@@ -9,7 +9,7 @@ Exit code convention:
 import argparse
 import sys
 
-from . import __version__
+from . import __version__, validate
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -35,12 +35,24 @@ def build_parser():
         dest="command", required=True, metavar="<command>"
     )
     for name, help_text in SUBCOMMANDS.items():
-        subparsers.add_parser(name, help=help_text, description=help_text)
+        subparser = subparsers.add_parser(name, help=help_text, description=help_text)
+        if name == "validate":
+            subparser.add_argument(
+                "paths",
+                nargs="*",
+                metavar="PATH",
+                help=(
+                    "unit files or directories to validate "
+                    f"(default: {validate.DEFAULT_KNOWLEDGE_DIR}/)"
+                ),
+            )
     return parser
 
 
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "validate":
+        return validate.run(args.paths, stdout=sys.stdout, stderr=sys.stderr)
     print(f"ERROR: '{args.command}' is not implemented yet", file=sys.stderr)
     return EXIT_ERROR
