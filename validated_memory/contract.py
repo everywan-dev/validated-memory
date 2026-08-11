@@ -25,18 +25,24 @@ ISO_PATTERN = re.compile(
 
 
 class Finding:
-    """One reportable observation about one unit."""
+    """One reportable observation about one unit.
 
-    __slots__ = ("field", "location", "message", "severity")
+    `line` is set only when the finding has one: the parser knows where it
+    stopped, while a contract rule usually speaks about the unit as a whole.
+    """
 
-    def __init__(self, severity, location, field, message):
+    __slots__ = ("field", "line", "location", "message", "severity")
+
+    def __init__(self, severity, location, field, message, line=None):
         self.severity = severity
         self.location = location
         self.field = field
         self.message = message
+        self.line = line
 
     def render(self):
-        return f"{self.severity}: {self.location}: {self.field}: {self.message}"
+        where = self.location if self.line is None else f"{self.location}:{self.line}"
+        return f"{self.severity}: {where}: {self.field}: {self.message}"
 
 
 def validate_documents(documents):
@@ -53,7 +59,9 @@ def validate_documents(documents):
             data = parse(text)
         except FrontmatterError as error:
             findings.append(
-                Finding(ERROR, f"{location}:{error.lineno}", "frontmatter", error.message)
+                Finding(
+                    ERROR, location, "frontmatter", error.message, line=error.lineno
+                )
             )
             continue
         units.append((location, data))
@@ -253,47 +261,16 @@ def _check_anchors(location, data):
 
 def _check_anchor_values(location, field, anchor):
     findings = []
-    system = anchor.get("system")
-    if "system" in anchor and not _is_non_empty_string(system):
-        findings.append(
-            Finding(
-                ERROR,
-                location,
-                f"{field}.system",
-                f"{_describe(system)} is not a system name",
+    for name, accepts, expectation in ANCHOR_VALUE_RULES:
+        if name in anchor and not accepts(anchor[name]):
+            findings.append(
+                Finding(
+                    ERROR,
+                    location,
+                    f"{field}.{name}",
+                    f"{_describe(anchor[name])} is not {expectation}",
+                )
             )
-        )
-    kind = anchor.get("kind")
-    if "kind" in anchor and not _is_probe_kind(kind):
-        findings.append(
-            Finding(
-                ERROR,
-                location,
-                f"{field}.kind",
-                f"{_describe(kind)} is not a probe kind; expected a name without "
-                "whitespace",
-            )
-        )
-    captured_at = anchor.get("captured_at")
-    if "captured_at" in anchor and not _is_iso8601(captured_at):
-        findings.append(
-            Finding(
-                ERROR,
-                location,
-                f"{field}.captured_at",
-                f"{_describe(captured_at)} is not an ISO-8601 date or timestamp",
-            )
-        )
-    payload = anchor.get("payload")
-    if "payload" in anchor and not isinstance(payload, dict):
-        findings.append(
-            Finding(
-                ERROR,
-                location,
-                f"{field}.payload",
-                f"{_describe(payload)} is not a mapping",
-            )
-        )
     return findings
 
 
@@ -351,6 +328,16 @@ def _is_iso8601(value):
     except ValueError:
         return False
     return True
+
+
+# What each field of the anchor envelope accepts, and how to name the
+# expectation when it does not. The envelope's shape is checked apart.
+ANCHOR_VALUE_RULES = (
+    ("system", _is_non_empty_string, "a system name"),
+    ("kind", _is_probe_kind, "a probe kind (a name without whitespace)"),
+    ("captured_at", _is_iso8601, "an ISO-8601 date or timestamp"),
+    ("payload", lambda value: isinstance(value, dict), "a mapping"),
+)
 
 
 def _describe(value):

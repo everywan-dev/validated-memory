@@ -11,17 +11,10 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 
 
-def run(paths, stdout, stderr):
-    """Validate every unit under `paths` and report findings. Returns an exit code."""
-    explicit = bool(paths)
-    targets = [Path(path) for path in paths] if explicit else [Path(DEFAULT_KNOWLEDGE_DIR)]
-
-    documents = []
-    findings = []
-    for target in targets:
-        collected, target_findings = _collect(target, explicit)
-        documents.extend(collected)
-        findings.extend(target_findings)
+def run(path, stdout, stderr):
+    """Validate every unit under `path` and report findings. Returns an exit code."""
+    target = Path(path) if path else Path(DEFAULT_KNOWLEDGE_DIR)
+    documents, findings = _collect(target, explicit=bool(path))
     findings.extend(validate_documents(documents))
 
     errors = [finding for finding in findings if finding.severity == ERROR]

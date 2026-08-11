@@ -172,6 +172,22 @@ def test_missing_frontmatter_is_an_error(adopter_dir, run_cli):
     assert "frontmatter" in result.stderr
 
 
+def test_a_contract_finding_names_the_unit_and_field_without_a_line(
+    adopter_dir, write_unit, run_cli
+):
+    # A contract rule speaks about the unit as a whole, so it carries no line;
+    # only the parser knows where it stopped (see the frontmatter tests).
+    write_unit("kb-0001.md", "id: kb-0001\nanchors: []\n")
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert (
+        "ERROR: knowledge/kb-0001.md: evidence: required field is missing"
+        in result.stderr
+    )
+
+
 # --- base contract: cross-unit errors ----------------------------------------
 
 

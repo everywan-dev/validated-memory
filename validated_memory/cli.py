@@ -17,7 +17,7 @@ EXIT_ERROR = 1
 SUBCOMMANDS = {
     "init": "Scaffold the validated-memory layout in an adopter project",
     "lint": "Lint the agent-memory layer: index sync, frontmatter, wikilinks, supersession",
-    "validate": "Validate curated-knowledge units against the base contract and declared extension",
+    "validate": "Validate curated-knowledge units against the base contract",
     "derive": "Re-derive indexes and summaries from curated-knowledge units",
     "probe": "Run freshness probes and record ternary verdicts",
 }
@@ -38,11 +38,11 @@ def build_parser():
         subparser = subparsers.add_parser(name, help=help_text, description=help_text)
         if name == "validate":
             subparser.add_argument(
-                "paths",
-                nargs="*",
+                "path",
+                nargs="?",
                 metavar="PATH",
                 help=(
-                    "unit files or directories to validate "
+                    "unit file or directory to validate "
                     f"(default: {validate.DEFAULT_KNOWLEDGE_DIR}/)"
                 ),
             )
@@ -53,6 +53,6 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "validate":
-        return validate.run(args.paths, stdout=sys.stdout, stderr=sys.stderr)
+        return validate.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
     print(f"ERROR: '{args.command}' is not implemented yet", file=sys.stderr)
     return EXIT_ERROR

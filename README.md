@@ -40,13 +40,20 @@ non-zero = ERROR (gates).
 ### `validate`
 
 ```
-python3 -m validated_memory validate [PATH ...]
+python3 -m validated_memory validate [PATH]
 ```
 
-Validates every `*.md` unit found under each PATH, recursively. With no PATH it
-reads `knowledge/` relative to the working directory. Findings go to stderr as
-`SEVERITY: <unit>:<line>: <field>: <message>`; a one-line summary goes to
-stdout.
+Validates every `*.md` unit found under PATH, recursively; PATH may also be a
+single unit file. With no PATH it reads `knowledge/` relative to the working
+directory. A one-line summary goes to stdout; findings go to stderr as
+
+```
+SEVERITY: <unit>: <field>: <message>
+SEVERITY: <unit>:<line>: <field>: <message>    # parse errors only
+```
+
+A contract rule speaks about the unit as a whole, so it reports no line. Only
+the parser reports one, because only the parser knows where it stopped.
 
 Supersession resolves against the validated set: validate the whole knowledge
 directory, not a single file, or a `supersedes` entry pointing at a unit you
@@ -70,6 +77,12 @@ provenance: []                  # optional; where the native artifact lives
 
 An unknown top-level field is an ERROR: adopter-specific fields belong to a
 declared extension. A unit with no anchors is a WARNING, not an ERROR.
+
+An `id` must be unique and stable. `validate` enforces form and uniqueness
+across the validated set; stability is a convention no single run can check,
+since nothing records what the id was before. Reuse of an id across time is
+caught by supersession, not by the validator: correct a unit by writing a new
+one that supersedes it, never by editing its id.
 
 ### Frontmatter subset
 
