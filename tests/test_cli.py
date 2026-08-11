@@ -59,12 +59,12 @@ def test_unimplemented_subcommand_gates_with_explicit_error(name, adopter_dir):
     assert name in result.stderr
 
 
-def test_unknown_subcommand_fails(adopter_dir):
+def test_unknown_subcommand_fails_as_usage_error(adopter_dir):
     result = run_cli("frobnicate", cwd=adopter_dir)
-    assert result.returncode != 0
+    assert result.returncode == 2
 
 
 def test_no_arguments_fails_with_usage(adopter_dir):
     result = run_cli(cwd=adopter_dir)
-    assert result.returncode != 0
+    assert result.returncode == 2
     assert "usage" in result.stderr.lower()

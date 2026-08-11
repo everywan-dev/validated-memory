@@ -1,5 +1,5 @@
 test:
   image: python:3.12-slim
   script:
-    - pip install --quiet pytest
+    - pip install --quiet ".[dev]"
     - python -m pytest -q
