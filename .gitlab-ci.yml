@@ -1,0 +1,5 @@
+test:
+  image: python:3.12-slim
+  script:
+    - pip install --quiet pytest
+    - python -m pytest -q
