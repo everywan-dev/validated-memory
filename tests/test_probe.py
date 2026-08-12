@@ -249,6 +249,24 @@ def test_a_missing_executable_unparseable_output_and_an_out_of_domain_verdict_al
     assert records["repo-c"]["verdict"] == "unknown"
 
 
+def test_with_no_configuration_at_all_every_anchor_falls_back_to_unknown(
+    adopter_dir, write_unit, run_cli
+):
+    # No `validated-memory.md` means an empty probe registry: the same
+    # fallback path as a `kind` that is simply not registered in it.
+    write_unit("kb-0001.md", ONE_ANCHOR_UNIT)
+
+    result = run_cli("probe", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: kb-0001: anchors[0]: no probe registered for kind 'git_ref'" in (
+        result.stderr
+    )
+    records = _records(adopter_dir)
+    assert len(records) == 1
+    assert records[0]["verdict"] == "unknown"
+
+
 # --- append-only history; the service view is the latest record -------------
 
 ONE_ANCHOR_UNIT = """\
