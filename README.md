@@ -15,8 +15,8 @@ Under construction (v1). Every subcommand is live: `validate` enforces the
 base contract and the adopter's declared extension; `lint` enforces the
 agent-memory layer; `derive` re-derives the knowledge index, with a `--check`
 gate, and reads real freshness verdicts; `probe` runs freshness probes and
-records them; `init` scaffolds a new adopter project. The bundled `git_ref`
-probe is still pending.
+records them, including the bundled `git_ref` probe; `init` scaffolds a new
+adopter project.
 
 ## Layers
 
@@ -64,10 +64,9 @@ all, e.g. no write permission on the target directory.
 
 `validated-memory.md` declares the full adopter surface `extension.py`
 validates: the declared extension (`schema`, `version`), the `id_prefix`,
-and the probe registry, already mapping `git_ref` to its probe command
-(`python3 -m validated_memory.probes.git_ref`). That module lands with the
-probe framework in a later ticket; registering it now is still correct, since
-`probes` only records a command string here -- see "Adopter configuration"
+and the probe registry, already mapping `git_ref` to its bundled probe
+command (`python3 -m validated_memory.probes.git_ref`; see "The bundled
+`git_ref` probe" under `probe` below) -- see "Adopter configuration"
 below. `knowledge-extension.md` declares no fields (`fields: []`, a valid,
 empty extension) and its body documents, in prose, the field format (`name`,
 `type`, `values`; types `string` and `enum`) and the versioning rule.
@@ -276,6 +275,51 @@ Exit codes: `0` clean, or WARNING-only findings -- **a `drifted` or
 `unknown` verdict is data, not a finding, and never gates `probe`**; `1` an
 ERROR (source validation, or the verdict log could not be written); `2` a
 usage error.
+
+#### The bundled `git_ref` probe
+
+Ships with the plugin at `validated_memory/probes/git_ref.py`, invocable as
+`python3 -m validated_memory.probes.git_ref` -- the command `init` already
+registers for `git_ref` in the scaffolded `validated-memory.md` (see
+"Adopter configuration" below). It implements the probe contract above for
+one `kind`: freshness of a git repository ref.
+
+Its payload, interpreted by the probe -- the envelope itself does not know
+its shape:
+
+```yaml
+payload:
+  repo: .                       # local path or URL `git` understands
+  ref: refs/heads/main          # full ref name
+  commit: <sha at capture time> # what `ref` resolved to when the anchor
+                                 # was captured
+```
+
+The live commit is resolved with `git ls-remote <repo> <ref>`, run as a
+subprocess without a shell -- uniform for local paths and URLs, and `git` is
+a system binary, not a pip dependency, so this keeps the stdlib-only rule.
+`git` must be installed and on `PATH`.
+
+The comparison is textual, against the full sha `git ls-remote` returns, so
+the capture side must record exactly that: `commit` is the **full 40-hex
+sha** the ref resolves to (`git rev-parse <ref>`). Two captures that read
+naturally but never match: an abbreviated sha, and -- for an annotated tag --
+the peeled commit (`v1^{commit}`), since the ref resolves to the tag
+*object*. Both read as a permanent, misleading `drifted`; capture what the
+ref resolves to, not what it points at.
+
+- the live commit equals `commit` -- `current`.
+- it differs -- `drifted`, with a detail naming the ref and both shas.
+- the verdict cannot be determined -- `unknown`, with a detail explaining
+  why: `repo`, `ref` or `commit` missing from the payload; a repo that
+  cannot be reached; a ref that does not exist (`git ls-remote` exits clean
+  with no output); or `git` not installed or not on `PATH`.
+
+Like every probe, it never gates the run over its own verdict, and it holds
+itself to the probe contract directly rather than leaning on the
+framework's fallback: every failure it can anticipate is caught and turned
+into `unknown` with a reason here, so it never raises, never prints a raw
+traceback, and never exits non-zero.
 
 ## Agent memory
 
