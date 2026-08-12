@@ -5,20 +5,21 @@ first (the base contract plus the adopter's declared extension) and refuses to
 write or check anything when that validation reports an ERROR. The index is a
 plain Markdown table -- readable without the plugin -- naming, per unit, its
 effective state (computed from `supersedes`, never mutating the unit), its
-evidence state, and a verdict column that this version always reports as
-`unknown`: freshness probes land in a later ticket.
+evidence state, and a verdict column read from the service view of
+`verdicts.jsonl` (see `verdicts` and the `probe` subcommand): an anchor never
+probed is `unknown`, fail-explicit.
 """
 
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import validate
+from . import verdicts as verdicts_module
 from .contract import ERROR
 from .findings import EXIT_ERROR, EXIT_OK
 from .frontmatter import parse as parse_frontmatter
 
 INDEX_FILENAME = "knowledge-index.md"
-VERDICT_UNKNOWN = "unknown"
 
 
 def run(path, check, stdout, stderr):
@@ -49,12 +50,15 @@ def _basis_location(path):
     return location
 
 
-def _rows(documents):
-    """Compute the effective state per unit, sorted by id.
+def effective_states(documents):
+    """Compute each unit's frontmatter and effective state, keyed by id.
 
+    Shared with `probe`, which only probes anchors of *active* units: one that
+    appears in another unit's `supersedes` within the set is not current.
     Documents already passed validation, so every `id` is present, valid and
     unique, and every `supersedes` entry names a declared id. The unit itself
     is never mutated; the effective state is computed from the whole set.
+    Returns `{unit_id: (data, state)}`.
     """
     units = {}
     for _location, text in documents:
@@ -66,16 +70,58 @@ def _rows(documents):
         for target_id in data.get("supersedes") or []:
             superseded_by.setdefault(target_id, []).append(unit_id)
 
-    rows = []
-    for unit_id in sorted(units):
-        data = units[unit_id]
+    states = {}
+    for unit_id, data in units.items():
         supersessors = sorted(superseded_by.get(unit_id, []))
         if supersessors:
             state = "superseded by " + ", ".join(supersessors)
         else:
             state = "active"
-        rows.append((unit_id, state, data["evidence"]))
+        states[unit_id] = (data, state)
+    return states
+
+
+def _rows(documents):
+    """Compute one row per unit, sorted by id: state, evidence and verdict."""
+    states = effective_states(documents)
+    view = verdicts_module.service_view()
+    rows = []
+    for unit_id in sorted(states):
+        data, state = states[unit_id]
+        verdict = _verdict_cell(unit_id, data.get("anchors") or [], view)
+        rows.append((unit_id, state, data["evidence"], verdict))
     return rows
+
+
+def _verdict_cell(unit_id, anchors, view):
+    """The verdict column for one unit: the worst verdict among its anchors.
+
+    No anchors -- nothing to probe -- reports `unknown` on its own. With
+    anchors, an anchor absent from the service view (never probed) is
+    `unknown`, fail-explicit. When the worst verdict is `unknown`, the
+    systems behind it are listed; when it is `drifted` and some anchors are
+    also `unknown`, those are listed too, tagged as such.
+    """
+    if not anchors:
+        return verdicts_module.UNKNOWN
+    per_anchor = [
+        (
+            anchor.get("system"),
+            view.get(
+                (unit_id, anchor.get("system"), anchor.get("kind")), verdicts_module.UNKNOWN
+            ),
+        )
+        for anchor in anchors
+    ]
+    verdict = verdicts_module.worst(anchor_verdict for _system, anchor_verdict in per_anchor)
+    unknown_systems = sorted(
+        {system for system, anchor_verdict in per_anchor if anchor_verdict == verdicts_module.UNKNOWN}
+    )
+    if verdict == verdicts_module.UNKNOWN:
+        return f"{verdicts_module.UNKNOWN} (" + ", ".join(unknown_systems) + ")"
+    if verdict == verdicts_module.DRIFTED and unknown_systems:
+        return f"{verdicts_module.DRIFTED} (unknown: " + ", ".join(unknown_systems) + ")"
+    return verdict
 
 
 def _render(rows, basis):
@@ -90,8 +136,8 @@ def _render(rows, basis):
         "| id | state | evidence | verdict |",
         "|----|-------|----------|---------|",
     ]
-    for unit_id, state, evidence in rows:
-        lines.append(f"| {unit_id} | {state} | {evidence} | {VERDICT_UNKNOWN} |")
+    for unit_id, state, evidence, verdict in rows:
+        lines.append(f"| {unit_id} | {state} | {evidence} | {verdict} |")
     return "\n".join(lines) + "\n"
 
 
