@@ -9,6 +9,8 @@ clean right after a run on an empty project.
 
 import os
 
+import pytest
+
 
 # --- the full scaffold, from an empty directory -------------------------------
 
@@ -159,6 +161,9 @@ def test_re_running_init_does_not_overwrite_a_hand_edited_config(
 # --- failure to create is an ERROR ---------------------------------------------
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
 def test_a_directory_that_cannot_be_created_gates_with_an_error(adopter_dir, run_cli):
     locked = adopter_dir / "locked"
     locked.mkdir()
@@ -171,6 +176,18 @@ def test_a_directory_that_cannot_be_created_gates_with_an_error(adopter_dir, run
         assert "knowledge" in result.stderr
     finally:
         os.chmod(locked, 0o700)
+
+
+def test_an_item_blocked_by_a_file_gates_with_an_error(adopter_dir, run_cli):
+    # A regular file where the scaffold needs a directory: creating
+    # memory/MEMORY.md fails for every user, root included -- unlike
+    # permission bits, which root ignores.
+    (adopter_dir / "memory").write_text("not a directory\n", encoding="utf-8")
+
+    result = run_cli("init", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR" in result.stderr
 
 
 # --- --harness-memory: the move-proof symlink ----------------------------------
