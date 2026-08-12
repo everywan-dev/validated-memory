@@ -22,9 +22,6 @@ INDEX_FILENAME = "MEMORY.md"
 MEMORY_TYPES = ("user", "project", "feedback", "reference")
 
 INDEX_ENTRY_PATTERN = re.compile(r"^-\s+\[[^\]]*\]\(([^)]+)\)")
-WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
-SUPERSEDED_PREFIX = "superseded by "
-SUPERSEDED_WIKILINK_PATTERN = re.compile(r"^\[\[([^\]]+)\]\]")
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -49,13 +46,7 @@ def run(path, stdout, stderr):
 
 
 def _collect(target, explicit):
-    """Resolve the memory directory and its index, and read every memory file.
-
-    Returns `(documents, findings)`. A missing directory or a missing index
-    stops the run before any file is read: both are structural problems the
-    rest of the checks depend on, so reporting file-level findings alongside
-    them would suggest a partial pass that was never attempted.
-    """
+    """Resolve the memory directory and its index, and read every memory file."""
     location = target.as_posix()
     if not target.exists():
         if explicit:
@@ -78,14 +69,7 @@ def _collect(target, explicit):
             )
         ]
 
-    try:
-        index_text = index_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        return [], [
-            Finding(
-                ERROR, index_path.as_posix(), "file", f"cannot be read: {error}"
-            )
-        ]
+    index_text = index_path.read_text(encoding="utf-8")
 
     files = sorted(
         candidate
@@ -93,25 +77,16 @@ def _collect(target, explicit):
         if candidate.is_file() and candidate != index_path
     )
 
-    documents = []
-    findings = []
-    for candidate in files:
-        try:
-            text = candidate.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as error:
-            findings.append(
-                Finding(
-                    ERROR, candidate.as_posix(), "file", f"cannot be read: {error}"
-                )
-            )
-            continue
-        documents.append((candidate.as_posix(), text))
+    documents = [
+        (candidate.as_posix(), candidate.read_text(encoding="utf-8"))
+        for candidate in files
+    ]
 
     files_by_relpath = {
         candidate.relative_to(target).as_posix(): candidate for candidate in files
     }
     hrefs = _parse_index_entries(index_text)
-    findings.extend(_check_sync(index_path.as_posix(), hrefs, files_by_relpath))
+    findings = _check_sync(index_path.as_posix(), hrefs, files_by_relpath)
 
     return documents, findings
 
@@ -135,7 +110,7 @@ def _check_sync(index_location, hrefs, files_by_relpath):
     findings = []
     referenced = set()
     for href in hrefs:
-        relpath = _normalize_href(href)
+        relpath = PurePosixPath(href.strip()).as_posix()
         referenced.add(relpath)
         if relpath not in files_by_relpath:
             findings.append(
@@ -159,20 +134,8 @@ def _check_sync(index_location, hrefs, files_by_relpath):
     return findings
 
 
-def _normalize_href(href):
-    return PurePosixPath(href.strip()).as_posix()
-
-
 def _lint_memories(documents):
-    """Lint each memory file's frontmatter, then its wikilinks and supersession.
-
-    Names are collected in a first pass, once every document has parsed, so
-    that wikilink and supersession resolution can be checked against the full
-    set regardless of file order -- the same two-pass shape `validate` uses
-    for id declaration and supersedes resolution.
-    """
     findings = []
-    parsed = []
     for location, text in documents:
         try:
             data = parse(text)
@@ -183,54 +146,8 @@ def _lint_memories(documents):
                 )
             )
             continue
-        body = _body(text)
-        parsed.append((location, data, body))
-
-    for location, data, _ in parsed:
         findings.extend(_check_memory(location, data))
-
-    declared_names = {}
-    for location, data, _ in parsed:
-        name = data.get("name")
-        if not _is_non_empty_string(name):
-            continue
-        if name in declared_names:
-            findings.append(
-                Finding(
-                    ERROR,
-                    location,
-                    "name",
-                    f"duplicate name '{name}', already declared by "
-                    f"{declared_names[name]}",
-                )
-            )
-        else:
-            declared_names[name] = location
-
-    valid_names = set(declared_names)
-    for location, data, body in parsed:
-        own_name = data.get("name")
-        if not _is_non_empty_string(own_name):
-            own_name = None
-        description = data.get("description")
-        findings.extend(
-            _check_wikilinks(location, own_name, description, body, valid_names)
-        )
-
     return findings
-
-
-def _body(text):
-    """Return the document text after the closing frontmatter fence.
-
-    Called only once `parse` has already accepted the frontmatter, so the
-    fences are known to be well formed.
-    """
-    lines = text.split("\n")
-    for index in range(1, len(lines)):
-        if lines[index].rstrip() == "---":
-            return "\n".join(lines[index + 1 :])
-    return ""  # pragma: no cover - unreachable once `parse` has succeeded
 
 
 def _check_memory(location, data):
@@ -289,78 +206,6 @@ def _check_type(location, data):
             )
         ]
     return []
-
-
-def _check_wikilinks(location, own_name, description, body, valid_names):
-    """Check the supersession marker (if any), then every remaining wikilink.
-
-    A wikilink that opens the supersession marker is checked by
-    `_check_supersession` instead of the generic scan below, so it is not
-    reported twice.
-    """
-    findings = []
-    scan_description = description if _is_non_empty_string(description) else ""
-    if _is_non_empty_string(description) and description.startswith(
-        SUPERSEDED_PREFIX
-    ):
-        remainder = description[len(SUPERSEDED_PREFIX) :]
-        match = SUPERSEDED_WIKILINK_PATTERN.match(remainder)
-        if not match:
-            findings.append(
-                Finding(
-                    ERROR,
-                    location,
-                    "description",
-                    "malformed supersession marker: 'superseded by ' must be "
-                    "followed by a [[wikilink]]",
-                )
-            )
-            scan_description = ""
-        else:
-            target = match.group(1)
-            scan_description = remainder[match.end() :]
-            if target == own_name:
-                findings.append(
-                    Finding(
-                        ERROR,
-                        location,
-                        "description",
-                        f"supersession points at itself: '{target}'",
-                    )
-                )
-            elif target not in valid_names:
-                findings.append(
-                    Finding(
-                        ERROR,
-                        location,
-                        "description",
-                        f"supersession points at '{target}', which does not exist",
-                    )
-                )
-    findings.extend(
-        _check_wikilink_targets(location, "description", scan_description, valid_names)
-    )
-    findings.extend(_check_wikilink_targets(location, "body", body, valid_names))
-    return findings
-
-
-def _check_wikilink_targets(location, field, text, valid_names):
-    findings = []
-    seen = set()
-    for match in WIKILINK_PATTERN.finditer(text):
-        target = match.group(1)
-        if target in valid_names or target in seen:
-            continue
-        seen.add(target)
-        findings.append(
-            Finding(
-                WARNING,
-                location,
-                field,
-                f"wikilink to '{target}' has no matching memory (not written yet)",
-            )
-        )
-    return findings
 
 
 def _is_non_empty_string(value):
