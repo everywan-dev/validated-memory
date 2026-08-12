@@ -114,28 +114,13 @@ def _check_extension_fields(location, data, extension):
     if extension is None:
         return []
     findings = []
-    for name, declaration in extension.fields.items():
+    for name in extension.names:
         if name not in data:
             continue
-        value = data[name]
-        if not isinstance(value, str):
+        reason = extension.violation(name, data[name])
+        if reason:
             findings.append(
-                Finding(
-                    ERROR, location, name, f"{_describe(value)} is not a scalar value"
-                )
-            )
-            continue
-        if declaration["type"] != "enum":
-            continue
-        values = declaration["values"]
-        if value not in values:
-            findings.append(
-                Finding(
-                    ERROR,
-                    location,
-                    name,
-                    f"{_describe(value)} is not one of " + ", ".join(values),
-                )
+                Finding(ERROR, location, name, f"{_describe(data[name])} {reason}")
             )
     return findings
 

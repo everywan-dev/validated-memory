@@ -131,6 +131,22 @@ def test_a_string_field_holding_a_collection_gates(
     assert "ERROR: knowledge/kb-0001.md: owner: " in result.stderr
 
 
+def test_a_declared_field_holding_an_empty_value_gates(
+    adopter_dir, write_document, write_unit, run_cli
+):
+    write_document("validated-memory.md", CONFIG)
+    write_document("knowledge-extension.md", SCHEMA)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nanchors: []\nowner: ""\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md: owner: " in result.stderr
+
+
 # --- fail-loud loading: the configuration itself ------------------------------
 
 MALFORMED_CONFIGS = [

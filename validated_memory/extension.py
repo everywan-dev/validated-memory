@@ -47,6 +47,19 @@ class Extension:
     def names(self):
         return tuple(self.fields)
 
+    def violation(self, name, value):
+        """Say why `value` fails the declaration of `name`, or None if it holds.
+
+        The reason completes a sentence about the value, which the caller
+        describes: the schema's shape is known here, not by the contract.
+        """
+        declaration = self.fields[name]
+        if not _is_non_empty_string(value):
+            return "is not a non-empty scalar"
+        if declaration["type"] == "enum" and value not in declaration["values"]:
+            return "is not one of " + ", ".join(declaration["values"])
+        return None
+
 
 def load(root):
     """Load the adopter's declared extension, or None when none is configured."""
