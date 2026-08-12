@@ -135,7 +135,14 @@ def _check_sync(index_location, hrefs, files_by_relpath):
 
 
 def _lint_memories(documents):
+    """Lint each memory file's frontmatter, then cross-file name uniqueness.
+
+    Names are collected in a first pass, once every document has parsed, so
+    duplicate detection does not depend on file order -- the same two-pass
+    shape `validate` uses for id declaration.
+    """
     findings = []
+    parsed = []
     for location, text in documents:
         try:
             data = parse(text)
@@ -146,7 +153,29 @@ def _lint_memories(documents):
                 )
             )
             continue
+        parsed.append((location, data))
+
+    for location, data in parsed:
         findings.extend(_check_memory(location, data))
+
+    declared_names = {}
+    for location, data in parsed:
+        name = data.get("name")
+        if not _is_non_empty_string(name):
+            continue
+        if name in declared_names:
+            findings.append(
+                Finding(
+                    ERROR,
+                    location,
+                    "name",
+                    f"duplicate name '{name}', already declared by "
+                    f"{declared_names[name]}",
+                )
+            )
+        else:
+            declared_names[name] = location
+
     return findings
 
 
