@@ -147,17 +147,79 @@ def test_a_declared_field_holding_an_empty_value_gates(
     assert "ERROR: knowledge/kb-0001.md: owner: " in result.stderr
 
 
+def test_a_config_without_an_extension_block_applies_the_base_contract(
+    adopter_dir, write_document, write_unit, run_cli
+):
+    # `extension` is one adopter surface among several, not the price of
+    # having a configuration file at all.
+    write_document(
+        "validated-memory.md",
+        "id_prefix: kb-\nprobes:\n  git_ref: run-git-ref-probe\n",
+    )
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\nanchors: []\n")
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "1 unit(s) checked" in result.stdout
+
+
+def test_a_config_with_every_adopter_key_loads(
+    adopter_dir, write_document, write_unit, run_cli
+):
+    write_document(
+        "validated-memory.md",
+        CONFIG + "id_prefix: kb-\nprobes:\n  git_ref: run-git-ref-probe\n",
+    )
+    write_document("knowledge-extension.md", SCHEMA)
+    write_unit("kb-0001.md", EXTENDED_UNIT)
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_probe_kind_with_whitespace_cannot_even_be_written(
+    adopter_dir, write_document, write_unit, run_cli
+):
+    # A kind is a frontmatter key, and the parser rejects keys with spaces:
+    # the "no whitespace in a probe kind" rule needs no separate check here.
+    write_document("validated-memory.md", "probes:\n  git ref: run-probe\n")
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\nanchors: []\n")
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: validated-memory.md:" in result.stderr
+    assert "frontmatter" in result.stderr
+
+
+def test_an_empty_probes_mapping_is_valid(
+    adopter_dir, write_document, write_unit, run_cli
+):
+    write_document("validated-memory.md", "probes: {}\n")
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\nanchors: []\n")
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+
+
 # --- fail-loud loading: the configuration itself ------------------------------
 
 MALFORMED_CONFIGS = [
     ("schema_missing", 'extension:\n  version: "1"\n'),
     ("version_missing", "extension:\n  schema: knowledge-extension.md\n"),
     ("extension_not_a_mapping", "extension: knowledge-extension.md\n"),
-    ("extension_missing", "knowledge: knowledge\n"),
+    ("unknown_config_key", "knowledge: knowledge\n"),
     (
         "unknown_extension_key",
         'extension:\n  schema: knowledge-extension.md\n  version: "1"\n  strict: yes\n',
     ),
+    ("id_prefix_empty", 'id_prefix: ""\n'),
+    ("id_prefix_not_a_scalar", "id_prefix:\n  - kb\n"),
+    ("probes_not_a_mapping", "probes: git_ref\n"),
+    ("probe_command_empty", 'probes:\n  git_ref: ""\n'),
 ]
 
 

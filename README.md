@@ -210,11 +210,32 @@ since nothing records what the id was before. Reuse of an id across time is
 caught by supersession, not by the validator: correct a unit by writing a new
 one that supersedes it, never by editing its id.
 
+## Adopter configuration
+
+The adopter's configuration is a file named `validated-memory.md`, read from
+the working directory. This version declares three fields, each optional:
+
+```yaml
+extension:                         # the declared extension (next section)
+  schema: knowledge-extension.md
+  version: "1"
+id_prefix: kb-                     # the id scheme the adopter's units follow
+probes:                            # probe registry: kind -> command
+  git_ref: run-git-ref-probe
+```
+
+`id_prefix` records the id scheme for humans and skills; `validate` does not
+enforce it. `probes` maps an anchor `kind` to the command that probes it (the
+`probe` subcommand consumes it). An unknown configuration field, an empty
+`id_prefix`, or a probe entry whose command is not a non-empty string each
+stop every run with an ERROR naming the configuration file: the configuration
+is one document, and a malformed key gates even the subcommands that do not
+consume it.
+
 ## Declared extension
 
-An adopter extends the contract without forking it. A configuration file named
-`validated-memory.md`, read from the working directory, names a versioned
-schema:
+An adopter extends the contract without forking it. The `extension` block of
+the configuration names a versioned schema:
 
 ```yaml
 extension:
@@ -243,8 +264,9 @@ required: v1 has no way to demand one.
 Keep the schema outside the curated-knowledge directory. Anything ending in
 `.md` under `knowledge/` is read as a unit, and a schema is not one.
 
-With no configuration file, only the base contract applies. With one, loading
-is fail-loud: an unreadable or malformed configuration, a schema that does not
+With no configuration file, or with one that declares no `extension` block,
+only the base contract applies. With an extension declared, loading is
+fail-loud: an unreadable or malformed configuration, a schema that does not
 exist, an unknown field type, an enum with no values, a field that redeclares a
 base contract field -- each stops the run with an ERROR against the offending
 document. Nothing here degrades to base-contract-only validation, because an

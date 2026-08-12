@@ -13,7 +13,7 @@ from .frontmatter import FrontmatterError, parse
 
 CONFIG_FILENAME = "validated-memory.md"
 
-CONFIG_FIELDS = ("extension",)
+CONFIG_FIELDS = ("extension", "id_prefix", "probes")
 EXTENSION_FIELDS = ("schema", "version")
 FIELD_KEYS = ("name", "type", "values")
 FIELD_TYPES = ("string", "enum")
@@ -68,6 +68,8 @@ def load(root):
         return None
 
     declared = _declaration(config_path)
+    if declared is None:
+        return None
     return Extension(_fields(config_path.parent / declared["schema"]))
 
 
@@ -146,7 +148,14 @@ def _check_domain(location, field, declaration):
 
 
 def _declaration(config_path):
-    """Read the `extension` block of the adopter's configuration."""
+    """Read the adopter's configuration and return its `extension` block.
+
+    The whole configuration is checked here -- an adopter surface with a
+    malformed key stops the run even when the key belongs to another
+    subcommand -- but only the extension declaration is returned. Returns
+    None when the configuration declares no extension: `extension` is one
+    adopter surface among several, not a required one.
+    """
     location = config_path.as_posix()
     config = _read(config_path)
 
@@ -158,8 +167,24 @@ def _declaration(config_path):
                 "unknown configuration field; this version declares "
                 + ", ".join(CONFIG_FIELDS),
             )
+
+    if "id_prefix" in config and not _is_non_empty_string(config["id_prefix"]):
+        raise ExtensionError(location, "id_prefix", "is not a non-empty string")
+
+    if "probes" in config:
+        probes = config["probes"]
+        if not isinstance(probes, dict):
+            raise ExtensionError(
+                location, "probes", "is not a mapping of probe kind to command"
+            )
+        for kind, command in probes.items():
+            if not _is_non_empty_string(command):
+                raise ExtensionError(
+                    location, f"probes.{kind}", "is not a non-empty command"
+                )
+
     if "extension" not in config:
-        raise ExtensionError(location, "extension", "required field is missing")
+        return None
 
     declared = config["extension"]
     if not isinstance(declared, dict):
