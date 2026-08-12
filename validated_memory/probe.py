@@ -31,16 +31,13 @@ from . import derive as derive_module
 from . import extension as extension_module
 from . import validate
 from . import verdicts as verdicts_module
-from .contract import ERROR
 from .findings import EXIT_ERROR, EXIT_OK, WARNING, Finding
 
 
 def run(path, stdout, stderr):
     """Probe every active unit's anchors and record their verdicts."""
-    documents, findings = validate.collect_and_validate(path)
-    for finding in findings:
-        print(finding.render(), file=stderr)
-    if any(finding.severity == ERROR for finding in findings):
+    documents, ok = validate.gated_source(path, stderr)
+    if not ok:
         return EXIT_ERROR
 
     registry = extension_module.probes(Path())

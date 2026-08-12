@@ -322,3 +322,40 @@ def test_an_unwritable_verdict_log_is_an_operational_error(
 
     assert result.returncode == 1
     assert f"ERROR: {VERDICT_LOG}: " in result.stderr
+
+
+# --- a corrupt verdict log fails loud for its readers -------------------------
+
+
+def test_a_corrupt_verdict_log_gates_derive_with_an_error(
+    adopter_dir, write_unit, run_cli
+):
+    # `probe` only appends; `derive` is the reader, and a reader must never
+    # guess about a log it cannot parse -- nor dump a raw traceback.
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\nanchors: []\n")
+    (adopter_dir / "verdicts.jsonl").write_text("not json\n", encoding="utf-8")
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: verdicts.jsonl:1: " in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not (adopter_dir / "knowledge-index.md").exists()
+
+
+def test_a_verdict_outside_the_domain_in_the_log_gates_derive(
+    adopter_dir, write_unit, run_cli
+):
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\nanchors: []\n")
+    record = (
+        '{"kind": "git_ref", "recorded_at": "2026-08-12T08:00:00Z", '
+        '"system": "repo-a", "unit": "kb-0001", "verdict": "maybe"}\n'
+    )
+    (adopter_dir / "verdicts.jsonl").write_text(record, encoding="utf-8")
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: verdicts.jsonl:1: " in result.stderr
+    assert "maybe" in result.stderr
+    assert "Traceback" not in result.stderr

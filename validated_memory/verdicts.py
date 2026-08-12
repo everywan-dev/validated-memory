@@ -13,6 +13,20 @@ from pathlib import Path
 
 LOG_FILENAME = "verdicts.jsonl"
 
+
+class VerdictLogError(Exception):
+    """Raised when the log cannot be read as verdict records.
+
+    A reader must never guess about a log it cannot parse: a truncated write
+    or a hand edit is reported with its line, fail-loud, instead of serving
+    verdicts computed from a record that was silently skipped.
+    """
+
+    def __init__(self, lineno, message):
+        super().__init__(message)
+        self.lineno = lineno
+        self.message = message
+
 CURRENT = "current"
 DRIFTED = "drifted"
 UNKNOWN = "unknown"
@@ -37,16 +51,39 @@ def append(records, root=Path()):
 
 
 def service_view(root=Path()):
-    """The latest verdict per `(unit, system, kind)`, or `{}` if never probed."""
+    """The latest verdict per `(unit, system, kind)`, or `{}` if never probed.
+
+    Raises `VerdictLogError` on a log that cannot be read as records.
+    """
     path = Path(root) / LOG_FILENAME
     if not path.exists():
         return {}
     view = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for lineno, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         line = line.strip()
         if not line:
             continue
-        record = json.loads(line)
-        key = (record["unit"], record["system"], record["kind"])
-        view[key] = record["verdict"]
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise VerdictLogError(
+                lineno, f"not a JSON record: {error.msg}"
+            ) from error
+        if not isinstance(record, dict):
+            raise VerdictLogError(lineno, "record is not a JSON object")
+        try:
+            key = (record["unit"], record["system"], record["kind"])
+            verdict = record["verdict"]
+        except KeyError as error:
+            raise VerdictLogError(
+                lineno, f"record is missing the {error} field"
+            ) from error
+        if verdict not in VERDICTS:
+            raise VerdictLogError(
+                lineno,
+                f"'{verdict}' is not one of " + ", ".join(VERDICTS),
+            )
+        view[key] = verdict
     return view

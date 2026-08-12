@@ -16,7 +16,7 @@ from pathlib import Path
 from . import validate
 from . import verdicts as verdicts_module
 from .contract import ERROR
-from .findings import EXIT_ERROR, EXIT_OK
+from .findings import EXIT_ERROR, EXIT_OK, Finding
 from .frontmatter import parse as parse_frontmatter
 
 INDEX_FILENAME = "knowledge-index.md"
@@ -24,14 +24,26 @@ INDEX_FILENAME = "knowledge-index.md"
 
 def run(path, check, stdout, stderr):
     """Derive the knowledge index, or check it against disk. Returns an exit code."""
-    documents, findings = validate.collect_and_validate(path)
-    for finding in findings:
-        print(finding.render(), file=stderr)
-    if any(finding.severity == ERROR for finding in findings):
+    documents, ok = validate.gated_source(path, stderr)
+    if not ok:
         return EXIT_ERROR
 
     basis = _basis_location(path)
-    content = _render(_rows(documents), basis)
+    try:
+        rows = _rows(documents)
+    except verdicts_module.VerdictLogError as error:
+        # The log is the reader's source of verdicts: one it cannot parse is
+        # reported like any other unreadable document, never served around.
+        finding = Finding(
+            ERROR,
+            verdicts_module.LOG_FILENAME,
+            "log",
+            error.message,
+            line=error.lineno,
+        )
+        print(finding.render(), file=stderr)
+        return EXIT_ERROR
+    content = _render(rows, basis)
 
     index_path = Path(INDEX_FILENAME)
     if check:
