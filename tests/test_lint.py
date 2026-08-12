@@ -280,3 +280,84 @@ def test_a_supersession_pointing_at_itself_gates(
     assert result.returncode == 1
     assert "ERROR: memory/old.md: description: " in result.stderr
     assert "itself" in result.stderr
+
+
+# --- target resolution -------------------------------------------------------
+
+
+def test_a_missing_default_directory_gates_and_points_at_init(adopter_dir, run_cli):
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "memory" in result.stderr
+    assert "init" in result.stderr
+
+
+def test_a_missing_explicit_path_gates(adopter_dir, run_cli):
+    result = run_cli("lint", "nowhere", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "nowhere" in result.stderr
+    assert "no such file or directory" in result.stderr
+
+
+def test_a_missing_index_gates_and_points_at_init(
+    adopter_dir, write_memory, run_cli
+):
+    write_memory("coffee-preference.md", HEALTHY_MEMORY)
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "MEMORY.md" in result.stderr
+    assert "init" in result.stderr
+    assert "0 memory file(s) checked" in result.stdout
+
+
+def test_an_empty_memory_directory_with_an_empty_index_is_clean(
+    adopter_dir, write_index, run_cli
+):
+    write_index("# Agent memory\n\nNo entries yet.\n")
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "ERROR" not in result.stderr
+    assert "WARNING" not in result.stderr
+    assert "0 memory file(s) checked" in result.stdout
+
+
+def test_explicit_path_overrides_the_default_directory(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory("coffee-preference.md", HEALTHY_MEMORY)
+    write_index(HEALTHY_INDEX)
+    (adopter_dir / "memory").rename(adopter_dir / "facts")
+
+    result = run_cli("lint", "facts", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+
+
+# --- ERROR and WARNING are reported apart -------------------------------------
+
+
+def test_errors_and_warnings_are_reported_apart(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory(
+        "warned.md",
+        "name: coffee-preference\n"
+        "description: See also [[tea-preference]].\n"
+        "metadata:\n  type: user\n",
+    )
+    write_memory("failed.md", "name: broken\nmetadata:\n  type: user\n")
+    write_index(
+        "- [Warned](warned.md) — fixture entry\n- [Failed](failed.md) — fixture entry\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "1 error(s)" in result.stdout
+    assert "1 warning(s)" in result.stdout
