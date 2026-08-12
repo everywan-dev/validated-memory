@@ -11,12 +11,14 @@ without the plugin installed.
 
 ## Status
 
-Under construction (v1). Every subcommand is live: `validate` enforces the
-base contract and the adopter's declared extension; `lint` enforces the
-agent-memory layer; `derive` re-derives the knowledge index, with a `--check`
-gate, and reads real freshness verdicts; `probe` runs freshness probes and
-records them, including the bundled `git_ref` probe; `init` scaffolds a new
-adopter project.
+v1 complete. Every subcommand is live: `validate` enforces the base contract
+and the adopter's declared extension; `lint` enforces the agent-memory
+layer; `derive` re-derives the knowledge index, with a `--check` gate, and
+reads real freshness verdicts; `probe` runs freshness probes and records
+them, including the bundled `git_ref` probe; `init` scaffolds a new adopter
+project. Five skills make the method invocable from the CLI surface alone,
+and a `SessionStart` hook keeps a `--harness-memory` symlink alive across
+sessions -- see "Skills" and "Startup hook" below.
 
 ## Layers
 
@@ -92,9 +94,10 @@ inside the adopter repo:
 
 Computing PATH from the harness's own layout and calling `init
 --harness-memory PATH` automatically on every session start is the plugin's
-startup hook, and is **not** part of `init`: that wiring lands in a later
-ticket. `init` only guarantees the hook, once wired, can call it repeatedly
-without ever losing data.
+startup hook (`hooks/restore-memory-symlink.sh`, wired as `SessionStart` in
+`hooks/hooks.json` -- see "Startup hook" below), and is **not** part of
+`init` itself. `init` only guarantees the hook can call it repeatedly, from
+any project state, without ever losing data.
 
 ### `lint`
 
@@ -385,6 +388,16 @@ anchors:                        # optional; without anchors a unit cannot expire
 provenance: []                  # optional; where the native artifact lives
 ```
 
+The three evidence states say how a claim is backed, and never mix planes:
+
+- **`measured`** -- directly observed or computed by executing something,
+  with a way to re-check it.
+- **`verifiable`** -- not directly measured, but checkable without executing,
+  by someone who follows the provenance.
+- **`hypothesis`** -- a claim not yet checked. A unit is never promoted out
+  of it by conviction: promotion is a new unit with better evidence that
+  supersedes this one.
+
 An unknown top-level field is an ERROR: adopter-specific fields belong to a
 declared extension. A unit with no anchors is a WARNING, not an ERROR.
 
@@ -472,6 +485,48 @@ non-empty inline collections, duplicate keys, a key with no value -- is an
 ERROR. Scalars are always strings; no type is inferred. A unit whose
 frontmatter fails to parse is never validated on a best-effort basis: the parse
 error is the only finding reported for it.
+
+## Skills
+
+Five skills, under `skills/*/SKILL.md`, make the method invocable from an
+agent session using only the CLI surface documented above -- each names the
+exact `validated-memory` invocation to run and the data discipline to
+follow, never reimplementing a rule the CLI already enforces:
+
+- **`adopt-validated-memory`** -- bootstrap a project (`init`), wire
+  `--harness-memory`, verify the result with `validate` and `lint`.
+- **`create-knowledge-unit`** -- write a new curated-knowledge unit, base
+  contract field by field, with the evidence-state discipline (never
+  promote by conviction; anchors are probeable, provenance is not).
+- **`supersede-knowledge`** -- correct existing knowledge with a new unit
+  and `supersedes`, never by editing or deleting the superseded one.
+- **`probe-freshness`** -- run `probe`, then `derive`, and read the ternary
+  verdict in `knowledge-index.md`.
+- **`maintain-agent-memory`** -- record or supersede an agent-memory fact,
+  and verify the memory set with `lint`.
+
+For the full adoption sequence, see `docs/adoption.md`. For a complete,
+reproducible run through every layer -- `init` → create a unit → `validate`
+→ `derive` → `probe` → supersede → `derive` again -- see
+`docs/walkthrough.md`.
+
+## Startup hook
+
+A `SessionStart` hook (`hooks/hooks.json`, running
+`hooks/restore-memory-symlink.sh`) restores a project's `--harness-memory`
+symlink automatically on every session start -- the wiring the
+`--harness-memory` section above defers to it. It computes the harness's
+per-project memory location the same way Claude Code lays out
+`~/.claude/projects/` (one directory per project, keyed by the project's own
+path with every `/` replaced by `-`) and re-runs `init --harness-memory`
+against it, with its stdout silenced.
+
+The hook is fail-open throughout, matching `init`'s own contract: no
+`$CLAUDE_PROJECT_DIR`, a project that has not adopted validated-memory (no
+`validated-memory.md`, or no `memory/`, at its root), no `python3` on
+`PATH`, or any other problem along the way is a clean no-op -- it never
+gates or breaks session startup, and it never deletes data. See
+`docs/adoption.md` ("The startup hook") for the adopter-facing summary.
 
 ## Development
 
