@@ -91,6 +91,9 @@ def test_after_init_validate_and_lint_pass_clean(adopter_dir, run_cli):
 
     assert validated.returncode == 0, validated.stderr
     assert "ERROR" not in validated.stderr
+    # An empty knowledge/ still reports its usual "no units" WARNING, which
+    # does not gate.
+    assert "WARNING" in validated.stderr
     assert linted.returncode == 0, linted.stderr
     assert "ERROR" not in linted.stderr
     assert "WARNING" not in linted.stderr

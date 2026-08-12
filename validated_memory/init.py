@@ -107,13 +107,16 @@ def run(harness_memory, stdout, stderr):
     created = 0
     kept = 0
 
-    for item, outcome, finding in (
+    # Each call below runs (and creates its item, if missing) immediately;
+    # this just names the completed results before reporting them in order.
+    steps = (
         _ensure_dir(Path("knowledge")),
         _ensure_dir(Path("memory")),
         _ensure_file(Path("memory") / "MEMORY.md", MEMORY_INDEX),
         _ensure_file(Path("validated-memory.md"), CONFIG),
         _ensure_file(Path("knowledge-extension.md"), EXTENSION_STUB),
-    ):
+    )
+    for item, outcome, finding in steps:
         if finding is not None:
             findings.append(finding)
             continue
