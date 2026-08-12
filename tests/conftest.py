@@ -72,6 +72,26 @@ def write_memory(write_document):
 
 
 @pytest.fixture
+def write_probe(adopter_dir):
+    """Return a callable that writes a fake probe script and its command.
+
+    The script is plain Python, invoked through the interpreter
+    (`sys.executable script.py`) -- so no shebang or `chmod +x` is needed.
+    The returned command is exactly what a `probes:` entry in
+    `validated-memory.md` would register: split with `shlex.split` and run
+    without a shell.
+    """
+
+    def _write(relative_path, source):
+        path = adopter_dir / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+        return f"{sys.executable} {path.as_posix()}"
+
+    return _write
+
+
+@pytest.fixture
 def write_index(adopter_dir):
     """Return a callable that writes the agent-memory index at `memory/MEMORY.md`."""
 
