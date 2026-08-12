@@ -59,3 +59,26 @@ def write_unit(write_document):
         return write_document(f"knowledge/{name}", frontmatter, body)
 
     return _write
+
+
+@pytest.fixture
+def write_memory(write_document):
+    """Return a callable that writes an agent-memory file under `memory/`."""
+
+    def _write(name, frontmatter, body="Memory body.\n"):
+        return write_document(f"memory/{name}", frontmatter, body)
+
+    return _write
+
+
+@pytest.fixture
+def write_index(adopter_dir):
+    """Return a callable that writes the agent-memory index at `memory/MEMORY.md`."""
+
+    def _write(text):
+        path = adopter_dir / "memory" / "MEMORY.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    return _write
