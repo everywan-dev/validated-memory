@@ -11,10 +11,12 @@ without the plugin installed.
 
 ## Status
 
-Under construction (v1). `validate` enforces the base contract and the
-adopter's declared extension; `lint` enforces the agent-memory layer;
-`derive` re-derives the knowledge index, with a `--check` gate; `init`
-scaffolds a new adopter project; `probe` is still a stub.
+Under construction (v1). Every subcommand is live: `validate` enforces the
+base contract and the adopter's declared extension; `lint` enforces the
+agent-memory layer; `derive` re-derives the knowledge index, with a `--check`
+gate, and reads real freshness verdicts; `probe` runs freshness probes and
+records them; `init` scaffolds a new adopter project. The bundled `git_ref`
+probe is still pending.
 
 ## Layers
 
@@ -175,9 +177,18 @@ Basis: 2 unit(s) under knowledge/
 - **state** is computed, never stored on the unit: `active`, or
   `superseded by <ids>` naming every unit that lists this one in its own
   `supersedes` (many-to-one), sorted and comma-separated.
-- **verdict** is present from the first derived index and is always `unknown`
-  in this version -- fail-explicit in the absence of freshness probes, which
-  land in a later version.
+- **verdict** reads the service view of `verdicts.jsonl` (the log `probe`
+  writes -- see the `probe` section below): for each of the unit's anchors,
+  the latest verdict of its `(system, kind)`, or `unknown` when the anchor was
+  never probed -- fail-explicit. A unit is graded by the worst of its
+  anchors' verdicts (`drifted` > `unknown` > `current`):
+  - no anchors: `unknown`, on its own.
+  - the worst verdict is `unknown`: `unknown (<systems>)`, naming every
+    system behind an `unknown` anchor, sorted and comma-separated -- this
+    also covers a unit with anchors that was never probed at all.
+  - the worst verdict is `drifted` and some anchors are also `unknown`:
+    `drifted (unknown: <systems>)`.
+  - otherwise: the verdict alone (`current` or `drifted`).
 
 `--check` recalculates the index in memory instead of writing it, and
 compares it against the `knowledge-index.md` already on disk, line by line.
@@ -188,10 +199,83 @@ divergence -- `Basis:`, a row, a missing or extra line -- is an ERROR naming
 the first line that does not match, numbered as on disk. `--check` never
 writes. A match exits clean with a summary. This makes `derive --check` a
 local or CI gate for adopters who version the derived index: hand-editing it,
-or letting it drift from the units, fails the check.
+or letting it drift from the units, fails the check. **The verdict column is
+part of that content**: running `probe` between a `derive` and a
+`derive --check` changes what the recalculated index says, so the check
+correctly fails against the now-stale on-disk index -- run `derive` again to
+pick up the new verdicts.
 
 Exit codes: `0` clean, or WARNING-only validation findings; `1` an ERROR
 finding (source validation, or a `--check` mismatch); `2` a usage error.
+
+### `probe`
+
+```
+python3 -m validated_memory probe [PATH]
+```
+
+Runs freshness probes over the anchors of every *active* curated-knowledge
+unit found under PATH, resolved exactly like `validate`'s PATH (default
+`knowledge/`), and records what each probe answered. "Active" excludes a unit
+that appears in another unit's `supersedes` within the validated set -- a
+superseded unit is not current, so its anchors are never probed. Probing
+requires a valid source: `probe` first runs the same validation as `validate`
+and `derive` (base contract plus the adopter's declared extension); an ERROR
+finding stops the run before anything is probed. A WARNING does not block.
+
+**Probe contract.** A probe is registered per anchor `kind` in the `probes`
+map of `validated-memory.md` (see "Adopter configuration" above). The
+registered command is split with `shlex.split` and run **without a shell**.
+
+- It receives the anchor's envelope on **stdin**, as JSON:
+  ```json
+  {"system": "repo-a", "kind": "git_ref", "captured_at": "2026-08-11T10:00:00Z", "payload": {}}
+  ```
+  The unit's id is deliberately not included -- the envelope is the
+  producer/store boundary, and a probe only needs to know what it is
+  checking, not which unit cites it.
+- It answers on **stdout**, as JSON, and exits `0`:
+  ```json
+  {"verdict": "current", "detail": "optional free-form note"}
+  ```
+  `verdict` is one of `current | drifted | unknown`; `detail` is optional.
+
+Any failure falls back to `unknown`, with a note explaining why, and never
+aborts the run: no probe registered for the anchor's `kind` (or no
+`validated-memory.md` at all), a command that cannot be run (parse failure,
+executable not found), a non-zero exit, stdout that does not parse as JSON,
+or a verdict outside the three-value domain. Each such fallback is reported
+to stderr as a WARNING finding, in the usual shape:
+
+```
+WARNING: <unit>: anchors[<i>]: <message>
+```
+
+**The verdict log.** Every anchor probed -- successful or fallen back --
+appends one JSON line to `verdicts.jsonl` in the current working directory,
+never inside `knowledge/`, for the same reason `knowledge-index.md` lives
+outside it (see "Keep the schema outside the curated-knowledge directory"
+above). The log is **append-only**: a run never rewrites or removes a prior
+line, so the full probing history accumulates. Each line:
+
+```json
+{"recorded_at": "2026-08-12T10:00:00Z", "unit": "kb-0001", "system": "repo-a", "kind": "git_ref", "verdict": "current", "detail": null}
+```
+
+The **service view** a reader wants -- and the one `derive` reads for its
+verdict column -- is the latest record per `(unit, system, kind)`; re-probing
+adds new lines, it never edits history.
+
+A summary goes to stdout:
+
+```
+probe: 3 anchor(s) probed across 1 unit(s): 1 current, 1 drifted, 1 unknown
+```
+
+Exit codes: `0` clean, or WARNING-only findings -- **a `drifted` or
+`unknown` verdict is data, not a finding, and never gates `probe`**; `1` an
+ERROR (source validation, or the verdict log could not be written); `2` a
+usage error.
 
 ## Agent memory
 

@@ -327,3 +327,148 @@ def test_an_empty_knowledge_directory_warns_and_derives_an_empty_index(
     assert "WARNING" in result.stderr
     index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
     assert "Basis: 0 unit(s) under knowledge/" in index
+
+
+# --- the verdict column reads the real service view of verdicts.jsonl -------
+
+CURRENT_PROBE = """\
+import sys, json
+sys.stdin.read()
+print(json.dumps({"verdict": "current"}))
+"""
+
+DRIFTED_PROBE = """\
+import sys, json
+sys.stdin.read()
+print(json.dumps({"verdict": "drifted"}))
+"""
+
+TWO_ANCHOR_UNIT = """\
+id: kb-0001
+evidence: measured
+anchors:
+  - system: repo-a
+    kind: git_ref
+    captured_at: 2026-08-01T00:00:00Z
+    payload: {}
+  - system: repo-b
+    kind: unregistered_kind
+    captured_at: 2026-08-01T00:00:00Z
+    payload: {}
+"""
+
+
+def test_a_unit_never_probed_stays_unknown_naming_every_system(
+    adopter_dir, write_unit, run_cli
+):
+    write_unit("kb-0001.md", TWO_ANCHOR_UNIT)
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
+    assert "| kb-0001 | active | measured | unknown (repo-a, repo-b) |" in index
+
+
+def test_derive_reports_the_worst_verdict_and_flags_unknown_systems(
+    adopter_dir, write_document, write_unit, write_probe, run_cli
+):
+    current_cmd = write_probe("probes/current_probe.py", CURRENT_PROBE)
+    write_document("validated-memory.md", f"probes:\n  git_ref: {current_cmd}\n")
+    write_unit("kb-0001.md", TWO_ANCHOR_UNIT)
+    run_cli("probe", cwd=adopter_dir)
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
+    # repo-a is current, repo-b was never registered (unknown); the worst of
+    # the two is unknown, and the cell names the system(s) behind it.
+    assert "| kb-0001 | active | measured | unknown (repo-b) |" in index
+
+
+def test_derive_flags_unknowns_alongside_a_worse_drifted_verdict(
+    adopter_dir, write_document, write_unit, write_probe, run_cli
+):
+    drifted_cmd = write_probe("probes/drifted_probe.py", DRIFTED_PROBE)
+    write_document("validated-memory.md", f"probes:\n  git_ref: {drifted_cmd}\n")
+    write_unit("kb-0001.md", TWO_ANCHOR_UNIT)
+    run_cli("probe", cwd=adopter_dir)
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
+    assert "| kb-0001 | active | measured | drifted (unknown: repo-b) |" in index
+
+
+def test_derive_reports_a_plain_current_verdict_when_every_anchor_is_current(
+    adopter_dir, write_document, write_unit, write_probe, run_cli
+):
+    current_cmd = write_probe("probes/current_probe.py", CURRENT_PROBE)
+    write_document("validated-memory.md", f"probes:\n  git_ref: {current_cmd}\n")
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo-a\n    kind: git_ref\n"
+        "    captured_at: 2026-08-01T00:00:00Z\n    payload: {}\n",
+    )
+    run_cli("probe", cwd=adopter_dir)
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
+    assert "| kb-0001 | active | measured | current |" in index
+
+
+def test_only_active_units_are_probed_a_superseded_unit_keeps_its_last_verdict(
+    adopter_dir, write_document, write_unit, write_probe, run_cli
+):
+    # kb-0001 is superseded by kb-0002 inside the same validated set; `probe`
+    # only walks active units, so kb-0001's anchor is never dispatched and
+    # its cell stays unknown even though a probe is registered for its kind.
+    current_cmd = write_probe("probes/current_probe.py", CURRENT_PROBE)
+    write_document("validated-memory.md", f"probes:\n  git_ref: {current_cmd}\n")
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo-a\n    kind: git_ref\n"
+        "    captured_at: 2026-08-01T00:00:00Z\n    payload: {}\n",
+    )
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: measured\nsupersedes:\n  - kb-0001\nanchors:\n"
+        "  - system: repo-b\n    kind: git_ref\n"
+        "    captured_at: 2026-08-01T00:00:00Z\n    payload: {}\n",
+    )
+
+    probe_result = run_cli("probe", cwd=adopter_dir)
+    assert probe_result.returncode == 0, probe_result.stderr
+    assert "1 anchor(s) probed across 1 unit(s)" in probe_result.stdout
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
+    assert "| kb-0001 | superseded by kb-0002 | measured | unknown (repo-a) |" in index
+    assert "| kb-0002 | active | measured | current |" in index
+
+
+def test_probing_after_a_derive_fails_check_because_verdicts_are_index_content(
+    adopter_dir, write_document, write_unit, write_probe, run_cli
+):
+    # `--check` protects the whole recalculated index, and the verdict column
+    # is part of it: probing after a derive changes what the index would say,
+    # so a stale on-disk index correctly fails --check.
+    write_unit("kb-0001.md", TWO_ANCHOR_UNIT)
+    run_cli("derive", cwd=adopter_dir)
+
+    current_cmd = write_probe("probes/current_probe.py", CURRENT_PROBE)
+    write_document("validated-memory.md", f"probes:\n  git_ref: {current_cmd}\n")
+    run_cli("probe", cwd=adopter_dir)
+
+    result = run_cli("derive", "--check", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert f"ERROR: {INDEX_FILENAME}: index: " in result.stderr

@@ -73,6 +73,20 @@ def load(root):
     return Extension(_fields(config_path.parent / declared["schema"]))
 
 
+def probes(root):
+    """The adopter's probe registry: `kind` -> command, or `{}` when unconfigured.
+
+    Consumed by the `probe` subcommand. Reuses the same whole-configuration
+    validation as `load`, so a malformed `validated-memory.md` raises
+    `ExtensionError` the same way regardless of which subcommand reads it
+    first.
+    """
+    config_path = Path(root) / CONFIG_FILENAME
+    if not config_path.exists():
+        return {}
+    return _config(config_path).get("probes") or {}
+
+
 def _fields(schema_path):
     """Read the field declarations of the adopter's schema."""
     location = schema_path.as_posix()
@@ -147,14 +161,13 @@ def _check_domain(location, field, declaration):
             )
 
 
-def _declaration(config_path):
-    """Read the adopter's configuration and return its `extension` block.
+def _config(config_path):
+    """Read and validate the adopter's whole configuration document.
 
-    The whole configuration is checked here -- an adopter surface with a
-    malformed key stops the run even when the key belongs to another
-    subcommand -- but only the extension declaration is returned. Returns
-    None when the configuration declares no extension: `extension` is one
-    adopter surface among several, not a required one.
+    Every adopter surface is checked here, not only the one the caller
+    consumes: a configuration with a malformed key stops every run, even a
+    run of a subcommand that key does not concern. Returns the validated
+    mapping.
     """
     location = config_path.as_posix()
     config = _read(config_path)
@@ -183,12 +196,25 @@ def _declaration(config_path):
                     location, f"probes.{kind}", "is not a non-empty command"
                 )
 
+    if "extension" in config and not isinstance(config["extension"], dict):
+        raise ExtensionError(location, "extension", "is not a mapping")
+
+    return config
+
+
+def _declaration(config_path):
+    """Read the adopter's configuration and return its `extension` block.
+
+    Returns None when the configuration declares no extension: `extension` is
+    one adopter surface among several, not a required one.
+    """
+    location = config_path.as_posix()
+    config = _config(config_path)
+
     if "extension" not in config:
         return None
 
     declared = config["extension"]
-    if not isinstance(declared, dict):
-        raise ExtensionError(location, "extension", "is not a mapping")
     for key in declared:
         if key not in EXTENSION_FIELDS:
             raise ExtensionError(

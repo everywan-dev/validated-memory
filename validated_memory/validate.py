@@ -16,6 +16,20 @@ def run(path, stdout, stderr):
     return report("validate", len(documents), "unit(s)", findings, stdout, stderr)
 
 
+def gated_source(path, stderr):
+    """Collect and validate the source, printing every finding.
+
+    The gate every consumer of a valid source shares (`derive`, `probe`):
+    returns `(documents, ok)`, where a False `ok` means an ERROR finding
+    gates and the source must not be consumed.
+    """
+    documents, findings = collect_and_validate(path)
+    for finding in findings:
+        print(finding.render(), file=stderr)
+    ok = not any(finding.severity == ERROR for finding in findings)
+    return documents, ok
+
+
 def collect_and_validate(path):
     """Collect units under `path` and validate them against the full contract.
 

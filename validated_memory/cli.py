@@ -9,10 +9,7 @@ Exit code convention:
 import argparse
 import sys
 
-from . import __version__, derive, init, lint, validate
-
-EXIT_OK = 0
-EXIT_ERROR = 1
+from . import __version__, derive, init, lint, probe, validate
 
 SUBCOMMANDS = {
     "init": "Scaffold the validated-memory layout in an adopter project",
@@ -74,6 +71,16 @@ def build_parser():
                     f"(default: {lint.DEFAULT_MEMORY_DIR}/)"
                 ),
             )
+        if name == "probe":
+            subparser.add_argument(
+                "path",
+                nargs="?",
+                metavar="PATH",
+                help=(
+                    "unit file or directory to probe "
+                    f"(default: {validate.DEFAULT_KNOWLEDGE_DIR}/)"
+                ),
+            )
         if name == "init":
             subparser.add_argument(
                 "--harness-memory",
@@ -97,9 +104,6 @@ def main(argv=None):
         )
     if args.command == "lint":
         return lint.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
-    if args.command == "init":
-        return init.run(
-            args.harness_memory, stdout=sys.stdout, stderr=sys.stderr
-        )
-    print(f"ERROR: '{args.command}' is not implemented yet", file=sys.stderr)
-    return EXIT_ERROR
+    if args.command == "probe":
+        return probe.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
+    return init.run(args.harness_memory, stdout=sys.stdout, stderr=sys.stderr)
