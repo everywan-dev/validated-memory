@@ -9,7 +9,7 @@ Exit code convention:
 import argparse
 import sys
 
-from . import __version__, validate
+from . import __version__, derive, validate
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -46,6 +46,24 @@ def build_parser():
                     f"(default: {validate.DEFAULT_KNOWLEDGE_DIR}/)"
                 ),
             )
+        if name == "derive":
+            subparser.add_argument(
+                "path",
+                nargs="?",
+                metavar="PATH",
+                help=(
+                    "unit file or directory to derive the index from "
+                    f"(default: {validate.DEFAULT_KNOWLEDGE_DIR}/)"
+                ),
+            )
+            subparser.add_argument(
+                "--check",
+                action="store_true",
+                help=(
+                    "recalculate without writing; fail if the on-disk index "
+                    f"({derive.INDEX_FILENAME}) does not match"
+                ),
+            )
     return parser
 
 
@@ -54,5 +72,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "validate":
         return validate.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
+    if args.command == "derive":
+        return derive.run(
+            args.path, args.check, stdout=sys.stdout, stderr=sys.stderr
+        )
     print(f"ERROR: '{args.command}' is not implemented yet", file=sys.stderr)
     return EXIT_ERROR
