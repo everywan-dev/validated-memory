@@ -203,3 +203,80 @@ def test_a_wikilink_resolving_to_a_real_memory_is_not_a_finding(
 
     assert result.returncode == 0, result.stderr
     assert "WARNING" not in result.stderr
+
+
+# --- supersession convention ------------------------------------------------
+
+
+def test_a_well_formed_supersession_is_recognized_without_findings(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory(
+        "old.md",
+        "name: old-coffee-preference\n"
+        "description: superseded by [[coffee-preference]]\n"
+        "metadata:\n  type: user\n",
+    )
+    write_memory("new.md", HEALTHY_MEMORY)
+    write_index("- [Old](old.md) — fixture entry\n- [New](new.md) — fixture entry\n")
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "ERROR" not in result.stderr
+    assert "WARNING" not in result.stderr
+
+
+def test_a_malformed_supersession_marker_gates(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory(
+        "old.md",
+        "name: old-coffee-preference\n"
+        "description: superseded by coffee-preference\n"
+        "metadata:\n  type: user\n",
+    )
+    write_index("- [Old](old.md) — fixture entry\n")
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: memory/old.md: description: " in result.stderr
+    assert "supersession" in result.stderr
+
+
+def test_a_supersession_pointing_at_a_missing_memory_gates(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory(
+        "old.md",
+        "name: old-coffee-preference\n"
+        "description: superseded by [[coffee-preference]]\n"
+        "metadata:\n  type: user\n",
+    )
+    write_index("- [Old](old.md) — fixture entry\n")
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: memory/old.md: description: " in result.stderr
+    assert "coffee-preference" in result.stderr
+    assert "WARNING" not in result.stderr
+
+
+def test_a_supersession_pointing_at_itself_gates(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory(
+        "old.md",
+        "name: old-coffee-preference\n"
+        "description: superseded by [[old-coffee-preference]]\n"
+        "metadata:\n  type: user\n",
+    )
+    write_index("- [Old](old.md) — fixture entry\n")
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: memory/old.md: description: " in result.stderr
+    assert "itself" in result.stderr

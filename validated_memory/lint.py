@@ -23,6 +23,8 @@ MEMORY_TYPES = ("user", "project", "feedback", "reference")
 
 INDEX_ENTRY_PATTERN = re.compile(r"^-\s+\[[^\]]*\]\(([^)]+)\)")
 WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
+SUPERSEDED_PREFIX = "superseded by "
+SUPERSEDED_WIKILINK_PATTERN = re.compile(r"^\[\[([^\]]+)\]\]")
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -180,9 +182,12 @@ def _lint_memories(documents):
 
     valid_names = set(declared_names)
     for location, data, body in parsed:
+        own_name = data.get("name")
+        if not _is_non_empty_string(own_name):
+            own_name = None
         description = data.get("description")
         findings.extend(
-            _check_wikilink_targets(location, "description", description, valid_names)
+            _check_description_wikilinks(location, own_name, description, valid_names)
         )
         findings.extend(_check_wikilink_targets(location, "body", body, valid_names))
 
@@ -200,6 +205,56 @@ def _body(text):
         if lines[index].rstrip() == "---":
             return "\n".join(lines[index + 1 :])
     return ""  # pragma: no cover - unreachable once `parse` has succeeded
+
+
+def _check_description_wikilinks(location, own_name, description, valid_names):
+    """Check the supersession marker (if any), then any remaining wikilink.
+
+    A wikilink that opens a well-formed `superseded by [[name]]` marker is
+    checked by the supersession rule below, not by the generic wikilink scan,
+    so it is not reported twice.
+    """
+    if not isinstance(description, str):
+        return []
+    findings = []
+    scan_text = description
+    if description.startswith(SUPERSEDED_PREFIX):
+        remainder = description[len(SUPERSEDED_PREFIX) :]
+        match = SUPERSEDED_WIKILINK_PATTERN.match(remainder)
+        if not match:
+            findings.append(
+                Finding(
+                    ERROR,
+                    location,
+                    "description",
+                    "malformed supersession marker: 'superseded by ' must be "
+                    "followed by a [[wikilink]]",
+                )
+            )
+            scan_text = ""
+        else:
+            target = match.group(1)
+            scan_text = remainder[match.end() :]
+            if target == own_name:
+                findings.append(
+                    Finding(
+                        ERROR,
+                        location,
+                        "description",
+                        f"supersession points at itself: '{target}'",
+                    )
+                )
+            elif target not in valid_names:
+                findings.append(
+                    Finding(
+                        ERROR,
+                        location,
+                        "description",
+                        f"supersession points at '{target}', which does not exist",
+                    )
+                )
+    findings.extend(_check_wikilink_targets(location, "description", scan_text, valid_names))
+    return findings
 
 
 def _check_wikilink_targets(location, field, text, valid_names):
