@@ -357,3 +357,46 @@ def test_probe_reports_unknown_cleanly_for_an_inaccessible_repo_and_a_missing_re
     assert derive_result.returncode == 0, derive_result.stderr
     index = (adopter_dir / "knowledge-index.md").read_text(encoding="utf-8")
     assert "| kb-0001 | active | measured | unknown (repo-a, repo-b) |" in index
+
+
+# --- textual sha comparison: the capture side must match ls-remote ----------
+
+
+def test_an_abbreviated_captured_sha_reads_as_drifted(tmp_path, run_probe_module):
+    # The comparison is textual against the full sha `git ls-remote` returns:
+    # a capture made with an abbreviated sha never matches, and reads as
+    # drifted even though the ref did not move. The payload contract demands
+    # the full sha for exactly this reason.
+    repo_dir = tmp_path / "repo"
+    sha = _init_repo(repo_dir)
+
+    result = run_probe_module(
+        _envelope(str(repo_dir), "refs/heads/main", sha[:12])
+    )
+
+    verdict = json.loads(result.stdout)
+    assert verdict["verdict"] == "drifted"
+
+
+def test_an_annotated_tag_compares_against_the_tag_object_sha(
+    tmp_path, run_probe_module
+):
+    # `git ls-remote <repo> refs/tags/v1` resolves to the tag OBJECT for an
+    # annotated tag, never the peeled commit: a capture must use what the ref
+    # resolves to (`git rev-parse v1`), not `v1^{commit}`.
+    repo_dir = tmp_path / "repo"
+    _init_repo(repo_dir)
+    _git(repo_dir, "tag", "-a", "v1", "-m", "release v1")
+    tag_object_sha = _git(repo_dir, "rev-parse", "v1").strip()
+    peeled_sha = _git(repo_dir, "rev-parse", "v1^{commit}").strip()
+    assert tag_object_sha != peeled_sha
+
+    with_tag_object = run_probe_module(
+        _envelope(str(repo_dir), "refs/tags/v1", tag_object_sha)
+    )
+    with_peeled = run_probe_module(
+        _envelope(str(repo_dir), "refs/tags/v1", peeled_sha)
+    )
+
+    assert json.loads(with_tag_object.stdout)["verdict"] == "current"
+    assert json.loads(with_peeled.stdout)["verdict"] == "drifted"

@@ -300,6 +300,14 @@ subprocess without a shell -- uniform for local paths and URLs, and `git` is
 a system binary, not a pip dependency, so this keeps the stdlib-only rule.
 `git` must be installed and on `PATH`.
 
+The comparison is textual, against the full sha `git ls-remote` returns, so
+the capture side must record exactly that: `commit` is the **full 40-hex
+sha** the ref resolves to (`git rev-parse <ref>`). Two captures that read
+naturally but never match: an abbreviated sha, and -- for an annotated tag --
+the peeled commit (`v1^{commit}`), since the ref resolves to the tag
+*object*. Both read as a permanent, misleading `drifted`; capture what the
+ref resolves to, not what it points at.
+
 - the live commit equals `commit` -- `current`.
 - it differs -- `drifted`, with a detail naming the ref and both shas.
 - the verdict cannot be determined -- `unknown`, with a detail explaining
