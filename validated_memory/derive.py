@@ -14,13 +14,11 @@ from pathlib import Path
 
 from . import validate
 from .contract import ERROR
+from .findings import EXIT_ERROR, EXIT_OK
 from .frontmatter import parse as parse_frontmatter
 
 INDEX_FILENAME = "knowledge-index.md"
 VERDICT_UNKNOWN = "unknown"
-
-EXIT_OK = 0
-EXIT_ERROR = 1
 
 
 def run(path, check, stdout, stderr):

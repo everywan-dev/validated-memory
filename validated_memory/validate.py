@@ -4,27 +4,16 @@ from pathlib import Path
 
 from . import extension as extension_module
 from .contract import ERROR, WARNING, Finding, validate_documents
+from .findings import report
 
 DEFAULT_KNOWLEDGE_DIR = "knowledge"
 UNIT_SUFFIX = ".md"
-
-EXIT_OK = 0
-EXIT_ERROR = 1
 
 
 def run(path, stdout, stderr):
     """Validate every unit under `path` and report findings. Returns an exit code."""
     documents, findings = collect_and_validate(path)
-    errors = [finding for finding in findings if finding.severity == ERROR]
-    warnings = [finding for finding in findings if finding.severity == WARNING]
-    for finding in findings:
-        print(finding.render(), file=stderr)
-    print(
-        f"validate: {len(documents)} unit(s) checked, "
-        f"{len(errors)} error(s), {len(warnings)} warning(s)",
-        file=stdout,
-    )
-    return EXIT_ERROR if errors else EXIT_OK
+    return report("validate", len(documents), "unit(s)", findings, stdout, stderr)
 
 
 def collect_and_validate(path):
