@@ -11,8 +11,8 @@ without the plugin installed.
 
 ## Status
 
-Under construction (v1). `validate` enforces the base contract; `init`, `lint`,
-`derive` and `probe` are still stubs.
+Under construction (v1). `validate` enforces the base contract and the adopter's
+declared extension; `init`, `lint`, `derive` and `probe` are still stubs.
 
 ## Layers
 
@@ -83,6 +83,53 @@ across the validated set; stability is a convention no single run can check,
 since nothing records what the id was before. Reuse of an id across time is
 caught by supersession, not by the validator: correct a unit by writing a new
 one that supersedes it, never by editing its id.
+
+## Declared extension
+
+An adopter extends the contract without forking it. A configuration file named
+`validated-memory.md`, read from the working directory, names a versioned
+schema:
+
+```yaml
+extension:
+  schema: knowledge-extension.md   # path, relative to the configuration file
+  version: "1"                     # the schema version this project is on
+```
+
+The schema declares the fields the adopter's units may carry:
+
+```yaml
+fields:
+  - name: domain
+    type: enum                     # closed domain: 'values' is required
+    values:
+      - network
+      - storage
+  - name: owner
+    type: string                   # any non-empty scalar
+```
+
+A declared field carrying a valid value passes. A value outside a closed
+domain, and a field neither the base contract nor the schema declares, are
+ERRORs naming the unit and the field. A declared field is permitted, not
+required: v1 has no way to demand one.
+
+Keep the schema outside the curated-knowledge directory. Anything ending in
+`.md` under `knowledge/` is read as a unit, and a schema is not one.
+
+With no configuration file, only the base contract applies. With one, loading
+is fail-loud: an unreadable or malformed configuration, a schema that does not
+exist, an unknown field type, an enum with no values, a field that redeclares a
+base contract field -- each stops the run with an ERROR against the offending
+document. Nothing here degrades to base-contract-only validation, because an
+extension ignored in silence validates nothing while appearing to pass.
+
+### Versioning the schema
+
+`version` records which schema version the project is on. Adding a field, or
+adding a value to a closed domain, is additive and does not bump it. Removing
+or narrowing anything does. Units already written are never rewritten to match
+a newer schema: correct a unit by writing a new one that supersedes it.
 
 ### Frontmatter subset
 

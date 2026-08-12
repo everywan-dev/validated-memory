@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from . import extension as extension_module
 from .contract import ERROR, WARNING, Finding, validate_documents
 
 DEFAULT_KNOWLEDGE_DIR = "knowledge"
@@ -13,9 +14,20 @@ EXIT_ERROR = 1
 
 def run(path, stdout, stderr):
     """Validate every unit under `path` and report findings. Returns an exit code."""
-    target = Path(path) if path else Path(DEFAULT_KNOWLEDGE_DIR)
-    documents, findings = _collect(target, explicit=bool(path))
-    findings.extend(validate_documents(documents))
+    try:
+        extension = extension_module.load(Path())
+    except extension_module.ExtensionError as error:
+        # An extension that cannot be loaded stops the run: validating units
+        # against the base contract alone would report a pass the adopter did
+        # not ask for.
+        documents = []
+        findings = [
+            Finding(ERROR, error.location, error.field, error.message, line=error.line)
+        ]
+    else:
+        target = Path(path) if path else Path(DEFAULT_KNOWLEDGE_DIR)
+        documents, findings = _collect(target, explicit=bool(path))
+        findings.extend(validate_documents(documents, extension))
 
     errors = [finding for finding in findings if finding.severity == ERROR]
     warnings = [finding for finding in findings if finding.severity == WARNING]
