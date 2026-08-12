@@ -9,7 +9,7 @@ import pytest
 
 SUBCOMMANDS = ["init", "lint", "validate", "derive", "probe"]
 
-UNIMPLEMENTED = ["init", "probe"]
+UNIMPLEMENTED = ["probe"]
 
 
 def test_global_help_lists_every_subcommand(adopter_dir, run_cli):

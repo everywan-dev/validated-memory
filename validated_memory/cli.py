@@ -9,7 +9,7 @@ Exit code convention:
 import argparse
 import sys
 
-from . import __version__, derive, lint, validate
+from . import __version__, derive, init, lint, validate
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -74,6 +74,15 @@ def build_parser():
                     f"(default: {lint.DEFAULT_MEMORY_DIR}/)"
                 ),
             )
+        if name == "init":
+            subparser.add_argument(
+                "--harness-memory",
+                metavar="PATH",
+                help=(
+                    "make PATH a move-proof symlink to this project's "
+                    f"{lint.DEFAULT_MEMORY_DIR}/ directory"
+                ),
+            )
     return parser
 
 
@@ -88,5 +97,9 @@ def main(argv=None):
         )
     if args.command == "lint":
         return lint.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
+    if args.command == "init":
+        return init.run(
+            args.harness_memory, stdout=sys.stdout, stderr=sys.stderr
+        )
     print(f"ERROR: '{args.command}' is not implemented yet", file=sys.stderr)
     return EXIT_ERROR
