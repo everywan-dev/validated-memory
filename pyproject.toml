@@ -7,3 +7,8 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+# The plugin ships skills/ and hooks/ as top-level data directories; only
+# validated_memory/ (and its subpackages) is the installable Python package.
+include = ["validated_memory*"]
