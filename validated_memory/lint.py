@@ -22,6 +22,7 @@ INDEX_FILENAME = "MEMORY.md"
 MEMORY_TYPES = ("user", "project", "feedback", "reference")
 
 INDEX_ENTRY_PATTERN = re.compile(r"^-\s+\[[^\]]*\]\(([^)]+)\)")
+WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -135,11 +136,12 @@ def _check_sync(index_location, hrefs, files_by_relpath):
 
 
 def _lint_memories(documents):
-    """Lint each memory file's frontmatter, then cross-file name uniqueness.
+    """Lint each memory file's frontmatter, then cross-file name resolution.
 
     Names are collected in a first pass, once every document has parsed, so
-    duplicate detection does not depend on file order -- the same two-pass
-    shape `validate` uses for id declaration.
+    duplicate detection and wikilink resolution do not depend on file order --
+    the same two-pass shape `validate` uses for id declaration and supersedes
+    resolution.
     """
     findings = []
     parsed = []
@@ -153,13 +155,13 @@ def _lint_memories(documents):
                 )
             )
             continue
-        parsed.append((location, data))
+        parsed.append((location, data, _body(text)))
 
-    for location, data in parsed:
+    for location, data, _text in parsed:
         findings.extend(_check_memory(location, data))
 
     declared_names = {}
-    for location, data in parsed:
+    for location, data, _text in parsed:
         name = data.get("name")
         if not _is_non_empty_string(name):
             continue
@@ -176,6 +178,48 @@ def _lint_memories(documents):
         else:
             declared_names[name] = location
 
+    valid_names = set(declared_names)
+    for location, data, body in parsed:
+        description = data.get("description")
+        findings.extend(
+            _check_wikilink_targets(location, "description", description, valid_names)
+        )
+        findings.extend(_check_wikilink_targets(location, "body", body, valid_names))
+
+    return findings
+
+
+def _body(text):
+    """Return the document text after the closing frontmatter fence.
+
+    Called only once `parse` has already accepted the frontmatter, so the
+    fences are known to be well formed.
+    """
+    lines = text.split("\n")
+    for index in range(1, len(lines)):
+        if lines[index].rstrip() == "---":
+            return "\n".join(lines[index + 1 :])
+    return ""  # pragma: no cover - unreachable once `parse` has succeeded
+
+
+def _check_wikilink_targets(location, field, text, valid_names):
+    if not isinstance(text, str):
+        return []
+    findings = []
+    seen = set()
+    for match in WIKILINK_PATTERN.finditer(text):
+        target = match.group(1)
+        if target in valid_names or target in seen:
+            continue
+        seen.add(target)
+        findings.append(
+            Finding(
+                WARNING,
+                location,
+                field,
+                f"wikilink to '{target}' has no matching memory (not written yet)",
+            )
+        )
     return findings
 
 
