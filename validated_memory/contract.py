@@ -45,12 +45,12 @@ class Finding:
         return f"{self.severity}: {where}: {self.field}: {self.message}"
 
 
-def validate_documents(documents):
-    """Validate `(location, text)` documents against the base contract.
+def validate_documents(documents, extension=None):
+    """Validate `(location, text)` documents against the contract.
 
     Returns every finding, in document order. Parsing and per-unit rules run
     first; supersession is resolved afterwards, once every declared id is
-    known.
+    known. `extension` carries the adopter's declared fields, if any.
     """
     findings = []
     units = []
@@ -68,7 +68,7 @@ def validate_documents(documents):
 
     declared = {}
     for location, data in units:
-        findings.extend(_check_unit(location, data))
+        findings.extend(_check_unit(location, data, extension))
         unit_id = data.get("id")
         if not _is_valid_id(unit_id):
             continue
@@ -89,25 +89,39 @@ def validate_documents(documents):
     return findings
 
 
-def _check_unit(location, data):
+def _check_unit(location, data, extension=None):
+    extension_names = extension.names if extension else ()
     findings = []
     for field in data:
-        if field not in BASE_FIELDS:
-            findings.append(
-                Finding(
-                    ERROR,
-                    location,
-                    field,
-                    "unknown field; the base contract declares "
-                    + ", ".join(BASE_FIELDS),
-                )
-            )
+        if field in BASE_FIELDS or field in extension_names:
+            continue
+        message = "unknown field; the base contract declares " + ", ".join(BASE_FIELDS)
+        if extension_names:
+            message += " and the declared extension adds " + ", ".join(extension_names)
+        findings.append(Finding(ERROR, location, field, message))
 
     findings.extend(_check_id(location, data))
     findings.extend(_check_evidence(location, data))
     findings.extend(_check_supersedes_shape(location, data))
     findings.extend(_check_anchors(location, data))
     findings.extend(_check_provenance(location, data))
+    findings.extend(_check_extension_fields(location, data, extension))
+    return findings
+
+
+def _check_extension_fields(location, data, extension):
+    """Apply the adopter's declared fields to a unit that carries them."""
+    if extension is None:
+        return []
+    findings = []
+    for name in extension.names:
+        if name not in data:
+            continue
+        reason = extension.violation(name, data[name])
+        if reason:
+            findings.append(
+                Finding(ERROR, location, name, f"{_describe(data[name])} {reason}")
+            )
     return findings
 
 
