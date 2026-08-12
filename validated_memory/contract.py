@@ -8,10 +8,8 @@ to a declared extension, validated separately.
 import datetime
 import re
 
+from .findings import ERROR, WARNING, Finding
 from .frontmatter import FrontmatterError, parse
-
-ERROR = "ERROR"
-WARNING = "WARNING"
 
 EVIDENCE_STATES = ("measured", "verifiable", "hypothesis")
 BASE_FIELDS = ("id", "evidence", "supersedes", "anchors", "provenance")
@@ -22,27 +20,6 @@ ISO_PATTERN = re.compile(
     r"^(\d{4}-\d{2}-\d{2})"
     r"(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$"
 )
-
-
-class Finding:
-    """One reportable observation about one unit.
-
-    `line` is set only when the finding has one: the parser knows where it
-    stopped, while a contract rule usually speaks about the unit as a whole.
-    """
-
-    __slots__ = ("field", "line", "location", "message", "severity")
-
-    def __init__(self, severity, location, field, message, line=None):
-        self.severity = severity
-        self.location = location
-        self.field = field
-        self.message = message
-        self.line = line
-
-    def render(self):
-        where = self.location if self.line is None else f"{self.location}:{self.line}"
-        return f"{self.severity}: {where}: {self.field}: {self.message}"
 
 
 def validate_documents(documents, extension=None):

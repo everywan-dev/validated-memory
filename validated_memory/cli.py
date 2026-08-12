@@ -9,7 +9,7 @@ Exit code convention:
 import argparse
 import sys
 
-from . import __version__, derive, validate
+from . import __version__, derive, lint, validate
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -64,6 +64,16 @@ def build_parser():
                     f"({derive.INDEX_FILENAME}) does not match"
                 ),
             )
+        if name == "lint":
+            subparser.add_argument(
+                "path",
+                nargs="?",
+                metavar="PATH",
+                help=(
+                    "agent-memory directory to lint "
+                    f"(default: {lint.DEFAULT_MEMORY_DIR}/)"
+                ),
+            )
     return parser
 
 
@@ -76,5 +86,7 @@ def main(argv=None):
         return derive.run(
             args.path, args.check, stdout=sys.stdout, stderr=sys.stderr
         )
+    if args.command == "lint":
+        return lint.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
     print(f"ERROR: '{args.command}' is not implemented yet", file=sys.stderr)
     return EXIT_ERROR
