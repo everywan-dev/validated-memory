@@ -12,7 +12,8 @@ without the plugin installed.
 ## Status
 
 Under construction (v1). `validate` enforces the base contract and the adopter's
-declared extension; `init`, `lint`, `derive` and `probe` are still stubs.
+declared extension; `lint` enforces the agent-memory layer; `init`, `derive` and
+`probe` are still stubs.
 
 ## Layers
 
@@ -37,6 +38,26 @@ Commands: `init`, `lint`, `validate`, `derive`, `probe`.
 Exit codes: `0` = clean run or WARNING-only findings (does not gate);
 non-zero = ERROR (gates).
 
+### `lint`
+
+```
+python3 -m validated_memory lint [PATH]
+```
+
+Lints the agent-memory layer: every `*.md` file found under PATH, recursively,
+except the index `MEMORY.md` itself. With no PATH it reads `memory/` relative
+to the working directory. A one-line summary goes to stdout; findings go to
+stderr in the same shape `validate` uses:
+
+```
+SEVERITY: <location>: <field>: <message>
+SEVERITY: <location>:<line>: <field>: <message>    # parse errors only
+```
+
+`lint` resolves wikilinks and the supersession convention against the whole
+memory set, so a missing `MEMORY.md`, a missing memory directory, or an
+explicit PATH that does not exist each stop the run before any file is read.
+
 ### `validate`
 
 ```
@@ -58,6 +79,54 @@ the parser reports one, because only the parser knows where it stopped.
 Supersession resolves against the validated set: validate the whole knowledge
 directory, not a single file, or a `supersedes` entry pointing at a unit you
 left out is reported as missing.
+
+## Agent memory
+
+The agent-memory layer is one Markdown file per fact (`memory/*.md`), plus a
+one-line-per-entry index at `memory/MEMORY.md`. `lint` enforces four things.
+
+**Frontmatter.** Every memory file's frontmatter carries the shape the Claude
+Code harness gives it -- `lint` does not redefine it, only requires it be
+complete:
+
+```yaml
+name: short-kebab-slug        # required; a non-empty string
+description: one-line summary # required; a non-empty string
+metadata:
+  type: user                  # required; user | project | feedback | reference
+```
+
+`name`, `description` or `metadata.type` missing, or `metadata.type` outside
+its domain, is an ERROR. Additional keys the harness may add are tolerated
+without being checked. A `name` must be unique across the memory set: a
+duplicate is an ERROR, since wikilinks resolve by `name` and a duplicate
+makes that resolution ambiguous.
+
+**Index.** `MEMORY.md`, at the root of the memory directory, lists one entry
+per fact as a Markdown bullet with a link to the file, relative to the
+directory:
+
+```markdown
+- [Coffee preference](coffee-preference.md) — oat milk in coffee
+```
+
+Only bullet lines shaped `- [Title](file.md)` count as entries; headers and
+prose are ignored. The index and the memory files must agree in both
+directions: an entry whose file does not exist, and a memory file with no
+entry in the index, are each an ERROR. A missing `MEMORY.md` stops the run,
+pointing at `validated-memory init`.
+
+**Wikilinks.** A `[[name]]` reference in `description` or in a file's body
+names another memory by its `name`. A wikilink whose target does not exist is
+a WARNING -- it marks something pending to write, and does not gate.
+
+**Supersession.** A memory is marked superseded by rewriting its
+`description` to start with the literal prefix `superseded by ` followed by a
+wikilink, e.g. `superseded by [[coffee-preference]]`. Well formed -- the
+wikilink resolves to a different memory that exists -- it is recognized and
+raises no finding. Malformed is an ERROR: the prefix with no parseable
+wikilink after it, a wikilink pointing at a memory that does not exist, or a
+wikilink pointing at the memory itself.
 
 ## Base contract
 
