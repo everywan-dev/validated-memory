@@ -183,6 +183,22 @@ def test_a_broken_wikilink_in_the_body_warns_without_gating(
     assert "tea-preference" in result.stderr
 
 
+def test_a_repeated_broken_wikilink_warns_once_per_field(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory(
+        "coffee-preference.md",
+        HEALTHY_MEMORY,
+        body="See [[tea-preference]] and again [[tea-preference]].\n",
+    )
+    write_index(HEALTHY_INDEX)
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.count("tea-preference") == 1
+
+
 def test_a_wikilink_resolving_to_a_real_memory_is_not_a_finding(
     adopter_dir, write_memory, write_index, run_cli
 ):

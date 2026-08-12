@@ -12,7 +12,7 @@ well formed or reported.
 import re
 from pathlib import Path, PurePosixPath
 
-from .findings import ERROR, WARNING, Finding
+from .findings import ERROR, WARNING, Finding, report
 from .frontmatter import FrontmatterError, parse
 
 DEFAULT_MEMORY_DIR = "memory"
@@ -26,26 +26,13 @@ WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
 SUPERSEDED_PREFIX = "superseded by "
 SUPERSEDED_WIKILINK_PATTERN = re.compile(r"^\[\[([^\]]+)\]\]")
 
-EXIT_OK = 0
-EXIT_ERROR = 1
-
 
 def run(path, stdout, stderr):
     """Lint every memory file under `path` and report findings. Returns an exit code."""
     target = Path(path) if path else Path(DEFAULT_MEMORY_DIR)
     documents, findings = _collect(target, explicit=bool(path))
     findings.extend(_lint_memories(documents))
-
-    errors = [finding for finding in findings if finding.severity == ERROR]
-    warnings = [finding for finding in findings if finding.severity == WARNING]
-    for finding in findings:
-        print(finding.render(), file=stderr)
-    print(
-        f"lint: {len(documents)} memory file(s) checked, "
-        f"{len(errors)} error(s), {len(warnings)} warning(s)",
-        file=stdout,
-    )
-    return EXIT_ERROR if errors else EXIT_OK
+    return report("lint", len(documents), "memory file(s)", findings, stdout, stderr)
 
 
 def _collect(target, explicit):
