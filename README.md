@@ -103,13 +103,13 @@ Basis: 2 unit(s) under knowledge/
   land in a later version.
 
 `--check` recalculates the index in memory instead of writing it, and
-compares it against the `knowledge-index.md` already on disk, **excluding the
-`Derived:` line from the comparison** -- its timestamp changes on every run,
-so only what it protects, `Basis:` and the table, has to match. A missing
-index is an ERROR pointing at running `derive` first. Any other divergence --
-`Basis:`, a row, a missing or extra row -- is an ERROR naming the first line
-that does not match. `--check` never writes. A match exits clean with a
-summary. This makes `derive --check` a local or CI gate for adopters who
+compares it against the `knowledge-index.md` already on disk, line by line.
+The `Derived:` line must be there, but **its timestamp is ignored** -- it
+changes on every run, so what has to match is the rest: `Basis:` and the
+table. A missing index is an ERROR pointing at running `derive` first. Any
+divergence -- `Basis:`, a row, a missing or extra line -- is an ERROR naming
+the first line that does not match, numbered as on disk. `--check` never
+writes. A match exits clean with a summary. This makes `derive --check` a local or CI gate for adopters who
 version the derived index: hand-editing it, or letting it drift from the
 units, fails the check.
 

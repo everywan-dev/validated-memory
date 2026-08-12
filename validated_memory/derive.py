@@ -12,9 +12,8 @@ evidence state, and a verdict column that this version always reports as
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import extension as extension_module
 from . import validate
-from .contract import ERROR, Finding, validate_documents
+from .contract import ERROR
 from .frontmatter import parse as parse_frontmatter
 
 INDEX_FILENAME = "knowledge-index.md"
@@ -26,7 +25,7 @@ EXIT_ERROR = 1
 
 def run(path, check, stdout, stderr):
     """Derive the knowledge index, or check it against disk. Returns an exit code."""
-    documents, findings = _validate(path)
+    documents, findings = validate.collect_and_validate(path)
     for finding in findings:
         print(finding.render(), file=stderr)
     if any(finding.severity == ERROR for finding in findings):
@@ -44,23 +43,8 @@ def run(path, check, stdout, stderr):
     return EXIT_OK
 
 
-def _validate(path):
-    """Run the same validation as `validate`: base contract plus extension."""
-    try:
-        extension = extension_module.load(Path())
-    except extension_module.ExtensionError as error:
-        return [], [
-            Finding(ERROR, error.location, error.field, error.message, line=error.line)
-        ]
-    target = Path(path) if path else Path(validate.DEFAULT_KNOWLEDGE_DIR)
-    documents, findings = validate._collect(target, explicit=bool(path))
-    findings = list(findings)
-    findings.extend(validate_documents(documents, extension))
-    return documents, findings
-
-
 def _basis_location(path):
-    target = Path(path) if path else Path(validate.DEFAULT_KNOWLEDGE_DIR)
+    target = validate.resolve_target(path)
     location = target.as_posix()
     if target.is_dir():
         location += "/"
@@ -124,12 +108,13 @@ def _check(index_path, content, stdout, stderr):
         return EXIT_ERROR
 
     existing = index_path.read_text(encoding="utf-8")
-    mismatch = _first_mismatch(_without_derived(existing), _without_derived(content))
+    mismatch = _first_mismatch(existing.splitlines(), content.splitlines())
     if mismatch is not None:
+        number, found, expected = mismatch
         print(
             f"ERROR: {location}: index: on-disk index does not match the "
-            f"recalculated index at line {mismatch[0]}: "
-            f"found {mismatch[1]!r}, expected {mismatch[2]!r}",
+            f"recalculated index at line {number}: "
+            f"found {found}, expected {expected}",
             file=stderr,
         )
         return EXIT_ERROR
@@ -138,19 +123,27 @@ def _check(index_path, content, stdout, stderr):
     return EXIT_OK
 
 
-def _without_derived(content):
-    """Drop the `Derived:` line: `--check` protects content, not the timestamp."""
-    return [line for line in content.split("\n") if not line.startswith("Derived: ")]
-
-
 def _first_mismatch(actual_lines, expected_lines):
-    """Return `(line_number, actual, expected)` for the first differing line."""
-    for number, (actual, expected) in enumerate(
-        zip(actual_lines, expected_lines), start=1
-    ):
-        if actual != expected:
-            return number, actual, expected
-    if len(actual_lines) != len(expected_lines):
-        shorter = min(len(actual_lines), len(expected_lines))
-        return shorter + 1, actual_lines[shorter:], expected_lines[shorter:]
+    """Return `(line_number, found, expected)` for the first differing line.
+
+    Lines are numbered as on disk. A recalculated `Derived:` line matches any
+    on-disk `Derived:` line -- `--check` protects the content, not the
+    timestamp -- but the line itself must be there.
+    """
+    for number in range(1, max(len(actual_lines), len(expected_lines)) + 1):
+        actual = actual_lines[number - 1] if number <= len(actual_lines) else None
+        expected = expected_lines[number - 1] if number <= len(expected_lines) else None
+        if _lines_match(actual, expected):
+            continue
+        return (
+            number,
+            "end of file" if actual is None else repr(actual),
+            "end of file" if expected is None else repr(expected),
+        )
     return None
+
+
+def _lines_match(actual, expected):
+    if expected is not None and expected.startswith("Derived: "):
+        return actual is not None and actual.startswith("Derived: ")
+    return actual == expected

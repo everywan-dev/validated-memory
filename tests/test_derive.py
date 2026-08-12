@@ -142,6 +142,60 @@ def test_a_hand_edited_index_fails_check_with_error(adopter_dir, write_unit, run
     assert index_path.read_text(encoding="utf-8") == mutated
 
 
+def test_deleting_the_derived_line_fails_check(adopter_dir, write_unit, run_cli):
+    # The timestamp's value is ignored, but the line itself is content: a
+    # hand-deleted `Derived:` line is a mutation and must fail the check.
+    write_unit("kb-0001.md", ACTIVE_UNIT)
+    run_cli("derive", cwd=adopter_dir)
+    index_path = adopter_dir / INDEX_FILENAME
+    lines = index_path.read_text(encoding="utf-8").split("\n")
+    lines = [line for line in lines if not line.startswith("Derived: ")]
+    index_path.write_text("\n".join(lines), encoding="utf-8")
+
+    result = run_cli("derive", "--check", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert f"ERROR: {INDEX_FILENAME}: index: " in result.stderr
+    assert "Derived" in result.stderr
+
+
+def test_a_mismatch_names_the_line_as_numbered_on_disk(
+    adopter_dir, write_unit, run_cli
+):
+    # The row sits on line 8 of the file (title, blank, Derived, Basis,
+    # blank, header, separator, row); the message must use that numbering.
+    write_unit("kb-0001.md", ACTIVE_UNIT)
+    run_cli("derive", cwd=adopter_dir)
+    index_path = adopter_dir / INDEX_FILENAME
+    mutated = index_path.read_text(encoding="utf-8").replace(
+        "| kb-0001 | active | measured | unknown |",
+        "| kb-0001 | active | hypothesis | unknown |",
+    )
+    index_path.write_text(mutated, encoding="utf-8")
+
+    result = run_cli("derive", "--check", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "at line 8" in result.stderr
+
+
+def test_an_extra_trailing_line_fails_check_naming_the_line(
+    adopter_dir, write_unit, run_cli
+):
+    write_unit("kb-0001.md", ACTIVE_UNIT)
+    run_cli("derive", cwd=adopter_dir)
+    index_path = adopter_dir / INDEX_FILENAME
+    with index_path.open("a", encoding="utf-8") as handle:
+        handle.write("\n")
+
+    result = run_cli("derive", "--check", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "at line 9" in result.stderr
+    assert "end of file" in result.stderr
+    assert "['']" not in result.stderr
+
+
 def test_check_does_not_rewrite_the_index_on_success(adopter_dir, write_unit, run_cli):
     write_unit("kb-0001.md", ACTIVE_UNIT)
     run_cli("derive", cwd=adopter_dir)
