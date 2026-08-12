@@ -46,14 +46,10 @@ fourth:
   is never silently folded into "current."
 
 A unit's verdict is the worst of its anchors' verdicts (`drifted` >
-`unknown` > `current`), read from the `knowledge-index.md` table:
-
-| cell | meaning |
-|------|---------|
-| `unknown` | the unit has no anchors at all -- nothing to probe |
-| `unknown (repo-a, repo-b)` | the worst verdict is unknown; names every system behind an unknown anchor |
-| `drifted (unknown: repo-b)` | the worst verdict is drifted, but some anchors are also unknown -- both are surfaced |
-| `current` or `drifted` alone | every anchor agrees; no unknowns to flag |
+`unknown` > `current`), read from the `knowledge-index.md` table. The exact
+cell format -- including how systems behind an unknown anchor are listed --
+is `derive`'s algorithm, documented once in the README's `derive` section;
+read the cell there, do not re-derive it by hand.
 
 ## Register a probe for a new anchor `kind`
 

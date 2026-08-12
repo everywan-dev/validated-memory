@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "hooks" / "restore-memory-symlink.sh"
 
 
-def _run_hook(env_overrides):
+def _run_hook(env_overrides, cwd=None):
     env = {"PATH": os.environ.get("PATH", "")}
     env.update(env_overrides)
     return subprocess.run(
@@ -34,6 +34,7 @@ def _run_hook(env_overrides):
         capture_output=True,
         text=True,
         env=env,
+        cwd=cwd,
         check=False,
     )
 
@@ -260,3 +261,24 @@ def test_hook_is_idempotent_across_two_runs(tmp_path):
     assert second.returncode == 0, second.stderr
     harness_memory = config_dir / "projects" / _slug(project_dir) / "memory"
     assert harness_memory.resolve() == memory_dir.resolve()
+
+
+def test_a_relative_config_dir_resolves_against_the_hooks_own_cwd(tmp_path):
+    # A relative CLAUDE_CONFIG_DIR must never leak into the adopter project:
+    # the hook resolves it against its own working directory BEFORE changing
+    # into the project to run `init`.
+    project_dir = tmp_path / "project"
+    _write_adopter_project(project_dir)
+
+    result = _run_hook(
+        {
+            "CLAUDE_PROJECT_DIR": str(project_dir),
+            "CLAUDE_CONFIG_DIR": "relcfg",
+        },
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 0
+    expected = tmp_path / "relcfg" / "projects" / _slug(project_dir) / "memory"
+    assert expected.is_symlink()
+    assert not (project_dir / "relcfg").exists()

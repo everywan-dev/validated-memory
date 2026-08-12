@@ -388,6 +388,16 @@ anchors:                        # optional; without anchors a unit cannot expire
 provenance: []                  # optional; where the native artifact lives
 ```
 
+The three evidence states say how a claim is backed, and never mix planes:
+
+- **`measured`** -- directly observed or computed by executing something,
+  with a way to re-check it.
+- **`verifiable`** -- not directly measured, but checkable without executing,
+  by someone who follows the provenance.
+- **`hypothesis`** -- a claim not yet checked. A unit is never promoted out
+  of it by conviction: promotion is a new unit with better evidence that
+  supersedes this one.
+
 An unknown top-level field is an ERROR: adopter-specific fields belong to a
 declared extension. A unit with no anchors is a WARNING, not an ERROR.
 

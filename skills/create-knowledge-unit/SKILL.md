@@ -30,7 +30,8 @@ provenance: []                  # optional; where the native artifact lives
   project follows. Never reuse an id once written; a correction is a new
   unit (see `supersede-knowledge`).
 - **`evidence`** -- pick the state the knowledge actually has *right now*,
-  not the state you hope to reach:
+  not the state you hope to reach (canonical definitions: the README's
+  "Base contract" section):
   - `measured` -- directly observed or computed, with a way to re-check it.
   - `verifiable` -- not directly measured, but checkable by someone who
     follows the provenance.

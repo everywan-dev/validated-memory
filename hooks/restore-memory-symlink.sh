@@ -45,6 +45,14 @@ if [ -z "${CLAUDE_CONFIG_DIR:-}" ] && [ -z "${HOME:-}" ]; then
   exit 0
 fi
 
+# Resolve a relative config dir against THIS shell's cwd, before the subshell
+# below changes into the project: otherwise `init` would resolve it against
+# the project directory and write a spurious tree inside the adopter repo.
+case "$config_dir" in
+  /*) ;;
+  *) config_dir="$PWD/$config_dir" ;;
+esac
+
 if ! command -v python3 >/dev/null 2>&1; then
   echo "restore-memory-symlink: python3 not found on PATH; skipping" >&2
   exit 0
