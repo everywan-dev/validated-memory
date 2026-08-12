@@ -14,21 +14,7 @@ EXIT_ERROR = 1
 
 def run(path, stdout, stderr):
     """Validate every unit under `path` and report findings. Returns an exit code."""
-    try:
-        extension = extension_module.load(Path())
-    except extension_module.ExtensionError as error:
-        # An extension that cannot be loaded stops the run: validating units
-        # against the base contract alone would report a pass the adopter did
-        # not ask for.
-        documents = []
-        findings = [
-            Finding(ERROR, error.location, error.field, error.message, line=error.line)
-        ]
-    else:
-        target = Path(path) if path else Path(DEFAULT_KNOWLEDGE_DIR)
-        documents, findings = _collect(target, explicit=bool(path))
-        findings.extend(validate_documents(documents, extension))
-
+    documents, findings = collect_and_validate(path)
     errors = [finding for finding in findings if finding.severity == ERROR]
     warnings = [finding for finding in findings if finding.severity == WARNING]
     for finding in findings:
@@ -39,6 +25,33 @@ def run(path, stdout, stderr):
         file=stdout,
     )
     return EXIT_ERROR if errors else EXIT_OK
+
+
+def collect_and_validate(path):
+    """Collect units under `path` and validate them against the full contract.
+
+    The shared front half of every consumer that needs a valid source: load
+    the declared extension, read the units, apply the contract. Returns
+    `(documents, findings)`; when the extension cannot be loaded, there are no
+    documents and the single blocking finding.
+    """
+    try:
+        extension = extension_module.load(Path())
+    except extension_module.ExtensionError as error:
+        # An extension that cannot be loaded stops the run: validating units
+        # against the base contract alone would report a pass the adopter did
+        # not ask for.
+        return [], [
+            Finding(ERROR, error.location, error.field, error.message, line=error.line)
+        ]
+    documents, findings = _collect(resolve_target(path), explicit=bool(path))
+    findings.extend(validate_documents(documents, extension))
+    return documents, findings
+
+
+def resolve_target(path):
+    """The unit tree a run reads: `path` if given, the default directory if not."""
+    return Path(path) if path else Path(DEFAULT_KNOWLEDGE_DIR)
 
 
 def _collect(target, explicit):

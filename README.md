@@ -11,8 +11,9 @@ without the plugin installed.
 
 ## Status
 
-Under construction (v1). `validate` enforces the base contract and the adopter's
-declared extension; `init`, `lint`, `derive` and `probe` are still stubs.
+Under construction (v1). `validate` enforces the base contract and the
+adopter's declared extension; `derive` re-derives the knowledge index, with a
+`--check` gate; `init`, `lint` and `probe` are still stubs.
 
 ## Layers
 
@@ -58,6 +59,62 @@ the parser reports one, because only the parser knows where it stopped.
 Supersession resolves against the validated set: validate the whole knowledge
 directory, not a single file, or a `supersedes` entry pointing at a unit you
 left out is reported as missing.
+
+### `derive`
+
+```
+python3 -m validated_memory derive [PATH] [--check]
+```
+
+Re-derives the curated-knowledge index from the units under PATH, resolved
+exactly like `validate`'s PATH (default `knowledge/`, single unit file or a
+directory, same errors on a missing path). Deriving requires a valid source:
+`derive` first runs the same validation as `validate` (base contract plus the
+adopter's declared extension). An ERROR finding reports the findings to
+stderr, in `validate`'s format, and stops -- nothing is written or checked.
+A WARNING does not block.
+
+The index is written to `knowledge-index.md` in the current working
+directory, never inside `knowledge/`: anything ending in `.md` there is read
+as a unit (see "Keep the schema outside the curated-knowledge directory"
+above -- the same reason applies to the index).
+
+```markdown
+# Knowledge index
+
+Derived: 2026-08-12T10:00:00Z
+Basis: 2 unit(s) under knowledge/
+
+| id | state | evidence | verdict |
+|----|-------|----------|---------|
+| kb-0001 | superseded by kb-0002 | measured | unknown |
+| kb-0002 | active | hypothesis | unknown |
+```
+
+- `Derived:` is the UTC ISO-8601 timestamp of the derivation run.
+- `Basis:` is the recount basis: how many units, under which path.
+- Rows are sorted by `id`. Nothing is omitted: a superseded unit is still
+  listed, marked, never mutated.
+- **state** is computed, never stored on the unit: `active`, or
+  `superseded by <ids>` naming every unit that lists this one in its own
+  `supersedes` (many-to-one), sorted and comma-separated.
+- **verdict** is present from the first derived index and is always `unknown`
+  in this version -- fail-explicit in the absence of freshness probes, which
+  land in a later version.
+
+`--check` recalculates the index in memory instead of writing it, and
+compares it against the `knowledge-index.md` already on disk, line by line.
+The `Derived:` line must be there, but **its timestamp is ignored** -- it
+changes on every run, so what has to match is the rest: `Basis:` and the
+table. A missing index is an ERROR pointing at running `derive` first. Any
+divergence -- `Basis:`, a row, a missing or extra line -- is an ERROR naming
+the first line that does not match, numbered as on disk. `--check` never
+writes. A match exits clean with a summary. This makes `derive --check` a local or CI gate for adopters who
+version the derived index: hand-editing it, or letting it drift from the
+units, fails the check.
+
+Exit codes: `0` clean, or WARNING-only validation findings; `1` an ERROR
+finding (source validation, or a `--check` mismatch); `2` a usage error.
 
 ## Base contract
 
