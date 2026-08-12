@@ -13,8 +13,8 @@ without the plugin installed.
 
 Under construction (v1). `validate` enforces the base contract and the
 adopter's declared extension; `lint` enforces the agent-memory layer;
-`derive` re-derives the knowledge index, with a `--check` gate; `init` and
-`probe` are still stubs.
+`derive` re-derives the knowledge index, with a `--check` gate; `init`
+scaffolds a new adopter project; `probe` is still a stub.
 
 ## Layers
 
@@ -38,6 +38,62 @@ Commands: `init`, `lint`, `validate`, `derive`, `probe`.
 
 Exit codes: `0` = clean run or WARNING-only findings (does not gate);
 non-zero = ERROR (gates).
+
+### `init`
+
+```
+python3 -m validated_memory init [--harness-memory PATH]
+```
+
+Scaffolds a new adopter project in the working directory: `knowledge/`
+(empty), `memory/` with an empty index (`memory/MEMORY.md`), the adopter
+configuration (`validated-memory.md`), and a valid, empty declared-extension
+stub (`knowledge-extension.md`). Right after `init` on an empty directory,
+`validate` and `lint` both pass clean -- the bootstrap is verified by the
+enforcement it bootstraps, not by inspection. (An empty `knowledge/`
+directory still reports its usual WARNING for having no units; that does not
+gate.)
+
+Each item is created only if missing. An existing item -- including one
+already hand-edited -- is never touched: `init` reports `init: created
+<path>` or `init: kept <path>` per item, so re-running it is idempotent and
+says so. The only way `init` gates (exit 1) is an item it could not create at
+all, e.g. no write permission on the target directory.
+
+`validated-memory.md` declares the full adopter surface `extension.py`
+validates: the declared extension (`schema`, `version`), the `id_prefix`,
+and the probe registry, already mapping `git_ref` to its probe command
+(`python3 -m validated_memory.probes.git_ref`). That module lands with the
+probe framework in a later ticket; registering it now is still correct, since
+`probes` only records a command string here -- see "Adopter configuration"
+below. `knowledge-extension.md` declares no fields (`fields: []`, a valid,
+empty extension) and its body documents, in prose, the field format (`name`,
+`type`, `values`; types `string` and `enum`) and the versioning rule.
+Both files are plain Markdown with a YAML-subset frontmatter: readable
+without the plugin installed.
+
+**`--harness-memory PATH`** makes PATH a move-proof symlink to this
+project's `memory/` directory (absolute target), so the harness can read
+agent memory from wherever it expects it while the data stays versioned
+inside the adopter repo:
+
+- PATH missing: `init` creates the symlink (making parent directories as
+  needed).
+- PATH already a symlink -- pointing at this project, elsewhere, or broken:
+  `init` re-points it at this project's `memory/`. Re-pointing a symlink
+  never destroys data, so restoring it after the adopter project is renamed
+  or re-cloned is exactly re-running `init --harness-memory PATH` from the
+  new location: the link moves, the memory files underneath are untouched.
+  Already pointing at the right place is a no-op (`kept`).
+- PATH already exists as a real file or directory (not a symlink): fail-open.
+  `init` reports a WARNING explaining what to do by hand and leaves PATH
+  exactly as it was -- exit 0, nothing deleted, nothing moved.
+
+Computing PATH from the harness's own layout and calling `init
+--harness-memory PATH` automatically on every session start is the plugin's
+startup hook, and is **not** part of `init`: that wiring lands in a later
+ticket. `init` only guarantees the hook, once wired, can call it repeatedly
+without ever losing data.
 
 ### `lint`
 
