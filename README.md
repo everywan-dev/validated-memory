@@ -574,9 +574,16 @@ A `SessionStart` hook (`hooks/hooks.json`, running
 symlink automatically on every session start -- the wiring the
 `--harness-memory` section above defers to it. It computes the harness's
 per-project memory location the same way Claude Code lays out
-`~/.claude/projects/` (one directory per project, keyed by the project's own
-path with every `/` replaced by `-`) and re-runs `init --harness-memory`
-against it, with its stdout silenced.
+`~/.claude/projects/` -- one directory per project, keyed by the project's
+own path with **every character that is not a letter or a digit** replaced by
+`-` -- and re-runs `init --harness-memory` against it, with its stdout
+silenced. That rule covers `_` and `.`, not only `/`:
+`/home/u/Claude/odoo_ecosystem/odoo_migration` is keyed
+`-home-u-Claude-odoo-ecosystem-odoo-migration`. Getting it wrong is the one
+failure here that is silent rather than fail-open -- `init` reports success
+against a directory the harness never reads, and the memory simply never
+shows up -- so the rule is pinned by a test rather than left to the
+substitution being "obviously" about slashes.
 
 The hook is fail-open throughout, matching `init`'s own contract: no
 `$CLAUDE_PROJECT_DIR`, a project that has not adopted validated-memory (no
