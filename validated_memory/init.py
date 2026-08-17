@@ -13,13 +13,19 @@ of the harness integration: computing PATH from the harness's own layout and
 calling `init --harness-memory PATH` on every session start is the plugin's
 startup hook, wired in a later ticket. `init` only guarantees that calling it
 again -- from the same checkout or from a renamed or re-cloned one -- restores
-the link without ever deleting data; when PATH is a real file or directory
-that is not a symlink, `init` leaves it alone and reports why, fail-open, so
-a startup hook built on top of it can never break the session.
+the link without ever deleting data.
+
+When PATH is a real path that is not a symlink, `adopt` decides: a directory
+recognizably holding the harness's own agent memory is absorbed into this
+project's `memory/` and parked aside as a `.bak` before the link is created
+(see `adopt.py`); anything else is left alone with a WARNING saying why. Both
+outcomes are fail-open, so a startup hook built on top of `init` can never
+break the session.
 """
 
 from pathlib import Path
 
+from . import adopt
 from .findings import ERROR, EXIT_ERROR, EXIT_OK, WARNING, Finding
 
 MEMORY_INDEX = """\
@@ -176,8 +182,9 @@ def _sync_symlink(raw_path, stdout):
     - Missing: create the symlink (making parent directories as needed).
     - Already a symlink (even broken, even pointing elsewhere): re-point it --
       re-pointing a symlink never destroys data, unlike replacing a real path.
-    - A real file or directory: fail-open. Report why and leave it untouched;
-      the caller decides what to do by hand.
+    - A real path: handed to `adopt.take_over`, which either frees it (by
+      absorbing the agent memory it holds and parking the original aside) or
+      refuses and says why. Only a freed path gets a symlink.
 
     Any OS-level failure along this path (permissions, a dangling parent,
     ...) is reported the same way: a WARNING that never gates, because a
@@ -195,18 +202,17 @@ def _sync_symlink(raw_path, stdout):
             path.symlink_to(target, target_is_directory=True)
             print(f"init: re-pointed symlink {location} -> {target}", file=stdout)
             return []
+        # A real path that is not a symlink: `adopt` decides whether it holds
+        # agent memory this project can absorb, or must be left alone.
+        findings = []
         if path.exists():
-            message = (
-                f"'{location}' already exists and is not a symlink; it was not "
-                f"linked to '{target}'. Move or remove it by hand, or symlink it "
-                "yourself, then re-run 'validated-memory init --harness-memory "
-                f"{location}'."
-            )
-            return [Finding(WARNING, location, "symlink", message)]
+            freed, findings = adopt.take_over(path, target, stdout)
+            if not freed:
+                return findings
         path.parent.mkdir(parents=True, exist_ok=True)
         path.symlink_to(target, target_is_directory=True)
         print(f"init: created symlink {location} -> {target}", file=stdout)
-        return []
+        return findings
     except OSError as error:
         message = f"could not be linked to '{target}': {error}; session unaffected"
         return [Finding(WARNING, location, "symlink", message)]

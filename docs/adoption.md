@@ -32,6 +32,17 @@ project (see [Agent memory](../README.md#agent-memory)), also pass
 `--harness-memory PATH`; see [the startup hook](#the-startup-hook) below for
 how this stays in sync automatically after the first run.
 
+If the harness has already been writing agent memory of its own for this
+project, PATH is a real directory, not free. `init` merges it rather than
+leaving two memories that cannot see each other: it copies the memory files
+into this project's `memory/`, gives each one an entry in `MEMORY.md`, parks
+the harness's original directory alongside as `PATH.bak`, and only then
+creates the symlink. Nothing is overwritten and nothing is deleted -- see
+[Absorbing an existing harness memory
+directory](../README.md#absorbing-an-existing-harness-memory-directory) for
+the recognition rule, the conflict rule, and what happens on failure. After
+it runs, `lint` is the check that the merge is sound.
+
 Right after bootstrapping, confirm both enforcement commands pass clean:
 
 ```
@@ -98,6 +109,12 @@ sessions, without any manual step:
   Idempotent and fail-open: any problem it hits (missing tools, a path it
   cannot touch, ...) is reported to stderr and the hook still exits clean,
   so it can never break session startup.
+
+This is also where a pre-existing harness memory directory gets absorbed, on
+the first session after adoption, without anyone running anything by hand.
+The `.bak` it leaves behind is the only manual follow-up worth doing: once
+`lint` passes and the merged memory looks right, that backup can be removed
+whenever the adopter wants -- the plugin never touches it again.
 
 Nothing here needs to be invoked by hand in the common case: it runs on
 every session start for every adopter project that has ever asked for a
