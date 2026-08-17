@@ -19,6 +19,7 @@ non-zero, and no case may delete data. That is the whole point of a
 """
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -40,8 +41,14 @@ def _run_hook(env_overrides, cwd=None):
 
 
 def _slug(path):
-    """The same '/'->'-' substitution the hook uses for the harness's per-project dir."""
-    return str(path).replace("/", "-")
+    """The harness's per-project directory name for `path`.
+
+    Every character that is not a letter or a digit becomes '-'. Note this
+    covers '_' and '.', not just '/': a project at `a/b_c/.d` lands under
+    `-a-b-c--d`. Written out here rather than deferring to the hook, so the
+    test states the rule the hook has to implement.
+    """
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
 def _write_adopter_project(project_dir):
@@ -304,6 +311,34 @@ def test_hook_absorbs_a_harness_memory_directory_that_already_holds_memories(
     # The harness's original directory survives untouched, alongside.
     parked = harness_memory.parent / "memory.bak"
     assert (parked / "deploy-window.md").is_file()
+
+
+def test_the_project_slug_replaces_every_non_alphanumeric_character(tmp_path):
+    # The harness keys `~/.claude/projects/` by the project's own path with
+    # every non-alphanumeric character replaced by '-' -- '_' and '.' included,
+    # not just '/'. Getting this wrong plants the symlink in a directory the
+    # harness never reads, which fails silently: `init` reports success and the
+    # memory simply never shows up.
+    project_dir = tmp_path / "odoo_ecosystem.v2" / "odoo_migration"
+    memory_dir = _write_adopter_project(project_dir)
+    config_dir = tmp_path / "config"
+
+    result = _run_hook(
+        {
+            "HOME": str(tmp_path / "home"),
+            "CLAUDE_CONFIG_DIR": str(config_dir),
+            "CLAUDE_PROJECT_DIR": str(project_dir),
+        }
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected = config_dir / "projects" / _slug(project_dir) / "memory"
+    assert "_" not in expected.parent.name and "." not in expected.parent.name
+    assert expected.is_symlink()
+    assert expected.resolve() == memory_dir.resolve()
+    # Nothing is planted under the naive '/'-only slug.
+    naive = config_dir / "projects" / str(project_dir).replace("/", "-")
+    assert not naive.exists()
 
 
 def test_a_relative_config_dir_resolves_against_the_hooks_own_cwd(tmp_path):

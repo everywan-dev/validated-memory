@@ -28,10 +28,15 @@
 # project directory at all -- is a clean no-op.
 #
 # Harness memory location: this mirrors the per-project layout Claude Code
-# itself uses under `~/.claude/projects/` (one directory per project, named
-# after the project's own path with every '/' replaced by '-'):
+# itself uses under `~/.claude/projects/` -- one directory per project, named
+# after the project's own path with every character that is not a letter or a
+# digit replaced by '-'. That covers '_' and '.', not just '/': a project at
+# `/home/u/Claude/odoo_ecosystem/odoo_migration` lands under
+# `-home-u-Claude-odoo-ecosystem-odoo-migration`, and `/home/u/.ssh` under
+# `-home-u--ssh`. Getting this wrong fails silently -- `init` reports success
+# against a directory the harness never reads -- so it is pinned by a test.
 #
-#   ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<project dir, '/' -> '-'>/memory
+#   ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<project dir, [^A-Za-z0-9] -> '-'>/memory
 
 set -u
 
@@ -66,7 +71,18 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 0
 fi
 
-slug=$(printf '%s' "$project_dir" | sed 's|/|-|g')
+# Computed with python3 rather than `sed` on purpose: the substitution is per
+# character, and `sed`'s character class depends on the locale, which a hook
+# does not control -- under LC_ALL=C an accented character would become two or
+# three '-' instead of one, and the path would silently miss.
+slug=$(printf '%s' "$project_dir" | python3 -c '
+import re, sys
+sys.stdout.write(re.sub(r"[^A-Za-z0-9]", "-", sys.stdin.read()))
+')
+if [ -z "$slug" ]; then
+  echo "restore-memory-symlink: could not derive the project slug; skipping" >&2
+  exit 0
+fi
 harness_memory="$config_dir/projects/$slug/memory"
 
 # The plugin's own package root: this script lives at <plugin root>/hooks/,
