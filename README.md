@@ -88,9 +88,13 @@ inside the adopter repo:
   or re-cloned is exactly re-running `init --harness-memory PATH` from the
   new location: the link moves, the memory files underneath are untouched.
   Already pointing at the right place is a no-op (`kept`).
-- PATH already exists as a real file or directory (not a symlink): fail-open.
-  `init` reports a WARNING explaining what to do by hand and leaves PATH
-  exactly as it was -- exit 0, nothing deleted, nothing moved.
+- PATH already exists as a real directory holding the harness's own agent
+  memory: `init` absorbs it -- see "Absorbing an existing harness memory
+  directory" below.
+- PATH already exists as anything else real (a file, or a directory that is
+  not agent memory): fail-open. `init` reports a WARNING naming what it found
+  and why the directory did not qualify, and leaves PATH exactly as it was --
+  exit 0, nothing deleted, nothing moved.
 
 Computing PATH from the harness's own layout and calling `init
 --harness-memory PATH` automatically on every session start is the plugin's
@@ -98,6 +102,59 @@ startup hook (`hooks/restore-memory-symlink.sh`, wired as `SessionStart` in
 `hooks/hooks.json` -- see "Startup hook" below), and is **not** part of
 `init` itself. `init` only guarantees the hook can call it repeatedly, from
 any project state, without ever losing data.
+
+#### Absorbing an existing harness memory directory
+
+A project that adopts this plugin after the harness has already been writing
+agent memory of its own finds PATH occupied by a real directory full of
+memory files. Leaving it alone would leave two live memories that cannot see
+each other: the harness reads its own directory, the plugin reads the
+project's `memory/`, and neither shows the other's facts. So `init` absorbs
+it, in this order -- nothing is parked until the copy is done:
+
+1. **Recognize.** PATH qualifies only if every file under it is a `.md` file
+   and every one of them except a top-level `MEMORY.md` carries the
+   agent-memory frontmatter `lint` requires (see "Agent memory" below). A
+   top-level `MEMORY.md` alone is recognition enough. Anything else -- a
+   stray non-Markdown file, a `.md` without that frontmatter -- disqualifies
+   the whole directory, which is then left untouched with a WARNING naming
+   the file that disqualified it. Hidden files count: a stray `.gitkeep` or
+   `.DS_Store` blocks the merge until someone removes it. The bias is
+   deliberate: a false negative costs a warning, a false positive moves a
+   directory that belongs to something else.
+2. **Copy in.** Every memory file is copied into the project's `memory/`,
+   preserving subdirectories, **only where the destination does not exist**.
+   A destination that already holds identical content is skipped silently, so
+   re-running is quiet. A destination that differs is a real conflict: the
+   project's copy is kept, and a WARNING says so -- the harness's version is
+   still in the backup from step 4, for a human to reconcile.
+3. **Reconcile the index.** Every adopted file gets an entry in the project's
+   `memory/MEMORY.md`: the line the harness's own index carried for it when
+   there was one, synthesized from the file's `name` and `description`
+   otherwise. Reconciling only ever appends -- entries already in the
+   project's index are never rewritten or removed -- except for the `No
+   entries yet.` placeholder `init` writes into a fresh index, which goes as
+   soon as the index has real entries. The result passes `lint` clean, which
+   is how the absorption is verified.
+4. **Park.** The original directory is renamed alongside itself, to
+   `<PATH>.bak` (or `.bak.1`, `.bak.2`, the first free slot -- an existing
+   backup is never overwritten). Nothing is deleted: after the run there are
+   two copies of every adopted file, one live inside the project and one in
+   the backup.
+5. **Link.** Only now is the symlink created, so the harness and the plugin
+   read the same files from that point on.
+
+The one exception to "nothing is deleted": PATH as an **empty** directory is
+removed with `rmdir` and replaced by the symlink, with no backup. `rmdir` is
+refused by the operating system on anything that is not empty, so it cannot
+lose data, and the alternative -- an empty `.bak` on the side, or a WARNING
+on every session start forever -- is worse.
+
+Every failure along the way is fail-open: a WARNING, exit 0, and a state that
+still holds every file. The order is what guarantees it -- a failed copy
+leaves the original in place and unparked, a failed park leaves the copies in
+the project and the original intact, and a failed link leaves the backup path
+named in the WARNING.
 
 ### `lint`
 
@@ -525,8 +582,16 @@ The hook is fail-open throughout, matching `init`'s own contract: no
 `$CLAUDE_PROJECT_DIR`, a project that has not adopted validated-memory (no
 `validated-memory.md`, or no `memory/`, at its root), no `python3` on
 `PATH`, or any other problem along the way is a clean no-op -- it never
-gates or breaks session startup, and it never deletes data. See
-`docs/adoption.md` ("The startup hook") for the adopter-facing summary.
+gates or breaks session startup, and it never deletes data.
+
+Because the hook runs unattended, it is also where "Absorbing an existing
+harness memory directory" (above) normally happens: the first session after a
+project adopts the plugin merges the harness's pre-existing memory into the
+project and parks the original as a `.bak`. That merge is deliberately part
+of `init` rather than a flag the hook passes, so it happens once, by itself,
+on the deployment path -- gated by the recognition rule, which is what keeps
+it from touching anything that is not agent memory. See `docs/adoption.md`
+("The startup hook") for the adopter-facing summary.
 
 ## Development
 

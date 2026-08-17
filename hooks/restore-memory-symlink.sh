@@ -14,6 +14,14 @@
 # and the script always exits 0 -- a SessionStart hook must never be able
 # to break session startup, whatever it finds.
 #
+# One thing `init` does do on this path is merge: if the harness memory
+# location computed below already holds the harness's own agent memory,
+# `init` absorbs it into the project, parks the original as a '.bak' and
+# then links (see validated_memory/adopt.py, and the README's "Absorbing an
+# existing harness memory directory"). That is deliberate and happens here,
+# unattended, on the first session after a project adopts the plugin -- it
+# still deletes nothing, and it still exits 0 either way.
+#
 # What "adopted" means here: the project directory the harness just opened
 # (`$CLAUDE_PROJECT_DIR`) has both `validated-memory.md` and `memory/` at
 # its root. Anything else -- not adopted yet, only half-scaffolded, or no

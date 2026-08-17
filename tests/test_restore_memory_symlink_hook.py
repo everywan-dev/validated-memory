@@ -263,6 +263,49 @@ def test_hook_is_idempotent_across_two_runs(tmp_path):
     assert harness_memory.resolve() == memory_dir.resolve()
 
 
+def test_hook_absorbs_a_harness_memory_directory_that_already_holds_memories(
+    tmp_path,
+):
+    # The deployment case: the harness already has native agent memory for
+    # this project, written before the plugin was ever installed. The hook
+    # must end with a single set of files, inside the project, visible through
+    # the symlink -- not two memories that cannot see each other.
+    project_dir = tmp_path / "project"
+    memory_dir = _write_adopter_project(project_dir)
+    config_dir = tmp_path / "config"
+    harness_memory = config_dir / "projects" / _slug(project_dir) / "memory"
+    harness_memory.mkdir(parents=True)
+    (harness_memory / "deploy-window.md").write_text(
+        "---\nname: deploy-window\ndescription: Tuesdays only.\n"
+        "metadata:\n  type: project\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    (harness_memory / "MEMORY.md").write_text(
+        "# Agent memory\n\n- [Deploy window](deploy-window.md) — Tuesdays only\n",
+        encoding="utf-8",
+    )
+
+    result = _run_hook(
+        {
+            "HOME": str(tmp_path / "home"),
+            "CLAUDE_CONFIG_DIR": str(config_dir),
+            "CLAUDE_PROJECT_DIR": str(project_dir),
+        }
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert harness_memory.is_symlink()
+    assert harness_memory.resolve() == memory_dir.resolve()
+    # Both memories are now one set, reachable through the harness's path.
+    assert (harness_memory / "deploy-window.md").is_file()
+    assert (harness_memory / "coffee-preference.md").is_file()
+    index = (harness_memory / "MEMORY.md").read_text(encoding="utf-8")
+    assert "deploy-window.md" in index and "coffee-preference.md" in index
+    # The harness's original directory survives untouched, alongside.
+    parked = harness_memory.parent / "memory.bak"
+    assert (parked / "deploy-window.md").is_file()
+
+
 def test_a_relative_config_dir_resolves_against_the_hooks_own_cwd(tmp_path):
     # A relative CLAUDE_CONFIG_DIR must never leak into the adopter project:
     # the hook resolves it against its own working directory BEFORE changing
