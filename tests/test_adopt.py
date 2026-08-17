@@ -248,6 +248,24 @@ def test_a_non_markdown_file_is_left_untouched_even_when_it_looks_like_a_memory(
     assert (native / "stray.yaml").is_file()
 
 
+def test_a_hidden_file_disqualifies_the_directory_like_any_other(
+    adopter_dir, tmp_path, run_cli
+):
+    # Recognition counts hidden files too. A stray '.gitkeep' or '.DS_Store'
+    # therefore blocks the merge until a human removes it -- strict by design,
+    # and the WARNING names the file so the fix is obvious.
+    native = tmp_path / "harness" / "memory"
+    write_native(native, "coffee-preference", "Prefers oat milk.")
+    (native / ".gitkeep").write_text("", encoding="utf-8")
+
+    result = run_cli("init", "--harness-memory", str(native), cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING" in result.stderr
+    assert ".gitkeep" in result.stderr
+    assert not native.is_symlink()
+
+
 def test_a_directory_holding_only_the_index_qualifies(adopter_dir, tmp_path, run_cli):
     # A harness index with no facts under it is still recognizably agent
     # memory: absorbing it is a no-op, but the path gets its symlink instead

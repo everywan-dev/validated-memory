@@ -118,9 +118,10 @@ it, in this order -- nothing is parked until the copy is done:
    top-level `MEMORY.md` alone is recognition enough. Anything else -- a
    stray non-Markdown file, a `.md` without that frontmatter -- disqualifies
    the whole directory, which is then left untouched with a WARNING naming
-   the file that disqualified it. The bias is deliberate: a false negative
-   costs a warning, a false positive moves a directory that belongs to
-   something else.
+   the file that disqualified it. Hidden files count: a stray `.gitkeep` or
+   `.DS_Store` blocks the merge until someone removes it. The bias is
+   deliberate: a false negative costs a warning, a false positive moves a
+   directory that belongs to something else.
 2. **Copy in.** Every memory file is copied into the project's `memory/`,
    preserving subdirectories, **only where the destination does not exist**.
    A destination that already holds identical content is skipped silently, so
