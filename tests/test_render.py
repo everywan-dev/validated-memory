@@ -595,6 +595,68 @@ def test_a_confluence_is_drawn_when_three_units_are_superseded_at_once(
             if tag == "svg" and attrs.get("class") == "confluence"]
 
 
+SVG_FORBIDDEN_ELEMENTS = {"use", "image", "iframe", "object", "embed", "script"}
+
+
+def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
+    run_cli, adopter_dir, write_unit, page_elements
+):
+    # A page where BOTH diagrams are actually drawn: a confluence (three
+    # units superseded at once) and a freshness strip (several probes of one
+    # anchor). The generic URL-whitelist and hostile-content tests elsewhere
+    # in this file exercise pages with no anchors and no three-way
+    # supersession, so they never contain an <svg> at all -- they would pass
+    # unchanged even if `svg.py` started emitting a `<use href=...>`. This
+    # test exists so that scan actually has an SVG to scan.
+    run_cli("init", cwd=adopter_dir)
+    for old in ("kb-0001", "kb-0002", "kb-0003"):
+        write_unit(f"{old}.md", f"id: {old}\nevidence: hypothesis\n", f"# {old}\n")
+    write_unit(
+        "kb-0004.md",
+        "id: kb-0004\nevidence: measured\nsupersedes:\n"
+        "  - kb-0001\n  - kb-0002\n  - kb-0003\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# The one that replaced them\n",
+    )
+    # A hostile `recorded_at` -- angle brackets and a quote -- on the LAST
+    # record: this is the one value both the strip's per-band <title> and
+    # its right-edge aria-label read, so it is the sharpest place a missed
+    # escape would show up as live markup.
+    _log(adopter_dir, [
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "drifted",
+         "recorded_at": '2026-02-01T00:00:00Z"><script>alert(1)</script>'},
+    ])
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    # The page really does draw both diagrams -- asserted by count, not just
+    # "any svg", so this test cannot go vacuous the way the reused one did.
+    svgs = [(tag, attrs) for tag, attrs in elements if tag == "svg"]
+    assert len(svgs) == 2, svgs
+    assert {attrs.get("class") for _, attrs in svgs} == {"freshness", "confluence"}
+
+    # The hostile `recorded_at` reaches the page escaped, inside the strip's
+    # <title>, never as an unescaped tag.
+    assert '"><script>alert(1)</script>' not in page
+    assert (
+        '2026-02-01T00:00:00Z"&gt;&lt;script&gt;alert(1)&lt;/script&gt;' in page
+    )
+
+    for tag, attrs in elements:
+        assert tag not in SVG_FORBIDDEN_ELEMENTS, f"<{tag}> must never appear"
+        for name, value in attrs.items():
+            assert not name.lower().startswith("on"), f"{tag}[{name}] is an event attribute"
+            assert name not in URL_BEARING, f"{tag}[{name}]={value}"
+            if "://" in (value or ""):
+                assert (tag, name) == ("a", "href"), f"{tag}[{name}]={value}"
+
+
 def test_an_outgoing_href_matches_a_spaced_and_punctuated_name_anchor(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
 ):
