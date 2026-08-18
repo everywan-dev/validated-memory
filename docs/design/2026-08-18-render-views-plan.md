@@ -913,10 +913,14 @@ HISTORY_WINDOW = 20
 
 
 def _history(unit_id, anchor, records):
-    key = (unit_id, anchor.get("system"), anchor.get("kind"))
+    # An anchor is identified by what it points at, payload included: two
+    # anchors of one unit can share a system and a kind and measure different
+    # things. Records written before the payload was recorded carry none, and
+    # are read only when this `(system, kind)` is unique within the unit --
+    # the one case where the correspondence is determined, not guessed.
+    key = _anchor_key(unit_id, anchor)
     matching = [
-        record for record in records
-        if (record["unit"], record["system"], record["kind"]) == key
+        record for record in records if _record_key(record) == key
     ]
     shown = list(reversed(matching))[:HISTORY_WINDOW]
     items = "\n".join(

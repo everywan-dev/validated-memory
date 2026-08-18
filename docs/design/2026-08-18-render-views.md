@@ -181,7 +181,7 @@ with the histories in front of them, and is left to guess where the difference
 went.
 
 Each anchor's own history repeats the disclosure for itself: how many records
-that `(unit, system, kind)` has, and how many of them are shown.
+that `(unit, system, kind, payload)` has, and how many of them are shown.
 
 Then one entry per **live conclusion**, ordered by `id`. Ordering by `id` is
 the only order that does not move on its own: any ordering by freshness or
@@ -353,24 +353,27 @@ carries its label, for colour-blind readers and for black-and-white printing.
 
 ## History window
 
-Twenty probe records per `(unit, system, kind)`, most recent first.
+Twenty probe records per `(unit, system, kind, payload)`, most recent first.
 
-Two anchors of the same unit sharing a `system` and a `kind` are one key.
-The contract does not require them to differ, and `probe` records no position,
-`captured_at` or `payload` -- so the log cannot tell them apart even though
-their payloads may probe different things and return different verdicts. The
-view does not pretend otherwise: when a unit has more than one anchor on the
-same `(system, kind)`, the history is shown once, marked as shared by those
-anchors. Showing the same records under each as if they were its own would be
-the view inventing a distinction the data does not carry.
+An anchor's identity is **what it points at**: `(system, kind, payload)`.
+`captured_at` dates it, it does not identify it. Two anchors of one unit can
+legitimately share a `system` and a `kind` -- two refs of the same repository
+are `system: repo-a, kind: git_ref` twice, differing only in `payload.ref` --
+so a key without the payload merges two anchors that measure different things.
+That was not a cosmetic limit: `probe` detected one anchor's drift, wrote it
+to the log, and the service view collapsed it onto its sibling and kept
+whichever was written last, so the index reported `current` for a unit with a
+drifted anchor, order-dependently. The key now carries the canonical payload,
+and each anchor has its own history.
 
-Fixing it properly means changing an append-only log format that already
-carries history -- recording the anchor's position (fragile: reordering
-anchors reassigns history) or a fingerprint of its payload (stable). That
-decision is open, and is not this design's to take. Forbidding two anchors to
-share a `(system, kind)` is not the way out: two refs of the same repository
-are legitimately `system: repo-a, kind: git_ref` twice, differing only in
-`payload.ref`.
+Records written before that change carry no payload. They fall into a bucket
+of their own, and a unit's anchor reads them only when its `(system, kind)` is
+unique within the unit -- the one case where the correspondence is determined
+rather than guessed. Where it is ambiguous the verdict is `unknown`, which is
+the honest answer.
+
+Because the payload is what distinguishes two anchors, the view shows it
+beside each history: a record can finally say what it measured.
 
 The key includes the unit: `verdicts.service_view()` builds it as
 `(record["unit"], record["system"], record["kind"])`, and `unit_verdict`
@@ -478,7 +481,7 @@ logs, with the same line numbers.
   brackets, a memory entry with markup in its body. None of it becomes live
   markup. A file built to be emailed to a third party that renders repository
   content unescaped is a hole, not a detail.
-- The history window: with more than twenty records for one `(unit, system, kind)`,
+- The history window: with more than twenty records for one `(unit, system, kind, payload)`,
   twenty are shown and the page states the true total.
 - Determinism: two runs over an unchanged corpus produce identical bytes, and
   the output contains no generation timestamp.
