@@ -531,6 +531,70 @@ def test_hostile_memory_content_never_becomes_live_markup(
                 assert attrs.get("rel") == "noopener noreferrer"
 
 
+def test_the_freshness_strip_is_drawn_and_ends_at_the_last_record(
+    run_cli, adopter_dir, write_unit, page_elements
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Title\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0001", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
+        {"unit": "kb-0001", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "drifted", "recorded_at": "2026-02-01T00:00:00Z"},
+    ])
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert any(tag == "svg" for tag, _ in page_elements(page))
+    assert "2026-02-01T00:00:00Z" in page
+    assert "drifted" in page
+
+
+def test_no_confluence_is_drawn_for_a_two_link_chain(
+    run_cli, adopter_dir, write_unit, page_elements
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: hypothesis\n", "# Old\n")
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: measured\nsupersedes:\n  - kb-0001\n",
+        "# New\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert not [attrs for tag, attrs in page_elements(page)
+                if tag == "svg" and attrs.get("class") == "confluence"]
+
+
+def test_a_confluence_is_drawn_when_three_units_are_superseded_at_once(
+    run_cli, adopter_dir, write_unit, page_elements
+):
+    run_cli("init", cwd=adopter_dir)
+    for old in ("kb-0001", "kb-0002", "kb-0003"):
+        write_unit(f"{old}.md", f"id: {old}\nevidence: hypothesis\n", f"# {old}\n")
+    write_unit(
+        "kb-0004.md",
+        "id: kb-0004\nevidence: measured\nsupersedes:\n"
+        "  - kb-0001\n  - kb-0002\n  - kb-0003\n",
+        "# The one that replaced them\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert [attrs for tag, attrs in page_elements(page)
+            if tag == "svg" and attrs.get("class") == "confluence"]
+
+
 def test_an_outgoing_href_matches_a_spaced_and_punctuated_name_anchor(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
 ):

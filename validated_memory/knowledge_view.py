@@ -2,7 +2,7 @@
 
 import re
 
-from . import derive, html, memory, verdicts
+from . import derive, html, memory, svg, verdicts
 from .frontmatter import parse as parse_frontmatter
 
 TITLE = "Curated knowledge"
@@ -176,6 +176,10 @@ def _render_section(frame, bodies, view, grouped, shown_keys):
     chain = "".join(frame["pieces"])
     if chain:
         chain = f'<div class="chain">\n{chain}\n</div>\n'
+    # A confluence is drawn only when three or more units are superseded at
+    # once by this one -- below three, a chain is two boxes and an arrow
+    # saying what one line of text already says, so nothing is drawn.
+    confluence = svg.confluence(frame["children"], unit_id)
     css_class = "unit" if frame["top"] else "unit superseded"
     return (
         f'<section class="{css_class}" id="unit-{html.escape_attribute(unit_id)}"'
@@ -190,6 +194,7 @@ def _render_section(frame, bodies, view, grouped, shown_keys):
         f'<pre class="body">{html.escape_text(body_text)}</pre>\n'
         f"{_anchors(unit_id, data.get('anchors') or [], grouped, shown_keys)}"
         f"{_provenance(data.get('provenance') or [])}"
+        f"{confluence}"
         f"{chain}"
         "</details>\n</section>"
     )
@@ -241,6 +246,11 @@ def _history(matching):
     most recent probe reads first, then windowed. The disclosure line states
     the anchor's true total before the window, so a reader never mistakes a
     partial history for a complete one.
+
+    The freshness strip below the list is drawn from `shown` -- the same
+    windowed records the text history displays, put back in oldest-first
+    order -- not a second pass over the log. A record outside the window
+    never appears on the page in any form, text or drawn.
     """
     shown = list(reversed(matching))[:HISTORY_WINDOW]
     items = "\n".join(
@@ -252,6 +262,7 @@ def _history(matching):
         f'<p class="meta">{len(matching)} record(s) for this anchor; '
         f"showing {len(shown)}.</p>\n"
         f'<ul class="history">\n{items}\n</ul>\n'
+        f"{svg.freshness_strip(list(reversed(shown)))}"
     )
 
 
