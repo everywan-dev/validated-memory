@@ -1113,7 +1113,7 @@ def freshness_strip(records):
         f'<svg class="freshness" role="img" viewBox="0 0 {WIDTH} {BAND_HEIGHT}" '
         f'width="100%" height="{BAND_HEIGHT}" '
         f'aria-label="Probe history, oldest to newest, ending '
-        f'{html.escape_attribute(last.get("at", ""))} {html.escape_attribute(last["verdict"])}">'
+        f'{html.escape_attribute(last.get("recorded_at", ""))} {html.escape_attribute(last["verdict"])}">'
         + "".join(bands)
         + "</svg>"
     )
@@ -1149,6 +1149,11 @@ def confluence(superseded_ids, successor_id):
 Call them from `knowledge_view`: the strip inside `_history` (after the
 list), the confluence just before the `chain` div when the unit supersedes
 three or more.
+
+**The strip draws the same windowed slice the list shows**, not the full
+group. The two must agree: the page states "showing N of M", and a strip
+drawn over all M while the list shows N would contradict that disclosure in
+the one artifact whose whole point is not misleading its reader.
 
 - [ ] **Step 4: Run the tests**
 
