@@ -7,6 +7,7 @@ a temporary directory. Nothing here imports the package's internals.
 import os
 import subprocess
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -102,3 +103,31 @@ def write_index(adopter_dir):
         return path
 
     return _write
+
+
+class _Collector(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.elements = []
+
+    def handle_starttag(self, tag, attrs):
+        self.elements.append((tag, dict(attrs)))
+
+    handle_startendtag = handle_starttag
+
+
+@pytest.fixture
+def page_elements():
+    """Parse a page into `[(tag, {attr: value})]` with the stdlib parser.
+
+    Substring assertions pass over malformed HTML, so structure is asserted
+    structurally. This reads the artifact as data; it imports nothing from
+    the package.
+    """
+
+    def _parse(text):
+        collector = _Collector()
+        collector.feed(text)
+        return collector.elements
+
+    return _parse
