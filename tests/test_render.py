@@ -1,6 +1,7 @@
 """End-to-end tests for the `render` subcommand."""
 
 import re
+import shutil
 
 
 def _scaffold(run_cli, adopter_dir, write_unit):
@@ -322,6 +323,27 @@ def test_a_missing_memory_index_stops_the_run(run_cli, adopter_dir, write_unit):
 
     assert result.returncode == 1
     assert "MEMORY.md" in result.stderr
+    # Both artifacts are built before either is written: a memory-layer
+    # precondition failing must not leave a knowledge.html written from a
+    # run that, as a whole, did not succeed.
+    assert not (adopter_dir / "knowledge.html").exists()
+    assert not (adopter_dir / "memory.html").exists()
+
+
+def test_a_missing_knowledge_directory_stops_the_run_and_writes_nothing(
+    run_cli, adopter_dir
+):
+    # The mirror case: a curated-layer precondition failing must not leave a
+    # memory.html written either. `render` does not render half a project
+    # quietly.
+    run_cli("init", cwd=adopter_dir)
+    shutil.rmtree(adopter_dir / "knowledge")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert not (adopter_dir / "knowledge.html").exists()
+    assert not (adopter_dir / "memory.html").exists()
 
 
 def test_a_memory_file_with_unparseable_frontmatter_is_rendered_not_raised(
@@ -365,3 +387,86 @@ def test_a_non_string_description_does_not_raise(
     assert "Traceback" not in result.stderr
     page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
     assert "oat" in page and "milk" in page
+
+
+def test_hostile_memory_content_never_becomes_live_markup(
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
+):
+    # `memory_view` renders the same kind of adopter-authored freeform text
+    # as `knowledge_view` (body, description, metadata), so it carries the
+    # same injection risk -- mirrors the curated layer's hostile-content and
+    # URL-whitelist tests above, over `memory.html` instead.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory(
+        "coffee.md",
+        'name: coffee\ndescription: \'a "quoted" <tag>\'\nmetadata:\n  type: user\n',
+        "# Title\n\n<script>alert(1)</script>\n",
+    )
+    write_index("- [Coffee](coffee.md) — hostile\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+
+    assert "<script>alert(1)</script>" not in page
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
+    assert 'a "quoted" &lt;tag&gt;' in page
+    assert "user" in page
+
+    elements = page_elements(page)
+    assert not [tag for tag, _ in elements if tag == "script"]
+    for tag, attrs in elements:
+        for name, value in attrs.items():
+            carries_url = name in URL_BEARING or "://" in (value or "")
+            if carries_url:
+                assert (tag, name) == ("a", "href"), f"{tag}[{name}]={value}"
+        if tag == "a":
+            assert "ping" not in attrs
+            if attrs.get("target") == "_blank":
+                assert attrs.get("rel") == "noopener noreferrer"
+
+
+def test_an_outgoing_href_matches_a_spaced_and_punctuated_name_anchor(
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
+):
+    # Unlike a curated unit's `id`, nothing constrains a memory's `name`: a
+    # real corpus (ADR 0001) has names shaped like titles, with spaces, dots,
+    # capitals and parentheses. The anchor (`id="entry-<name>"`) and a
+    # resolved wikilink's `href` are built by the same escaping call on the
+    # same string, so they should agree byte for byte -- verified here
+    # rather than assumed.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory(
+        "release-owner.md",
+        "name: 'Release owner (approved)'\n"
+        "description: who owns releases\nmetadata:\n  type: user\n",
+    )
+    write_memory(
+        "coffee.md",
+        "name: coffee\ndescription: oat milk\nmetadata:\n  type: user\n",
+        "See [[Release owner (approved)]].\n",
+    )
+    write_index(
+        "- [Release owner](release-owner.md) — who owns releases\n"
+        "- [Coffee](coffee.md) — oat milk\n"
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    section_ids = {
+        attrs["id"]
+        for tag, attrs in elements
+        if tag == "section" and attrs.get("class") == "entry"
+    }
+    outgoing_hrefs = [
+        attrs["href"]
+        for tag, attrs in elements
+        if tag == "a" and attrs.get("href", "").startswith("#entry-")
+    ]
+
+    assert outgoing_hrefs, "expected the wikilink to resolve to a link"
+    for href in outgoing_hrefs:
+        assert href[1:] in section_ids, f"{href} does not match any entry id"
