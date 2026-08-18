@@ -48,7 +48,9 @@ def run(only_existing, stdout, stderr):
     else:
         targets = list(ARTIFACTS)
 
-    artifacts, ok = build_artifacts(stderr, downgrade=only_existing)
+    artifacts, findings, ok = build_artifacts(downgrade=only_existing)
+    for finding in findings:
+        print(finding.render(), file=stderr)
     if not ok:
         return EXIT_OK if only_existing else EXIT_ERROR
     for path in targets:
@@ -57,15 +59,21 @@ def run(only_existing, stdout, stderr):
     return EXIT_OK
 
 
-def build_artifacts(stderr, downgrade=False):
-    """Build every artifact's content in memory. Writes nothing.
+def build_artifacts(downgrade=False):
+    """Build every artifact's content in memory. Writes nothing, prints nothing.
 
-    Returns `(artifacts, ok)`. On success `artifacts` maps each path in
-    `ARTIFACTS` to its rendered content and `ok` is True. On a read or
-    validation precondition failing -- an ERROR finding over the curated
-    layer, an unreadable verdict log, or a missing memory directory or index
-    -- every finding has already been printed to `stderr`, `artifacts` is
-    empty and `ok` is False.
+    Returns `(artifacts, findings, ok)`. On success `artifacts` maps each
+    path in `ARTIFACTS` to its rendered content, `findings` holds whatever
+    non-gating findings came up along the way (validation WARNINGs, for
+    instance), and `ok` is True. On a read or validation precondition
+    failing -- an ERROR finding over the curated layer, an unreadable
+    verdict log, or a missing memory directory or index -- `artifacts` is
+    empty, `findings` holds every finding gathered up to the failure, and
+    `ok` is False. Printing `findings` -- exactly once -- is the caller's
+    job, not this function's: `run` and `init --view` both call this and
+    each has its own findings to fold them into, so a single shared print
+    site here would either print nothing useful to a caller building its
+    own tally or print things twice.
 
     Both artifacts are built before either is written (`run` does the
     writing) so that a failure on the second can never leave the first
@@ -73,16 +81,17 @@ def build_artifacts(stderr, downgrade=False):
     (`init --view`) needs the same build-without-writing step, so it lives
     here once rather than being composed at each of those call sites too.
 
-    `downgrade`, set by `run`'s unattended mode, prints every ERROR finding
-    as a WARNING instead -- `ok` is computed from the real severity
-    regardless, so a downgraded run still returns `False` here and writes
-    nothing; only the printed severity and `run`'s exit code differ.
+    `downgrade`, set by `run`'s unattended mode, downgrades every ERROR
+    finding to WARNING in the returned list instead -- `ok` is computed from
+    the real severity regardless, so a downgraded run still returns `False`
+    here and writes nothing; only the returned severity and `run`'s exit
+    code differ.
     """
-    documents, findings = validate.collect_and_validate(None)
-    for finding in findings:
-        _print_finding(finding, stderr, downgrade)
-    if any(finding.severity == ERROR for finding in findings):
-        return {}, False
+    documents, validation_findings = validate.collect_and_validate(None)
+    has_error = any(finding.severity == ERROR for finding in validation_findings)
+    findings = [_downgraded(finding, downgrade) for finding in validation_findings]
+    if has_error:
+        return {}, findings, False
 
     try:
         # Both reads of the log happen here, together, before either is
@@ -109,14 +118,14 @@ def build_artifacts(stderr, downgrade=False):
             error.message,
             line=error.lineno,
         )
-        _print_finding(finding, stderr, downgrade)
-        return {}, False
+        findings.append(_downgraded(finding, downgrade))
+        return {}, findings, False
 
     memory_target = Path(memory_module.DEFAULT_DIR)
     precondition = _memory_precondition(memory_target)
     if precondition is not None:
-        _print_finding(precondition, stderr, downgrade)
-        return {}, False
+        findings.append(_downgraded(precondition, downgrade))
+        return {}, findings, False
 
     memory_documents, memory_resolution = _memory_source(memory_target)
     memory_content = memory_view.build(memory_documents, memory_resolution)
@@ -124,22 +133,22 @@ def build_artifacts(stderr, downgrade=False):
     return {
         KNOWLEDGE_ARTIFACT: knowledge_content,
         MEMORY_ARTIFACT: memory_content,
-    }, True
+    }, findings, True
 
 
-def _print_finding(finding, stderr, downgrade):
-    """Print one finding, downgraded from ERROR to WARNING when `downgrade`.
+def _downgraded(finding, downgrade):
+    """Return `finding`, its severity downgraded from ERROR to WARNING when `downgrade`.
 
-    Only the printed severity changes -- the caller still decides `ok` from
-    the finding's real severity, so a downgraded ERROR still stops the
-    build. This only ever softens what unattended mode reports; an
-    already-WARNING finding is printed unchanged either way.
+    Only the severity changes -- callers still decide `ok`/gating from the
+    finding's real severity before this runs, so a downgraded ERROR still
+    stops the build; this only ever softens what unattended mode reports.
+    An already-WARNING finding is returned unchanged either way.
     """
     if downgrade and finding.severity == ERROR:
-        finding = Finding(
+        return Finding(
             WARNING, finding.location, finding.field, finding.message, line=finding.line
         )
-    print(finding.render(), file=stderr)
+    return finding
 
 
 def _memory_precondition(target):

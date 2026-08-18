@@ -149,7 +149,7 @@ def run(harness_memory, view, stdout, stderr):
         findings.extend(_sync_symlink(harness_memory, stdout))
 
     if view:
-        view_created, view_kept, view_findings = _ensure_views(stdout, stderr)
+        view_created, view_kept, view_findings = _ensure_views(stdout)
         created += view_created
         kept += view_kept
         findings.extend(view_findings)
@@ -237,11 +237,14 @@ def _sync_symlink(raw_path, stdout):
         return [Finding(WARNING, location, "symlink", message)]
 
 
-def _ensure_views(stdout, stderr):
+def _ensure_views(stdout):
     """Create `knowledge.html` and `memory.html` once each.
 
     Returns `(created, kept, findings)`, mirroring `_sync_symlink`'s shape
-    so `run` folds it into the same counters and the same printed findings.
+    so `run` folds it into the same counters and prints every finding
+    exactly once, from its own central loop -- `build_artifacts` returns
+    findings rather than printing them, precisely so a caller like this one
+    is never in the position of also having something to print itself.
 
     Same contract as every other item `init` manages: an artifact that
     already exists is reported `kept` and never touched, hand-edited or not.
@@ -252,12 +255,10 @@ def _ensure_views(stdout, stderr):
     `build_artifacts` call covers whichever are missing) before either is
     written, matching `render`'s own all-or-nothing write order.
 
-    A corpus `build_artifacts` refuses is reported as a WARNING --
-    `downgrade=True`, the same fail-open mode `render --only-existing` uses
-    -- and creates neither artifact; whichever of the two already existed is
-    still reported `kept`. `build_artifacts` prints that finding itself (its
-    own documented contract), so it is not also returned here -- doing both
-    would print it twice.
+    A corpus `build_artifacts` refuses is folded into the returned findings
+    as a WARNING -- `downgrade=True`, the same fail-open mode `render
+    --only-existing` uses -- and creates neither artifact; whichever of the
+    two already existed is still reported `kept`.
 
     A write that fails at the OS level (permissions, a full disk, ...) is,
     like `--harness-memory`, a WARNING rather than a crash or a gate: an
@@ -270,7 +271,8 @@ def _ensure_views(stdout, stderr):
     missing = [name for name in render.ARTIFACTS if not Path(name).exists()]
     artifacts = {}
     if missing:
-        artifacts, ok = render.build_artifacts(stderr, downgrade=True)
+        artifacts, build_findings, ok = render.build_artifacts(downgrade=True)
+        findings.extend(build_findings)
         if not ok:
             artifacts = {}
     for name in render.ARTIFACTS:

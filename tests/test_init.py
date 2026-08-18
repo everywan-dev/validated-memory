@@ -8,6 +8,7 @@ clean right after a run on an empty project.
 """
 
 import os
+import re
 
 import pytest
 
@@ -387,6 +388,29 @@ def test_init_view_on_an_invalid_corpus_warns_without_gating(
     assert result.returncode == 0
     assert "WARNING" in result.stderr
     assert not (adopter_dir / "knowledge.html").exists()
+
+
+def test_init_view_summary_reports_the_warning_it_printed(
+    run_cli, adopter_dir, write_unit
+):
+    # A summary line claiming "0 warning(s)" in the same run that printed a
+    # WARNING to stderr would contradict itself -- this pins that the
+    # WARNING `build_artifacts` reports for an invalid corpus is folded
+    # into init's own tally, not left unaccounted for. It also guards
+    # against the double-print regression that folding it in could
+    # introduce: every stderr line must appear exactly once.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: invented\n")
+
+    result = run_cli("init", "--view", cwd=adopter_dir)
+
+    assert result.returncode == 0
+    assert "WARNING" in result.stderr
+    match = re.search(r"(\d+) warning\(s\)", result.stdout)
+    assert match, result.stdout
+    assert int(match.group(1)) >= 1
+    stderr_lines = [line for line in result.stderr.splitlines() if line]
+    assert len(stderr_lines) == len(set(stderr_lines)), result.stderr
 
 
 def test_init_view_creates_only_the_missing_artifact_and_keeps_the_other(
