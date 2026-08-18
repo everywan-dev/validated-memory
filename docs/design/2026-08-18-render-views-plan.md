@@ -748,14 +748,12 @@ def _unit_section(unit_id, data, state, bodies, view, states, rendered, top=True
         )
     rendered.add(unit_id)
     ...  # summary, body, anchors, provenance exactly as in Task 3
-    chain = "".join(
-        _unit_section(
-            target, states[target][0], states[target][1],
-            bodies, view, states, rendered, top=False,
-        )
-        for target in sorted(data.get("supersedes") or [])
-        if target in states
-    )
+    # ILLUSTRATIVE ONLY -- and note it must NOT be written as the recursive
+    # call it reads like. The closing requirement below is binding: push each
+    # `sorted(data.get("supersedes") or [])` target onto an explicit stack,
+    # mark it rendered as it is pushed, and build each section as one balanced
+    # string before appending it to its parent's pieces.
+    chain = _walk_chain(unit_id, states, bodies, view, rendered)
     if chain:
         chain = f'<div class="chain">\n{chain}\n</div>\n'
     css_class = "unit" if top else "unit superseded"
