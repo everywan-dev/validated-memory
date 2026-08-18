@@ -47,7 +47,10 @@ def _skill_files():
 
 
 def _doc_files():
-    return sorted(DOCS_DIR.glob("*.md"))
+    # Recursive: `docs/adr/` already exists and more subdirectories will
+    # follow, and a doc that escapes these checks by sitting one level down
+    # is exactly the one nobody notices drifting.
+    return sorted(DOCS_DIR.rglob("*.md"))
 
 
 def _all_prose_files():

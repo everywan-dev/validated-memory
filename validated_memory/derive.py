@@ -11,6 +11,7 @@ probed is `unknown`, fail-explicit.
 """
 
 from datetime import datetime, timezone
+from collections import namedtuple
 from pathlib import Path
 
 from . import validate
@@ -20,6 +21,12 @@ from .findings import EXIT_ERROR, EXIT_OK, Finding
 from .frontmatter import parse as parse_frontmatter
 
 INDEX_FILENAME = "knowledge-index.md"
+
+# One anchor's freshness, and a unit's graded from all of them. Named so a
+# reader other than the index -- which needs the per-anchor detail, not a
+# table cell -- can grade a unit without reimplementing the rule.
+AnchorVerdict = namedtuple("AnchorVerdict", "system kind verdict")
+UnitVerdict = namedtuple("UnitVerdict", "verdict unknown_systems per_anchor")
 
 
 def run(path, check, stdout, stderr):
@@ -105,35 +112,62 @@ def _rows(documents):
     return rows
 
 
-def _verdict_cell(unit_id, anchors, view):
-    """The verdict column for one unit: the worst verdict among its anchors.
+def unit_verdict(unit_id, anchors, view):
+    """Grade one unit's freshness from its anchors and the service view.
 
-    No anchors -- nothing to probe -- reports `unknown` on its own. With
-    anchors, an anchor absent from the service view (never probed) is
-    `unknown`, fail-explicit. When the worst verdict is `unknown`, the
-    systems behind it are listed; when it is `drifted` and some anchors are
-    also `unknown`, those are listed too, tagged as such.
+    The worst verdict among the unit's anchors (`drifted` > `unknown` >
+    `current`). No anchors -- nothing to probe -- grades `unknown` on its own.
+    With anchors, one absent from the service view (never probed) is
+    `unknown`, fail-explicit.
+
+    Returns a `UnitVerdict`: the grade, the systems behind an `unknown` anchor
+    (sorted), and the per-anchor detail. Computation only -- how the grade is
+    written into the index is `_verdict_cell`'s business, and any other reader
+    grades a unit by calling this rather than by reimplementing the rule.
     """
     if not anchors:
-        return verdicts_module.UNKNOWN
-    per_anchor = [
-        (
+        return UnitVerdict(verdicts_module.UNKNOWN, (), ())
+    per_anchor = tuple(
+        AnchorVerdict(
             anchor.get("system"),
+            anchor.get("kind"),
             view.get(
-                (unit_id, anchor.get("system"), anchor.get("kind")), verdicts_module.UNKNOWN
+                (unit_id, anchor.get("system"), anchor.get("kind")),
+                verdicts_module.UNKNOWN,
             ),
         )
         for anchor in anchors
-    ]
-    verdict = verdicts_module.worst(anchor_verdict for _system, anchor_verdict in per_anchor)
-    unknown_systems = sorted(
-        {system for system, anchor_verdict in per_anchor if anchor_verdict == verdicts_module.UNKNOWN}
     )
-    if verdict == verdicts_module.UNKNOWN:
-        return f"{verdicts_module.UNKNOWN} (" + ", ".join(unknown_systems) + ")"
-    if verdict == verdicts_module.DRIFTED and unknown_systems:
-        return f"{verdicts_module.DRIFTED} (unknown: " + ", ".join(unknown_systems) + ")"
-    return verdict
+    verdict = verdicts_module.worst(anchor.verdict for anchor in per_anchor)
+    unknown_systems = tuple(
+        sorted(
+            {
+                anchor.system
+                for anchor in per_anchor
+                if anchor.verdict == verdicts_module.UNKNOWN
+            }
+        )
+    )
+    return UnitVerdict(verdict, unknown_systems, per_anchor)
+
+
+def _verdict_cell(unit_id, anchors, view):
+    """The verdict column for one unit, written as the index states it.
+
+    When the grade is `unknown`, the systems behind it are listed; when it is
+    `drifted` and some anchors are also `unknown`, those are listed too,
+    tagged as such.
+    """
+    graded = unit_verdict(unit_id, anchors, view)
+    if graded.verdict == verdicts_module.UNKNOWN and graded.unknown_systems:
+        return f"{verdicts_module.UNKNOWN} (" + ", ".join(graded.unknown_systems) + ")"
+    if graded.verdict == verdicts_module.DRIFTED and graded.unknown_systems:
+        return (
+            f"{verdicts_module.DRIFTED} (unknown: "
+            + ", ".join(graded.unknown_systems)
+            + ")"
+        )
+    return graded.verdict
 
 
 def _render(rows, basis):

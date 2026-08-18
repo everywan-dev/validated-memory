@@ -140,6 +140,24 @@ def test_entries_are_appended_to_an_index_that_already_has_some(
     assert linted.returncode == 0, linted.stderr
 
 
+def test_an_index_entry_already_there_is_not_duplicated_by_absorption(
+    adopter_dir, tmp_path, run_cli, write_index
+):
+    # The project's index lists a file it does not have -- a stale entry -- and
+    # the harness turns out to hold exactly that file. Absorbing it must reuse
+    # the entry already there, not append a second one for the same file.
+    stale = "- [Coffee preference](coffee-preference.md) — oat milk"
+    write_index(f"# Agent memory\n\n{stale}\n")
+    native = tmp_path / "harness" / "memory"
+    write_native(native, "coffee-preference", "Prefers oat milk.")
+    write_native_index(native, stale)
+
+    run_cli("init", "--harness-memory", str(native), cwd=adopter_dir)
+
+    index = (adopter_dir / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert index.count("(coffee-preference.md)") == 1, index
+
+
 # --- collisions: the project's own copy always wins ---------------------------
 
 
