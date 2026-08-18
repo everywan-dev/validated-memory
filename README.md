@@ -11,9 +11,9 @@ without the plugin installed.
 
 ## Status
 
-v1 complete. Every subcommand is live: `validate` enforces the base contract
-and the adopter's declared extension; `lint` enforces the agent-memory
-layer; `derive` re-derives the knowledge index, with a `--check` gate, and
+**1.0.0** -- v1 complete. Every subcommand is live: `validate` enforces the
+base contract and the adopter's declared extension; `lint` enforces the
+agent-memory layer; `derive` re-derives the knowledge index, with a `--check` gate, and
 reads real freshness verdicts; `probe` runs freshness probes and records
 them, including the bundled `git_ref` probe; `init` scaffolds a new adopter
 project. Five skills make the method invocable from the CLI surface alone,
