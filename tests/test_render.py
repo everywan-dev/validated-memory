@@ -1,7 +1,17 @@
 """End-to-end tests for the `render` subcommand."""
 
+import json
 import re
 import shutil
+
+HISTORY_WINDOW = 20
+
+
+def _log(adopter_dir, records):
+    (adopter_dir / "verdicts.jsonl").write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
+        encoding="utf-8",
+    )
 
 
 def _scaffold(run_cli, adopter_dir, write_unit):
@@ -233,6 +243,68 @@ def test_a_verdict_log_that_is_not_utf8_is_reported_without_a_line_number(
     assert not re.search(r"verdicts\.jsonl:\d", result.stderr)
     assert "ERROR" in result.stderr
     assert not (adopter_dir / "knowledge.html").exists()
+
+
+def test_the_history_window_shows_twenty_and_states_the_true_total(
+    run_cli, adopter_dir, write_unit
+):
+    # 25 probes of one anchor: only the most recent 20 are shown, newest
+    # first, but the log's total and the anchor's own total both count all 25.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2025-12-01T00:00:00Z\n    payload: {}\n",
+        "# Title\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0001", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "current", "recorded_at": f"2026-01-{day:02d}T00:00:00Z"}
+        for day in range(1, 26)
+    ])
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert page.count('class="record"') == HISTORY_WINDOW
+    assert "25 record(s)" in page
+    assert "of which 25 belong to an anchor shown below" in page
+    assert "25 record(s) for this anchor; showing 20." in page
+    assert "2026-01-25T00:00:00Z" in page
+    assert "2026-01-01T00:00:00Z" not in page
+
+
+def test_a_record_without_a_payload_is_never_attributed_to_an_anchor(
+    run_cli, adopter_dir, write_unit
+):
+    # The rule that matters most: a record written before payloads were
+    # recorded carries no `payload` field at all, and NO anchor reads it --
+    # not even one whose own payload happens to be empty (`{}`), because
+    # `{}` and "absent" are different keys. The record still counts toward
+    # the log's total, but not toward the anchor's, and the anchor it would
+    # have matched on `(system, kind)` alone stays `unknown`.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Title\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0001", "system": "repo", "kind": "git_ref",
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
+    ])
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert page.count('class="record"') == 0
+    assert "1 record(s)" in page
+    assert "of which 0 belong to an anchor shown below" in page
+    assert "0 record(s) for this anchor; showing 0." in page
+    assert '<span class="verdict">unknown</span>' in page
 
 
 def test_a_superseded_unit_appears_only_inside_its_successor(

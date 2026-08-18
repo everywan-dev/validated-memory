@@ -9,6 +9,12 @@ TITLE = "Curated knowledge"
 
 HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
+# The most recent probes shown under each anchor. The log itself is never
+# truncated -- only what a page shows of it -- and each anchor states its
+# own true total beside the window, so a reader can tell a full history from
+# a partial one without leaving the page.
+HISTORY_WINDOW = 20
+
 
 def headline(body_text, unit_id):
     """The first heading of the body, or the id when there is none.
@@ -21,29 +27,84 @@ def headline(body_text, unit_id):
     return match.group(1) if match else unit_id
 
 
-def build(documents, basis):
-    """Return the whole page as a string."""
+def build(documents, basis, records):
+    """Return the whole page as a string.
+
+    `records` is the verdict log's full history (`verdicts.history()`),
+    read once by the caller and handed down here -- it feeds both the
+    per-anchor probe-history sections and the page header's two totals, so
+    it is read exactly once per render, not once per anchor.
+    """
     states = derive.effective_states(documents)
     view = verdicts.service_view()
     bodies = {}
     for _location, text in documents:
         bodies[parse_frontmatter(text)["id"]] = memory.body(text)
 
-    parts = [f"<h1>{html.escape_text(TITLE)}</h1>"]
-    parts.append(
-        f'<p class="basis">Basis: {len(documents)} unit(s) under '
-        f"{html.escape_text(basis)}</p>"
-    )
+    grouped = _group_history(records)
+    # Populated as anchors are rendered below, so the header's "belonging"
+    # total reflects exactly what ended up on the page -- not a count
+    # derived separately from `states`, which could drift from the walk.
+    shown_keys = set()
+
+    sections = []
     rendered = set()
     for unit_id in sorted(states):
         data, state = states[unit_id]
         if state != "active":
             continue
-        parts.append(_unit_section(unit_id, data, state, states, bodies, view, rendered))
+        sections.append(
+            _unit_section(
+                unit_id, data, state, states, bodies, view, rendered,
+                grouped, shown_keys,
+            )
+        )
+
+    belonging = sum(len(grouped[key]) for key in shown_keys if key in grouped)
+    parts = [f"<h1>{html.escape_text(TITLE)}</h1>"]
+    parts.append(
+        f'<p class="basis">Basis: {len(documents)} unit(s) under '
+        f"{html.escape_text(basis)}</p>"
+    )
+    # Two totals, not one: the log outlives the corpus (nothing prunes a
+    # record whose unit or anchor is gone), so the log's own total can never
+    # be reconciled by a reader against the histories on the page -- only
+    # the "belonging" count can be.
+    parts.append(
+        f'<p class="window">Verdict log: {len(records)} record(s) in '
+        f"{html.escape_text(verdicts.LOG_FILENAME)}, of which {belonging} "
+        f"belong to an anchor shown below; at most {HISTORY_WINDOW} shown "
+        "per anchor.</p>"
+    )
+    parts.extend(sections)
     return html.page(TITLE, "\n".join(parts))
 
 
-def _unit_section(unit_id, data, state, states, bodies, view, rendered, top=True):
+def _group_history(records):
+    """Group every record that names an anchor by the key it names.
+
+    A record with no `payload` field predates payloads and is read by no
+    anchor -- see `verdicts.NO_PAYLOAD` -- so it never joins a group here.
+    It is still counted in the page header's log total, since that total is
+    the log's own, not an anchor's; it just never counts toward an anchor's.
+    Grouping preserves `records`' file order, so each group is oldest-first;
+    `_history` reverses only the slice it shows.
+    """
+    grouped = {}
+    for record in records:
+        if "payload" not in record:
+            continue
+        key = verdicts.anchor_key(
+            record["unit"], record["system"], record["kind"], record["payload"]
+        )
+        grouped.setdefault(key, []).append(record)
+    return grouped
+
+
+def _unit_section(
+    unit_id, data, state, states, bodies, view, rendered, grouped, shown_keys,
+    top=True,
+):
     """Render this unit's section, with its supersession chain nested inside.
 
     A chain's length is set by whoever writes `supersedes` and nothing in
@@ -78,7 +139,7 @@ def _unit_section(unit_id, data, state, states, bodies, view, rendered, top=True
             continue
 
         stack.pop()
-        section = _render_section(frame, bodies, view)
+        section = _render_section(frame, bodies, view, grouped, shown_keys)
         if not stack:
             return section
         stack[-1]["pieces"].append(section)
@@ -96,7 +157,7 @@ def _new_frame(unit_id, data, state, top):
     }
 
 
-def _render_section(frame, bodies, view):
+def _render_section(frame, bodies, view, grouped, shown_keys):
     unit_id = frame["unit_id"]
     data = frame["data"]
     state = frame["state"]
@@ -117,7 +178,7 @@ def _render_section(frame, bodies, view):
         f'<span class="verdict">{html.escape_text(graded.verdict)}</span>'
         "</summary>\n"
         f'<pre class="body">{html.escape_text(body_text)}</pre>\n'
-        f"{_anchors(data.get('anchors') or [])}"
+        f"{_anchors(unit_id, data.get('anchors') or [], grouped, shown_keys)}"
         f"{_provenance(data.get('provenance') or [])}"
         f"{chain}"
         "</details>\n</section>"
@@ -132,7 +193,7 @@ def _repeat_reference(unit_id):
     )
 
 
-def _anchors(anchors):
+def _anchors(unit_id, anchors, grouped, shown_keys):
     # `payload` is a mapping the contract never looks inside -- the probe
     # interprets it, not the contract -- so it is arbitrary structure even
     # here, in the validated layer. `html.escape_text` stringifies before
@@ -142,15 +203,46 @@ def _anchors(anchors):
     items = []
     for anchor in anchors:
         payload = anchor.get("payload")
+        # Same key an anchor's own verdict is read under (`derive.unit_verdict`)
+        # -- what it points at, payload included. Two anchors that happen to
+        # share every field share a key and therefore a history; that is a
+        # true fact about the log, not a bug in this grouping.
+        key = verdicts.anchor_key(
+            unit_id, anchor.get("system"), anchor.get("kind"), payload
+        )
+        shown_keys.add(key)
         items.append(
             "<li>"
             f'<span class="system">{html.escape_text(anchor.get("system"))}</span> '
             f'<span class="kind">{html.escape_text(anchor.get("kind"))}</span> '
             f'<span class="captured">{html.escape_text(anchor.get("captured_at"))}</span>'
             f'<pre class="payload">{html.escape_text(payload)}</pre>'
+            f"{_history(grouped.get(key, []))}"
             "</li>"
         )
     return '<ul class="anchors">\n' + "\n".join(items) + "\n</ul>\n"
+
+
+def _history(matching):
+    """This anchor's probe history: at most `HISTORY_WINDOW` records, newest first.
+
+    `matching` is already this anchor's own records (`_group_history` keys on
+    the same `anchor_key` computed above), oldest first; reversed here so the
+    most recent probe reads first, then windowed. The disclosure line states
+    the anchor's true total before the window, so a reader never mistakes a
+    partial history for a complete one.
+    """
+    shown = list(reversed(matching))[:HISTORY_WINDOW]
+    items = "\n".join(
+        f'<li class="record">{html.escape_text(record.get("recorded_at"))} '
+        f'{html.escape_text(record.get("verdict"))}</li>'
+        for record in shown
+    )
+    return (
+        f'<p class="meta">{len(matching)} record(s) for this anchor; '
+        f"showing {len(shown)}.</p>\n"
+        f'<ul class="history">\n{items}\n</ul>\n'
+    )
 
 
 def _provenance(entries):

@@ -58,7 +58,10 @@ def build_artifacts(stderr):
         return {}, False
 
     try:
-        knowledge_content = knowledge_view.build(documents, _basis_location(None))
+        records = verdicts_module.history()
+        knowledge_content = knowledge_view.build(
+            documents, _basis_location(None), records
+        )
     except verdicts_module.VerdictLogError as error:
         # Same shape `derive` reports: a log this reader cannot parse is a
         # finding naming the file (and line, when the fault is one line's
