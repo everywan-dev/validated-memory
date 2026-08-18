@@ -277,3 +277,91 @@ def test_a_unit_superseded_twice_is_rendered_once_and_referenced_after(
 
     assert page.count('data-unit="kb-0001"') == 1
     assert '<a href="#unit-kb-0001">' in page
+
+
+def test_the_memory_page_lists_entries_with_their_references(
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
+):
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory("coffee.md", "name: coffee\ndescription: oat milk\nmetadata:\n  type: user\n",
+                 "Related: [[tea]].\n")
+    write_memory("tea.md", "name: tea\ndescription: green\nmetadata:\n  type: user\n")
+    write_index("- [Coffee](coffee.md) — oat milk\n- [Tea](tea.md) — green\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+    entries = [attrs for tag, attrs in page_elements(page)
+               if tag == "section" and attrs.get("class") == "entry"]
+
+    assert result.returncode == 0, result.stderr
+    assert [attrs["data-name"] for attrs in entries] == ["coffee", "tea"]
+    assert '<a href="#entry-tea">' in page
+    assert "render: wrote memory.html" in result.stdout
+
+
+def test_an_unresolved_wikilink_is_marked_rather_than_linked(
+    run_cli, adopter_dir, write_unit, write_memory, write_index
+):
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory("coffee.md", "name: coffee\ndescription: oat milk\nmetadata:\n  type: user\n",
+                 "Related: [[nothing-here]].\n")
+    write_index("- [Coffee](coffee.md) — oat milk\n")
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+
+    assert 'class="unresolved"' in page
+    assert '<a href="#entry-nothing-here">' not in page
+
+
+def test_a_missing_memory_index_stops_the_run(run_cli, adopter_dir, write_unit):
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "memory" / "MEMORY.md").unlink()
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "MEMORY.md" in result.stderr
+
+
+def test_a_memory_file_with_unparseable_frontmatter_is_rendered_not_raised(
+    run_cli, adopter_dir, write_unit, write_memory, write_index
+):
+    # There is no `gated_source` for the memory layer: `render` stops only on
+    # what it cannot read (the directory, the index). A document whose
+    # frontmatter will not parse is still one of the files that directory
+    # holds, so it gets an entry, with the parse error stated in place of the
+    # fields that could not be read -- not a traceback, and not silence.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory("broken.md", "name coffee\n")
+    write_index("- [Broken](broken.md) — bad frontmatter\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+    assert "broken" in page
+    assert "expected a 'key: value' entry" in page
+
+
+def test_a_non_string_description_does_not_raise(
+    run_cli, adopter_dir, write_unit, write_memory, write_index
+):
+    # Nothing validated this layer's frontmatter, so `description` can be any
+    # JSON type the parser accepts -- here, a list rather than the string
+    # `lint` requires. The page must stringify it, not crash trying to
+    # `.strip()` or membership-test a value of unknown type.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory(
+        "coffee.md",
+        "name: coffee\ndescription:\n  - oat\n  - milk\nmetadata:\n  type: user\n",
+    )
+    write_index("- [Coffee](coffee.md) — a list description\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+    assert "oat" in page and "milk" in page

@@ -9,22 +9,56 @@ docs/design/2026-08-18-render-views.md.
 import os
 from pathlib import Path
 
-from . import knowledge_view, validate
+from . import knowledge_view, memory_view, validate
+from . import memory as memory_module
 from . import verdicts as verdicts_module
 from .contract import ERROR
 from .findings import EXIT_ERROR, EXIT_OK, Finding
+from .frontmatter import FrontmatterError
+from .frontmatter import parse as parse_frontmatter
 
 KNOWLEDGE_ARTIFACT = "knowledge.html"
 MEMORY_ARTIFACT = "memory.html"
 
+# Fixed order: what `build_artifacts` returns and `run` writes, in the order
+# reported on stdout. A dict keeps insertion order in practice, but writing
+# it out here means that fact is never load-bearing.
+ARTIFACTS = (KNOWLEDGE_ARTIFACT, MEMORY_ARTIFACT)
+
 
 def run(only_existing, stdout, stderr):
     """Render the views. Returns an exit code."""
-    documents, ok = validate.gated_source(None, stderr)
+    artifacts, ok = build_artifacts(stderr)
     if not ok:
         return EXIT_ERROR
+    for path in ARTIFACTS:
+        action = write_if_changed(Path(path), artifacts[path])
+        print(f"render: {action} {path}", file=stdout)
+    return EXIT_OK
+
+
+def build_artifacts(stderr):
+    """Build every artifact's content in memory. Writes nothing.
+
+    Returns `(artifacts, ok)`. On success `artifacts` maps each path in
+    `ARTIFACTS` to its rendered content and `ok` is True. On a read or
+    validation precondition failing -- an ERROR finding over the curated
+    layer, an unreadable verdict log, or a missing memory directory or index
+    -- every finding has already been printed to `stderr`, `artifacts` is
+    empty and `ok` is False.
+
+    Both artifacts are built before either is written (`run` does the
+    writing) so that a failure on the second can never leave the first
+    written from a run that, as a whole, did not succeed. `--only-existing`
+    (`init --view`) needs the same build-without-writing step, so it lives
+    here once rather than being composed at each of those call sites too.
+    """
+    documents, ok = validate.gated_source(None, stderr)
+    if not ok:
+        return {}, False
+
     try:
-        content = knowledge_view.build(documents, _basis_location(None))
+        knowledge_content = knowledge_view.build(documents, _basis_location(None))
     except verdicts_module.VerdictLogError as error:
         # Same shape `derive` reports: a log this reader cannot parse is a
         # finding naming the file (and line, when the fault is one line's
@@ -38,10 +72,69 @@ def run(only_existing, stdout, stderr):
             line=error.lineno,
         )
         print(finding.render(), file=stderr)
-        return EXIT_ERROR
-    action = write_if_changed(Path(KNOWLEDGE_ARTIFACT), content)
-    print(f"render: {action} {KNOWLEDGE_ARTIFACT}", file=stdout)
-    return EXIT_OK
+        return {}, False
+
+    memory_target = Path(memory_module.DEFAULT_DIR)
+    precondition = _memory_precondition(memory_target)
+    if precondition is not None:
+        print(precondition.render(), file=stderr)
+        return {}, False
+
+    memory_documents, memory_resolution = _memory_source(memory_target)
+    memory_content = memory_view.build(memory_documents, memory_resolution)
+
+    return {
+        KNOWLEDGE_ARTIFACT: knowledge_content,
+        MEMORY_ARTIFACT: memory_content,
+    }, True
+
+
+def _memory_precondition(target):
+    """Check the memory directory and its index exist. Returns a `Finding`, or `None`.
+
+    This is a read precondition, the same one `lint` stops on -- not a
+    validation gate. Everything else about the memory layer (frontmatter,
+    sync with the index, wikilink resolution) is `lint`'s business, not
+    `render`'s: this view does not enforce.
+    """
+    location = target.as_posix()
+    if not target.exists():
+        return Finding(
+            ERROR,
+            location,
+            "target",
+            f"no agent-memory directory found at '{location}'; run "
+            "'validated-memory init'",
+        )
+    index_path = target / memory_module.INDEX_FILENAME
+    if not index_path.exists():
+        return Finding(
+            ERROR,
+            index_path.as_posix(),
+            "index",
+            f"index '{memory_module.INDEX_FILENAME}' not found; run "
+            "'validated-memory init'",
+        )
+    return None
+
+
+def _memory_source(target):
+    """Read the memory documents and build the resolution table for them.
+
+    A document whose frontmatter will not parse is simply absent from
+    `declared` -- the same two-pass shape `lint` uses -- so it can never be a
+    resolution target, while `documents` (the full, unfiltered set) still
+    goes to `memory_view.build` so that document gets an entry of its own.
+    """
+    documents = memory_module.documents(target)
+    declared = {}
+    for document in documents:
+        try:
+            data = parse_frontmatter(document.text)
+        except FrontmatterError:
+            continue
+        declared[document.location] = data.get("name")
+    return documents, memory_module.resolution(documents, declared)
 
 
 def _basis_location(path):
