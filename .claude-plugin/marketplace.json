@@ -1,0 +1,14 @@
+{
+  "name": "validated-memory",
+  "owner": {
+    "name": "Juan C. Vázquez"
+  },
+  "description": "Validated memory for agent projects, published from its own repository.",
+  "plugins": [
+    {
+      "name": "validated-memory",
+      "source": "./",
+      "description": "Curated knowledge with evidence states, supersession without deletion, freshness probes with a ternary verdict, and agent-memory linting."
+    }
+  ]
+}
