@@ -68,8 +68,91 @@ def test_an_error_finding_stops_the_run_and_writes_nothing(
     assert not (adopter_dir / "knowledge.html").exists()
 
 
-URL_BEARING = {"src", "srcset", "data", "poster", "action", "formaction",
-               "cite", "background", "xlink:href", "ping"}
+# The complete set of (element, attribute) pairs either view is allowed to
+# emit anywhere on the page. This is a real whitelist, not a blacklist of
+# attributes known to carry a URL: a blacklist misses a *relative* `href` on
+# anything other than `<a>` (`<base href>`, `<link href>`, `<area href>`),
+# and `<meta http-equiv="refresh" content="...">`, since `content` cannot be
+# blacklisted -- the viewport meta uses it legitimately. Walking the parsed
+# document against this set instead means any element or attribute neither
+# view emits today fails the moment it appears, whatever it is called.
+#
+# `("a", "href")` is the only pair permitted to carry an external URL --
+# checked separately, below, since membership here says nothing about a
+# pair's *value*.
+SELF_CONTAINED_ATTRIBUTES = {
+    ("html", "lang"),
+    ("meta", "charset"),
+    ("meta", "name"),
+    ("meta", "content"),
+    ("section", "class"),
+    ("section", "id"),
+    ("section", "data-unit"),
+    ("section", "data-state"),
+    ("section", "data-name"),
+    ("p", "class"),
+    ("span", "class"),
+    ("code", "class"),
+    ("pre", "class"),
+    ("ul", "class"),
+    ("li", "class"),
+    ("div", "class"),
+    ("a", "href"),
+    ("a", "target"),
+    ("a", "rel"),
+    ("svg", "class"),
+    ("svg", "role"),
+    # `html.parser.HTMLParser` lowercases attribute names, so the source's
+    # `viewBox` is observed here as `viewbox`.
+    ("svg", "viewbox"),
+    ("svg", "width"),
+    ("svg", "height"),
+    ("svg", "aria-label"),
+    ("rect", "x"),
+    ("rect", "y"),
+    ("rect", "width"),
+    ("rect", "height"),
+    ("rect", "fill"),
+    ("text", "x"),
+    ("text", "y"),
+    ("text", "font-size"),
+    ("line", "x1"),
+    ("line", "y1"),
+    ("line", "x2"),
+    ("line", "y2"),
+    ("line", "stroke"),
+    ("line", "stroke-width"),
+}
+
+
+def _assert_self_contained(page, page_elements):
+    """The self-containment scan both pages' tests share.
+
+    A real whitelist over the parsed document, not a blacklist of
+    substrings: every (element, attribute) pair anywhere on the page must be
+    in `SELF_CONTAINED_ATTRIBUTES`, `("a", "href")` is the only pair allowed
+    to carry an external URL, and no `<meta>` is an `http-equiv` refresh.
+    Kept as one helper so `knowledge.html` and `memory.html` cannot drift
+    apart on what "self-contained" means. Returns the parsed elements so a
+    caller can run further checks over the same parse.
+    """
+    elements = page_elements(page)
+    for tag, attrs in elements:
+        if tag == "meta":
+            assert "http-equiv" not in attrs, f"<meta http-equiv> found: {attrs}"
+        for name, value in attrs.items():
+            assert (tag, name) in SELF_CONTAINED_ATTRIBUTES, (
+                f"{tag}[{name}]={value!r} is outside the self-containment whitelist"
+            )
+            if (tag, name) != ("a", "href"):
+                assert "://" not in (value or ""), (
+                    f"{tag}[{name}]={value!r} carries a URL outside the whitelist"
+                )
+        if tag == "a":
+            assert "ping" not in attrs
+            if attrs.get("target") == "_blank":
+                assert attrs.get("rel") == "noopener noreferrer"
+    return elements
 
 
 def test_every_unit_has_a_section_with_its_headline_and_grades(
@@ -136,17 +219,8 @@ def test_only_an_anchor_href_ever_carries_an_external_url(
 
     run_cli("render", cwd=adopter_dir)
     page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
-    elements = page_elements(page)
+    elements = _assert_self_contained(page, page_elements)
 
-    for tag, attrs in elements:
-        for name, value in attrs.items():
-            carries_url = name in URL_BEARING or "://" in (value or "")
-            if carries_url:
-                assert (tag, name) == ("a", "href"), f"{tag}[{name}]={value}"
-        if tag == "a":
-            assert "ping" not in attrs
-            if attrs.get("target") == "_blank":
-                assert attrs.get("rel") == "noopener noreferrer"
     assert any(
         tag == "a" and attrs.get("href") == "https://example.invalid/doc"
         for tag, attrs in elements
@@ -626,17 +700,41 @@ def test_hostile_memory_content_never_becomes_live_markup(
     assert 'a "quoted" &lt;tag&gt;' in page
     assert "user" in page
 
-    elements = page_elements(page)
+    elements = _assert_self_contained(page, page_elements)
     assert not [tag for tag, _ in elements if tag == "script"]
-    for tag, attrs in elements:
-        for name, value in attrs.items():
-            carries_url = name in URL_BEARING or "://" in (value or "")
-            if carries_url:
-                assert (tag, name) == ("a", "href"), f"{tag}[{name}]={value}"
-        if tag == "a":
-            assert "ping" not in attrs
-            if attrs.get("target") == "_blank":
-                assert attrs.get("rel") == "noopener noreferrer"
+
+
+def test_a_null_recorded_at_reads_as_absent_in_the_list_and_the_strip_alike(
+    run_cli, adopter_dir, write_unit, page_elements
+):
+    # `recorded_at` is not a key field and nothing validates it, so an
+    # explicit `null` is a legal record. `html.escape_text` (the history
+    # list) and `html.escape_attribute` (the strip's `aria-label`) must spell
+    # an absent value the same way -- not "" in one place and the literal
+    # word "None" in the other.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Title\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0001", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "current", "recorded_at": None},
+    ])
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    assert "None" not in page
+    strip = next(
+        attrs for tag, attrs in elements
+        if tag == "svg" and attrs.get("class") == "freshness"
+    )
+    assert "None" not in strip["aria-label"]
 
 
 def test_the_freshness_strip_is_drawn_and_ends_at_the_last_record(
@@ -760,9 +858,8 @@ def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
         assert tag not in SVG_FORBIDDEN_ELEMENTS, f"<{tag}> must never appear"
         for name, value in attrs.items():
             assert not name.lower().startswith("on"), f"{tag}[{name}] is an event attribute"
-            assert name not in URL_BEARING, f"{tag}[{name}]={value}"
-            if "://" in (value or ""):
-                assert (tag, name) == ("a", "href"), f"{tag}[{name}]={value}"
+
+    _assert_self_contained(page, page_elements)
 
 
 def test_an_outgoing_href_matches_a_spaced_and_punctuated_name_anchor(

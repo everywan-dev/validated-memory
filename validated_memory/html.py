@@ -29,7 +29,15 @@ def escape_text(value):
 
 
 def escape_attribute(value):
-    """Escape `value` for use inside a double-quoted attribute."""
+    """Escape `value` for use inside a double-quoted attribute. Never returns markup.
+
+    Shares `escape_text`'s `None` handling: an absent value spells the same
+    way, `""`, wherever it is rendered -- a history list built with one and
+    a freshness strip's `aria-label` built with the other must not disagree
+    about what "absent" looks like.
+    """
+    if value is None:
+        return ""
     return _html.escape(str(value), quote=True)
 
 
