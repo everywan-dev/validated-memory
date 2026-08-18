@@ -952,10 +952,14 @@ cannot be reconciled with the histories on the page.
     )
 ```
 
-When a unit carries two anchors with the same `(system, kind)` -- which the
-contract permits and the log cannot tell apart, since `probe` records no
-position or payload -- the history is emitted once and marked as shared by
-those anchors, rather than repeated under each as if it were its own.
+[Superseded by the payload-keyed anchor identity in the final design's
+"History window" section: the anchor key is `(unit, system, kind, payload)`,
+not `(system, kind)` alone, so two anchors that share a `(system, kind)` but
+differ in `payload` -- two refs of the same repository, for instance -- get
+two separate histories, not one merged into the other. Keying on
+`(system, kind)` alone let a drifted anchor's history hide behind a current
+sibling's, order-dependently; that is exactly the failure the payload key
+exists to prevent.]
 
 In `render.run`, read the history once and report a bad log exactly as
 `derive` does:

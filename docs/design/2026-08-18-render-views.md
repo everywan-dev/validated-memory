@@ -1,6 +1,6 @@
 # Design: `render`, HTML views of validated memory
 
-Target version: 1.1.0. Status: approved, not implemented.
+Target version: 1.1.0. Status: implemented.
 
 ## Purpose
 
@@ -56,12 +56,13 @@ One limit of those readers is part of this design rather than hidden by it.
 
 **There is no `gated_source` for the memory layer.** `memory.py` reads; every
 rule lives in private functions of `lint`. The views therefore **do not
-enforce**: `render` gates only on what it must read -- the memory directory
-and its index exist, and a document's frontmatter parses -- and everything
-else stays `lint`'s business. A memory file with no index entry is still
-rendered, an unresolved reference is marked as unresolved, and a document
-whose frontmatter will not parse is rendered with that said in place of its
-fields.
+enforce**: `render` gates only on what it must read to reach the memory
+layer at all -- that the memory directory and its index exist -- and
+everything else, including whether a document's frontmatter parses, stays
+`lint`'s business. A memory file with no index entry is still rendered, an
+unresolved reference is marked as unresolved, and a document whose
+frontmatter will not parse is rendered with that said in place of its
+fields, never gated.
 
 That makes the memory view the one place where **a frontmatter value can be
 any JSON type at all**, because nothing validated it first: a `description`
@@ -233,6 +234,13 @@ body, falling back to the `id`.
 documented rule is not rendering the body; taking "and the first paragraph
 too" would be, and would reintroduce exactly what the scope section rejects.
 The rule is to be stated in the code at the point where it is implemented.
+
+"First" is by line position in the raw text, not by Markdown structure: the
+rule has no notion of a fenced code block, so a `#` line inside one, ahead of
+the real heading, becomes the headline. This is a known consequence of
+stating the rule this way, not a bug -- telling a fenced `#` apart from a
+real heading means parsing the body's structure, which a verbatim block does
+not do.
 
 ## `memory.html`
 
@@ -470,10 +478,12 @@ logs, with the same line numbers.
   untouched**. Identical bytes alone would pass an implementation that
   rewrites the same content and prints `unchanged`, which is the thing this
   rule exists to forbid.
-- A supersession cycle renders every unit involved, under the section for
-  units no live conclusion reaches, and warns without gating.
-- A unit with two anchors on the same `(system, kind)` shows one history,
-  marked as shared.
+- A supersession cycle is a `validate` ERROR: the run stops and writes
+  nothing, same as any other ERROR-level contract finding (see "Why there is
+  no 'unreachable units' section").
+- A unit with two anchors sharing `(system, kind)` but different `payload`
+  shows two separate histories, not one merged into the other (see "History
+  window").
 - A `provenance` entry with a `javascript:` scheme is rendered as text, never
   as a link.
 - An ERROR-level contract finding stops the run and writes nothing.

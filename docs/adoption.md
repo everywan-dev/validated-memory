@@ -29,7 +29,7 @@ touched.
 
 If the harness needs to read agent memory from a fixed location outside this
 project (see [Agent memory](../README.md#agent-memory)), also pass
-`--harness-memory PATH`; see [the startup hook](#the-startup-hook) below for
+`--harness-memory PATH`; see [the startup hooks](#the-startup-hooks) below for
 how this stays in sync automatically after the first run.
 
 If the harness has already been writing agent memory of its own for this
@@ -116,9 +116,9 @@ running `init --view` again brings it back. Like `knowledge-index.md` and
 files, and this project decides whether to version them.
 
 Once activated, a view stays current on its own -- see
-["The startup hook"](#the-startup-hook) below for how.
+["The startup hooks"](#the-startup-hooks) below for how.
 
-## The startup hook
+## The startup hooks
 
 Two `SessionStart` hooks run on every session start, wired in
 `hooks/hooks.json`.

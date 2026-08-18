@@ -21,7 +21,7 @@ scaffolds a new adopter project and, with `--view`, activates the pages
 `render` writes. Five skills make the method invocable from the CLI surface
 alone, and two `SessionStart` hooks keep a `--harness-memory` symlink alive
 and refresh whichever views are active, across sessions -- see "Skills" and
-"Startup hook" below.
+"Startup hooks" below.
 
 ## Layers
 
@@ -102,7 +102,7 @@ inside the adopter repo:
 Computing PATH from the harness's own layout and calling `init
 --harness-memory PATH` automatically on every session start is the plugin's
 startup hook (`hooks/restore-memory-symlink.sh`, wired as `SessionStart` in
-`hooks/hooks.json` -- see "Startup hook" below), and is **not** part of
+`hooks/hooks.json` -- see "Startup hooks" below), and is **not** part of
 `init` itself. `init` only guarantees the hook can call it repeatedly, from
 any project state, without ever losing data.
 
@@ -485,7 +485,7 @@ into a link: the body is verbatim, and linkifying it would be rendering it.
 
 **`--only-existing`** regenerates only the artifacts already on disk and
 creates neither -- it is what the startup hook below invokes, and it is
-what makes activation and deactivation (see "Startup hook") mean anything.
+what makes activation and deactivation (see "Startup hooks") mean anything.
 It is also fail-open: an invalid corpus, an unreadable verdict log, or a
 missing memory directory or index is a WARNING and exit 0, leaving whatever
 is already on disk exactly as it was, rather than an ERROR that a hook
@@ -781,7 +781,7 @@ reproducible run through every layer -- `init` → create a unit → `validate`
 → `derive` → `probe` → supersede → `derive` again -- see
 `docs/walkthrough.md`.
 
-## Startup hook
+## Startup hooks
 
 Two `SessionStart` hooks run, in that order, from `hooks/hooks.json`: one
 restores the `--harness-memory` symlink, the other refreshes whichever HTML
@@ -818,7 +818,7 @@ project and parks the original as a `.bak`. That merge is deliberately part
 of `init` rather than a flag the hook passes, so it happens once, by itself,
 on the deployment path -- gated by the recognition rule, which is what keeps
 it from touching anything that is not agent memory. See `docs/adoption.md`
-("The startup hook") for the adopter-facing summary.
+("The startup hooks") for the adopter-facing summary.
 
 **Activating and refreshing the HTML views.** Activation of `knowledge.html`
 and `memory.html` is the presence of the artifact, not a configuration key:
@@ -848,8 +848,9 @@ fresh by running `render --only-existing` (see "render" above): it
 regenerates only the artifacts already on disk and creates none, so an
 adopter who never activated the views pays nothing at session start. It is
 fail-open on every path it can fail on -- an invalid corpus, an unreadable
-verdict log, a missing memory directory or index -- and always exits 0, the
-same discipline the first hook follows.
+verdict log, a missing memory directory or index, or a write that fails at
+the OS level (permissions, a full disk) -- and always exits 0, the same
+discipline the first hook follows.
 
 Neither `knowledge.html` nor `memory.html` is added to `.gitignore`: like
 `knowledge-index.md` and `verdicts.jsonl`, they are derived files, and this
