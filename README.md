@@ -543,6 +543,25 @@ since nothing records what the id was before. Reuse of an id across time is
 caught by supersession, not by the validator: correct a unit by writing a new
 one that supersedes it, never by editing its id.
 
+**A supersession chain has to end.** Supersession retires a fact by naming
+what replaces it, so a chain that closes on itself -- `kb-0001` superseding
+`kb-0002` while `kb-0002` supersedes `kb-0001`, at any length -- leaves every
+unit in it superseded and none live. An ERROR, not a note, because the
+consequence is silent: the whole group drops out of the index's active view
+**and `probe` stops probing it**, since only active units are probed. Nothing
+was deleted, yet the knowledge stops being checked, which is the failure this
+contract exists to prevent. There is no migration case to protect -- a cycle
+is never intentional and never correct.
+
+```
+ERROR: knowledge/kb-0001.md: supersedes: supersession cycle: kb-0001 ->
+kb-0002 -> kb-0001; every unit in it is superseded, so none is live and none
+is probed
+```
+
+A unit superseding itself is a cycle of one and has its own rule; it is not
+also reported here.
+
 ## Adopter configuration
 
 The adopter's configuration is a file named `validated-memory.md`, read from
