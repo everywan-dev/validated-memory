@@ -36,9 +36,11 @@ TITLE = "Agent memory"
 # name can never be a resolution target (`memory.resolution` excludes it
 # from `by_name`), so nothing a reference resolves to ever names the
 # fallback -- but the entry still needs an anchor of its own to sit at on
-# the page. `anchor` is that DOM id (see `_anchor`): it and `identity` can
-# differ, which is exactly what keeps a document with no declared name from
-# ever landing on the same id as one that declares that name for real.
+# the page. `anchor` is that DOM id (see `_anchor`): for a declared entry it
+# is built from `identity` (the name); for one with no declared name it is
+# built from `document.relpath`, not from `identity` (the filename) --
+# `identity` can repeat across subdirectories where `relpath` cannot, so the
+# anchor and `identity` deliberately part ways there too.
 #
 # `error` is set when the frontmatter would not parse; then `data`, `body`,
 # `targets` and `marker` are never populated, because deriving them needs the
@@ -50,22 +52,38 @@ _Record = namedtuple(
 )
 
 
-def _anchor(identity, declared):
+def _anchor(value, declared):
     """The DOM id an entry sits at.
 
-    A declared name is `resolution.by_name`'s namespace: every link built
-    from a resolved wikilink target lands on `entry-<name>`. An entry with
-    no declared name falls back to its filename for `identity` elsewhere on
-    the page, but the filename is not that namespace -- nothing a wikilink
-    resolves to is ever a bare filename -- so it anchors as
-    `entry-file-<filename>` instead. The two schemes can never collide with
-    each other, which `entry-<identity>` for both could: a document with no
-    declared name can have any filename, including one that some other
-    document has declared as its own `name`.
+    Disjoint by construction, not by hoping the two inputs differ: a
+    declared name anchors as `entry-name-<name>`, an entry with no declared
+    name anchors as `entry-path-<relpath>`, and `name-` and `path-` are
+    fixed tokens that differ at the first character right after the shared
+    `entry-` prefix. No string either scheme can produce is ever a string
+    the other can produce, whatever `value` holds. That is what
+    `entry-<value>` for both, with a `file-` prefix folded into `value` on
+    the fallback side, did not guarantee: `_anchor('alpha', False)` (no
+    declared name, filename `alpha`) and `_anchor('file-alpha', True)`
+    (declared `name: file-alpha`) both landed on `entry-file-alpha`,
+    because the discriminator lived inside the same string space it was
+    supposed to keep separate.
+
+    Each namespace still has to be injective on its own inputs for the
+    anchor to be unique, and the two rely on different facts to get there.
+    A declared name is `resolution.by_name`'s namespace: `lint` makes a
+    duplicate declared name an ERROR and `memory.resolution` only ever
+    admits an unambiguous one into `by_name`, so keying on the name is safe
+    for the names a link can actually target. A filename is not unique the
+    same way -- two memories in different subdirectories may share one, and
+    `lint` reports that as its own finding -- so the no-declared-name scheme
+    is keyed on `relpath` instead: the document's path relative to the
+    memory directory (`memory.documents` builds it as
+    `candidate.relative_to(target)`), which is unique by construction
+    across every document `memory` reads, unlike the bare filename.
     """
     if declared:
-        return f"entry-{identity}"
-    return f"entry-file-{identity}"
+        return f"entry-name-{value}"
+    return f"entry-path-{value}"
 
 
 def build(documents, basis, resolution):
@@ -110,14 +128,22 @@ def _read(document):
         data = parse_frontmatter(document.text)
     except FrontmatterError as error:
         return _Record(
-            document, filename, filename, False, _anchor(filename, False),
+            document, filename, filename, False, _anchor(document.relpath, False),
             None, None, [], None, error,
         )
 
     name = data.get("name")
     declared = memory_module.is_declared(name)
     identity = name if declared else filename
-    anchor = _anchor(identity, declared)
+    # The anchor is keyed on `identity` (the name) when declared, but on
+    # `document.relpath` -- not `identity` -- when it falls back: `identity`
+    # is the filename there, and a filename is not unique across
+    # subdirectories the way `relpath` is (see `_anchor`).
+    anchor = (
+        _anchor(identity, declared)
+        if declared
+        else _anchor(document.relpath, declared)
+    )
     body = memory_module.body(document.text)
     description = data.get("description")
     marker = memory_module.supersession(description)

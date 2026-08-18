@@ -600,7 +600,7 @@ def test_the_memory_page_lists_entries_with_their_references(
 
     assert result.returncode == 0, result.stderr
     assert [attrs["data-name"] for attrs in entries] == ["coffee", "tea"]
-    assert '<a href="#entry-tea">' in page
+    assert '<a href="#entry-name-tea">' in page
     assert "render: wrote memory.html" in result.stdout
 
 
@@ -643,10 +643,12 @@ def test_an_undeclared_name_falling_back_to_the_filename_does_not_collide_with_a
     # `alpha.md` declares no `name`, so its identity falls back to its
     # filename, "alpha". `other.md` declares `name: alpha` -- a real
     # declared name, just not `alpha.md`'s own (a `lint` ERROR the memory
-    # view does not gate on, since it does not enforce). Before the fix both
-    # entries anchor at id="entry-alpha": a `[[alpha]]` reference resolves
-    # through `by_name` to `other.md`, but the href built from the same
-    # collided id lands the reader on `alpha.md` instead.
+    # view does not gate on, since it does not enforce). Before the first
+    # fix both entries anchored at id="entry-alpha": a `[[alpha]]` reference
+    # resolves through `by_name` to `other.md`, but the href built from the
+    # same collided id would have landed the reader on `alpha.md` instead.
+    # The two now anchor in disjoint namespaces (`entry-path-<relpath>` vs.
+    # `entry-name-<name>`), so this stays collision-free by construction.
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory("alpha.md", "description: no name here\nmetadata:\n  type: user\n")
     write_memory(
@@ -674,15 +676,129 @@ def test_an_undeclared_name_falling_back_to_the_filename_does_not_collide_with_a
         if tag == "section" and attrs.get("class") == "entry"
     ]
     assert len(section_ids) == len(set(section_ids)), f"duplicate ids: {section_ids}"
-    assert "entry-file-alpha" in section_ids
-    assert "entry-alpha" in section_ids
+    assert "entry-path-alpha.md" in section_ids
+    assert "entry-name-alpha" in section_ids
 
     outgoing_hrefs = [
         attrs["href"] for tag, attrs in elements
         if tag == "a" and attrs.get("href", "").startswith("#entry")
     ]
-    assert "#entry-alpha" in outgoing_hrefs
-    assert "#entry-file-alpha" not in outgoing_hrefs
+    assert "#entry-name-alpha" in outgoing_hrefs
+    assert "#entry-path-alpha.md" not in outgoing_hrefs
+
+
+def test_the_fallback_and_declared_schemes_do_not_collide_through_the_file_token(
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
+):
+    # The residual collision the first fix left standing: `alpha.md`
+    # declares no `name`, so under the old scheme it fell back to
+    # `entry-file-<filename>` = "entry-file-alpha". `other.md` declares
+    # `name: file-alpha` for real -- a legal, if unusual, name -- which
+    # under the old scheme anchored at `entry-<name>` = "entry-file-alpha"
+    # too: the discriminator token lived inside the same string space the
+    # two schemes shared, so a declared name starting with "file-" could
+    # walk straight into the fallback scheme's territory. The fixed scheme
+    # puts the token before either payload (`entry-name-` / `entry-path-`),
+    # so no declared name can ever reach into the fallback namespace or
+    # back.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory("alpha.md", "description: no name here\nmetadata:\n  type: user\n")
+    write_memory(
+        "other.md",
+        "name: file-alpha\ndescription: shares the old fallback token\n"
+        "metadata:\n  type: user\n",
+    )
+    write_index(
+        "- [Alpha](alpha.md) — no name here\n"
+        "- [Other](other.md) — shares the old fallback token\n"
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    section_ids = [
+        attrs["id"] for tag, attrs in elements
+        if tag == "section" and attrs.get("class") == "entry"
+    ]
+    assert len(section_ids) == len(set(section_ids)), f"duplicate ids: {section_ids}"
+
+
+def test_two_undeclared_entries_sharing_a_filename_in_different_subdirectories_get_distinct_anchors(
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
+):
+    # `memory.documents` collects files recursively (`target.rglob('*.md')`),
+    # so two memories can share a bare filename as long as they sit in
+    # different subdirectories -- `lint` reports that as its own collision,
+    # but this view does not enforce and renders both anyway. Neither
+    # declares a `name`, so both fall back; keying the fallback anchor on
+    # the filename ("dup") would collide even after the file/name-token fix
+    # above, because the filename alone does not tell the two apart. Keying
+    # on `relpath` does, since `relpath` includes the subdirectory.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory("first/dup.md", "description: first copy\nmetadata:\n  type: user\n")
+    write_memory("second/dup.md", "description: second copy\nmetadata:\n  type: user\n")
+    write_index(
+        "- [Dup one](first/dup.md) — first copy\n"
+        "- [Dup two](second/dup.md) — second copy\n"
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    dup_ids = [
+        attrs["id"] for tag, attrs in elements
+        if tag == "section" and attrs.get("class") == "entry"
+        and attrs.get("data-name") == "dup"
+    ]
+    assert len(dup_ids) == 2, f"expected both undeclared 'dup' entries, got {dup_ids}"
+    assert dup_ids[0] != dup_ids[1], f"duplicate anchor for both copies: {dup_ids}"
+    assert set(dup_ids) == {"entry-path-first/dup.md", "entry-path-second/dup.md"}
+
+
+def test_an_outgoing_href_to_a_declared_name_matches_that_sections_id_exactly(
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
+):
+    # A sanity check that the rename did not break navigation: a link from
+    # one entry to another still lands on the linked entry's own anchor,
+    # byte for byte, under the new `entry-name-<name>` spelling.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory(
+        "target.md",
+        "name: target-name\ndescription: the link target\nmetadata:\n  type: user\n",
+    )
+    write_memory(
+        "source.md",
+        "name: source-name\ndescription: links out\nmetadata:\n  type: user\n",
+        "See [[target-name]].\n",
+    )
+    write_index(
+        "- [Target](target.md) — the link target\n"
+        "- [Source](source.md) — links out\n"
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    target_ids = [
+        attrs["id"] for tag, attrs in elements
+        if tag == "section" and attrs.get("class") == "entry"
+        and attrs.get("data-name") == "target-name"
+    ]
+    assert len(target_ids) == 1
+    target_id = target_ids[0]
+    assert target_id == "entry-name-target-name"
+
+    outgoing_hrefs = [
+        attrs["href"] for tag, attrs in elements
+        if tag == "a" and attrs.get("href", "").startswith("#entry")
+    ]
+    assert f"#{target_id}" in outgoing_hrefs
 
 
 def test_an_unresolved_reference_is_not_linked_from_the_incoming_side_either(
@@ -723,7 +839,7 @@ def test_an_unresolved_reference_is_not_linked_from_the_incoming_side_either(
     # side marked unresolved as if it had resolved.
     assert not [
         attrs for tag, attrs in elements
-        if tag == "a" and attrs.get("href") == "#entry-other"
+        if tag == "a" and attrs.get("href") == "#entry-name-other"
     ]
 
 
@@ -992,7 +1108,7 @@ def test_an_outgoing_href_matches_a_spaced_and_punctuated_name_anchor(
 ):
     # Unlike a curated unit's `id`, nothing constrains a memory's `name`: a
     # real corpus (ADR 0001) has names shaped like titles, with spaces, dots,
-    # capitals and parentheses. The anchor (`id="entry-<name>"`) and a
+    # capitals and parentheses. The anchor (`id="entry-name-<name>"`) and a
     # resolved wikilink's `href` are built by the same escaping call on the
     # same string, so they should agree byte for byte -- verified here
     # rather than assumed.
