@@ -1,5 +1,5 @@
 {
   "name": "validated-memory",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Validated memory for agent projects: curated knowledge with evidence states, supersession without deletion, freshness probes with a ternary verdict, and agent-memory linting."
 }
