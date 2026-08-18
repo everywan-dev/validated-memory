@@ -4,8 +4,9 @@ Each `probe` run appends one JSON line per anchor probed to `verdicts.jsonl`
 in the working directory -- never under `knowledge/`, for the same reason
 `knowledge-index.md` lives outside it (see `derive`). History is never
 rewritten: the log only grows. The service view a reader wants is the latest
-record per `(unit, system, kind)`, computed here rather than stored, since
-storing it would mean rewriting the log on every probe.
+record per anchor -- an anchor being what its `(system, kind, payload)` names,
+see `anchor_key` -- computed here rather than stored, since storing it would
+mean rewriting the log on every probe.
 """
 
 import json
@@ -55,9 +56,12 @@ def append(records, root=Path()):
 
 KEY_FIELDS = ("unit", "system", "kind")
 
-# The key a record written before payloads were recorded lands under. It is a
-# key of its own, never merged with a real anchor's here: which anchor such a
-# record belongs to is not knowable from the log alone.
+# The key a record written before payloads were recorded lands under. Such a
+# record is never read by an anchor: the log cannot say which anchor it was
+# about, nor what that anchor pointed at when it was written. Attributing it
+# would risk reporting `current` for something that has since drifted, which
+# is the failure the payload was added to prevent. It is kept, because the log
+# is history and history is not rewritten, and it is ignored.
 NO_PAYLOAD = None
 
 
@@ -135,8 +139,11 @@ def _keyed(lineno, record):
     for field, value in zip(KEY_FIELDS, fields):
         if not isinstance(value, str):
             raise VerdictLogError(lineno, f"the '{field}' field is not a string")
+    # Presence, not value: only an absent field means "written before
+    # payloads were recorded". An explicit `null` is a malformed record, and
+    # letting it pass would file it under the same key as an absent one.
     payload = record.get("payload")
-    if payload is not None and not isinstance(payload, dict):
+    if "payload" in record and not isinstance(payload, dict):
         raise VerdictLogError(lineno, "the 'payload' field is not a mapping")
     if verdict not in VERDICTS:
         raise VerdictLogError(

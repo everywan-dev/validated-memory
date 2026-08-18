@@ -238,8 +238,8 @@ Basis: 2 unit(s) under knowledge/
   `supersedes` (many-to-one), sorted and comma-separated.
 - **verdict** reads the service view of `verdicts.jsonl` (the log `probe`
   writes -- see the `probe` section below): for each of the unit's anchors,
-  the latest verdict of its `(system, kind)`, or `unknown` when the anchor was
-  never probed -- fail-explicit. A unit is graded by the worst of its
+  the latest verdict recorded for that anchor, or `unknown` when it was never
+  probed -- fail-explicit. A unit is graded by the worst of its
   anchors' verdicts (`drifted` > `unknown` > `current`):
   - no anchors: `unknown`, on its own.
   - the worst verdict is `unknown`: `unknown (<systems>)`, naming every
@@ -336,12 +336,21 @@ whose anchor had drifted, with the winner decided by the order the anchors
 happened to be written in. A false "still true" is the one answer this tool
 must never give.
 
-A record written before payloads were recorded carries none, and the log
-alone cannot say which anchor it belonged to. Such a record is kept in a key
-of its own and read by an anchor **only where that unit carries its
-`(system, kind)` exactly once** -- there the record can only be that anchor's,
-which is a fact, not a guess. Where the pair repeats, every anchor of it reads
-`unknown` until the next probe, fail-explicit.
+A record written before payloads were recorded carries none, and **is never
+attributed to an anchor**. It is not only that the log cannot say which anchor
+it was about; it cannot say what that anchor pointed at when it was written,
+and an anchor can be re-captured. A single-anchor unit is no exception: its
+`payload` may have changed since, so reading the old record would again be
+reporting `current` for something that has drifted. The record stays in the
+log, because history is not rewritten, and it is ignored: the anchor reads
+`unknown` until it is probed again, which repairs itself on the next `probe`.
+
+The payload in a record is compared against the anchor's exactly as the
+frontmatter parser produced it, and that parser infers no types -- every
+scalar is a string (see "Frontmatter subset"). A record hand-edited to carry
+`true` or `3` where the anchor says `"true"` or `"3"` names a different
+payload, so it is a different anchor. That is deliberate: coercing them would
+be inferring a type, which nothing else here does.
 
 The **service view** a reader wants -- and the one `derive` reads for its
 verdict column -- is the latest record per anchor; re-probing

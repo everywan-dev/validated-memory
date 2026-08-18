@@ -134,12 +134,19 @@ def unit_verdict(unit_id, anchors, view):
     """
     if not anchors:
         return UnitVerdict(verdicts_module.UNKNOWN, (), ())
-    repeated = _repeated_pairs(anchors)
     per_anchor = tuple(
         AnchorVerdict(
             anchor.get("system"),
             anchor.get("kind"),
-            _anchor_verdict(unit_id, anchor, view, repeated),
+            view.get(
+                verdicts_module.anchor_key(
+                    unit_id,
+                    anchor.get("system"),
+                    anchor.get("kind"),
+                    anchor.get("payload"),
+                ),
+                verdicts_module.UNKNOWN,
+            ),
         )
         for anchor in anchors
     )
@@ -154,38 +161,6 @@ def unit_verdict(unit_id, anchors, view):
         )
     )
     return UnitVerdict(verdict, unknown_systems, per_anchor)
-
-
-def _repeated_pairs(anchors):
-    """The `(system, kind)` pairs this unit carries more than once."""
-    counts = {}
-    for anchor in anchors:
-        pair = (anchor.get("system"), anchor.get("kind"))
-        counts[pair] = counts.get(pair, 0) + 1
-    return {pair for pair, count in counts.items() if count > 1}
-
-
-def _anchor_verdict(unit_id, anchor, view, repeated):
-    """One anchor's latest verdict, or `unknown` when it has none.
-
-    A log written before payloads were recorded has no way of saying which
-    anchor a record belongs to. Where the unit carries its `(system, kind)`
-    exactly once, that is not a question -- the record can only be this
-    anchor's -- so the old verdict still counts. Where the pair repeats, it
-    could be either, and attaching it to one of them is the very guess that
-    let a drift disappear: both read `unknown` instead, fail-explicit.
-    """
-    system, kind = anchor.get("system"), anchor.get("kind")
-    verdict = view.get(
-        verdicts_module.anchor_key(unit_id, system, kind, anchor.get("payload"))
-    )
-    if verdict is None and (system, kind) not in repeated:
-        verdict = view.get(
-            verdicts_module.anchor_key(
-                unit_id, system, kind, verdicts_module.NO_PAYLOAD
-            )
-        )
-    return verdicts_module.UNKNOWN if verdict is None else verdict
 
 
 def _verdict_cell(unit_id, anchors, view):

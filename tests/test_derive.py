@@ -442,34 +442,17 @@ anchors:
 """
 
 
-def test_a_record_written_before_payloads_still_reads_when_it_is_unambiguous(
+def test_a_record_written_before_payloads_is_never_attributed_to_an_anchor(
     adopter_dir, write_unit, run_cli
 ):
-    # A log written by an earlier version carries no payload. Where the unit
-    # has exactly one anchor of that `(system, kind)`, which anchor the record
-    # belongs to is determined, not guessed, so its verdict still counts.
+    # A log written by an earlier version carries no payload, so it cannot say
+    # what was probed -- not even for a unit with a single anchor, because the
+    # anchor may have been re-captured since and now point somewhere else.
+    # Attributing it would risk reporting `current` for something that has
+    # drifted, which is the failure the payload was added to prevent. The
+    # record is kept in the log and ignored; the anchor reads `unknown` until
+    # it is probed again.
     write_unit("kb-0001.md", ONE_ANCHOR_UNIT)
-    (adopter_dir / "verdicts.jsonl").write_text(
-        '{"recorded_at": "2026-08-01T00:00:00Z", "unit": "kb-0001", '
-        '"system": "repo-a", "kind": "git_ref", "verdict": "drifted", '
-        '"detail": null}\n',
-        encoding="utf-8",
-    )
-
-    result = run_cli("derive", cwd=adopter_dir)
-
-    assert result.returncode == 0, result.stderr
-    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
-    assert "| kb-0001 | active | measured | drifted |" in index
-
-
-def test_a_record_written_before_payloads_is_not_guessed_when_it_is_ambiguous(
-    adopter_dir, write_unit, run_cli
-):
-    # Two anchors share the `(system, kind)`, so the old record could belong
-    # to either. Attaching it to one of them is exactly the guess that made
-    # the drift vanish in the first place: both read `unknown` instead.
-    write_unit("kb-0001.md", TWO_REFS_UNIT)
     (adopter_dir / "verdicts.jsonl").write_text(
         '{"recorded_at": "2026-08-01T00:00:00Z", "unit": "kb-0001", '
         '"system": "repo-a", "kind": "git_ref", "verdict": "current", '
@@ -482,6 +465,79 @@ def test_a_record_written_before_payloads_is_not_guessed_when_it_is_ambiguous(
     assert result.returncode == 0, result.stderr
     index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
     assert "| kb-0001 | active | measured | unknown (repo-a) |" in index
+
+
+def test_a_record_whose_payload_is_null_is_rejected_not_read_as_absent(
+    adopter_dir, write_unit, run_cli
+):
+    # Presence, not value: an explicit `null` is a malformed record. Reading
+    # it as "written before payloads" would file it under the key reserved for
+    # records that genuinely predate them.
+    write_unit("kb-0001.md", ONE_ANCHOR_UNIT)
+    (adopter_dir / "verdicts.jsonl").write_text(
+        '{"recorded_at": "2026-08-01T00:00:00Z", "unit": "kb-0001", '
+        '"system": "repo-a", "kind": "git_ref", "payload": null, '
+        '"verdict": "current", "detail": null}\n',
+        encoding="utf-8",
+    )
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "verdicts.jsonl:1:" in result.stderr
+    assert "'payload' field is not a mapping" in result.stderr
+
+
+
+def test_a_record_with_a_payload_supersedes_one_written_without(
+    adopter_dir, write_unit, run_cli
+):
+    # The anchor reads its own record and ignores the one that cannot say what
+    # it measured -- whichever order the two were written in.
+    write_unit("kb-0001.md", ONE_ANCHOR_UNIT)
+    (adopter_dir / "verdicts.jsonl").write_text(
+        '{"recorded_at": "2026-08-01T00:00:00Z", "unit": "kb-0001", '
+        '"system": "repo-a", "kind": "git_ref", "verdict": "current", '
+        '"detail": null}\n'
+        '{"recorded_at": "2026-08-02T00:00:00Z", "unit": "kb-0001", '
+        '"system": "repo-a", "kind": "git_ref", "payload": {"ref": "main"}, '
+        '"verdict": "drifted", "detail": null}\n',
+        encoding="utf-8",
+    )
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
+    assert "| kb-0001 | active | measured | drifted |" in index
+
+
+def test_a_payload_matches_whatever_order_its_keys_were_written_in(
+    adopter_dir, write_unit, run_cli
+):
+    # The anchor writes `ref` then `repo`; the record writes `repo` then `ref`.
+    # They are the same payload, so they are the same anchor: the key is
+    # canonical, not textual.
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo-a\n    kind: git_ref\n"
+        "    captured_at: 2026-08-01T00:00:00Z\n"
+        "    payload:\n      ref: main\n      repo: '.'\n",
+    )
+    (adopter_dir / "verdicts.jsonl").write_text(
+        '{"recorded_at": "2026-08-02T00:00:00Z", "unit": "kb-0001", '
+        '"system": "repo-a", "kind": "git_ref", '
+        '"payload": {"repo": ".", "ref": "main"}, '
+        '"verdict": "drifted", "detail": null}\n',
+        encoding="utf-8",
+    )
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
+    assert "| kb-0001 | active | measured | drifted |" in index
 
 
 
