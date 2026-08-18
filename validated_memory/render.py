@@ -41,11 +41,22 @@ def write_if_changed(path, content):
     The write is atomic -- a temporary file in the same directory, then a
     rename -- so a failure can never leave a half-written page for a reader
     to open, and an unchanged artifact is not touched at all, which is what
-    keeps the startup hook from dirtying `git status` on every session.
+    keeps the startup hook from dirtying `git status` on every session. The
+    temporary file's name includes this process's pid: the startup hook runs
+    `render --only-existing` on every session, and this environment routinely
+    has several sessions working the same repository at once, so a fixed
+    temp name would let two concurrent runs interleave writes to it before
+    either reaches its rename -- the very half-written page the atomic
+    rename exists to prevent. On any failure the temporary file is removed
+    rather than left behind.
     """
     if path.exists() and path.read_text(encoding="utf-8") == content:
         return "unchanged"
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(content, encoding="utf-8")
-    os.replace(temporary, path)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     return "wrote"
