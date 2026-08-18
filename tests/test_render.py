@@ -232,3 +232,48 @@ def test_a_verdict_log_that_is_not_utf8_is_reported_without_a_line_number(
     assert not re.search(r"verdicts\.jsonl:\d", result.stderr)
     assert "ERROR" in result.stderr
     assert not (adopter_dir / "knowledge.html").exists()
+
+
+def test_a_superseded_unit_appears_only_inside_its_successor(
+    run_cli, adopter_dir, write_unit, page_elements
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: hypothesis\n", "# Old\n")
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: measured\nsupersedes:\n  - kb-0001\n",
+        "# New\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    sections = [
+        attrs for tag, attrs in page_elements(page)
+        if tag == "section" and attrs.get("class") in {"unit", "unit superseded"}
+    ]
+
+    top = [a for a in sections if a.get("class") == "unit"]
+    assert [a["data-unit"] for a in top] == ["kb-0002"]
+    assert any(
+        a["data-unit"] == "kb-0001" and a["data-state"] == "superseded by kb-0002"
+        for a in sections
+    )
+
+
+def test_a_unit_superseded_twice_is_rendered_once_and_referenced_after(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: hypothesis\n", "# Old\n")
+    for new in ("kb-0002", "kb-0003"):
+        write_unit(
+            f"{new}.md",
+            f"id: {new}\nevidence: measured\nsupersedes:\n  - kb-0001\n",
+            f"# {new}\n",
+        )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert page.count('data-unit="kb-0001"') == 1
+    assert '<a href="#unit-kb-0001">' in page

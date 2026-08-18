@@ -34,19 +34,80 @@ def build(documents, basis):
         f'<p class="basis">Basis: {len(documents)} unit(s) under '
         f"{html.escape_text(basis)}</p>"
     )
+    rendered = set()
     for unit_id in sorted(states):
         data, state = states[unit_id]
         if state != "active":
             continue
-        parts.append(_unit_section(unit_id, data, state, bodies, view))
+        parts.append(_unit_section(unit_id, data, state, states, bodies, view, rendered))
     return html.page(TITLE, "\n".join(parts))
 
 
-def _unit_section(unit_id, data, state, bodies, view):
+def _unit_section(unit_id, data, state, states, bodies, view, rendered, top=True):
+    """Render this unit's section, with its supersession chain nested inside.
+
+    A chain's length is set by whoever writes `supersedes` and nothing in
+    the contract bounds it, so this walks with an explicit stack rather than
+    recursing -- a deep chain must not turn into a `RecursionError`. Two
+    units may supersede the same one, so a unit already rendered elsewhere
+    on the page is referenced by anchor (`<a href="#unit-...">`) instead of
+    rendered again; that repeat rule is also what stops the walk from
+    re-entering a shared ancestor. `render` validates before it renders, so
+    `validate`'s rejection of a supersession cycle already guarantees this
+    walk is over a DAG -- there is no separate cycle guard here.
+    """
+    if unit_id in rendered:
+        return _repeat_reference(unit_id)
+
+    rendered.add(unit_id)
+    root = _new_frame(unit_id, data, state, top)
+    stack = [root]
+    while True:
+        frame = stack[-1]
+        if frame["index"] < len(frame["children"]):
+            target = frame["children"][frame["index"]]
+            frame["index"] += 1
+            if target not in states:
+                continue
+            if target in rendered:
+                frame["pieces"].append(_repeat_reference(target))
+                continue
+            rendered.add(target)
+            target_data, target_state = states[target]
+            stack.append(_new_frame(target, target_data, target_state, False))
+            continue
+
+        stack.pop()
+        section = _render_section(frame, bodies, view)
+        if not stack:
+            return section
+        stack[-1]["pieces"].append(section)
+
+
+def _new_frame(unit_id, data, state, top):
+    return {
+        "unit_id": unit_id,
+        "data": data,
+        "state": state,
+        "top": top,
+        "children": sorted(data.get("supersedes") or []),
+        "index": 0,
+        "pieces": [],
+    }
+
+
+def _render_section(frame, bodies, view):
+    unit_id = frame["unit_id"]
+    data = frame["data"]
+    state = frame["state"]
     graded = derive.unit_verdict(unit_id, data.get("anchors") or [], view)
     body_text = bodies.get(unit_id, "")
+    chain = "".join(frame["pieces"])
+    if chain:
+        chain = f'<div class="chain">\n{chain}\n</div>\n'
+    css_class = "unit" if frame["top"] else "unit superseded"
     return (
-        f'<section class="unit" id="unit-{html.escape_attribute(unit_id)}"'
+        f'<section class="{css_class}" id="unit-{html.escape_attribute(unit_id)}"'
         f' data-unit="{html.escape_attribute(unit_id)}"'
         f' data-state="{html.escape_attribute(state)}">\n'
         "<details>\n<summary>"
@@ -58,7 +119,16 @@ def _unit_section(unit_id, data, state, bodies, view):
         f'<pre class="body">{html.escape_text(body_text)}</pre>\n'
         f"{_anchors(data.get('anchors') or [])}"
         f"{_provenance(data.get('provenance') or [])}"
+        f"{chain}"
         "</details>\n</section>"
+    )
+
+
+def _repeat_reference(unit_id):
+    return (
+        f'<p class="repeat">Already shown above: '
+        f'<a href="#unit-{html.escape_attribute(unit_id)}">'
+        f"{html.escape_text(unit_id)}</a></p>"
     )
 
 
