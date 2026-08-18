@@ -160,3 +160,34 @@ def test_a_hostile_provenance_scheme_is_text_and_never_a_link(
         attrs for tag, attrs in page_elements(page)
         if tag == "a" and attrs.get("href", "").startswith("javascript:")
     ]
+
+
+def test_a_hostile_anchor_payload_is_text_and_never_live_markup(
+    run_cli, adopter_dir, write_unit, page_elements
+):
+    # `payload` is a mapping the contract checks is present as one and never
+    # looks inside: the probe interprets its contents, not the contract. So
+    # arbitrary structure -- here, markup nested two levels deep -- reaches
+    # the page from inside the otherwise-validated layer.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: gitlab\n"
+        "    kind: file-hash\n"
+        "    captured_at: 2026-08-01T00:00:00Z\n"
+        "    payload:\n"
+        '      note: "<script>alert(1)</script>"\n',
+        "# Title\n",
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    assert "gitlab" in page
+    assert "file-hash" in page
+    assert "2026-08-01T00:00:00Z" in page
+    assert "<script>alert(1)</script>" not in page
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
+    assert not [tag for tag, _ in page_elements(page) if tag == "script"]
