@@ -332,9 +332,17 @@ def write_if_changed(path, content):
     """
     if path.exists() and path.read_text(encoding="utf-8") == content:
         return "unchanged"
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(content, encoding="utf-8")
-    os.replace(temporary, path)
+    # The temporary name carries this process's pid: a fixed one is shared
+    # state between concurrent runs, and the startup hook makes concurrent
+    # runs ordinary. It stays in the destination's directory, because
+    # `os.replace` is only atomic within one filesystem.
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     return "wrote"
 ```
 
