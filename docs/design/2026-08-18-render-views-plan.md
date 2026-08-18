@@ -913,9 +913,10 @@ HISTORY_WINDOW = 20
 def _history(unit_id, anchor, records):
     # An anchor is identified by what it points at, payload included: two
     # anchors of one unit can share a system and a kind and measure different
-    # things. Records written before the payload was recorded carry none, and
-    # are read only when this `(system, kind)` is unique within the unit --
-    # the one case where the correspondence is determined, not guessed.
+    # things. A record written before the payload was recorded carries none
+    # and is read by NO anchor: uniqueness would settle which anchor it
+    # belongs to, never what it measured, and an anchor gets recaptured. The
+    # anchor reads `unknown` until the next probe repairs it.
     key = _anchor_key(unit_id, anchor)
     matching = [
         record for record in records if _record_key(record) == key
@@ -1491,7 +1492,10 @@ Expected: FAIL -- the three declared versions disagree.
 
 - `README.md`: a `render` section under the CLI covering both artifacts, the
   window, the inertness of the output and `--only-existing`; and the
-  startup-hook section extended with the second hook.
+  startup-hook section extended with the second hook. **Do not document the
+  verdict log's format change** -- the anchor identity, the payload in each
+  record, and how records older than it are treated are already written by
+  the session that made that change.
 - `docs/adoption.md`: activating the views with `init --view`, and that
   deleting an artifact deactivates it.
 - `skills/adopt-validated-memory/SKILL.md`: the activation step.

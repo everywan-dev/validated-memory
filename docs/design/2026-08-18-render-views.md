@@ -366,11 +366,23 @@ whichever was written last, so the index reported `current` for a unit with a
 drifted anchor, order-dependently. The key now carries the canonical payload,
 and each anchor has its own history.
 
-Records written before that change carry no payload. They fall into a bucket
-of their own, and a unit's anchor reads them only when its `(system, kind)` is
-unique within the unit -- the one case where the correspondence is determined
-rather than guessed. Where it is ambiguous the verdict is `unknown`, which is
-the honest answer.
+Records written before that change carry no payload. They stay in the log --
+history is not rewritten -- and **no anchor reads them, without exception**.
+The anchor reads `unknown` until the next probe, which repairs it by itself.
+
+Reading them when the `(system, kind)` happened to be unique was considered
+and rejected: uniqueness settles *which* anchor a record belongs to, not
+*what it measured*. An anchor gets recaptured -- that is what `captured_at`
+is for -- so its payload today need not be its payload then, and serving that
+record would report `current` for something already drifted. That is the
+false "still current" the payload exists to prevent, reintroduced quietly.
+
+Two consequences the view inherits. An explicit `payload: null` is a
+malformed record, not an old one: presence of the field is what is checked,
+so `render` reports it as it reports any other unreadable record. And the
+payload is compared exactly as the frontmatter parser produced it -- every
+scalar is a string, no type is inferred -- so the view shows it as it is and
+normalises nothing.
 
 Because the payload is what distinguishes two anchors, the view shows it
 beside each history: a record can finally say what it measured.
