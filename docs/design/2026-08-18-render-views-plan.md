@@ -457,7 +457,9 @@ def test_hostile_content_never_becomes_live_markup(
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
-        'id: kb-0001\nevidence: measured\nprovenance:\n  - "a \\"quoted\\" source"\n',
+        # The frontmatter subset rejects backslash escapes inside a quoted
+        # scalar on purpose, so the quotes go the other way round.
+        "id: kb-0001\nevidence: measured\nprovenance:\n  - 'a \"quoted\" source'\n",
         "# Title\n\n<script>alert(1)</script>\n",
     )
 
