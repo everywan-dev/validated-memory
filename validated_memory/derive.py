@@ -35,7 +35,7 @@ def run(path, check, stdout, stderr):
     if not ok:
         return EXIT_ERROR
 
-    basis = _basis_location(path)
+    basis = validate.basis_location(path)
     try:
         rows = _rows(documents)
     except verdicts_module.VerdictLogError as error:
@@ -59,14 +59,6 @@ def run(path, check, stdout, stderr):
     index_path.write_text(content, encoding="utf-8")
     print(f"derive: {len(documents)} unit(s) indexed", file=stdout)
     return EXIT_OK
-
-
-def _basis_location(path):
-    target = validate.resolve_target(path)
-    location = target.as_posix()
-    if target.is_dir():
-        location += "/"
-    return location
 
 
 def effective_states(documents):

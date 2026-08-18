@@ -716,6 +716,71 @@ def test_only_existing_regenerates_what_is_there_and_creates_nothing(
     assert not (adopter_dir / "memory.html").exists()
 
 
+def test_an_existing_artifact_that_is_not_valid_utf8_is_overwritten_not_raised(
+    run_cli, adopter_dir, write_unit
+):
+    # `write_if_changed` reads the existing artifact only to decide whether a
+    # write is needed. A file it cannot decode is not thereby known to equal
+    # what is about to be written, so the safe default is to write over it --
+    # never a traceback on a page a reader has no repository to debug.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "knowledge.html").write_bytes(b"\xff\xfe not valid utf-8\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr
+    assert "render: wrote knowledge.html" in result.stdout
+    assert (
+        (adopter_dir / "knowledge.html")
+        .read_text(encoding="utf-8")
+        .startswith("<!doctype html>")
+    )
+
+
+def test_only_existing_is_fail_open_on_an_unwritable_working_directory(
+    run_cli, adopter_dir, write_unit
+):
+    # The other reproduction: the temporary file itself cannot be written
+    # (here, a read-only working directory). Fail-open is documented for
+    # `--only-existing`, so this must warn and exit 0, leaving the artifact
+    # already on disk exactly as it was -- not a `PermissionError` traceback
+    # on every session start.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "knowledge.html").write_text("stale\n", encoding="utf-8")
+    adopter_dir.chmod(0o555)
+    try:
+        result = run_cli("render", "--only-existing", cwd=adopter_dir)
+    finally:
+        adopter_dir.chmod(0o755)
+
+    assert result.returncode == 0
+    assert "Traceback" not in result.stderr
+    assert "WARNING" in result.stderr
+    assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "stale\n"
+
+
+def test_a_write_failure_gates_when_render_runs_explicitly(
+    run_cli, adopter_dir, write_unit
+):
+    # The mirror case: run explicitly (no `--only-existing`), the same write
+    # failure gates as an ERROR does, same as any other finding -- a person
+    # asking for the views by hand is entitled to be told they were not
+    # written, without a traceback.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "knowledge.html").write_text("stale\n", encoding="utf-8")
+    adopter_dir.chmod(0o555)
+    try:
+        result = run_cli("render", cwd=adopter_dir)
+    finally:
+        adopter_dir.chmod(0o755)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "ERROR" in result.stderr
+    assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "stale\n"
+
+
 def test_only_existing_is_fail_open_on_an_invalid_corpus(
     run_cli, adopter_dir, write_unit
 ):

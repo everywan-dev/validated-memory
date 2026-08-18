@@ -40,6 +40,13 @@ def run(only_existing, stdout, stderr):
     never means "write a page built on data the enforcement rejected": on
     that path `build_artifacts` still returns no artifacts, so whatever is
     already on disk is left exactly as it was.
+
+    A write that fails at the OS level (permissions, a full disk, ...) is
+    downgraded the same way: a WARNING under `--only-existing`, an ERROR run
+    explicitly -- see `write_if_changed`. Either way it is a `Finding`
+    reported like any other, never an exception; a person who runs `render`
+    by hand is entitled to a traceback-free reason it did not write, and a
+    hook must never let one reach stderr on every session start.
     """
     if only_existing:
         targets = [path for path in ARTIFACTS if Path(path).exists()]
@@ -53,9 +60,16 @@ def run(only_existing, stdout, stderr):
         print(finding.render(), file=stderr)
     if not ok:
         return EXIT_OK if only_existing else EXIT_ERROR
+    write_ok = True
     for path in targets:
-        action = write_if_changed(Path(path), artifacts[path])
+        action, finding = write_if_changed(Path(path), artifacts[path])
+        if finding is not None:
+            print(_downgraded(finding, only_existing).render(), file=stderr)
+            write_ok = False
+            continue
         print(f"render: {action} {path}", file=stdout)
+    if not write_ok:
+        return EXIT_OK if only_existing else EXIT_ERROR
     return EXIT_OK
 
 
@@ -104,7 +118,7 @@ def build_artifacts(downgrade=False):
         records = verdicts_module.history()
         view = verdicts_module.service_view()
         knowledge_content = knowledge_view.build(
-            documents, _basis_location(None), records, view
+            documents, validate.basis_location(None), records, view
         )
     except verdicts_module.VerdictLogError as error:
         # Same shape `derive` reports: a log this reader cannot parse is a
@@ -199,16 +213,8 @@ def _memory_source(target):
     return documents, memory_module.resolution(documents, declared)
 
 
-def _basis_location(path):
-    target = validate.resolve_target(path)
-    location = target.as_posix()
-    if target.is_dir():
-        location += "/"
-    return location
-
-
 def write_if_changed(path, content):
-    """Write `content` to `path` only when it differs. Returns what happened.
+    """Write `content` to `path` only when it differs. Returns `(action, finding)`.
 
     The write is atomic -- a temporary file in the same directory, then a
     rename -- so a failure can never leave a half-written page for a reader
@@ -219,16 +225,40 @@ def write_if_changed(path, content):
     has several sessions working the same repository at once, so a fixed
     temp name would let two concurrent runs interleave writes to it before
     either reaches its rename -- the very half-written page the atomic
-    rename exists to prevent. On any failure the temporary file is removed
-    rather than left behind.
+    rename exists to prevent.
+
+    An existing artifact this call cannot read back -- any `OSError`, or
+    content that is not valid UTF-8 -- counts as "differs": the read exists
+    only to decide whether a write is needed, and a file that cannot be read
+    is not known to already equal what is about to be written, so the safe
+    default is to attempt the write rather than raise.
+
+    A write that then fails (permissions, a full disk, ...) is reported as a
+    `Finding` rather than raised -- the same shape `init._ensure_views` uses
+    for its own write failures -- so `run` can fold it into its findings and
+    decide severity instead of a traceback reaching a reader who has no
+    repository to read a stack trace against. The temporary file is removed
+    rather than left behind. `action` is `None` when `finding` is not.
     """
-    if path.exists() and path.read_text(encoding="utf-8") == content:
-        return "unchanged"
+    if path.exists():
+        try:
+            if path.read_text(encoding="utf-8") == content:
+                return "unchanged", None
+        except (OSError, UnicodeDecodeError):
+            pass
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         temporary.write_text(content, encoding="utf-8")
         os.replace(temporary, path)
+    except OSError as error:
+        temporary.unlink(missing_ok=True)
+        return None, Finding(
+            ERROR, path.as_posix(), "write", f"file could not be written: {error}"
+        )
     except BaseException:
+        # Anything other than `OSError` is not a fail-open case this module
+        # knows how to soften into a `Finding` -- only the temp file's
+        # cleanup is this call's business either way.
         temporary.unlink(missing_ok=True)
         raise
-    return "wrote"
+    return "wrote", None
