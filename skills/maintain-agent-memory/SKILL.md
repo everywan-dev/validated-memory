@@ -49,7 +49,13 @@ description: superseded by [[coffee-preference-v2]]
 ```
 
 The wikilink must resolve to a different memory that exists; pointing at
-itself, or at a name that does not exist, is malformed.
+itself -- by `name` or by this memory's own filename -- or at a name that
+does not exist, is malformed.
+
+Unlike an ordinary wikilink, a successor cannot be left pending: this is an
+ERROR and it gates. If `lint` says the target does not resolve by `name` but
+names a file that exists, repair that file's `name` rather than re-point the
+supersession.
 
 ## Wikilinks
 

@@ -460,6 +460,85 @@ def test_a_supersession_pointing_at_itself_gates(
     assert "itself" in result.stderr
 
 
+def test_a_supersession_pointing_at_a_diverging_file_names_the_cause(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # Same defect the wikilink warning names, but here it gates: the successor
+    # a memory is retired onto cannot be left pending, so the ERROR has to
+    # point at the repair rather than claim the memory does not exist.
+    write_memory(
+        "old-coffee-preference.md",
+        "name: old-coffee-preference\n"
+        "description: superseded by [[coffee-preference]]\n"
+        "metadata:\n  type: user\n",
+    )
+    write_memory("coffee-preference.md", DIVERGING_MEMORY)
+    write_index(
+        "- [Old](old-coffee-preference.md) — fixture entry\n"
+        "- [New](coffee-preference.md) — fixture entry\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: memory/old-coffee-preference.md: description: " in result.stderr
+    assert "does not resolve by name" in result.stderr
+    assert "declares name 'Coffee Preference'" in result.stderr
+    assert "which does not exist" not in result.stderr
+
+
+def test_a_supersession_pointing_at_its_own_filename_is_itself(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # The memory's canonical identity is its filename, so superseding that
+    # name is superseding itself -- whatever `name` currently says.
+    write_memory(
+        "coffee-preference.md",
+        "name: Coffee Preference\n"
+        "description: superseded by [[coffee-preference]]\n"
+        "metadata:\n  type: user\n",
+    )
+    write_index(HEALTHY_INDEX)
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: memory/coffee-preference.md: description: " in result.stderr
+    assert "itself" in result.stderr
+
+
+def test_a_supersession_resolving_by_name_is_not_read_as_itself(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # The superseding file's own filename happens to equal the `name` another
+    # memory declares. The target resolves to that other memory, so this is a
+    # valid supersession -- not a memory pointing at itself.
+    write_memory(
+        "coffee-preference.md",
+        "name: old-note\n"
+        "description: superseded by [[coffee-preference]]\n"
+        "metadata:\n  type: user\n",
+    )
+    write_memory(
+        "newer.md",
+        "name: coffee-preference\n"
+        "description: Prefers oat milk in coffee.\n"
+        "metadata:\n  type: user\n",
+    )
+    write_index(
+        "- [Old](coffee-preference.md) — fixture entry\n"
+        "- [New](newer.md) — fixture entry\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "itself" not in result.stderr
+    assert "supersession" not in result.stderr
+    # Both files still diverge from their filenames; that is the only finding.
+    assert "2 warning(s)" in result.stdout
+
+
 # --- target resolution -------------------------------------------------------
 
 

@@ -472,6 +472,22 @@ raises no finding. Malformed is an ERROR: the prefix with no parseable
 wikilink after it, a wikilink pointing at a memory that does not exist, or a
 wikilink pointing at the memory itself.
 
+A successor is not allowed to stay pending the way an ordinary wikilink is,
+so this gates. That is precisely why it names the cause when the target is a
+diverging file, rather than reporting a memory that is plainly there as
+missing:
+
+```
+ERROR: memory/old-note.md: description: supersession points at
+'coffee-preference', which does not resolve by name;
+'coffee-preference.md' exists but declares name 'Coffee Preference'
+```
+
+Pointing at **this memory's own filename** counts as pointing at itself,
+whatever its `name` currently says -- the filename is the identity. A target
+that does resolve to another memory is a valid supersession even when it
+happens to equal this file's filename, so resolution is settled first.
+
 ## Base contract
 
 Every curated-knowledge unit is a Markdown file whose frontmatter carries:

@@ -192,11 +192,12 @@ def _lint_memories(documents):
 def _index_by_filename(parsed):
     """Map each unambiguous filename (without `.md`) to the `name` it declares.
 
-    Used only to explain an unresolved wikilink: the writer reached for the
-    filename, which is the canonical identity, while resolution goes by `name`.
-    A filename carried by two memories in different subdirectories is left out
-    -- naming one of them as the cause would be a guess -- and so is one whose
-    `name` is missing or empty, which its own rule already reports.
+    Used to explain a reference that does not resolve -- a wikilink or a
+    supersession target: the writer reached for the filename, which is the
+    canonical identity, while resolution goes by `name`. A filename carried by
+    two memories in different subdirectories is left out -- naming one of them
+    as the cause would be a guess -- and so is one whose `name` is missing or
+    empty, which its own rule already reports.
     """
     names_by_filename = {}
     for location, data, _body in parsed:
@@ -252,30 +253,54 @@ def _check_description_wikilinks(
         else:
             target = match.group(1)
             scan_text = remainder[match.end() :]
-            if target == own_name:
-                findings.append(
-                    Finding(
-                        ERROR,
-                        location,
-                        "description",
-                        f"supersession points at itself: '{target}'",
-                    )
+            findings.extend(
+                _check_supersession_target(
+                    location, own_name, target, valid_names, names_by_filename
                 )
-            elif target not in valid_names:
-                findings.append(
-                    Finding(
-                        ERROR,
-                        location,
-                        "description",
-                        f"supersession points at '{target}', which does not exist",
-                    )
-                )
+            )
     findings.extend(
         _check_wikilink_targets(
             location, "description", scan_text, valid_names, names_by_filename
         )
     )
     return findings
+
+
+def _check_supersession_target(
+    location, own_name, target, valid_names, names_by_filename
+):
+    """Check the successor a memory is retired onto.
+
+    Order matters. A target that resolves to another memory is a valid
+    supersession even when it happens to equal this file's own filename, so
+    resolution is settled first. Only then does the filename count as naming
+    this memory itself -- it is the canonical identity, so retiring a memory
+    onto it is retiring it onto itself, whatever `name` currently says.
+    """
+    if target in valid_names and target != own_name:
+        return []
+    if target == own_name or target == PurePosixPath(location).stem:
+        return [
+            Finding(
+                ERROR,
+                location,
+                "description",
+                f"supersession points at itself: '{target}'",
+            )
+        ]
+    declared = names_by_filename.get(target)
+    if declared is None:
+        message = f"supersession points at '{target}', which does not exist"
+    else:
+        # Unlike a wikilink, a successor cannot be left pending: this gates.
+        # Saying the memory does not exist would send the repair to the wrong
+        # file, so the message names what actually fails to resolve.
+        message = (
+            f"supersession points at '{target}', which does not resolve by "
+            f"name; '{target}{MEMORY_SUFFIX}' exists but declares name "
+            f"'{declared}'"
+        )
+    return [Finding(ERROR, location, "description", message)]
 
 
 def _check_wikilink_targets(location, field, text, valid_names, names_by_filename):
