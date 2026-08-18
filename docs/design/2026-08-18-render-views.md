@@ -355,8 +355,12 @@ never importing internals.
   of unit sections equals the number of units, every superseded unit appears
   and is marked as such, no `id` is missing. Substring assertions alone pass
   over malformed HTML, so structure is asserted structurally.
-- Self-containment: no `src=`, `<link `, `@import`, `<iframe`, `url(`; an
-  `<a href>` to an external provenance URL is present and allowed.
+- Self-containment, asserted as the whitelist above over the parsed
+  document: the only attribute carrying an external URL is `href` on an `<a>`
+  element -- checked by walking every element and attribute, never by
+  searching for substrings. No `<a>` carries `ping`, and any
+  `target="_blank"` carries `rel="noopener noreferrer"`. A fixture whose
+  provenance is an external URL proves the allowed case renders as a link.
 - **Escaping**, with a hostile fixture: a unit body containing
   `<script>alert(1)</script>`, a `description` containing quotes and angle
   brackets, a memory entry with markup in its body. None of it becomes live
@@ -377,14 +381,16 @@ never importing internals.
 
 ## Dependencies and sequencing
 
-Blocked on the shared read model being extracted on `feature/shared-read-model`:
-`verdicts.history()` sharing `service_view`'s fail-loud parsing, the per-unit
-verdict grading available as a public function, and the memory-layer read
-model (collection, parsing, `Resolution`, supersession) lifted out of
-`lint.py` with `lint` left as the rules on top.
+The shared read model landed on `main` at `6ec754f`: `validated_memory/memory.py`
+carries the memory-layer reading (collection, parsing, `Resolution`,
+supersession) with `lint` left as the rules on top, and `derive.unit_verdict`
+is public. `feature/render-views` is rebased onto it.
 
-Work order: that extraction merges first; `feature/render-views` rebases onto
-it; implementation follows test-first.
+What remains on this branch, before any rendering code: `verdicts.history()`,
+under the contract stated in "Data sources" above. It is the one reader the
+views still need and the only reason to touch `verdicts.py`.
+
+Implementation follows test-first.
 
 One ordering constraint is load-bearing. `tests/test_skills_structure.py` now
 walks `docs/` recursively and asserts that every literal
