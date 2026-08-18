@@ -42,7 +42,15 @@ conclusion was reached, and is what the views render.
 | Effective state (`active`, `superseded by ...`) | `derive.effective_states(documents)` |
 | Per-unit verdict grading | `derive.unit_verdict(unit_id, anchors, view)` -> `UnitVerdict(verdict, unknown_systems, per_anchor)`, with an `AnchorVerdict(system, kind, verdict)` per anchor |
 | Verdict history | `verdicts.history(root)`, added on this branch (see below) |
-| Memory entries, resolution, supersession | `validated_memory/memory.py`: `documents`, `filename`, `index_entries`, `body`, `wikilinks`, `supersession`, `resolution` -> `Resolution(by_name, by_filename)`, `filename_hint` |
+| Memory entries, resolution, supersession | `validated_memory/memory.py`: `documents`, `filename`, `index_entries`, `body`, `wikilinks`, `supersession`, `resolution` -> `Resolution(by_name, by_filename)`, `filename_hint`, `is_declared` |
+
+Two shapes of that module are load-bearing for the views. `index_entries`
+returns the `href` already normalised, and the views must not normalise it
+again: the href is a key, and two consumers normalising it differently is how
+they end up disagreeing about which entry names which file. To compare paths,
+apply `PurePosixPath(href).as_posix()` as `lint` and `adopt` do, so `./x.md`
+and `x.md` are one entry. And what counts as a declared name is decided by
+`memory.is_declared(value)`, which exists once on purpose.
 
 This is a correctness rule, not a style preference. `verdicts.service_view()`
 is fail-loud: it raises `VerdictLogError` with a line number on a log it
@@ -383,8 +391,11 @@ walks `docs/` recursively and asserts that every literal
 `python3 -m validated_memory <word>` in skills, docs or the README names a
 real subcommand. This document contains that literal for `render`, so **the
 first implementation commit must register `render` in `cli.SUBCOMMANDS` and
-in the test's `REAL_SUBCOMMANDS`**, or the suite is red on this branch from
-the moment it rebases. The same test's clean-room check also scans this
+in the test's `REAL_SUBCOMMANDS`**. This is not a prediction: rebased onto
+`main` at `6ec754f`, the suite on this branch is
+`1 failed, 237 passed`, and the failure is exactly this document naming
+`render`. Clear it before the first test-first cycle, or an inherited red is
+indistinguishable from the red a new test is supposed to produce. The same test's clean-room check also scans this
 document for mentions of the internal projects the method was studied on.
 
 The version moves to 1.1.0 in the three places that must agree
