@@ -1453,7 +1453,7 @@ Expected: FAIL -- the script does not exist.
 
 `hooks/refresh-views.sh` mirrors `restore-memory-symlink.sh`'s discipline and
 nothing else: `set -u`, exit 0 unconditionally, no `$CLAUDE_PROJECT_DIR` is a
-no-op, a project without `validated-memory.md` and `knowledge/` is a no-op, no
+no-op, a project without `validated-memory.md` and `memory/` is a no-op -- the same adoption test the existing hook applies, read from its source rather than restated here, no
 `python3` is a no-op. It runs
 `python3 -m validated_memory render --only-existing` from the project
 directory with stdout silenced, with `PYTHONPATH` set to the plugin root
