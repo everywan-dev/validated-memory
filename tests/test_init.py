@@ -353,3 +353,58 @@ def test_without_harness_memory_flag_nothing_outside_the_project_is_touched(
 
     assert result.returncode == 0, result.stderr
     assert "symlink" not in result.stdout
+
+
+# --- --view: activation is the artifact, not a config key ----------------------
+
+
+def test_init_view_creates_both_artifacts_once_and_keeps_them(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n", "# Title\n")
+
+    first = run_cli("init", "--view", cwd=adopter_dir)
+    stamp = (adopter_dir / "knowledge.html").read_bytes()
+    (adopter_dir / "knowledge.html").write_text("edited by hand\n", encoding="utf-8")
+    second = run_cli("init", "--view", cwd=adopter_dir)
+
+    assert "created knowledge.html" in first.stdout
+    assert "created memory.html" in first.stdout
+    assert stamp
+    assert "kept knowledge.html" in second.stdout
+    assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "edited by hand\n"
+
+
+def test_init_view_on_an_invalid_corpus_warns_without_gating(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: invented\n")
+
+    result = run_cli("init", "--view", cwd=adopter_dir)
+
+    assert result.returncode == 0
+    assert "WARNING" in result.stderr
+    assert not (adopter_dir / "knowledge.html").exists()
+
+
+def test_init_view_creates_only_the_missing_artifact_and_keeps_the_other(
+    run_cli, adopter_dir, write_unit
+):
+    # One artifact already present (e.g. from an earlier `init --view`, then
+    # hand-deleted only for `memory.html`) must be kept untouched while the
+    # missing one is created, in the same run.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n", "# Title\n")
+    run_cli("init", "--view", cwd=adopter_dir)
+    (adopter_dir / "memory.html").unlink()
+    kept_content = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    result = run_cli("init", "--view", cwd=adopter_dir)
+
+    assert "kept knowledge.html" in result.stdout
+    assert "created memory.html" in result.stdout
+    assert "created knowledge.html" not in result.stdout
+    assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == kept_content
+    assert (adopter_dir / "memory.html").exists()

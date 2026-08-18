@@ -91,6 +91,15 @@ def build_parser():
                     f"{lint.DEFAULT_MEMORY_DIR}/ directory"
                 ),
             )
+            subparser.add_argument(
+                "--view",
+                action="store_true",
+                help=(
+                    "create the static HTML views (knowledge.html, "
+                    "memory.html) once each; never regenerates an "
+                    "artifact that already exists"
+                ),
+            )
         if name == "render":
             subparser.add_argument(
                 "--only-existing",
@@ -118,4 +127,6 @@ def main(argv=None):
         return probe.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "render":
         return render.run(args.only_existing, stdout=sys.stdout, stderr=sys.stderr)
-    return init.run(args.harness_memory, stdout=sys.stdout, stderr=sys.stderr)
+    return init.run(
+        args.harness_memory, args.view, stdout=sys.stdout, stderr=sys.stderr
+    )
