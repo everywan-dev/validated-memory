@@ -146,7 +146,7 @@ A header carrying the recount basis -- how many units, under which path, in
 `derive`'s idiom -- and the history-window disclosure: how many records the
 log holds in total, that at most twenty are shown per anchor, and where the
 log is. Each anchor's own history repeats the disclosure for itself: how many
-records that `(system, kind)` has, and how many of them are shown.
+records that `(unit, system, kind)` has, and how many of them are shown.
 
 Then one entry per **live conclusion**, ordered by `id`. Ordering by `id` is
 the only order that does not move on its own: any ordering by freshness or
@@ -282,7 +282,12 @@ carries its label, for colour-blind readers and for black-and-white printing.
 
 ## History window
 
-Twenty probe records per `(system, kind)`, most recent first.
+Twenty probe records per `(unit, system, kind)`, most recent first.
+
+The key includes the unit: `verdicts.service_view()` builds it as
+`(record["unit"], record["system"], record["kind"])`, and `unit_verdict`
+looks it up the same way. Two units anchored on the same system and kind have
+separate histories, and a window keyed on the pair alone would blend them.
 
 `verdicts.jsonl` is append-only and grows without bound by design, so
 embedding the full history would make the artifact grow monotonically until
@@ -366,7 +371,7 @@ never importing internals.
   brackets, a memory entry with markup in its body. None of it becomes live
   markup. A file built to be emailed to a third party that renders repository
   content unescaped is a hole, not a detail.
-- The history window: with more than twenty records for one `(system, kind)`,
+- The history window: with more than twenty records for one `(unit, system, kind)`,
   twenty are shown and the page states the true total.
 - Determinism: two runs over an unchanged corpus produce identical bytes, and
   the output contains no generation timestamp.
