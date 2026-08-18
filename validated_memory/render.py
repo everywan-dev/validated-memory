@@ -58,9 +58,17 @@ def build_artifacts(stderr):
         return {}, False
 
     try:
+        # Both reads of the log happen here, together, before either is
+        # handed to `knowledge_view.build`: `service_view` is the one that
+        # validates (it raises on a record such as an explicit
+        # `payload: null`), and it must run before `build` groups `history`'s
+        # records by key -- keeping both calls at this one site, rather than
+        # one of them inside `build`, is what keeps that order from being an
+        # accident of which line comes first in a function body.
         records = verdicts_module.history()
+        view = verdicts_module.service_view()
         knowledge_content = knowledge_view.build(
-            documents, _basis_location(None), records
+            documents, _basis_location(None), records, view
         )
     except verdicts_module.VerdictLogError as error:
         # Same shape `derive` reports: a log this reader cannot parse is a

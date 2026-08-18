@@ -307,6 +307,39 @@ def test_a_record_without_a_payload_is_never_attributed_to_an_anchor(
     assert '<span class="verdict">unknown</span>' in page
 
 
+def test_a_record_whose_payload_is_null_stops_render_and_writes_nothing(
+    run_cli, adopter_dir, write_unit
+):
+    # `_group_history` treats "no `payload` key" as "predates payloads" and
+    # skips it -- safe only because `service_view()` (through `_keyed`)
+    # rejects an explicit `payload: null` before grouping ever sees a
+    # record. `derive` already pins this rule for its own read of the log
+    # (`tests/test_derive.py`); this pins it for `render`'s, which reads the
+    # log through a separate call of its own.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Title\n",
+    )
+    (adopter_dir / "verdicts.jsonl").write_text(
+        '{"unit": "kb-0001", "system": "repo", "kind": "git_ref", '
+        '"payload": null, "verdict": "current", '
+        '"recorded_at": "2026-01-01T00:00:00Z"}\n',
+        encoding="utf-8",
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "verdicts.jsonl:1" in result.stderr
+    assert "'payload' field is not a mapping" in result.stderr
+    assert not (adopter_dir / "knowledge.html").exists()
+    assert not (adopter_dir / "memory.html").exists()
+
+
 def test_a_superseded_unit_appears_only_inside_its_successor(
     run_cli, adopter_dir, write_unit, page_elements
 ):

@@ -27,16 +27,19 @@ def headline(body_text, unit_id):
     return match.group(1) if match else unit_id
 
 
-def build(documents, basis, records):
+def build(documents, basis, records, view):
     """Return the whole page as a string.
 
-    `records` is the verdict log's full history (`verdicts.history()`),
-    read once by the caller and handed down here -- it feeds both the
-    per-anchor probe-history sections and the page header's two totals, so
-    it is read exactly once per render, not once per anchor.
+    `records` is the verdict log's full history (`verdicts.history()`) and
+    `view` is its graded view (`verdicts.service_view()`) -- both read once
+    by the caller, `render.build_artifacts`, in that order, before this is
+    ever called: `service_view` is what validates the log (it raises on a
+    malformed record, such as an explicit `payload: null`), so by the time
+    `records` reaches `_group_history` below, every record in it has
+    already passed that check. Reading both here instead would let a future
+    edit reorder the two calls and silently lose that guarantee.
     """
     states = derive.effective_states(documents)
-    view = verdicts.service_view()
     bodies = {}
     for _location, text in documents:
         bodies[parse_frontmatter(text)["id"]] = memory.body(text)
@@ -82,6 +85,13 @@ def build(documents, basis, records):
 
 def _group_history(records):
     """Group every record that names an anchor by the key it names.
+
+    `records` reaches here only after `service_view()` has validated the
+    whole log without raising (see `build`'s docstring for where and why),
+    so every record here is already known to carry `unit`, `system` and
+    `kind` as strings and, when present, `payload` as a mapping -- which is
+    why they are indexed directly (`record["unit"]` and friends) rather than
+    with `.get()`.
 
     A record with no `payload` field predates payloads and is read by no
     anchor -- see `verdicts.NO_PAYLOAD` -- so it never joins a group here.
