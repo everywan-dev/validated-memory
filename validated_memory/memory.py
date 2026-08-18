@@ -34,8 +34,8 @@ Document = namedtuple("Document", "location relpath text")
 
 # One `- [Title](file.md) — note` line of the index. `note` is whatever
 # follows the link, free text this layer does not interpret; `line` is the
-# entry exactly as written, which is what a reader that has to preserve it
-# rather than re-render it needs.
+# entry as written, stripped of surrounding whitespace, which is what a
+# reader that has to preserve it rather than re-render it needs.
 IndexEntry = namedtuple("IndexEntry", "title href note line")
 
 # How a reference to another memory resolves. `by_name` is what resolution
@@ -45,8 +45,10 @@ IndexEntry = namedtuple("IndexEntry", "title href note line")
 Resolution = namedtuple("Resolution", "by_name by_filename")
 
 # A parsed `superseded by [[name]]` marker. `target` is None when the marker
-# opened but no wikilink followed it; `remainder` is the description text
-# after the marker, which still has to be scanned for ordinary wikilinks.
+# opened but no wikilink followed it, and then `remainder` is empty: nothing
+# after an unparseable marker can be read as an ordinary reference. Otherwise
+# `remainder` is the description text after the marker, which still has to be
+# scanned for ordinary wikilinks.
 Supersession = namedtuple("Supersession", "target remainder")
 
 
@@ -85,14 +87,18 @@ def index_entries(text):
     """Return every bullet-with-link entry of the index, in order.
 
     Only lines shaped `- [Title](file.md)` count as entries; headers and prose
-    are ignored.
+    are ignored. The href is stripped here rather than by each caller: it is
+    used as a key, and two callers stripping it differently is how they come
+    to disagree about which entry names which file.
     """
     entries = []
     for line in text.splitlines():
         match = INDEX_ENTRY_PATTERN.match(line.strip())
         if match:
             title, href, note = match.groups()
-            entries.append(IndexEntry(title, href, note.strip(), line.strip()))
+            entries.append(
+                IndexEntry(title, href.strip(), note.strip(), line.strip())
+            )
     return entries
 
 
@@ -158,11 +164,11 @@ def resolution(documents_read, declared):
             declared.get(document.location)
         )
     return Resolution(
-        by_name=set(name for name in declared.values() if _is_non_empty_string(name)),
+        by_name=set(name for name in declared.values() if is_declared(name)),
         by_filename={
             name: names[0]
             for name, names in by_filename.items()
-            if len(names) == 1 and _is_non_empty_string(names[0])
+            if len(names) == 1 and is_declared(names[0])
         },
     )
 
@@ -179,5 +185,11 @@ def filename_hint(target, resolved):
     return f"'{target}{SUFFIX}' declares name '{declared}'"
 
 
-def _is_non_empty_string(value):
+def is_declared(value):
+    """Say whether a frontmatter value counts as a declared name.
+
+    Shared with `lint` rather than restated there: resolution and the rules
+    have to agree about which names exist, and two definitions of that are
+    how a name the rules accept gets left out of resolution.
+    """
     return isinstance(value, str) and bool(value.strip())

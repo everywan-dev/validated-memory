@@ -71,7 +71,7 @@ def _check_sync(index_location, entries, documents):
     by_relpath = {document.relpath: document for document in documents}
     referenced = set()
     for entry in entries:
-        relpath = PurePosixPath(entry.href.strip()).as_posix()
+        relpath = PurePosixPath(entry.href).as_posix()
         referenced.add(relpath)
         if relpath not in by_relpath:
             findings.append(
@@ -127,7 +127,7 @@ def _lint_memories(documents):
     declared_names = {}
     for location, data, _body in parsed:
         name = data.get("name")
-        if not _is_non_empty_string(name):
+        if not memory_module.is_declared(name):
             continue
         if name in declared_names:
             findings.append(
@@ -147,7 +147,7 @@ def _lint_memories(documents):
     )
     for location, data, body in parsed:
         own_name = data.get("name")
-        if not _is_non_empty_string(own_name):
+        if not memory_module.is_declared(own_name):
             own_name = None
         description = data.get("description")
         findings.extend(
@@ -293,7 +293,7 @@ def _check_name(location, data):
     if "name" not in data:
         return [Finding(ERROR, location, "name", "required field is missing")]
     name = data["name"]
-    if not _is_non_empty_string(name):
+    if not memory_module.is_declared(name):
         return [
             Finding(
                 ERROR, location, "name", f"{_describe(name)} is not a non-empty string"
@@ -341,7 +341,7 @@ def _check_description(location, data):
     if "description" not in data:
         return [Finding(ERROR, location, "description", "required field is missing")]
     description = data["description"]
-    if not _is_non_empty_string(description):
+    if not memory_module.is_declared(description):
         return [
             Finding(
                 ERROR,
@@ -368,10 +368,6 @@ def _check_type(location, data):
             )
         ]
     return []
-
-
-def _is_non_empty_string(value):
-    return isinstance(value, str) and bool(value.strip())
 
 
 def _describe(value):

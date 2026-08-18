@@ -158,6 +158,59 @@ def test_an_index_entry_already_there_is_not_duplicated_by_absorption(
     assert index.count("(coffee-preference.md)") == 1, index
 
 
+def test_a_padded_href_still_carries_the_harness_line_over(
+    adopter_dir, tmp_path, run_cli, write_index
+):
+    # The harness index pads the link target. The href is a key -- it is what
+    # says which entry names which file -- so a reader that does not normalize
+    # it fails to find the line and synthesizes one instead, silently losing
+    # what a human wrote about the fact.
+    write_index("# Agent memory\n\nNo entries yet.\n")
+    native = tmp_path / "harness" / "memory"
+    write_native(native, "coffee-preference", "Prefers oat milk.")
+    write_native_index(native, "- [Coffee preference]( coffee-preference.md ) — oat milk")
+
+    run_cli("init", "--harness-memory", str(native), cwd=adopter_dir)
+
+    index = (adopter_dir / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "— oat milk" in index, index
+
+
+def test_an_index_entry_written_with_a_path_alias_is_not_duplicated(
+    adopter_dir, tmp_path, run_cli, write_index
+):
+    # './coffee-preference.md' and 'coffee-preference.md' name the same file.
+    # Comparing the hrefs as raw strings makes them look like two entries and
+    # appends a second one; reconciling has to normalize the path the way the
+    # index/file cross-check already does.
+    write_index("# Agent memory\n\n- [Coffee](./coffee-preference.md) — oat milk\n")
+    native = tmp_path / "harness" / "memory"
+    write_native(native, "coffee-preference", "Prefers oat milk.")
+    write_native_index(native, "- [Coffee preference](coffee-preference.md) — oat milk")
+
+    run_cli("init", "--harness-memory", str(native), cwd=adopter_dir)
+
+    index = (adopter_dir / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert index.count("coffee-preference.md)") == 1, index
+
+
+def test_a_malformed_entry_does_not_keep_the_placeholder_alive(
+    adopter_dir, tmp_path, run_cli, write_index
+):
+    # A bullet whose link target is blank is not an entry naming a file, so an
+    # index holding only that one is still an index with no entries: the
+    # placeholder must go when real entries arrive.
+    write_index("# Agent memory\n\nNo entries yet.\n- [Malformed](   )\n")
+    native = tmp_path / "harness" / "memory"
+    write_native(native, "coffee-preference", "Prefers oat milk.")
+    write_native_index(native, "- [Coffee preference](coffee-preference.md) — oat milk")
+
+    run_cli("init", "--harness-memory", str(native), cwd=adopter_dir)
+
+    index = (adopter_dir / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "No entries yet." not in index, index
+
+
 # --- collisions: the project's own copy always wins ---------------------------
 
 

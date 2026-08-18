@@ -14,7 +14,7 @@ directory that belongs to something else.
 """
 
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .findings import WARNING, Finding
 from .frontmatter import FrontmatterError, parse
@@ -172,7 +172,7 @@ def _reconcile_index(source, memory_dir, adopted):
         return
 
     lines = text.splitlines()
-    if not index_entries(text):
+    if not list(_index_entries(text)):
         lines = [line for line in lines if line.strip() != PLACEHOLDER]
     while lines and not lines[-1].strip():
         lines.pop()
@@ -180,9 +180,17 @@ def _reconcile_index(source, memory_dir, adopted):
 
 
 def _index_entries(text):
-    """Yield `(href, line)` for every bullet-with-link entry in an index."""
+    """Yield `(relpath, line)` for every index entry that names a file.
+
+    The path is normalized the way the index/file cross-check normalizes it,
+    so `./coffee.md` and `coffee.md` are one entry for one file rather than
+    two. A bullet whose link target is blank names no file and is not an
+    entry here -- `lint` reports it as malformed on its own.
+    """
     for entry in index_entries(text):
-        yield entry.href, entry.line
+        if not entry.href:
+            continue
+        yield PurePosixPath(entry.href).as_posix(), entry.line
 
 
 def _synthesize(path, relative):
