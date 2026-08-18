@@ -750,3 +750,53 @@ def test_only_existing_with_neither_artifact_present_is_a_clean_no_op(
     assert result.stderr == ""
     assert not (adopter_dir / "knowledge.html").exists()
     assert not (adopter_dir / "memory.html").exists()
+
+
+def test_only_existing_is_fail_open_on_a_corrupt_verdict_log(
+    run_cli, adopter_dir, write_unit
+):
+    # The broader ruling: unattended mode downgrades every build failure,
+    # not only the contract's own ERROR findings. A verdict log this reader
+    # cannot parse is one such failure -- same fail-open contract, same
+    # "leave the artifact exactly as it was" guarantee.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "knowledge.html").write_text("stale\n", encoding="utf-8")
+    (adopter_dir / "verdicts.jsonl").write_text("{not json}\n", encoding="utf-8")
+
+    result = run_cli("render", "--only-existing", cwd=adopter_dir)
+
+    assert result.returncode == 0
+    assert "WARNING" in result.stderr
+    assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "stale\n"
+
+
+def test_only_existing_is_fail_open_on_a_missing_memory_index(
+    run_cli, adopter_dir, write_unit
+):
+    # Same ruling, over the memory-layer read precondition rather than the
+    # curated-layer contract or the verdict log.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "knowledge.html").write_text("stale\n", encoding="utf-8")
+    (adopter_dir / "memory" / "MEMORY.md").unlink()
+
+    result = run_cli("render", "--only-existing", cwd=adopter_dir)
+
+    assert result.returncode == 0
+    assert "WARNING" in result.stderr
+    assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "stale\n"
+
+
+def test_only_existing_regenerates_memory_when_only_memory_exists(
+    run_cli, adopter_dir, write_unit
+):
+    # The mirror of the brief's own case: with `knowledge.html` absent and
+    # `memory.html` present, only the latter is regenerated and the former
+    # is still not created.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "memory.html").write_text("stale\n", encoding="utf-8")
+
+    result = run_cli("render", "--only-existing", cwd=adopter_dir)
+
+    assert result.returncode == 0
+    assert (adopter_dir / "memory.html").read_text(encoding="utf-8") != "stale\n"
+    assert not (adopter_dir / "knowledge.html").exists()
