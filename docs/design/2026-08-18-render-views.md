@@ -40,9 +40,9 @@ conclusion was reached, and is what the views render.
 |----------|--------|
 | Units, contract plus declared extension | the loader `validate` and `derive` already use |
 | Effective state (`active`, `superseded by ...`) | `derive.effective_states(documents)` |
-| Per-unit verdict grading | `derive.unit_verdict(unit_id, anchors, view)` |
-| Verdict history | `verdicts.history(root)`, to be added beside `service_view` |
-| Memory entries, resolution, supersession | the shared memory read model extracted from `lint.py` |
+| Per-unit verdict grading | `derive.unit_verdict(unit_id, anchors, view)` -> `UnitVerdict(verdict, unknown_systems, per_anchor)`, with an `AnchorVerdict(system, kind, verdict)` per anchor |
+| Verdict history | `verdicts.history(root)`, added on this branch (see below) |
+| Memory entries, resolution, supersession | `validated_memory/memory.py`: `documents`, `filename`, `index_entries`, `body`, `wikilinks`, `supersession`, `resolution` -> `Resolution(by_name, by_filename)`, `filename_hint` |
 
 This is a correctness rule, not a style preference. `verdicts.service_view()`
 is fail-loud: it raises `VerdictLogError` with a line number on a log it
@@ -53,7 +53,19 @@ a unit's freshness with its own rule would disagree with `knowledge-index.md`
 about the same unit. A view that contradicts the enforcement is worse than no
 view.
 
-`verdicts.history()` must share `service_view`'s parsing, not parallel it.
+`verdicts.history()` does not exist yet and is written on this branch, with
+`render` as the consumer that exercises it -- the testing seam runs the CLI as
+a subprocess, so a reader with no subcommand behind it could not be tested
+today. Its contract:
+
+- It lives beside `service_view` in `verdicts.py` and **shares its parsing
+  loop**: the loop is lifted out and both call it. A second loop is a second
+  opinion about which logs are acceptable, and the two will diverge.
+- It raises `VerdictLogError` with a line number on exactly what fails today:
+  a line that is not JSON, a record that is not an object, a missing field, a
+  verdict outside the ternary domain.
+- It returns records in file order, uncollapsed. The twenty-record window is
+  applied by the renderer, not by the reader.
 
 ## Artifacts
 
@@ -82,6 +94,10 @@ before rendering, exactly as `derive` does: an ERROR finding is reported in
 `validate`'s format and stops the run with nothing written. WARNING findings
 do not block.
 
+Each artifact is built entirely in memory and written in one operation, so a
+validation ERROR or a failure mid-render can never leave a half-written page
+on disk for a reader to open.
+
 Reports one line per artifact, in `init`'s idiom:
 
 ```
@@ -96,6 +112,13 @@ repository that treats that churn as a defect.
 `--only-existing` regenerates only artifacts that already exist and creates
 none. It is what the hook invokes, and it is what makes activation and
 deactivation mean something.
+
+**`--only-existing` is fail-open**: an invalid corpus is a WARNING and exit 0,
+not an ERROR. It is the unattended mode, and an ERROR there would mean a
+failure reported on every session start until someone fixes the corpus. Run
+explicitly, without the flag, the same invalid corpus is an ERROR that gates
+-- a person asking for the views is entitled to be told they were not built.
+This is the discipline the existing startup hook already follows.
 
 Exit codes follow the repository convention: `0` clean or WARNING-only, `1`
 an ERROR finding, `2` a usage error.
@@ -210,10 +233,28 @@ search or filter of their own.
 **Self-containment is about resource loading, not about URL strings.**
 Provenance is rendered as a clickable link: it exists so a third party can go
 and check the claim, and making them copy a URL by hand degrades it for
-nothing. An outgoing link loads nothing when the page is opened. So the
-prohibition is on `src=`, `<link `, `@import`, `<iframe`, `url(` in CSS and
-any other construct that fetches something; `<a href="https://...">` is
-allowed.
+nothing. An outgoing link loads nothing when the page is opened.
+
+The rule is stated as a **whitelist over the parsed document**, not as a
+blacklist of substrings:
+
+> The only attribute anywhere in the page that carries an external URL is
+> `href`, and only on an `<a>` element.
+
+A substring blacklist leaks, and the leaks are not exotic:
+`<meta http-equiv="refresh">` navigates on open, `<base href>` rewrites every
+relative URL on the page, `<form action>` submits, `srcset` does not contain
+`src=`, and `<object>`, `<embed>`, `<video>`, `<audio>`, `<source>` and
+`<track>` all fetch. The one that bites this design directly is SVG: inside
+`<use>` and `<image>`, `href` (and `xlink:href`) **loads** rather than links,
+so "an `href` is fine" applied blindly would let it through. The page is
+parsed for the structure test anyway, which gives element and attribute, so
+the whitelist costs nothing and closes the cases nobody thought of.
+
+Two further checks: no `<a>` carries `ping` (it fires a request on click),
+and any `<a target="_blank">` carries `rel="noopener noreferrer"` -- without
+it the destination can reach back through `window.opener`, and this file is
+built to be mailed to strangers.
 
 ## Diagrams
 
@@ -320,6 +361,11 @@ never importing internals.
 - `init --view` creates both artifacts once and reports `kept` on a second
   run without rewriting them; on an invalid corpus it creates nothing, warns,
   and does not gate.
+- `--only-existing` over an invalid corpus warns and exits 0, while the same
+  corpus rendered explicitly exits 1.
+- The new hook script exists, starts with `#!/bin/bash`, and is referenced
+  from `SessionStart` in `hooks/hooks.json`. `test_hooks_manifest.py` covers
+  the existing script only; the new one gets the same safety net.
 
 ## Dependencies and sequencing
 
@@ -331,6 +377,15 @@ model (collection, parsing, `Resolution`, supersession) lifted out of
 
 Work order: that extraction merges first; `feature/render-views` rebases onto
 it; implementation follows test-first.
+
+One ordering constraint is load-bearing. `tests/test_skills_structure.py` now
+walks `docs/` recursively and asserts that every literal
+`python3 -m validated_memory <word>` in skills, docs or the README names a
+real subcommand. This document contains that literal for `render`, so **the
+first implementation commit must register `render` in `cli.SUBCOMMANDS` and
+in the test's `REAL_SUBCOMMANDS`**, or the suite is red on this branch from
+the moment it rebases. The same test's clean-room check also scans this
+document for mentions of the internal projects the method was studied on.
 
 The version moves to 1.1.0 in the three places that must agree
 (`pyproject.toml`, `.claude-plugin/plugin.json`, `validated_memory/__init__.py`),
