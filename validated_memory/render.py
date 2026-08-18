@@ -10,7 +10,9 @@ import os
 from pathlib import Path
 
 from . import knowledge_view, validate
-from .findings import EXIT_ERROR, EXIT_OK
+from . import verdicts as verdicts_module
+from .contract import ERROR
+from .findings import EXIT_ERROR, EXIT_OK, Finding
 
 KNOWLEDGE_ARTIFACT = "knowledge.html"
 MEMORY_ARTIFACT = "memory.html"
@@ -21,7 +23,22 @@ def run(only_existing, stdout, stderr):
     documents, ok = validate.gated_source(None, stderr)
     if not ok:
         return EXIT_ERROR
-    content = knowledge_view.build(documents, _basis_location(None))
+    try:
+        content = knowledge_view.build(documents, _basis_location(None))
+    except verdicts_module.VerdictLogError as error:
+        # Same shape `derive` reports: a log this reader cannot parse is a
+        # finding naming the file (and line, when the fault is one line's
+        # rather than the whole file's), never a traceback -- the person
+        # opening this page has no repository to read a stack trace against.
+        finding = Finding(
+            ERROR,
+            verdicts_module.LOG_FILENAME,
+            "log",
+            error.message,
+            line=error.lineno,
+        )
+        print(finding.render(), file=stderr)
+        return EXIT_ERROR
     action = write_if_changed(Path(KNOWLEDGE_ARTIFACT), content)
     print(f"render: {action} {KNOWLEDGE_ARTIFACT}", file=stdout)
     return EXIT_OK

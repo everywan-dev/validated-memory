@@ -1,5 +1,7 @@
 """End-to-end tests for the `render` subcommand."""
 
+import re
+
 
 def _scaffold(run_cli, adopter_dir, write_unit):
     run_cli("init", cwd=adopter_dir)
@@ -191,3 +193,42 @@ def test_a_hostile_anchor_payload_is_text_and_never_live_markup(
     assert "<script>alert(1)</script>" not in page
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
     assert not [tag for tag, _ in page_elements(page) if tag == "script"]
+
+
+def test_a_verdict_log_record_that_is_not_json_is_reported_not_raised(
+    run_cli, adopter_dir, write_unit
+):
+    # `knowledge_view.build` reads the service view through the same log
+    # `derive` reads. A log it cannot parse is a finding naming the file and
+    # line, not a traceback: the person opening this page has no repository
+    # to read a stack trace against.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n")
+    (adopter_dir / "verdicts.jsonl").write_text("{not json}\n", encoding="utf-8")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "verdicts.jsonl:1" in result.stderr
+    assert "ERROR" in result.stderr
+    assert not (adopter_dir / "knowledge.html").exists()
+
+
+def test_a_verdict_log_that_is_not_utf8_is_reported_without_a_line_number(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n")
+    (adopter_dir / "verdicts.jsonl").write_bytes(b"\xff\xfe not utf-8\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    # No line number: the fault is the file's, not one line's -- rendered as
+    # `verdicts.jsonl: log: …`, never `verdicts.jsonl:<N>: log: …`.
+    assert "verdicts.jsonl: log:" in result.stderr
+    assert not re.search(r"verdicts\.jsonl:\d", result.stderr)
+    assert "ERROR" in result.stderr
+    assert not (adopter_dir / "knowledge.html").exists()
