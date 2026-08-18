@@ -45,12 +45,36 @@ conclusion was reached, and is what the views render.
 | Memory entries, resolution, supersession | `validated_memory/memory.py`: `documents`, `filename`, `index_entries`, `body`, `wikilinks`, `supersession`, `resolution` -> `Resolution(by_name, by_filename)`, `filename_hint`, `is_declared` |
 
 Two shapes of that module are load-bearing for the views. `index_entries`
-returns the `href` already normalised, and the views must not normalise it
-again: the href is a key, and two consumers normalising it differently is how
-they end up disagreeing about which entry names which file. To compare paths,
-apply `PurePosixPath(href).as_posix()` as `lint` and `adopt` do, so `./x.md`
-and `x.md` are one entry. And what counts as a declared name is decided by
-`memory.is_declared(value)`, which exists once on purpose.
+strips the whitespace around the `href` and nothing else -- that stripping
+belongs to the reader so two consumers cannot do it differently -- while
+turning `./x.md` and `x.md` into one key is the consumer's job, done as `lint`
+and `adopt` do it, with `PurePosixPath(href).as_posix()`. And what counts as a
+declared name is decided by `memory.is_declared(value)`, which exists once on
+purpose.
+
+Two limits of those readers are part of this design rather than hidden by it.
+
+**`verdicts.service_view()` reads the file outside its `try`**, so an
+unreadable or undecodable log escapes as `OSError` or `UnicodeDecodeError`,
+not as the `VerdictLogError` its docstring promises, and `derive` -- which
+catches only `VerdictLogError` -- shows a traceback. The same read also builds
+its dictionary key without checking that the three fields are strings, so a
+record like `{"unit": [], ...}` raises `TypeError` instead of a finding. Both
+are fixed here, in `verdicts.py`, as part of adding `history()`: the read is
+wrapped and the key fields are type-checked, each raising `VerdictLogError`
+like every other unreadable record. Fail-loud that fails as a traceback is not
+fail-loud.
+
+**There is no `gated_source` for the memory layer.** `memory.py` reads; every
+rule lives in private functions of `lint`. The views therefore **do not
+enforce**: `render` gates only on what it must read -- the memory directory
+and its index exist, and a document's frontmatter parses -- and everything
+else stays `lint`'s business. A memory file with no index entry is still
+rendered, an unresolved reference is marked as unresolved, and a document
+whose frontmatter will not parse is rendered with that said in place of its
+fields. Hiding a record because `lint` would complain about it would make the
+view lie about what the repository holds; `lint` is one command away and is
+the authority.
 
 This is a correctness rule, not a style preference. `verdicts.service_view()`
 is fail-loud: it raises `VerdictLogError` with a line number on a log it
@@ -145,8 +169,15 @@ mangles accented text on a double click is not readable.
 A header carrying the recount basis -- how many units, under which path, in
 `derive`'s idiom -- and the history-window disclosure: how many records the
 log holds in total, that at most twenty are shown per anchor, and where the
-log is. Each anchor's own history repeats the disclosure for itself: how many
-records that `(unit, system, kind)` has, and how many of them are shown.
+log is. Because the log outlives the corpus -- nothing prunes records whose
+unit, system or anchor no longer exists -- the header states two totals rather
+than one: how many records the log holds, and how many of them belong to an
+anchor shown on this page. Otherwise the reader cannot reconcile the total
+with the histories in front of them, and is left to guess where the difference
+went.
+
+Each anchor's own history repeats the disclosure for itself: how many records
+that `(unit, system, kind)` has, and how many of them are shown.
 
 Then one entry per **live conclusion**, ordered by `id`. Ordering by `id` is
 the only order that does not move on its own: any ordering by freshness or
@@ -166,6 +197,27 @@ verdict. Expanded, it carries:
 Nothing superseded appears at the top level; it appears inside the history of
 whatever replaced it. Because two units may both supersede the same one, the
 second appearance is an internal reference to the first, not a copy.
+
+### Units no live conclusion reaches
+
+Nothing in the package detects a supersession cycle, and the contract does not
+reject one: `_check_supersedes` rejects a self-supersession and a target that
+does not exist, and stops there. So `A supersedes B` with `B supersedes A`
+validates cleanly, `effective_states` marks *both* as superseded, and neither
+is anyone's root. Rendering only what hangs off a live conclusion would drop
+them from the page in silence -- the exact failure this project exists to
+prevent, in the artifact meant to prove it does not happen.
+
+So the page ends with a final section, present only when it has content:
+every unit no live conclusion reaches, rendered with the same detail, under a
+heading that says what it is. `render` also reports a WARNING naming those
+ids, which does not gate.
+
+The recursion terminates on the same set that prevents duplicate rendering: a
+unit already rendered is emitted as an internal reference, never re-entered.
+That is what makes "the number of unit sections equals the number of units" a
+real invariant rather than an aspiration -- it fails loudly on a corpus this
+rule forgets.
 
 ### Headline
 
@@ -243,6 +295,13 @@ Provenance is rendered as a clickable link: it exists so a third party can go
 and check the claim, and making them copy a URL by hand degrades it for
 nothing. An outgoing link loads nothing when the page is opened.
 
+Only `http://` and `https://` become links. The contract requires
+`provenance` to be a list and validates nothing about its elements, so a
+valid unit can carry `javascript:alert(1)`, a `data:` URI, or a mapping
+instead of a string. `html.escape` does not neutralise a scheme -- it is the
+link that would arm it -- so the scheme allowlist is where that is stopped,
+and everything outside it is rendered as escaped text.
+
 The rule is stated as a **whitelist over the parsed document**, not as a
 blacklist of substrings:
 
@@ -268,11 +327,18 @@ built to be mailed to strangers.
 
 Only two, both inline SVG, both generated deterministically:
 
-- **The freshness strip** of an anchor: probes over time, coloured by
-  verdict. This shows what text does not -- how long it held `current`, when
-  it drifted, how long it has been drifting. **Its right edge is the last
-  record, never "now"**: an edge at "now" would change the SVG on every
-  regeneration and bring the churn back.
+- **The freshness strip** of an anchor: one band per probe, in log order,
+  coloured by verdict. This shows what text does not -- a run of `current`
+  ending in a switch to `drifted`, and how long it has stayed there.
+  **Its right edge is the last record, never "now"**: an edge at "now" would
+  change the SVG on every regeneration and bring the churn back.
+
+  The strip is ordered by **position in the log, not by timestamp**. The log
+  is append-only, so file order is chronological, and the verdict parser
+  requires only `unit`, `system`, `kind` and `verdict` -- `recorded_at` is
+  what `probe` happens to write, not something any reader can demand. A strip
+  laid out on timestamps would break on a record the enforcement accepts.
+  Each band is labelled with its `recorded_at` when there is one.
 - **Many-to-one confluence**, when three or more units are superseded at once
   by a single one. With two links in a chain nothing is drawn: two boxes and
   an arrow take half a screen to say what one line of text says better.
@@ -283,6 +349,15 @@ carries its label, for colour-blind readers and for black-and-white printing.
 ## History window
 
 Twenty probe records per `(unit, system, kind)`, most recent first.
+
+Two anchors of the same unit sharing a `system` and a `kind` are one key.
+The contract does not require them to differ, and `probe` records no position,
+`captured_at` or `payload` -- so the log cannot tell them apart even though
+their payloads may probe different things and return different verdicts. The
+view does not pretend otherwise: when a unit has more than one anchor on the
+same `(system, kind)`, the history is shown once, marked as shared by those
+anchors. Showing the same records under each as if they were its own would be
+the view inventing a distinction the data does not carry.
 
 The key includes the unit: `verdicts.service_view()` builds it as
 `(record["unit"], record["system"], record["kind"])`, and `unit_verdict`
@@ -319,8 +394,10 @@ a rename or a re-clone.
 A configuration key was rejected: an unknown field in `validated-memory.md`
 is an ERROR that gates *every* subcommand (`extension.py`, `CONFIG_FIELDS`),
 so an adopter who wrote a `view` key and then worked on a machine with an
-older plugin would find `validate`, `lint`, `derive` and `probe` all dead --
-not the view disabled. Presence-based activation needs no change to
+older plugin would find `validate`, `derive` and `probe` all dead -- not the
+view disabled. (`lint` survives: `lint.run` never loads the configuration.
+Three of the five subcommands, including every gate over curated knowledge, is
+still bricking a project to toggle a view.) Presence-based activation needs no change to
 `CONFIG_FIELDS` and cannot break an older plugin, which sees an `.html` file
 it does not understand and ignores it.
 
@@ -349,11 +426,28 @@ presentation.
 
 ## Tests
 
-End-to-end only, invoking the CLI as a subprocess over fixture adopter trees,
-never importing internals.
+End-to-end, invoking the CLI as a subprocess over fixture adopter trees. The
+seam is that no test imports the package's internals; reading files the plugin
+ships -- the hook script, `hooks/hooks.json` -- is reading data, which
+`tests/test_skills_structure.py` and `tests/test_hooks_manifest.py` already do
+and document as such.
+
+One invariant is not observable from outside, and is not pretended to be: that
+`history()` and `service_view()` run the *same* parsing loop is a review
+invariant. The tests assert the observable half -- that both reject the same
+logs, with the same line numbers.
 
 - `render` on a fixture corpus writes both artifacts; a second run reports
-  `unchanged` and leaves the files byte-identical.
+  `unchanged`, leaves the bytes identical **and leaves `st_mtime_ns`
+  untouched**. Identical bytes alone would pass an implementation that
+  rewrites the same content and prints `unchanged`, which is the thing this
+  rule exists to forbid.
+- A supersession cycle renders every unit involved, under the section for
+  units no live conclusion reaches, and warns without gating.
+- A unit with two anchors on the same `(system, kind)` shows one history,
+  marked as shared.
+- A `provenance` entry with a `javascript:` scheme is rendered as text, never
+  as a link.
 - An ERROR-level contract finding stops the run and writes nothing.
 - An unreadable `verdicts.jsonl` fails the same way `derive` fails on it.
 - Structure, parsed with `html.parser` from the standard library: the number
