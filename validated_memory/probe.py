@@ -85,6 +85,7 @@ def _probe_all(documents, registry):
                     "unit": unit_id,
                     "system": anchor.get("system"),
                     "kind": anchor.get("kind"),
+                    "payload": anchor.get("payload"),
                     "verdict": verdict,
                     "detail": detail,
                 }

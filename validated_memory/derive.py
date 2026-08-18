@@ -120,10 +120,17 @@ def unit_verdict(unit_id, anchors, view):
     With anchors, one absent from the service view (never probed) is
     `unknown`, fail-explicit.
 
+    Each anchor reads its own verdict, keyed on what it points at, so two
+    anchors of one unit that share a `(system, kind)` -- two refs of the same
+    repository -- no longer collapse into one entry.
+
     Returns a `UnitVerdict`: the grade, the systems behind an `unknown` anchor
     (sorted), and the per-anchor detail. Computation only -- how the grade is
     written into the index is `_verdict_cell`'s business, and any other reader
     grades a unit by calling this rather than by reimplementing the rule.
+
+    `anchors` are a validated unit's: `system` and `kind` are strings, so they
+    can be keyed on.
     """
     if not anchors:
         return UnitVerdict(verdicts_module.UNKNOWN, (), ())
@@ -132,7 +139,12 @@ def unit_verdict(unit_id, anchors, view):
             anchor.get("system"),
             anchor.get("kind"),
             view.get(
-                (unit_id, anchor.get("system"), anchor.get("kind")),
+                verdicts_module.anchor_key(
+                    unit_id,
+                    anchor.get("system"),
+                    anchor.get("kind"),
+                    anchor.get("payload"),
+                ),
                 verdicts_module.UNKNOWN,
             ),
         )
