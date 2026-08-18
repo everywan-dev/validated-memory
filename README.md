@@ -463,20 +463,25 @@ a routine `probe` would reshuffle on the next session. Each entry expands
 to its body, every anchor's envelope and provenance, the anchor's probe
 history, and the supersession chain that led to it, nested as deep as the
 chain runs; a superseded unit never appears at the top level, only inside
-the history of whatever replaced it. Probe history shows at most 20 records
-per anchor, most recent first, and the page states both how many records
-the verdict log holds in total and how many belong to an anchor actually
-shown on the page, so a reader can tell a full history from a partial one.
-Two diagrams, both inline SVG: a freshness strip per anchor (one band per
-probe, in log order, coloured and labelled by verdict) and a many-to-one
-confluence, drawn only when three or more units are superseded at once.
+the history of whatever replaced it. The page states how many records the
+verdict log holds in total and how many belong to an anchor shown on the
+page -- two totals, not one, because the log outlives the corpus (nothing
+prunes a record whose unit or anchor is gone), so a single total could
+never be reconciled by a reader against the histories in front of them.
+Probe history itself shows at most 20 records per anchor, most recent
+first, and each anchor's own history repeats the disclosure for itself --
+`N record(s) for this anchor; showing M` -- which is what actually lets a
+reader tell a full history from a truncated one. Two diagrams, both inline
+SVG: a freshness strip per anchor (one band per probe, in log order,
+coloured and labelled by verdict) and a many-to-one confluence, drawn only
+when three or more units are superseded at once.
 
 **`memory.html`** lists entries by filename, each with its outgoing and
 incoming references -- the wikilink graph, walkable entry by entry rather
 than drawn (a real corpus runs to hundreds of links, which draws as a
-hairball nobody reads anything out of). A wikilink inside a body is never
-turned into a link: the body is verbatim, and linkifying it would be
-rendering it.
+hairball nobody reads anything out of). A superseded entry is marked as
+such and links to its successor. A wikilink inside a body is never turned
+into a link: the body is verbatim, and linkifying it would be rendering it.
 
 **`--only-existing`** regenerates only the artifacts already on disk and
 creates neither -- it is what the startup hook below invokes, and it is
