@@ -11,14 +11,17 @@ without the plugin installed.
 
 ## Status
 
-**1.0.0** -- v1 complete. Every subcommand is live: `validate` enforces the
-base contract and the adopter's declared extension; `lint` enforces the
-agent-memory layer; `derive` re-derives the knowledge index, with a `--check` gate, and
-reads real freshness verdicts; `probe` runs freshness probes and records
-them, including the bundled `git_ref` probe; `init` scaffolds a new adopter
-project. Five skills make the method invocable from the CLI surface alone,
-and a `SessionStart` hook keeps a `--harness-memory` symlink alive across
-sessions -- see "Skills" and "Startup hook" below.
+**1.1.0** -- v1 complete, plus static HTML views. Every subcommand is live:
+`validate` enforces the base contract and the adopter's declared extension;
+`lint` enforces the agent-memory layer; `derive` re-derives the knowledge
+index, with a `--check` gate, and reads real freshness verdicts; `probe`
+runs freshness probes and records them, including the bundled `git_ref`
+probe; `render` writes two self-contained HTML pages, one per layer; `init`
+scaffolds a new adopter project and, with `--view`, activates the pages
+`render` writes. Five skills make the method invocable from the CLI surface
+alone, and two `SessionStart` hooks keep a `--harness-memory` symlink alive
+and refresh whichever views are active, across sessions -- see "Skills" and
+"Startup hook" below.
 
 ## Layers
 
@@ -38,7 +41,7 @@ sessions -- see "Skills" and "Startup hook" below.
 python3 -m validated_memory <command>
 ```
 
-Commands: `init`, `lint`, `validate`, `derive`, `probe`.
+Commands: `init`, `lint`, `validate`, `derive`, `probe`, `render`.
 
 Exit codes: `0` = clean run or WARNING-only findings (does not gate);
 non-zero = ERROR (gates).
@@ -412,6 +415,83 @@ framework's fallback: every failure it can anticipate is caught and turned
 into `unknown` with a reason here, so it never raises, never prints a raw
 traceback, and never exits non-zero.
 
+### `render`
+
+```
+python3 -m validated_memory render [--only-existing]
+```
+
+Writes two self-contained HTML pages to the working directory -- alongside
+`knowledge-index.md` and `verdicts.jsonl`, never inside `knowledge/`:
+`knowledge.html`, the curated layer, and `memory.html`, the agent-memory
+layer. Two files rather than one because the two layers share neither
+frontmatter, nor relations, nor the way each stops being true -- no single
+name covers both without being false about one of them.
+
+`render` validates before rendering, exactly like `derive`: an ERROR
+finding is reported in `validate`'s format and stops the run with nothing
+written; a WARNING does not block. Each artifact is built entirely in
+memory and written in one operation, so a validation failure or a crash
+mid-build can never leave a half-written page on disk for a reader to open.
+A summary goes to stdout, one line per artifact, in `init`'s idiom:
+
+```
+render: wrote knowledge.html
+render: unchanged memory.html
+```
+
+**A file whose content is unchanged is not rewritten**, and the output
+carries no generation timestamp, so an unchanged corpus produces
+byte-identical output run after run. Without this, the startup hook below
+would dirty `git status` on every session start, forever, in a repository
+that treats that churn as a defect.
+
+**Both pages are inert.** No JavaScript and no request to the network:
+collapsing a section uses the browser's native `<details>`/`<summary>`, not
+a script. The only attribute anywhere in either page that carries an
+external URL is `href` on an `<a>` element, and only a `provenance` entry
+with an `http://` or `https://` scheme becomes a link -- anything else (a
+`javascript:` URI, a bare string, a mapping) is shown as escaped text
+instead. A unit or memory body is shown verbatim, escaped and unrendered,
+in a monospaced block; the one line extracted from it is the headline,
+taken from the body's first heading and falling back to the unit's `id`
+when there is none.
+
+**`knowledge.html`** lists live conclusions ordered by `id` -- the one
+ordering that does not move on its own, unlike freshness or recency, which
+a routine `probe` would reshuffle on the next session. Each entry expands
+to its body, every anchor's envelope and provenance, the anchor's probe
+history, and the supersession chain that led to it, nested as deep as the
+chain runs; a superseded unit never appears at the top level, only inside
+the history of whatever replaced it. Probe history shows at most 20 records
+per anchor, most recent first, and the page states both how many records
+the verdict log holds in total and how many belong to an anchor actually
+shown on the page, so a reader can tell a full history from a partial one.
+Two diagrams, both inline SVG: a freshness strip per anchor (one band per
+probe, in log order, coloured and labelled by verdict) and a many-to-one
+confluence, drawn only when three or more units are superseded at once.
+
+**`memory.html`** lists entries by filename, each with its outgoing and
+incoming references -- the wikilink graph, walkable entry by entry rather
+than drawn (a real corpus runs to hundreds of links, which draws as a
+hairball nobody reads anything out of). A wikilink inside a body is never
+turned into a link: the body is verbatim, and linkifying it would be
+rendering it.
+
+**`--only-existing`** regenerates only the artifacts already on disk and
+creates neither -- it is what the startup hook below invokes, and it is
+what makes activation and deactivation (see "Startup hook") mean anything.
+It is also fail-open: an invalid corpus, an unreadable verdict log, or a
+missing memory directory or index is a WARNING and exit 0, leaving whatever
+is already on disk exactly as it was, rather than an ERROR that a hook
+would otherwise report unattended on every session start until someone
+fixes the corpus. Run explicitly, without the flag, the same corpus is an
+ERROR that gates -- a person asking for the views by hand is entitled to be
+told they were not built.
+
+Exit codes: `0` clean, or WARNING-only findings; `1` an ERROR finding; `2`
+a usage error.
+
 ## Agent memory
 
 The agent-memory layer is one Markdown file per fact (`memory/*.md`), plus a
@@ -698,15 +778,21 @@ reproducible run through every layer -- `init` → create a unit → `validate`
 
 ## Startup hook
 
-A `SessionStart` hook (`hooks/hooks.json`, running
-`hooks/restore-memory-symlink.sh`) restores a project's `--harness-memory`
-symlink automatically on every session start -- the wiring the
-`--harness-memory` section above defers to it. It computes the harness's
-per-project memory location the same way Claude Code lays out
-`~/.claude/projects/` -- one directory per project, keyed by the project's
-own path with **every character that is not a letter or a digit** replaced by
-`-` -- and re-runs `init --harness-memory` against it, with its stdout
-silenced. That rule covers `_` and `.`, not only `/`:
+Two `SessionStart` hooks run, in that order, from `hooks/hooks.json`: one
+restores the `--harness-memory` symlink, the other refreshes whichever HTML
+views this project has activated. They are two separate scripts rather than
+one because their contracts do not mix -- the first never loses data, the
+second overwrites files -- and reviewing both concerns in a single script
+would make it impossible to review either.
+
+**Restoring the harness-memory symlink.** `hooks/restore-memory-symlink.sh`
+restores a project's `--harness-memory` symlink automatically on every
+session start -- the wiring the `--harness-memory` section above defers to
+it. It computes the harness's per-project memory location the same way
+Claude Code lays out `~/.claude/projects/` -- one directory per project,
+keyed by the project's own path with **every character that is not a letter
+or a digit** replaced by `-` -- and re-runs `init --harness-memory` against
+it, with its stdout silenced. That rule covers `_` and `.`, not only `/`:
 `/home/u/Claude/odoo_ecosystem/odoo_migration` is keyed
 `-home-u-Claude-odoo-ecosystem-odoo-migration`. Getting it wrong is the one
 failure here that is silent rather than fail-open -- `init` reports success
@@ -714,20 +800,57 @@ against a directory the harness never reads, and the memory simply never
 shows up -- so the rule is pinned by a test rather than left to the
 substitution being "obviously" about slashes.
 
-The hook is fail-open throughout, matching `init`'s own contract: no
+This hook is fail-open throughout, matching `init`'s own contract: no
 `$CLAUDE_PROJECT_DIR`, a project that has not adopted validated-memory (no
 `validated-memory.md`, or no `memory/`, at its root), no `python3` on
 `PATH`, or any other problem along the way is a clean no-op -- it never
 gates or breaks session startup, and it never deletes data.
 
-Because the hook runs unattended, it is also where "Absorbing an existing
-harness memory directory" (above) normally happens: the first session after a
+Because it runs unattended, it is also where "Absorbing an existing harness
+memory directory" (above) normally happens: the first session after a
 project adopts the plugin merges the harness's pre-existing memory into the
 project and parks the original as a `.bak`. That merge is deliberately part
 of `init` rather than a flag the hook passes, so it happens once, by itself,
 on the deployment path -- gated by the recognition rule, which is what keeps
 it from touching anything that is not agent memory. See `docs/adoption.md`
 ("The startup hook") for the adopter-facing summary.
+
+**Activating and refreshing the HTML views.** Activation of `knowledge.html`
+and `memory.html` is the presence of the artifact, not a configuration key:
+
+```
+python3 -m validated_memory init --view
+```
+
+creates whichever of the two is missing and reports `created` / `kept` per
+item, the same idiom every other item `init` manages -- and, like every
+other item, it never regenerates an artifact that already exists, hand-edited
+or not. That is `init`'s documented contract (see "init" above); a view
+generator inside `init` would break the very command that defines it, so
+regeneration belongs to `render` and to the second hook below. Deleting a
+file deactivates it; running `init --view` again reactivates it.
+
+A configuration key was considered for this and rejected: an unknown field
+in `validated-memory.md` is an ERROR that gates every other subcommand, so
+an adopter who added a `view` key and then worked from a machine with an
+older copy of the plugin would find `validate`, `derive` and `probe` all
+dead, not merely the view disabled. Presence-based activation needs no
+change to the configuration schema and cannot break an older plugin, which
+sees an `.html` file it does not understand and ignores it.
+
+The second hook, `hooks/refresh-views.sh`, keeps whichever views are active
+fresh by running `render --only-existing` (see "render" above): it
+regenerates only the artifacts already on disk and creates none, so an
+adopter who never activated the views pays nothing at session start. It is
+fail-open on every path it can fail on -- an invalid corpus, an unreadable
+verdict log, a missing memory directory or index -- and always exits 0, the
+same discipline the first hook follows.
+
+Neither `knowledge.html` nor `memory.html` is added to `.gitignore`: like
+`knowledge-index.md` and `verdicts.jsonl`, they are derived files, and this
+project decides whether to version them. Versioning them means a fresh
+clone has the views immediately; not versioning them means running `init
+--view` once after cloning.
 
 ## Development
 

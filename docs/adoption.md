@@ -1,17 +1,17 @@
 # Adoption guide
 
 How to bring a project onto validated-memory: install the plugin, bootstrap
-the layout, declare an extension, register probes, and gate CI on the
-derived index. For the full command reference, see the
-[README](../README.md). For a worked example end to end, see
-[the walkthrough](walkthrough.md).
+the layout, declare an extension, register probes, gate CI on the derived
+index, and optionally activate the HTML views. For the full command
+reference, see the [README](../README.md). For a worked example end to
+end, see [the walkthrough](walkthrough.md).
 
 ## 1. Install the plugin
 
 Install `validated-memory` as a Claude Code plugin (however your harness
 manages plugins -- a marketplace, a local plugin path, or a checkout
 referenced directly). Once installed, its five skills are discovered from
-`skills/*/SKILL.md` by directory convention, and its startup hook from
+`skills/*/SKILL.md` by directory convention, and its two startup hooks from
 `hooks/hooks.json` -- neither needs any registration inside the adopter
 project.
 
@@ -96,11 +96,35 @@ Run `python3 -m validated_memory probe` on whatever cadence fits the project
 so the verdict column reflects current probing rather than going stale -- see
 [`probe`](../README.md#probe).
 
+## 6. Activate the HTML views (optional)
+
+`render` writes two self-contained, static HTML pages -- `knowledge.html`
+for the curated layer and `memory.html` for the agent-memory layer -- so
+someone with neither this repository nor Python installed can still read
+what the project holds; see [`render`](../README.md#render) for what each
+page shows. Activation is the presence of the file, not a setting:
+
+```
+python3 -m validated_memory init --view
+```
+
+creates whichever of the two is missing and reports `created` / `kept` for
+each, and -- like every other item `init` manages -- never touches one that
+already exists. Deleting `knowledge.html` or `memory.html` deactivates it;
+running `init --view` again brings it back. Like `knowledge-index.md` and
+`verdicts.jsonl`, neither artifact is in `.gitignore`: both are derived
+files, and this project decides whether to version them.
+
+Once activated, a view stays current on its own -- see
+["The startup hook"](#the-startup-hook) below for how.
+
 ## The startup hook
 
-`hooks/restore-memory-symlink.sh`, wired as a `SessionStart` hook, keeps a
-`--harness-memory` symlink alive across renames, re-clones, and fresh
-sessions, without any manual step:
+Two `SessionStart` hooks run on every session start, wired in
+`hooks/hooks.json`.
+
+`hooks/restore-memory-symlink.sh` keeps a `--harness-memory` symlink alive
+across renames, re-clones, and fresh sessions, without any manual step:
 
 - Not an adopter project (no `validated-memory.md`, or no `memory/`, at the
   project root) -- does nothing.
@@ -116,6 +140,16 @@ The `.bak` it leaves behind is the only manual follow-up worth doing: once
 `lint` passes and the merged memory looks right, that backup can be removed
 whenever the adopter wants -- the plugin never touches it again.
 
-Nothing here needs to be invoked by hand in the common case: it runs on
-every session start for every adopter project that has ever asked for a
-harness-memory symlink.
+`hooks/refresh-views.sh` keeps whichever HTML views this project has
+activated (see [step 6](#6-activate-the-html-views-optional) above)
+up to date, the same way: it re-runs `render --only-existing`, silencing
+its stdout, which regenerates only the artifacts already on disk and
+creates neither. A project that never ran `init --view` has no artifacts,
+so this hook finds nothing to do and costs it nothing. Fail-open the same
+way as the other hook: an invalid corpus, an unreadable verdict log, or a
+missing memory directory or index is reported to stderr and the hook still
+exits clean, leaving whatever view was already on disk untouched.
+
+Nothing here needs to be invoked by hand in the common case: both hooks run
+on every session start for every adopter project that has asked for a
+harness-memory symlink, or activated a view, respectively.
