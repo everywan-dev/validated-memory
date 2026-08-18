@@ -63,6 +63,7 @@ def validate_documents(documents, extension=None):
 
     for location, data in units:
         findings.extend(_check_supersedes(location, data, declared))
+    findings.extend(_check_supersession_cycles(units, declared))
     return findings
 
 
@@ -188,6 +189,86 @@ def _check_supersedes(location, data, declared):
                 )
             )
     return findings
+
+
+def _check_supersession_cycles(units, declared):
+    """Report a supersession chain that closes on itself.
+
+    Supersession retires a fact by naming what replaces it, so a chain has to
+    end somewhere. A cycle means every unit in it is superseded and none is
+    live: the group drops out of the index's active view, and `probe` stops
+    probing it, since only active units are probed. Nothing was deleted, yet
+    the knowledge silently stops being checked -- which is the failure this
+    contract exists to prevent, so it gates rather than warns. There is no
+    migration case to protect: a cycle is never intentional and never correct.
+
+    A unit superseding itself is a cycle of one and already has its own rule;
+    it is left out here so the same defect is not reported twice.
+    """
+    edges = {}
+    for _location, data in units:
+        unit_id = data.get("id")
+        # `_is_valid_id` first, always: an `id` or a `supersedes` entry can be
+        # any JSON value, and an unhashable one reaching `in declared` raises
+        # instead of being reported. Its own rule already gates it.
+        if not _is_valid_id(unit_id) or unit_id not in declared:
+            continue
+        supersedes = data.get("supersedes")
+        if not isinstance(supersedes, list):
+            continue
+        edges[unit_id] = [
+            entry
+            for entry in supersedes
+            if _is_valid_id(entry) and entry in declared and entry != unit_id
+        ]
+
+    findings = []
+    seen_cycles = set()
+    state = {}  # unit id -> True while on the current path, False once done
+    # Iterative rather than recursive: a long supersession chain would be a
+    # RecursionError, and a crash is not a finding.
+    for root in sorted(edges):
+        if root in state:
+            continue
+        path = [root]
+        state[root] = True
+        stack = [(root, iter(edges[root]))]
+        while stack:
+            _node, targets = stack[-1]
+            descended = False
+            for target in targets:
+                if state.get(target) is True:
+                    cycle = _canonical_cycle(path[path.index(target) :])
+                    if cycle not in seen_cycles:
+                        seen_cycles.add(cycle)
+                        findings.append(_cycle_finding(cycle, declared))
+                elif target not in state:
+                    state[target] = True
+                    path.append(target)
+                    stack.append((target, iter(edges.get(target, ()))))
+                    descended = True
+                    break
+            if not descended:
+                state[path.pop()] = False
+                stack.pop()
+    return findings
+
+
+def _canonical_cycle(cycle):
+    """Rotate a cycle to start at its lowest id, so it has one written form."""
+    start = min(range(len(cycle)), key=lambda index: cycle[index])
+    return tuple(cycle[start:] + cycle[:start])
+
+
+def _cycle_finding(cycle, declared):
+    chain = " -> ".join(cycle + (cycle[0],))
+    return Finding(
+        ERROR,
+        declared[cycle[0]],
+        "supersedes",
+        f"supersession cycle: {chain}; every unit in it is superseded, so "
+        "none is live and none is probed",
+    )
 
 
 def _check_anchors(location, data):

@@ -323,3 +323,75 @@ def test_supersession_resolves_against_the_validated_set_only(
 
     assert result.returncode == 1
     assert "does not exist in the validated set" in result.stderr
+
+
+# --- supersession cycles -----------------------------------------------------
+
+
+def _unit(unit_id, supersedes):
+    return f"id: {unit_id}\nevidence: measured\nsupersedes:\n  - {supersedes}\n"
+
+
+def test_a_two_unit_supersession_cycle_gates(adopter_dir, write_unit, run_cli):
+    # Both are superseded, so neither is live: the pair vanishes from the
+    # index's active view and `probe` stops probing it, since only active
+    # units are probed. Nothing was deleted, yet nothing is checked either.
+    write_unit("kb-0001.md", _unit("kb-0001", "kb-0002"))
+    write_unit("kb-0002.md", _unit("kb-0002", "kb-0001"))
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "supersession cycle" in result.stderr
+    assert "kb-0001" in result.stderr
+    assert "kb-0002" in result.stderr
+
+
+def test_a_longer_supersession_cycle_gates(adopter_dir, write_unit, run_cli):
+    write_unit("kb-0001.md", _unit("kb-0001", "kb-0002"))
+    write_unit("kb-0002.md", _unit("kb-0002", "kb-0003"))
+    write_unit("kb-0003.md", _unit("kb-0003", "kb-0001"))
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "supersession cycle" in result.stderr
+    assert result.stderr.count("supersession cycle") == 1
+
+
+def test_a_supersession_chain_that_ends_is_clean(adopter_dir, write_unit, run_cli):
+    # kb-0003 supersedes kb-0002 supersedes kb-0001: a chain with a live end.
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n")
+    write_unit("kb-0002.md", _unit("kb-0002", "kb-0001"))
+    write_unit("kb-0003.md", _unit("kb-0003", "kb-0002"))
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "cycle" not in result.stderr
+
+
+def test_self_supersession_is_not_also_reported_as_a_cycle(
+    adopter_dir, write_unit, run_cli
+):
+    # A unit pointing at itself already has its own ERROR; a self-loop is a
+    # cycle of one, and reporting both would say the same thing twice.
+    write_unit("kb-0001.md", _unit("kb-0001", "kb-0001"))
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "supersedes itself" in result.stderr
+    assert "cycle" not in result.stderr
+
+
+def test_two_separate_cycles_are_both_reported(adopter_dir, write_unit, run_cli):
+    write_unit("kb-0001.md", _unit("kb-0001", "kb-0002"))
+    write_unit("kb-0002.md", _unit("kb-0002", "kb-0001"))
+    write_unit("kb-0003.md", _unit("kb-0003", "kb-0004"))
+    write_unit("kb-0004.md", _unit("kb-0004", "kb-0003"))
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert result.stderr.count("supersession cycle") == 2

@@ -329,6 +329,42 @@ def test_an_empty_knowledge_directory_warns_and_derives_an_empty_index(
     assert "Basis: 0 unit(s) under knowledge/" in index
 
 
+def test_a_verdict_log_that_is_not_utf8_is_reported_not_raised(
+    adopter_dir, write_unit, run_cli
+):
+    # The log is the reader's source of verdicts. Fail-loud means a finding
+    # naming the file, not a traceback: a traceback tells the adopter nothing
+    # about which file to look at and gates by crashing rather than by rule.
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n")
+    (adopter_dir / "verdicts.jsonl").write_bytes(b"\xff\xfe not utf-8\n")
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "verdicts.jsonl" in result.stderr
+    assert "ERROR" in result.stderr
+
+
+def test_a_verdict_record_whose_key_fields_are_not_strings_is_reported(
+    adopter_dir, write_unit, run_cli
+):
+    # A hand-edited log can carry anything. An unhashable value used to reach
+    # the dict key and raise TypeError instead of being reported with its line.
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n")
+    (adopter_dir / "verdicts.jsonl").write_text(
+        '{"unit": [], "system": "repo-a", "kind": "git_ref", "verdict": "current"}\n',
+        encoding="utf-8",
+    )
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "verdicts.jsonl:1:" in result.stderr
+
+
+
 # --- the verdict column reads the real service view of verdicts.jsonl -------
 
 CURRENT_PROBE = """\
