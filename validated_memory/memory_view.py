@@ -32,32 +32,67 @@ TITLE = "Agent memory"
 # `filename` is the canonical identity (ADR 0001), always present -- it is a
 # plain path computation, never touched by unparsed or mistyped frontmatter.
 # `identity` is what a resolved wikilink targets: `name` when it is declared,
-# `filename` otherwise. A document with no declared name can never be a
-# resolution target (`memory.resolution` excludes it from `by_name`), so
-# nothing ever links to the fallback, but the entry still needs an anchor of
-# its own to sit at on the page.
+# `filename` otherwise; `declared` says which. A document with no declared
+# name can never be a resolution target (`memory.resolution` excludes it
+# from `by_name`), so nothing a reference resolves to ever names the
+# fallback -- but the entry still needs an anchor of its own to sit at on
+# the page. `anchor` is that DOM id (see `_anchor`): it and `identity` can
+# differ, which is exactly what keeps a document with no declared name from
+# ever landing on the same id as one that declares that name for real.
 #
 # `error` is set when the frontmatter would not parse; then `data`, `body`,
 # `targets` and `marker` are never populated, because deriving them needs the
 # frontmatter (or, for `body`, needs the closing fence `memory.body` assumes
 # is there).
 _Record = namedtuple(
-    "_Record", "document filename identity data body targets marker error"
+    "_Record",
+    "document filename identity declared anchor data body targets marker error",
 )
 
 
-def build(documents, resolution):
-    """Return the whole page as a string."""
+def _anchor(identity, declared):
+    """The DOM id an entry sits at.
+
+    A declared name is `resolution.by_name`'s namespace: every link built
+    from a resolved wikilink target lands on `entry-<name>`. An entry with
+    no declared name falls back to its filename for `identity` elsewhere on
+    the page, but the filename is not that namespace -- nothing a wikilink
+    resolves to is ever a bare filename -- so it anchors as
+    `entry-file-<filename>` instead. The two schemes can never collide with
+    each other, which `entry-<identity>` for both could: a document with no
+    declared name can have any filename, including one that some other
+    document has declared as its own `name`.
+    """
+    if declared:
+        return f"entry-{identity}"
+    return f"entry-file-{identity}"
+
+
+def build(documents, basis, resolution):
+    """Return the whole page as a string.
+
+    `basis` is the path the memory files were read under, in the same form
+    `knowledge_view.build` reports for the curated layer, so the two basis
+    lines agree on what "basis" discloses.
+    """
     ordered = sorted(
         documents, key=lambda document: memory_module.filename(document.location)
     )
     records = [_read(document) for document in ordered]
-    incoming = _incoming_map(records)
+    incoming = _incoming_map(records, resolution)
 
     parts = [f"<h1>{html.escape_text(TITLE)}</h1>"]
-    parts.append(f'<p class="basis">Basis: {len(records)} memory file(s)</p>')
+    parts.append(
+        f'<p class="basis">Basis: {len(records)} memory file(s) under '
+        f"{html.escape_text(basis)}</p>"
+    )
     for record in records:
-        referrers = incoming.get(record.identity, [])
+        # Only a record whose identity is itself a declared name can be the
+        # target `_incoming_map` indexed anything under -- a fallback
+        # identity (a filename) is never in `resolution.by_name`, so looking
+        # it up here regardless would risk a coincidental match: some other
+        # document's real name happening to equal this one's filename.
+        referrers = incoming.get(record.identity, []) if record.declared else []
         parts.append(_entry_section(record, resolution, referrers))
     return html.page(TITLE, "\n".join(parts))
 
@@ -74,10 +109,15 @@ def _read(document):
     try:
         data = parse_frontmatter(document.text)
     except FrontmatterError as error:
-        return _Record(document, filename, filename, None, None, [], None, error)
+        return _Record(
+            document, filename, filename, False, _anchor(filename, False),
+            None, None, [], None, error,
+        )
 
     name = data.get("name")
-    identity = name if memory_module.is_declared(name) else filename
+    declared = memory_module.is_declared(name)
+    identity = name if declared else filename
+    anchor = _anchor(identity, declared)
     body = memory_module.body(document.text)
     description = data.get("description")
     marker = memory_module.supersession(description)
@@ -87,7 +127,10 @@ def _read(document):
     targets = _ordered_unique(
         memory_module.wikilinks(scan_text) + memory_module.wikilinks(body)
     )
-    return _Record(document, filename, identity, data, body, targets, marker, None)
+    return _Record(
+        document, filename, identity, declared, anchor,
+        data, body, targets, marker, None,
+    )
 
 
 def _ordered_unique(items):
@@ -102,17 +145,23 @@ def _ordered_unique(items):
     return result
 
 
-def _incoming_map(records):
-    """Map each wikilink target string to the records that name it.
+def _incoming_map(records, resolution):
+    """Map each declared name to the records whose outgoing targets name it.
 
-    Built once over every record and looked up by `identity`, so an entry's
-    incoming list is exactly "which other entries carry this identity among
-    their outgoing targets" -- the mirror image of the outgoing list, with no
-    separate notion of what counts as a reference.
+    Built once over every record, restricted to targets `resolution.by_name`
+    recognises -- the same set `_outgoing_list` and `_supersession_html` test
+    membership against, so a wikilink the outgoing side marks unresolved can
+    never turn into a live incoming reference on the other end. Looked up by
+    `identity`, so an entry's incoming list is exactly "which other entries
+    carry this identity among their outgoing targets" -- the mirror image of
+    the outgoing list, with no separate notion of what counts as a
+    reference.
     """
     incoming = {}
     for record in records:
         for target in record.targets:
+            if target not in resolution.by_name:
+                continue
             incoming.setdefault(target, []).append(record)
     return incoming
 
@@ -120,7 +169,7 @@ def _incoming_map(records):
 def _entry_section(record, resolution, referrers):
     document = record.document
     open_tag = (
-        f'<section class="entry" id="entry-{html.escape_attribute(record.identity)}"'
+        f'<section class="entry" id="{html.escape_attribute(record.anchor)}"'
         f' data-name="{html.escape_attribute(record.identity)}">\n'
     )
     summary = (
@@ -161,8 +210,12 @@ def _supersession_html(marker, resolution):
     if marker is None:
         return ""
     if marker.target is not None and marker.target in resolution.by_name:
+        # `marker.target` is a declared name, checked against `by_name` on
+        # the line above -- `_anchor`'s declared branch, same as every other
+        # link built from a resolved target.
+        anchor = _anchor(marker.target, True)
         target_html = (
-            f'<a href="#entry-{html.escape_attribute(marker.target)}">'
+            f'<a href="#{html.escape_attribute(anchor)}">'
             f"{html.escape_text(marker.target)}</a>"
         )
     elif marker.target is not None:
@@ -179,8 +232,9 @@ def _outgoing_list(targets, resolution):
     for target in targets:
         text = html.escape_text(target)
         if target in resolution.by_name:
+            anchor = _anchor(target, True)
             items.append(
-                f'<li><a href="#entry-{html.escape_attribute(target)}">{text}</a></li>'
+                f'<li><a href="#{html.escape_attribute(anchor)}">{text}</a></li>'
             )
         else:
             items.append(f'<li class="unresolved">{text}</li>')
@@ -197,7 +251,7 @@ def _incoming_list(referrers):
     for referrer in referrers:
         text = html.escape_text(referrer.identity)
         items.append(
-            f'<li><a href="#entry-{html.escape_attribute(referrer.identity)}">{text}</a></li>'
+            f'<li><a href="#{html.escape_attribute(referrer.anchor)}">{text}</a></li>'
         )
     return (
         '<p class="meta">Incoming references:</p>\n'

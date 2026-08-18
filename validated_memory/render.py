@@ -142,7 +142,14 @@ def build_artifacts(downgrade=False):
         return {}, findings, False
 
     memory_documents, memory_resolution = _memory_source(memory_target)
-    memory_content = memory_view.build(memory_documents, memory_resolution)
+    # `_memory_precondition` already confirmed `memory_target` exists and
+    # holds an index, so it is a directory by the time we reach here -- the
+    # trailing slash always applies, the same convention `basis_location`
+    # uses for the curated layer.
+    memory_basis = memory_target.as_posix() + "/"
+    memory_content = memory_view.build(
+        memory_documents, memory_basis, memory_resolution
+    )
 
     return {
         KNOWLEDGE_ARTIFACT: knowledge_content,

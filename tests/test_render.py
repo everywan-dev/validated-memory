@@ -405,6 +405,24 @@ def test_the_memory_page_lists_entries_with_their_references(
     assert "render: wrote memory.html" in result.stdout
 
 
+def test_the_memory_basis_line_names_the_path_like_the_knowledge_page_does(
+    run_cli, adopter_dir, write_unit, write_memory, write_index
+):
+    # `knowledge.html`'s basis line names the path units were read under
+    # ("... under knowledge/"); `memory.html`'s omitted it. The two pages
+    # should agree on what "basis" discloses.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory("coffee.md", "name: coffee\ndescription: oat milk\nmetadata:\n  type: user\n")
+    write_index("- [Coffee](coffee.md) — oat milk\n")
+
+    run_cli("render", cwd=adopter_dir)
+    knowledge_page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    memory_page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+
+    assert "1 unit(s) under knowledge/" in knowledge_page
+    assert "1 memory file(s) under memory/" in memory_page
+
+
 def test_an_unresolved_wikilink_is_marked_rather_than_linked(
     run_cli, adopter_dir, write_unit, write_memory, write_index
 ):
@@ -418,6 +436,96 @@ def test_an_unresolved_wikilink_is_marked_rather_than_linked(
 
     assert 'class="unresolved"' in page
     assert '<a href="#entry-nothing-here">' not in page
+
+
+def test_an_undeclared_name_falling_back_to_the_filename_does_not_collide_with_a_declared_name(
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
+):
+    # `alpha.md` declares no `name`, so its identity falls back to its
+    # filename, "alpha". `other.md` declares `name: alpha` -- a real
+    # declared name, just not `alpha.md`'s own (a `lint` ERROR the memory
+    # view does not gate on, since it does not enforce). Before the fix both
+    # entries anchor at id="entry-alpha": a `[[alpha]]` reference resolves
+    # through `by_name` to `other.md`, but the href built from the same
+    # collided id lands the reader on `alpha.md` instead.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory("alpha.md", "description: no name here\nmetadata:\n  type: user\n")
+    write_memory(
+        "other.md",
+        "name: alpha\ndescription: the real alpha\nmetadata:\n  type: user\n",
+    )
+    write_memory(
+        "gamma.md",
+        "name: gamma\ndescription: refers to alpha\nmetadata:\n  type: user\n",
+        "See [[alpha]].\n",
+    )
+    write_index(
+        "- [Alpha](alpha.md) — no name here\n"
+        "- [Other](other.md) — the real alpha\n"
+        "- [Gamma](gamma.md) — refers to alpha\n"
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    section_ids = [
+        attrs["id"] for tag, attrs in elements
+        if tag == "section" and attrs.get("class") == "entry"
+    ]
+    assert len(section_ids) == len(set(section_ids)), f"duplicate ids: {section_ids}"
+    assert "entry-file-alpha" in section_ids
+    assert "entry-alpha" in section_ids
+
+    outgoing_hrefs = [
+        attrs["href"] for tag, attrs in elements
+        if tag == "a" and attrs.get("href", "").startswith("#entry")
+    ]
+    assert "#entry-alpha" in outgoing_hrefs
+    assert "#entry-file-alpha" not in outgoing_hrefs
+
+
+def test_an_unresolved_reference_is_not_linked_from_the_incoming_side_either(
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
+):
+    # `[[noname]]` targets a memory with no declared `name`, so `by_name`
+    # resolution -- the only resolution the outgoing list tests against --
+    # marks it unresolved, matching `lint`. The incoming list must agree: it
+    # is the mirror image of the outgoing list, not a second, looser notion
+    # of what counts as a reference. Before the fix, `noname.md`'s own
+    # incoming list still lists `other.md` as a referrer (keyed by the raw
+    # wikilink text, unfiltered by `resolution.by_name`) and links to it --
+    # a live link for the very reference the outgoing side just marked
+    # unresolved.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory(
+        "noname.md", "description: has no declared name\nmetadata:\n  type: user\n"
+    )
+    write_memory(
+        "other.md",
+        "name: other\ndescription: refers to noname\nmetadata:\n  type: user\n",
+        "See [[noname]].\n",
+    )
+    write_index(
+        "- [Noname](noname.md) — has no declared name\n"
+        "- [Other](other.md) — refers to noname\n"
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    assert 'class="unresolved"' in page
+    # The only entry that could ever link to "other.md" is noname.md's own
+    # incoming list -- nothing else on this page names "other". A live link
+    # there would be the incoming side treating a reference the outgoing
+    # side marked unresolved as if it had resolved.
+    assert not [
+        attrs for tag, attrs in elements
+        if tag == "a" and attrs.get("href") == "#entry-other"
+    ]
 
 
 def test_a_missing_memory_index_stops_the_run(run_cli, adopter_dir, write_unit):
