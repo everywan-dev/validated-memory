@@ -813,6 +813,11 @@ import json
 HISTORY_WINDOW = 20
 
 
+# Every record must carry the SAME payload as the anchor whose history it
+# belongs to: the anchor's identity is `(system, kind, payload)`, and a
+# record with no payload field belongs to no anchor at all. A fixture that
+# logs payload-less records and then asserts they fill an anchor's history
+# is self-contradictory, and would hide the very defect that rule prevents.
 def _log(adopter_dir, records):
     (adopter_dir / "verdicts.jsonl").write_text(
         "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
