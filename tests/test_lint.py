@@ -144,6 +144,9 @@ def test_duplicate_name_gates_naming_both_files(
     assert "duplicate name 'coffee-preference'" in result.stderr
     assert "memory/first.md" in result.stderr
     assert "memory/second.md" in result.stderr
+    # A duplicate `name` implies at least one divergence: two files in one
+    # directory cannot share a filename, so both are reported diverging too.
+    assert result.stderr.count("does not match the filename") == 2
 
 
 # --- wikilinks -------------------------------------------------------------
@@ -537,6 +540,99 @@ def test_a_supersession_resolving_by_name_is_not_read_as_itself(
     assert "supersession" not in result.stderr
     # Both files still diverge from their filenames; that is the only finding.
     assert "2 warning(s)" in result.stdout
+
+
+def test_an_unparseable_sibling_still_makes_a_filename_ambiguous(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # Two files share a filename but only one parses. The hint must still be
+    # withheld: the parsed one is not known to be the memory that was meant.
+    write_memory(
+        "alpha/shared.md",
+        "name: alpha-fact\ndescription: |\n  block\n",
+    )
+    write_memory(
+        "beta/shared.md",
+        "name: beta-fact\ndescription: Another fact.\nmetadata:\n  type: project\n",
+    )
+    write_memory(
+        "notes.md",
+        "name: notes\ndescription: Scratch notes.\nmetadata:\n  type: project\n",
+        body="Related: [[shared]].\n",
+    )
+    write_index(
+        "- [Alpha](alpha/shared.md) — one fact\n"
+        "- [Beta](beta/shared.md) — another fact\n"
+        "- [Notes](notes.md) — scratch notes\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert "WARNING: memory/notes.md: body: " in result.stderr
+    assert "not written yet" in result.stderr
+    assert "declares name" not in result.stderr
+
+
+def test_a_file_named_only_md_carries_no_identity(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # Removing the '.md' suffix leaves nothing, so there is no identity for
+    # `name` to match -- and the repair is the one the rule otherwise forbids:
+    # rename the file, because it has no name to begin with.
+    write_memory(".md", HEALTHY_MEMORY)
+    write_index("- [Nameless](.md) — no identity\n")
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: memory/.md: name: " in result.stderr
+    assert "no identity" in result.stderr
+
+
+def test_an_empty_name_is_not_also_reported_as_diverging(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory(
+        "coffee-preference.md",
+        "name: ''\ndescription: Prefers oat milk.\nmetadata:\n  type: user\n",
+    )
+    write_index(HEALTHY_INDEX)
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: memory/coffee-preference.md: name: " in result.stderr
+    assert "0 warning(s)" in result.stdout
+
+
+def test_a_supersession_resolving_onto_a_diverging_successor_is_valid(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # The successor resolves by `name` while its own file is named something
+    # else. That is a valid supersession plus a divergence to repair -- not a
+    # broken successor.
+    write_memory(
+        "old-coffee-preference.md",
+        "name: old-coffee-preference\n"
+        "description: superseded by [[coffee-preference]]\n"
+        "metadata:\n  type: user\n",
+    )
+    write_memory(
+        "newer.md",
+        "name: coffee-preference\n"
+        "description: Prefers oat milk in coffee.\n"
+        "metadata:\n  type: user\n",
+    )
+    write_index(
+        "- [Old](old-coffee-preference.md) — fixture entry\n"
+        "- [New](newer.md) — fixture entry\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "supersession" not in result.stderr
+    assert "1 warning(s)" in result.stdout
 
 
 # --- target resolution -------------------------------------------------------

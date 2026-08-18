@@ -11,6 +11,7 @@ well formed or reported.
 """
 
 import re
+from collections import namedtuple
 from pathlib import Path, PurePosixPath
 
 from .findings import ERROR, WARNING, Finding, report
@@ -26,6 +27,12 @@ INDEX_ENTRY_PATTERN = re.compile(r"^-\s+\[[^\]]*\]\(([^)]+)\)")
 WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
 SUPERSEDED_PREFIX = "superseded by "
 SUPERSEDED_WIKILINK_PATTERN = re.compile(r"^\[\[([^\]]+)\]\]")
+
+# How a reference to another memory is resolved. `by_name` is what resolution
+# actually goes by; `by_filename` is only ever used to explain a reference that
+# did not resolve, since the canonical identity is the filename and that is
+# what a writer reaches for.
+Resolution = namedtuple("Resolution", "by_name by_filename")
 
 
 def run(path, stdout, stderr):
@@ -168,46 +175,73 @@ def _lint_memories(documents):
         else:
             declared_names[name] = location
 
-    valid_names = set(declared_names)
-    names_by_filename = _index_by_filename(parsed)
+    resolution = Resolution(
+        by_name=set(declared_names),
+        by_filename=_index_by_filename(documents, parsed),
+    )
     for location, data, body in parsed:
         own_name = data.get("name")
         if not _is_non_empty_string(own_name):
             own_name = None
         description = data.get("description")
         findings.extend(
-            _check_description_wikilinks(
-                location, own_name, description, valid_names, names_by_filename
-            )
+            _check_description_wikilinks(location, own_name, description, resolution)
         )
         findings.extend(
-            _check_wikilink_targets(
-                location, "body", body, valid_names, names_by_filename
-            )
+            _check_wikilink_targets(location, "body", body, resolution)
         )
 
     return findings
 
 
-def _index_by_filename(parsed):
+def _index_by_filename(documents, parsed):
     """Map each unambiguous filename (without `.md`) to the `name` it declares.
 
     Used to explain a reference that does not resolve -- a wikilink or a
     supersession target: the writer reached for the filename, which is the
-    canonical identity, while resolution goes by `name`. A filename carried by
-    two memories in different subdirectories is left out -- naming one of them
-    as the cause would be a guess -- and so is one whose `name` is missing or
-    empty, which its own rule already reports.
+    canonical identity, while resolution goes by `name`.
+
+    Ambiguity is counted over **every** file collected, not just the ones that
+    parsed. A filename carried by two memories in different subdirectories is
+    left out, and it stays ambiguous even when only one of the two has readable
+    frontmatter: the readable one is not thereby known to be the memory meant.
+    A filename whose `name` is missing or empty is left out too -- that defect
+    has its own rule.
     """
-    names_by_filename = {}
-    for location, data, _body in parsed:
-        stem = PurePosixPath(location).stem
-        names_by_filename.setdefault(stem, []).append(data.get("name"))
-    return {
-        stem: names[0]
-        for stem, names in names_by_filename.items()
-        if len(names) == 1 and _is_non_empty_string(names[0])
+    declared_by_location = {
+        location: data.get("name") for location, data, _body in parsed
     }
+    names_by_filename = {}
+    for location, _text in documents:
+        names_by_filename.setdefault(_filename(location), []).append(
+            declared_by_location.get(location)
+        )
+    return {
+        filename: declared[0]
+        for filename, declared in names_by_filename.items()
+        if len(declared) == 1 and _is_non_empty_string(declared[0])
+    }
+
+
+def _filename(location):
+    """Return the memory's canonical identity: its filename minus `.md`.
+
+    Not `PurePosixPath.stem`, which reads a leading dot as the start of a name
+    rather than as a suffix boundary: a file called `.md` has `stem == '.md'`,
+    which would hand it the identity `.md` instead of none at all.
+    """
+    name = PurePosixPath(location).name
+    if name.endswith(MEMORY_SUFFIX):
+        return name[: -len(MEMORY_SUFFIX)]
+    return name  # pragma: no cover - only `*.md` files are ever collected
+
+
+def _filename_hint(target, resolution):
+    """Name the file a reference was reaching for, when it is certain which."""
+    declared = resolution.by_filename.get(target)
+    if declared is None:
+        return None
+    return f"'{target}{MEMORY_SUFFIX}' declares name '{declared}'"
 
 
 def _body(text):
@@ -223,9 +257,7 @@ def _body(text):
     return ""  # pragma: no cover - unreachable once `parse` has succeeded
 
 
-def _check_description_wikilinks(
-    location, own_name, description, valid_names, names_by_filename
-):
+def _check_description_wikilinks(location, own_name, description, resolution):
     """Check the supersession marker (if any), then any remaining wikilink.
 
     A wikilink that opens a well-formed `superseded by [[name]]` marker is
@@ -254,21 +286,15 @@ def _check_description_wikilinks(
             target = match.group(1)
             scan_text = remainder[match.end() :]
             findings.extend(
-                _check_supersession_target(
-                    location, own_name, target, valid_names, names_by_filename
-                )
+                _check_supersession_target(location, own_name, target, resolution)
             )
     findings.extend(
-        _check_wikilink_targets(
-            location, "description", scan_text, valid_names, names_by_filename
-        )
+        _check_wikilink_targets(location, "description", scan_text, resolution)
     )
     return findings
 
 
-def _check_supersession_target(
-    location, own_name, target, valid_names, names_by_filename
-):
+def _check_supersession_target(location, own_name, target, resolution):
     """Check the successor a memory is retired onto.
 
     Order matters. A target that resolves to another memory is a valid
@@ -277,9 +303,9 @@ def _check_supersession_target(
     this memory itself -- it is the canonical identity, so retiring a memory
     onto it is retiring it onto itself, whatever `name` currently says.
     """
-    if target in valid_names and target != own_name:
+    if target in resolution.by_name and target != own_name:
         return []
-    if target == own_name or target == PurePosixPath(location).stem:
+    if target == own_name or target == _filename(location):
         return [
             Finding(
                 ERROR,
@@ -288,8 +314,8 @@ def _check_supersession_target(
                 f"supersession points at itself: '{target}'",
             )
         ]
-    declared = names_by_filename.get(target)
-    if declared is None:
+    hint = _filename_hint(target, resolution)
+    if hint is None:
         message = f"supersession points at '{target}', which does not exist"
     else:
         # Unlike a wikilink, a successor cannot be left pending: this gates.
@@ -297,34 +323,30 @@ def _check_supersession_target(
         # file, so the message names what actually fails to resolve.
         message = (
             f"supersession points at '{target}', which does not resolve by "
-            f"name; '{target}{MEMORY_SUFFIX}' exists but declares name "
-            f"'{declared}'"
+            f"name; {hint}"
         )
     return [Finding(ERROR, location, "description", message)]
 
 
-def _check_wikilink_targets(location, field, text, valid_names, names_by_filename):
+def _check_wikilink_targets(location, field, text, resolution):
     if not isinstance(text, str):
         return []
     findings = []
     seen = set()
     for match in WIKILINK_PATTERN.finditer(text):
         target = match.group(1)
-        if target in valid_names or target in seen:
+        if target in resolution.by_name or target in seen:
             continue
         seen.add(target)
-        declared = names_by_filename.get(target)
-        if declared is None:
+        hint = _filename_hint(target, resolution)
+        if hint is None:
             message = (
                 f"wikilink to '{target}' has no matching memory (not written yet)"
             )
         else:
             # The file is right there; what does not resolve is its `name`.
             # Saying 'not written yet' here would point at the wrong repair.
-            message = (
-                f"wikilink to '{target}' has no matching memory; "
-                f"'{target}{MEMORY_SUFFIX}' declares name '{declared}'"
-            )
+            message = f"wikilink to '{target}' has no matching memory; {hint}"
         findings.append(Finding(WARNING, location, field, message))
     return findings
 
@@ -351,7 +373,17 @@ def _check_filename_identity(location, data):
     memory sets written before the rule. It becomes an ERROR in 2.0.0.
     """
     name = data["name"]
-    filename = PurePosixPath(location).stem
+    filename = _filename(location)
+    if not filename:
+        return [
+            Finding(
+                WARNING,
+                location,
+                "name",
+                f"the filename '{PurePosixPath(location).name}' carries no "
+                "identity once the '.md' suffix is removed; rename the file",
+            )
+        ]
     if name == filename:
         return []
     return [

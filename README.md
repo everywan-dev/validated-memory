@@ -480,7 +480,7 @@ missing:
 ```
 ERROR: memory/old-note.md: description: supersession points at
 'coffee-preference', which does not resolve by name;
-'coffee-preference.md' exists but declares name 'Coffee Preference'
+'coffee-preference.md' declares name 'Coffee Preference'
 ```
 
 Pointing at **this memory's own filename** counts as pointing at itself,
