@@ -9,7 +9,7 @@ Exit code convention:
 import argparse
 import sys
 
-from . import __version__, derive, init, lint, probe, validate
+from . import __version__, derive, init, lint, probe, render, validate
 
 SUBCOMMANDS = {
     "init": "Scaffold the validated-memory layout in an adopter project",
@@ -17,6 +17,7 @@ SUBCOMMANDS = {
     "validate": "Validate curated-knowledge units against the base contract",
     "derive": "Re-derive indexes and summaries from curated-knowledge units",
     "probe": "Run freshness probes and record ternary verdicts",
+    "render": "Render static HTML views of the curated and agent-memory layers",
 }
 
 
@@ -90,6 +91,15 @@ def build_parser():
                     f"{lint.DEFAULT_MEMORY_DIR}/ directory"
                 ),
             )
+        if name == "render":
+            subparser.add_argument(
+                "--only-existing",
+                action="store_true",
+                help=(
+                    "regenerate only the artifacts that already exist, and "
+                    "create none (the startup hook's mode: fail-open)"
+                ),
+            )
     return parser
 
 
@@ -106,4 +116,6 @@ def main(argv=None):
         return lint.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "probe":
         return probe.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
+    if args.command == "render":
+        return render.run(args.only_existing, stdout=sys.stdout, stderr=sys.stderr)
     return init.run(args.harness_memory, stdout=sys.stdout, stderr=sys.stderr)
