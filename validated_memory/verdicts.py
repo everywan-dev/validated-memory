@@ -55,6 +55,39 @@ def append(records, root=Path()):
 
 KEY_FIELDS = ("unit", "system", "kind")
 
+# The key a record written before payloads were recorded lands under. It is a
+# key of its own, never merged with a real anchor's here: which anchor such a
+# record belongs to is not knowable from the log alone.
+NO_PAYLOAD = None
+
+
+def anchor_key(unit_id, system, kind, payload):
+    """The key one anchor's verdicts are recorded and read under.
+
+    An anchor is identified by what it points at -- its system, its kind and
+    its payload. `captured_at` dates a capture, it does not identify one.
+
+    Keyed on `(system, kind)` alone, two legitimately distinct anchors of one
+    unit -- two refs of the same repository, both `git_ref` on the same system
+    -- collapsed into one entry, so the later verdict overwrote the earlier and
+    a `drifted` could disappear behind a `current`. The index then reported a
+    unit as current while one of its anchors had drifted, and which one won
+    depended on the order the anchors happened to be written in.
+    """
+    return (unit_id, system, kind, _canonical(payload))
+
+
+def _canonical(payload):
+    """A hashable, stable rendering of a payload, or `NO_PAYLOAD` if absent.
+
+    `sort_keys` makes two equal mappings render identically whatever order
+    they were written in; a list keeps its order, because there the order is
+    part of what the payload says.
+    """
+    if payload is None:
+        return NO_PAYLOAD
+    return json.dumps(payload, sort_keys=True)
+
 
 def records(root=Path()):
     """Yield `(lineno, record)` for every record in the log, fail-loud.
@@ -95,19 +128,22 @@ def _keyed(lineno, record):
     the dictionary raises `TypeError` instead of naming the line at fault.
     """
     try:
-        key = tuple(record[field] for field in KEY_FIELDS)
+        fields = tuple(record[field] for field in KEY_FIELDS)
         verdict = record["verdict"]
     except KeyError as error:
         raise VerdictLogError(lineno, f"record is missing the {error} field") from error
-    for field, value in zip(KEY_FIELDS, key):
+    for field, value in zip(KEY_FIELDS, fields):
         if not isinstance(value, str):
             raise VerdictLogError(lineno, f"the '{field}' field is not a string")
+    payload = record.get("payload")
+    if payload is not None and not isinstance(payload, dict):
+        raise VerdictLogError(lineno, "the 'payload' field is not a mapping")
     if verdict not in VERDICTS:
         raise VerdictLogError(
             lineno,
             f"'{verdict}' is not one of " + ", ".join(VERDICTS),
         )
-    return key, verdict
+    return anchor_key(*fields, payload), verdict
 
 
 def service_view(root=Path()):

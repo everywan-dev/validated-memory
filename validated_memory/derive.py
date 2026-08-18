@@ -120,21 +120,26 @@ def unit_verdict(unit_id, anchors, view):
     With anchors, one absent from the service view (never probed) is
     `unknown`, fail-explicit.
 
+    Each anchor reads its own verdict, keyed on what it points at, so two
+    anchors of one unit that share a `(system, kind)` -- two refs of the same
+    repository -- no longer collapse into one entry.
+
     Returns a `UnitVerdict`: the grade, the systems behind an `unknown` anchor
     (sorted), and the per-anchor detail. Computation only -- how the grade is
     written into the index is `_verdict_cell`'s business, and any other reader
     grades a unit by calling this rather than by reimplementing the rule.
+
+    `anchors` are a validated unit's: `system` and `kind` are strings, so they
+    can be keyed on.
     """
     if not anchors:
         return UnitVerdict(verdicts_module.UNKNOWN, (), ())
+    repeated = _repeated_pairs(anchors)
     per_anchor = tuple(
         AnchorVerdict(
             anchor.get("system"),
             anchor.get("kind"),
-            view.get(
-                (unit_id, anchor.get("system"), anchor.get("kind")),
-                verdicts_module.UNKNOWN,
-            ),
+            _anchor_verdict(unit_id, anchor, view, repeated),
         )
         for anchor in anchors
     )
@@ -149,6 +154,38 @@ def unit_verdict(unit_id, anchors, view):
         )
     )
     return UnitVerdict(verdict, unknown_systems, per_anchor)
+
+
+def _repeated_pairs(anchors):
+    """The `(system, kind)` pairs this unit carries more than once."""
+    counts = {}
+    for anchor in anchors:
+        pair = (anchor.get("system"), anchor.get("kind"))
+        counts[pair] = counts.get(pair, 0) + 1
+    return {pair for pair, count in counts.items() if count > 1}
+
+
+def _anchor_verdict(unit_id, anchor, view, repeated):
+    """One anchor's latest verdict, or `unknown` when it has none.
+
+    A log written before payloads were recorded has no way of saying which
+    anchor a record belongs to. Where the unit carries its `(system, kind)`
+    exactly once, that is not a question -- the record can only be this
+    anchor's -- so the old verdict still counts. Where the pair repeats, it
+    could be either, and attaching it to one of them is the very guess that
+    let a drift disappear: both read `unknown` instead, fail-explicit.
+    """
+    system, kind = anchor.get("system"), anchor.get("kind")
+    verdict = view.get(
+        verdicts_module.anchor_key(unit_id, system, kind, anchor.get("payload"))
+    )
+    if verdict is None and (system, kind) not in repeated:
+        verdict = view.get(
+            verdicts_module.anchor_key(
+                unit_id, system, kind, verdicts_module.NO_PAYLOAD
+            )
+        )
+    return verdicts_module.UNKNOWN if verdict is None else verdict
 
 
 def _verdict_cell(unit_id, anchors, view):

@@ -318,11 +318,33 @@ above). The log is **append-only**: a run never rewrites or removes a prior
 line, so the full probing history accumulates. Each line:
 
 ```json
-{"recorded_at": "2026-08-12T10:00:00Z", "unit": "kb-0001", "system": "repo-a", "kind": "git_ref", "verdict": "current", "detail": null}
+{"recorded_at": "2026-08-12T10:00:00Z", "unit": "kb-0001", "system": "repo-a", "kind": "git_ref", "payload": {"ref": "refs/heads/main"}, "verdict": "current", "detail": null}
 ```
 
+**An anchor is identified by what it points at**: its `system`, its `kind`
+and its `payload`. `captured_at` dates a capture; it does not identify one.
+That is why the record carries the payload, and it is also what makes the log
+a record of what was actually measured rather than of the fact that something
+was.
+
+The distinction is not academic. A unit may legitimately carry two anchors
+sharing a `(system, kind)` -- two refs of the same repository are both
+`git_ref` on the same system. Keyed on that pair alone they collapsed into
+one entry, so the later verdict overwrote the earlier: `probe` would report
+`1 current, 1 drifted` and the index would then say `current` about a unit
+whose anchor had drifted, with the winner decided by the order the anchors
+happened to be written in. A false "still true" is the one answer this tool
+must never give.
+
+A record written before payloads were recorded carries none, and the log
+alone cannot say which anchor it belonged to. Such a record is kept in a key
+of its own and read by an anchor **only where that unit carries its
+`(system, kind)` exactly once** -- there the record can only be that anchor's,
+which is a fact, not a guess. Where the pair repeats, every anchor of it reads
+`unknown` until the next probe, fail-explicit.
+
 The **service view** a reader wants -- and the one `derive` reads for its
-verdict column -- is the latest record per `(unit, system, kind)`; re-probing
+verdict column -- is the latest record per anchor; re-probing
 adds new lines, it never edits history.
 
 A summary goes to stdout:

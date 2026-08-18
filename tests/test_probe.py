@@ -359,3 +359,25 @@ def test_a_verdict_outside_the_domain_in_the_log_gates_derive(
     assert "ERROR: verdicts.jsonl:1: " in result.stderr
     assert "maybe" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_the_record_carries_the_payload_that_was_probed(
+    adopter_dir, write_document, write_unit, write_probe, run_cli
+):
+    # The log is a historical record. Without the payload it can say that
+    # something of some kind in some system was probed, but not which thing --
+    # a record that cannot say what it measured is not evidence.
+    command = write_probe("probes/current_probe.py", CURRENT_PROBE)
+    write_document("validated-memory.md", f"probes:\n  git_ref: {command}\n")
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo-a\n    kind: git_ref\n"
+        "    captured_at: 2026-08-01T00:00:00Z\n    payload:\n      ref: main\n",
+    )
+
+    run_cli("probe", cwd=adopter_dir)
+
+    log = (adopter_dir / "verdicts.jsonl").read_text(encoding="utf-8")
+    record = json.loads(log.splitlines()[0])
+    assert record["payload"] == {"ref": "main"}

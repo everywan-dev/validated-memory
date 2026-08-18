@@ -365,6 +365,126 @@ def test_a_verdict_record_whose_key_fields_are_not_strings_is_reported(
 
 
 
+# --- an anchor is identified by what it points at ----------------------------
+
+BY_REF_PROBE = """\
+import sys, json
+env = json.loads(sys.stdin.read())
+ref = env.get("payload", {}).get("ref")
+print(json.dumps({"verdict": "drifted" if ref == "main" else "current"}))
+"""
+
+TWO_REFS_UNIT = """\
+id: kb-0001
+evidence: measured
+anchors:
+  - system: repo-a
+    kind: git_ref
+    captured_at: 2026-08-01T00:00:00Z
+    payload:
+      ref: main
+  - system: repo-a
+    kind: git_ref
+    captured_at: 2026-08-01T00:00:00Z
+    payload:
+      ref: release
+"""
+
+
+def test_two_anchors_of_one_system_and_kind_keep_their_own_verdicts(
+    adopter_dir, write_document, write_unit, write_probe, run_cli
+):
+    # Two refs of the same repository are the same `(system, kind)` and a
+    # legitimate pair. Keyed on that pair alone, the second probed anchor
+    # overwrote the first and the drift vanished: the index said `current`
+    # about a unit with a drifted anchor -- a false "still true", and one
+    # whose answer depended on the order the anchors were written in.
+    command = write_probe("probes/by_ref.py", BY_REF_PROBE)
+    write_document("validated-memory.md", f"probes:\n  git_ref: {command}\n")
+    write_unit("kb-0001.md", TWO_REFS_UNIT)
+    probed = run_cli("probe", cwd=adopter_dir)
+    assert "1 current, 1 drifted" in probed.stdout
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
+    assert "| kb-0001 | active | measured | drifted |" in index
+
+
+def test_the_verdict_of_one_anchor_does_not_move_when_another_is_reprobed(
+    adopter_dir, write_document, write_unit, write_probe, run_cli
+):
+    # Re-probing appends; history is never rewritten. Each anchor must read
+    # its own latest record, not the log's latest record for the pair.
+    command = write_probe("probes/by_ref.py", BY_REF_PROBE)
+    write_document("validated-memory.md", f"probes:\n  git_ref: {command}\n")
+    write_unit("kb-0001.md", TWO_REFS_UNIT)
+    run_cli("probe", cwd=adopter_dir)
+    run_cli("probe", cwd=adopter_dir)
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
+    assert "| kb-0001 | active | measured | drifted |" in index
+
+
+ONE_ANCHOR_UNIT = """\
+id: kb-0001
+evidence: measured
+anchors:
+  - system: repo-a
+    kind: git_ref
+    captured_at: 2026-08-01T00:00:00Z
+    payload:
+      ref: main
+"""
+
+
+def test_a_record_written_before_payloads_still_reads_when_it_is_unambiguous(
+    adopter_dir, write_unit, run_cli
+):
+    # A log written by an earlier version carries no payload. Where the unit
+    # has exactly one anchor of that `(system, kind)`, which anchor the record
+    # belongs to is determined, not guessed, so its verdict still counts.
+    write_unit("kb-0001.md", ONE_ANCHOR_UNIT)
+    (adopter_dir / "verdicts.jsonl").write_text(
+        '{"recorded_at": "2026-08-01T00:00:00Z", "unit": "kb-0001", '
+        '"system": "repo-a", "kind": "git_ref", "verdict": "drifted", '
+        '"detail": null}\n',
+        encoding="utf-8",
+    )
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
+    assert "| kb-0001 | active | measured | drifted |" in index
+
+
+def test_a_record_written_before_payloads_is_not_guessed_when_it_is_ambiguous(
+    adopter_dir, write_unit, run_cli
+):
+    # Two anchors share the `(system, kind)`, so the old record could belong
+    # to either. Attaching it to one of them is exactly the guess that made
+    # the drift vanish in the first place: both read `unknown` instead.
+    write_unit("kb-0001.md", TWO_REFS_UNIT)
+    (adopter_dir / "verdicts.jsonl").write_text(
+        '{"recorded_at": "2026-08-01T00:00:00Z", "unit": "kb-0001", '
+        '"system": "repo-a", "kind": "git_ref", "verdict": "current", '
+        '"detail": null}\n',
+        encoding="utf-8",
+    )
+
+    result = run_cli("derive", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    index = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
+    assert "| kb-0001 | active | measured | unknown (repo-a) |" in index
+
+
+
 # --- the verdict column reads the real service view of verdicts.jsonl -------
 
 CURRENT_PROBE = """\
