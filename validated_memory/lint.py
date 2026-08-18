@@ -8,31 +8,22 @@ memory's canonical identity, a wikilink between memories names a real memory
 (or is flagged as pending), and the supersession convention -- a
 `description` rewritten to start with `superseded by [[name]]` -- is either
 well formed or reported.
+
+The rules live here; how the layer is read and how a reference resolves live
+in `memory`, so that a second reader of the same layer cannot resolve
+references differently from `lint`.
 """
 
-import re
-from collections import namedtuple
 from pathlib import Path, PurePosixPath
 
+from . import memory as memory_module
 from .findings import ERROR, WARNING, Finding, report
 from .frontmatter import FrontmatterError, parse
 
-DEFAULT_MEMORY_DIR = "memory"
-MEMORY_SUFFIX = ".md"
-INDEX_FILENAME = "MEMORY.md"
+DEFAULT_MEMORY_DIR = memory_module.DEFAULT_DIR
+INDEX_FILENAME = memory_module.INDEX_FILENAME
 
 MEMORY_TYPES = ("user", "project", "feedback", "reference")
-
-INDEX_ENTRY_PATTERN = re.compile(r"^-\s+\[[^\]]*\]\(([^)]+)\)")
-WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
-SUPERSEDED_PREFIX = "superseded by "
-SUPERSEDED_WIKILINK_PATTERN = re.compile(r"^\[\[([^\]]+)\]\]")
-
-# How a reference to another memory is resolved. `by_name` is what resolution
-# actually goes by; `by_filename` is only ever used to explain a reference that
-# did not resolve, since the canonical identity is the filename and that is
-# what a writer reaches for.
-Resolution = namedtuple("Resolution", "by_name by_filename")
 
 
 def run(path, stdout, stderr):
@@ -67,64 +58,36 @@ def _collect(target, explicit):
             )
         ]
 
-    index_text = index_path.read_text(encoding="utf-8")
-
-    files = sorted(
-        candidate
-        for candidate in target.rglob(f"*{MEMORY_SUFFIX}")
-        if candidate.is_file() and candidate != index_path
-    )
-
-    documents = [
-        (candidate.as_posix(), candidate.read_text(encoding="utf-8"))
-        for candidate in files
-    ]
-
-    files_by_relpath = {
-        candidate.relative_to(target).as_posix(): candidate for candidate in files
-    }
-    hrefs = _parse_index_entries(index_text)
-    findings = _check_sync(index_path.as_posix(), hrefs, files_by_relpath)
+    documents = memory_module.documents(target)
+    entries = memory_module.index_entries(index_path.read_text(encoding="utf-8"))
+    findings = _check_sync(index_path.as_posix(), entries, documents)
 
     return documents, findings
 
 
-def _parse_index_entries(text):
-    """Return the file hrefs of every bullet-with-link entry in the index.
-
-    Only lines shaped `- [Title](file.md)` count as entries; headers and
-    prose are ignored.
-    """
-    hrefs = []
-    for line in text.splitlines():
-        match = INDEX_ENTRY_PATTERN.match(line.strip())
-        if match:
-            hrefs.append(match.group(1))
-    return hrefs
-
-
-def _check_sync(index_location, hrefs, files_by_relpath):
+def _check_sync(index_location, entries, documents):
     """Check the index and the files agree in both directions."""
     findings = []
+    by_relpath = {document.relpath: document for document in documents}
     referenced = set()
-    for href in hrefs:
-        relpath = PurePosixPath(href.strip()).as_posix()
+    for entry in entries:
+        relpath = PurePosixPath(entry.href).as_posix()
         referenced.add(relpath)
-        if relpath not in files_by_relpath:
+        if relpath not in by_relpath:
             findings.append(
                 Finding(
                     ERROR,
                     index_location,
                     "entry",
-                    f"'{href}' has no matching memory file",
+                    f"'{entry.href}' has no matching memory file",
                 )
             )
-    for relpath, candidate in files_by_relpath.items():
+    for relpath, document in by_relpath.items():
         if relpath not in referenced:
             findings.append(
                 Finding(
                     ERROR,
-                    candidate.as_posix(),
+                    document.location,
                     "index",
                     f"memory file has no entry in '{INDEX_FILENAME}'",
                 )
@@ -136,31 +99,35 @@ def _lint_memories(documents):
     """Lint each memory file's frontmatter, then cross-file name resolution.
 
     Names are collected in a first pass, once every document has parsed, so
-    duplicate detection and wikilink resolution do not depend on file order --
+    duplicate detection and reference resolution do not depend on file order --
     the same two-pass shape `validate` uses for id declaration and supersedes
     resolution.
     """
     findings = _check_filename_collisions(documents)
     parsed = []
-    for location, text in documents:
+    for document in documents:
         try:
-            data = parse(text)
+            data = parse(document.text)
         except FrontmatterError as error:
             findings.append(
                 Finding(
-                    ERROR, location, "frontmatter", error.message, line=error.lineno
+                    ERROR,
+                    document.location,
+                    "frontmatter",
+                    error.message,
+                    line=error.lineno,
                 )
             )
             continue
-        parsed.append((location, data, _body(text)))
+        parsed.append((document.location, data, memory_module.body(document.text)))
 
-    for location, data, _text in parsed:
+    for location, data, _body in parsed:
         findings.extend(_check_memory(location, data))
 
     declared_names = {}
-    for location, data, _text in parsed:
+    for location, data, _body in parsed:
         name = data.get("name")
-        if not _is_non_empty_string(name):
+        if not memory_module.is_declared(name):
             continue
         if name in declared_names:
             findings.append(
@@ -175,21 +142,18 @@ def _lint_memories(documents):
         else:
             declared_names[name] = location
 
-    resolution = Resolution(
-        by_name=set(declared_names),
-        by_filename=_index_by_filename(documents, parsed),
+    resolution = memory_module.resolution(
+        documents, {location: data.get("name") for location, data, _body in parsed}
     )
     for location, data, body in parsed:
         own_name = data.get("name")
-        if not _is_non_empty_string(own_name):
+        if not memory_module.is_declared(own_name):
             own_name = None
         description = data.get("description")
         findings.extend(
-            _check_description_wikilinks(location, own_name, description, resolution)
+            _check_description_references(location, own_name, description, resolution)
         )
-        findings.extend(
-            _check_wikilink_targets(location, "body", body, resolution)
-        )
+        findings.extend(_check_references(location, "body", body, resolution))
 
     return findings
 
@@ -208,17 +172,17 @@ def _check_filename_collisions(documents):
     """
     findings = []
     first_seen = {}
-    for location, _text in documents:
-        filename = _filename(location)
+    for document in documents:
+        filename = memory_module.filename(document.location)
         if not filename:
             continue  # no identity at all; its own rule reports that
         if filename not in first_seen:
-            first_seen[filename] = location
+            first_seen[filename] = document.location
             continue
         findings.append(
             Finding(
                 WARNING,
-                location,
+                document.location,
                 "filename",
                 f"the filename '{filename}' is also carried by "
                 f"{first_seen[filename]}; the filename is the canonical "
@@ -229,70 +193,7 @@ def _check_filename_collisions(documents):
     return findings
 
 
-def _index_by_filename(documents, parsed):
-    """Map each unambiguous filename (without `.md`) to the `name` it declares.
-
-    Used to explain a reference that does not resolve -- a wikilink or a
-    supersession target: the writer reached for the filename, which is the
-    canonical identity, while resolution goes by `name`.
-
-    Ambiguity is counted over **every** file collected, not just the ones that
-    parsed. A filename carried by two memories in different subdirectories is
-    left out, and it stays ambiguous even when only one of the two has readable
-    frontmatter: the readable one is not thereby known to be the memory meant.
-    A filename whose `name` is missing or empty is left out too -- that defect
-    has its own rule.
-    """
-    declared_by_location = {
-        location: data.get("name") for location, data, _body in parsed
-    }
-    names_by_filename = {}
-    for location, _text in documents:
-        names_by_filename.setdefault(_filename(location), []).append(
-            declared_by_location.get(location)
-        )
-    return {
-        filename: declared[0]
-        for filename, declared in names_by_filename.items()
-        if len(declared) == 1 and _is_non_empty_string(declared[0])
-    }
-
-
-def _filename(location):
-    """Return the memory's canonical identity: its filename minus `.md`.
-
-    Not `PurePosixPath.stem`, which reads a leading dot as the start of a name
-    rather than as a suffix boundary: a file called `.md` has `stem == '.md'`,
-    which would hand it the identity `.md` instead of none at all.
-    """
-    name = PurePosixPath(location).name
-    if name.endswith(MEMORY_SUFFIX):
-        return name[: -len(MEMORY_SUFFIX)]
-    return name  # pragma: no cover - only `*.md` files are ever collected
-
-
-def _filename_hint(target, resolution):
-    """Name the file a reference was reaching for, when it is certain which."""
-    declared = resolution.by_filename.get(target)
-    if declared is None:
-        return None
-    return f"'{target}{MEMORY_SUFFIX}' declares name '{declared}'"
-
-
-def _body(text):
-    """Return the document text after the closing frontmatter fence.
-
-    Called only once `parse` has already accepted the frontmatter, so the
-    fences are known to be well formed.
-    """
-    lines = text.split("\n")
-    for index in range(1, len(lines)):
-        if lines[index].rstrip() == "---":
-            return "\n".join(lines[index + 1 :])
-    return ""  # pragma: no cover - unreachable once `parse` has succeeded
-
-
-def _check_description_wikilinks(location, own_name, description, resolution):
+def _check_description_references(location, own_name, description, resolution):
     """Check the supersession marker (if any), then any remaining wikilink.
 
     A wikilink that opens a well-formed `superseded by [[name]]` marker is
@@ -303,10 +204,10 @@ def _check_description_wikilinks(location, own_name, description, resolution):
         return []
     findings = []
     scan_text = description
-    if description.startswith(SUPERSEDED_PREFIX):
-        remainder = description[len(SUPERSEDED_PREFIX) :]
-        match = SUPERSEDED_WIKILINK_PATTERN.match(remainder)
-        if not match:
+    marker = memory_module.supersession(description)
+    if marker is not None:
+        scan_text = marker.remainder
+        if marker.target is None:
             findings.append(
                 Finding(
                     ERROR,
@@ -316,16 +217,13 @@ def _check_description_wikilinks(location, own_name, description, resolution):
                     "followed by a [[wikilink]]",
                 )
             )
-            scan_text = ""
         else:
-            target = match.group(1)
-            scan_text = remainder[match.end() :]
             findings.extend(
-                _check_supersession_target(location, own_name, target, resolution)
+                _check_supersession_target(
+                    location, own_name, marker.target, resolution
+                )
             )
-    findings.extend(
-        _check_wikilink_targets(location, "description", scan_text, resolution)
-    )
+    findings.extend(_check_references(location, "description", scan_text, resolution))
     return findings
 
 
@@ -340,7 +238,7 @@ def _check_supersession_target(location, own_name, target, resolution):
     """
     if target in resolution.by_name and target != own_name:
         return []
-    if target == own_name or target == _filename(location):
+    if target == own_name or target == memory_module.filename(location):
         return [
             Finding(
                 ERROR,
@@ -349,7 +247,7 @@ def _check_supersession_target(location, own_name, target, resolution):
                 f"supersession points at itself: '{target}'",
             )
         ]
-    hint = _filename_hint(target, resolution)
+    hint = memory_module.filename_hint(target, resolution)
     if hint is None:
         message = f"supersession points at '{target}', which does not exist"
     else:
@@ -363,21 +261,15 @@ def _check_supersession_target(location, own_name, target, resolution):
     return [Finding(ERROR, location, "description", message)]
 
 
-def _check_wikilink_targets(location, field, text, resolution):
-    if not isinstance(text, str):
-        return []
+def _check_references(location, field, text, resolution):
+    """Report every wikilink in `text` that does not resolve to a memory."""
     findings = []
-    seen = set()
-    for match in WIKILINK_PATTERN.finditer(text):
-        target = match.group(1)
-        if target in resolution.by_name or target in seen:
+    for target in memory_module.wikilinks(text):
+        if target in resolution.by_name:
             continue
-        seen.add(target)
-        hint = _filename_hint(target, resolution)
+        hint = memory_module.filename_hint(target, resolution)
         if hint is None:
-            message = (
-                f"wikilink to '{target}' has no matching memory (not written yet)"
-            )
+            message = f"wikilink to '{target}' has no matching memory (not written yet)"
         else:
             # The file is right there; what does not resolve is its `name`.
             # Saying 'not written yet' here would point at the wrong repair.
@@ -397,6 +289,19 @@ def _check_memory(location, data):
     return findings
 
 
+def _check_name(location, data):
+    if "name" not in data:
+        return [Finding(ERROR, location, "name", "required field is missing")]
+    name = data["name"]
+    if not memory_module.is_declared(name):
+        return [
+            Finding(
+                ERROR, location, "name", f"{_describe(name)} is not a non-empty string"
+            )
+        ]
+    return []
+
+
 def _check_filename_identity(location, data):
     """Check `name` against the filename, which is the canonical identity.
 
@@ -408,7 +313,7 @@ def _check_filename_identity(location, data):
     memory sets written before the rule. It becomes an ERROR in 2.0.0.
     """
     name = data["name"]
-    filename = _filename(location)
+    filename = memory_module.filename(location)
     if not filename:
         return [
             Finding(
@@ -432,26 +337,11 @@ def _check_filename_identity(location, data):
     ]
 
 
-def _check_name(location, data):
-    if "name" not in data:
-        return [Finding(ERROR, location, "name", "required field is missing")]
-    name = data["name"]
-    if not _is_non_empty_string(name):
-        return [
-            Finding(
-                ERROR, location, "name", f"{_describe(name)} is not a non-empty string"
-            )
-        ]
-    return []
-
-
 def _check_description(location, data):
     if "description" not in data:
-        return [
-            Finding(ERROR, location, "description", "required field is missing")
-        ]
+        return [Finding(ERROR, location, "description", "required field is missing")]
     description = data["description"]
-    if not _is_non_empty_string(description):
+    if not memory_module.is_declared(description):
         return [
             Finding(
                 ERROR,
@@ -466,9 +356,7 @@ def _check_description(location, data):
 def _check_type(location, data):
     metadata = data.get("metadata")
     if not isinstance(metadata, dict) or "type" not in metadata:
-        return [
-            Finding(ERROR, location, "metadata.type", "required field is missing")
-        ]
+        return [Finding(ERROR, location, "metadata.type", "required field is missing")]
     kind = metadata["type"]
     if kind not in MEMORY_TYPES:
         return [
@@ -480,10 +368,6 @@ def _check_type(location, data):
             )
         ]
     return []
-
-
-def _is_non_empty_string(value):
-    return isinstance(value, str) and bool(value.strip())
 
 
 def _describe(value):

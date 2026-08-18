@@ -15,10 +15,12 @@ Measured on the largest real corpus available (110 entries, 202 wikilinks,
   pass), and 29 stay broken because the target genuinely does not exist yet,
   which is the case the WARNING already exists for.
 - **`name` canonical, rename the file** — preserves the 83 links that work
-  today, but 36 of the 110 `name` values contain spaces, dots or capitals
-  (`'Pere Valls — restricción LEVANTADA (autorizado 2026-08-03)'`). They are
-  titles, not identifiers, so for a third of the corpus there is no rename to
-  perform.
+  today, but 36 of the 110 `name` values contain spaces, dots or capitals.
+  They are shaped like `'Release owner — restriction LIFTED (approved
+  2026-08-03)'`: a sentence with punctuation and a date, not an identifier.
+  (Shape reproduced from the corpus, not quoted from it: the originals name
+  people.) They are titles, so for a third of the corpus there is no rename
+  to perform.
 
 ## Consequences
 

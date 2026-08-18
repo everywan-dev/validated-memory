@@ -14,16 +14,12 @@ directory that belongs to something else.
 """
 
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .findings import WARNING, Finding
 from .frontmatter import FrontmatterError, parse
-from .lint import (
-    INDEX_ENTRY_PATTERN,
-    INDEX_FILENAME,
-    MEMORY_SUFFIX,
-    MEMORY_TYPES,
-)
+from .lint import MEMORY_TYPES
+from .memory import INDEX_FILENAME, SUFFIX as MEMORY_SUFFIX, index_entries
 
 PARKED_SUFFIX = ".bak"
 
@@ -160,7 +156,7 @@ def _reconcile_index(source, memory_dir, adopted):
         return
     index_path = memory_dir / INDEX_FILENAME
     text = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
-    known = set(_index_entries(text))
+    known = {href for href, _line in _index_entries(text)}
     native = dict(_index_entries(_read(source / INDEX_FILENAME)))
 
     added = []
@@ -176,7 +172,7 @@ def _reconcile_index(source, memory_dir, adopted):
         return
 
     lines = text.splitlines()
-    if not any(_entry_href(line) for line in lines):
+    if not list(_index_entries(text)):
         lines = [line for line in lines if line.strip() != PLACEHOLDER]
     while lines and not lines[-1].strip():
         lines.pop()
@@ -184,16 +180,17 @@ def _reconcile_index(source, memory_dir, adopted):
 
 
 def _index_entries(text):
-    """Yield `(href, line)` for every bullet-with-link entry in an index."""
-    for line in text.splitlines():
-        href = _entry_href(line)
-        if href is not None:
-            yield href, line.strip()
+    """Yield `(relpath, line)` for every index entry that names a file.
 
-
-def _entry_href(line):
-    match = INDEX_ENTRY_PATTERN.match(line.strip())
-    return match.group(1).strip() if match else None
+    The path is normalized the way the index/file cross-check normalizes it,
+    so `./coffee.md` and `coffee.md` are one entry for one file rather than
+    two. A bullet whose link target is blank names no file and is not an
+    entry here -- `lint` reports it as malformed on its own.
+    """
+    for entry in index_entries(text):
+        if not entry.href:
+            continue
+        yield PurePosixPath(entry.href).as_posix(), entry.line
 
 
 def _synthesize(path, relative):
