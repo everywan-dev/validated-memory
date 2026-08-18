@@ -192,11 +192,16 @@ def test_a_second_run_reports_unchanged_and_leaves_the_bytes_identical(
     run_cli("render", cwd=adopter_dir)
     first = (adopter_dir / "knowledge.html").read_bytes()
 
+    stamp = (adopter_dir / "knowledge.html").stat().st_mtime_ns
+
     result = run_cli("render", cwd=adopter_dir)
 
     assert result.returncode == 0
     assert "render: unchanged knowledge.html" in result.stdout
     assert (adopter_dir / "knowledge.html").read_bytes() == first
+    # Identical bytes alone would pass an implementation that rewrites the
+    # same content and prints `unchanged`. The file must not be touched.
+    assert (adopter_dir / "knowledge.html").stat().st_mtime_ns == stamp
 
 
 def test_an_error_finding_stops_the_run_and_writes_nothing(
@@ -483,6 +488,28 @@ def test_only_an_anchor_href_ever_carries_an_external_url(
         tag == "a" and attrs.get("href") == "https://example.invalid/doc"
         for tag, attrs in elements
     )
+
+
+def test_a_hostile_provenance_scheme_is_text_and_never_a_link(
+    run_cli, adopter_dir, write_unit, page_elements
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nprovenance:\n  - 'javascript:alert(1)'\n",
+        "# Title\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    # The contract validates nothing about a provenance entry, and escaping
+    # does not neutralise a scheme -- only the link would arm it.
+    assert "javascript:alert(1)" in page
+    assert not [
+        attrs for tag, attrs in page_elements(page)
+        if tag == "a" and attrs.get("href", "").startswith("javascript:")
+    ]
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -726,16 +753,86 @@ def _unit_section(unit_id, data, state, bodies, view, states, rendered, top=True
     )
 ```
 
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 4: Write the failing test for a cycle**
+
+Nothing in the package detects a supersession cycle and the contract accepts
+one, so both units are marked superseded and neither is anyone's root. They
+must not vanish:
+
+```python
+def test_a_supersession_cycle_still_renders_every_unit_and_warns(
+    run_cli, adopter_dir, write_unit, page_elements
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: hypothesis\nsupersedes:\n  - kb-0002\n",
+        "# One\n",
+    )
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: hypothesis\nsupersedes:\n  - kb-0001\n",
+        "# Two\n",
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    units = {
+        attrs["data-unit"]
+        for tag, attrs in page_elements(page)
+        if tag == "section" and attrs.get("class", "").startswith("unit")
+    }
+
+    assert result.returncode == 0
+    assert units == {"kb-0001", "kb-0002"}
+    assert "WARNING" in result.stderr
+    assert "no live conclusion reaches" in page
+```
+
+- [ ] **Step 5: Run it to verify it fails**
 
 Run: `python3 -m pytest tests/test_render.py -q`
-Expected: PASS.
+Expected: FAIL -- the page contains neither unit.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Implement the unreachable section**
+
+After the live conclusions, render every id in `states` that `rendered` never
+reached, under its own heading, with the same detail; return the list of those
+ids so `run` can report a WARNING naming them. The `rendered` set already
+terminates the recursion: a unit reached twice is emitted as an internal
+reference, never re-entered.
+
+```python
+def build(documents, basis, records):
+    ...
+    unreached = [unit_id for unit_id in sorted(states) if unit_id not in rendered]
+    if unreached:
+        parts.append("<h2>Units no live conclusion reaches</h2>")
+        parts.append(
+            '<p class="meta">Superseded by units that are themselves '
+            "superseded, in a cycle the contract does not reject. Shown here "
+            "so nothing is dropped in silence.</p>"
+        )
+        for unit_id in unreached:
+            data, state = states[unit_id]
+            parts.append(
+                _unit_section(unit_id, data, state, bodies, view, states,
+                              rendered, records, top=False)
+            )
+    return html.page(TITLE, "\n".join(parts)), unreached
+```
+
+- [ ] **Step 7: Run the tests**
+
+Run: `python3 -m pytest tests/test_render.py -q`
+Expected: PASS. The structural invariant from Task 3 -- one section per unit --
+now holds for every corpus, which is what makes it worth asserting.
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add validated_memory/knowledge_view.py tests/test_render.py
-git commit -m "feat: la cadena de supersesion se anida bajo la conclusion vigente"
+git add validated_memory/knowledge_view.py validated_memory/render.py tests/test_render.py
+git commit -m "feat: la cadena se anida y nada queda fuera de la pagina, ni en un ciclo"
 ```
 
 ---
@@ -782,7 +879,7 @@ def test_the_history_window_shows_twenty_and_states_the_true_total(
     )
     _log(adopter_dir, [
         {"unit": "kb-0001", "system": "repo", "kind": "git_ref",
-         "verdict": "current", "at": f"2026-01-{day:02d}T00:00:00Z"}
+         "verdict": "current", "recorded_at": f"2026-01-{day:02d}T00:00:00Z"}
         for day in range(1, 26)
     ])
 
@@ -791,6 +888,7 @@ def test_the_history_window_shows_twenty_and_states_the_true_total(
 
     assert page.count('class="record"') == HISTORY_WINDOW
     assert "25 record(s)" in page
+    assert "of which 25 belong to an anchor shown below" in page
     assert "2026-01-25T00:00:00Z" in page
     assert "2026-01-01T00:00:00Z" not in page
 
@@ -817,7 +915,14 @@ Expected: FAIL -- no history is rendered, and an unreadable log crashes.
 - [ ] **Step 3: Write the implementation**
 
 In `verdicts.py`, lift the parsing loop out of `service_view` and have both
-call it. A second loop is a second opinion about which logs are acceptable:
+call it. A second loop is a second opinion about which logs are acceptable.
+
+Two existing defects are fixed in the same move, because `render` would
+otherwise inherit them: the file is read **outside** the current `try`, so an
+undecodable log escapes as `UnicodeDecodeError` rather than the promised
+`VerdictLogError`; and the key is built without checking the fields are
+strings, so `{"unit": [], ...}` raises `TypeError`. Fail-loud that fails as a
+traceback is not fail-loud:
 
 ```python
 def _records(root):
@@ -830,9 +935,11 @@ def _records(root):
     path = Path(root) / LOG_FILENAME
     if not path.exists():
         return
-    for lineno, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise VerdictLogError(0, f"cannot be read: {error}") from error
+    for lineno, line in enumerate(text.splitlines(), start=1):
         line = line.strip()
         if not line:
             continue
@@ -843,10 +950,15 @@ def _records(root):
         if not isinstance(record, dict):
             raise VerdictLogError(lineno, "record is not a JSON object")
         try:
-            record["unit"], record["system"], record["kind"]
+            key_fields = (record["unit"], record["system"], record["kind"])
             verdict = record["verdict"]
         except KeyError as error:
             raise VerdictLogError(lineno, f"record is missing the {error} field") from error
+        for name, value in zip(("unit", "system", "kind"), key_fields):
+            if not isinstance(value, str):
+                raise VerdictLogError(
+                    lineno, f"the {name} field is not a string"
+                )
         if verdict not in VERDICTS:
             raise VerdictLogError(
                 lineno, f"'{verdict}' is not one of " + ", ".join(VERDICTS)
@@ -886,7 +998,7 @@ def _history(unit_id, anchor, records):
     ]
     shown = list(reversed(matching))[:HISTORY_WINDOW]
     items = "\n".join(
-        f'<li class="record">{html.escape_text(record.get("at", ""))} '
+        f'<li class="record">{html.escape_text(record.get("recorded_at", ""))} '
         f'{html.escape_text(record["verdict"])}</li>'
         for record in shown
     )
@@ -897,15 +1009,23 @@ def _history(unit_id, anchor, records):
     )
 ```
 
-And the page header states the log-wide total and the window:
+And the page header states **two** totals, because the log outlives the
+corpus: nothing prunes records whose unit or anchor is gone, so a single total
+cannot be reconciled with the histories on the page.
 
 ```python
     parts.append(
-        f'<p class="window">Verdict log: {total} record(s) in '
-        f"{html.escape_text(verdicts.LOG_FILENAME)}; at most {HISTORY_WINDOW} "
-        "shown per anchor.</p>"
+        f'<p class="window">Verdict log: {len(records)} record(s) in '
+        f"{html.escape_text(verdicts.LOG_FILENAME)}, of which {belonging} "
+        f"belong to an anchor shown below; at most {HISTORY_WINDOW} shown "
+        "per anchor.</p>"
     )
 ```
+
+When a unit carries two anchors with the same `(system, kind)` -- which the
+contract permits and the log cannot tell apart, since `probe` records no
+position or payload -- the history is emitted once and marked as shared by
+those anchors, rather than repeated under each as if it were its own.
 
 In `render.run`, read the history once and report a bad log exactly as
 `derive` does:
@@ -964,9 +1084,9 @@ def test_the_freshness_strip_is_drawn_and_ends_at_the_last_record(
     )
     _log(adopter_dir, [
         {"unit": "kb-0001", "system": "repo", "kind": "git_ref",
-         "verdict": "current", "at": "2026-01-01T00:00:00Z"},
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
         {"unit": "kb-0001", "system": "repo", "kind": "git_ref",
-         "verdict": "drifted", "at": "2026-02-01T00:00:00Z"},
+         "verdict": "drifted", "recorded_at": "2026-02-01T00:00:00Z"},
     ])
 
     run_cli("render", cwd=adopter_dir)
@@ -1055,7 +1175,7 @@ def freshness_strip(records):
         bands.append(
             f'<rect x="{index * band:.2f}" y="0" width="{band:.2f}" '
             f'height="{BAND_HEIGHT}" fill="{COLOURS[verdict]}">'
-            f"<title>{html.escape_text(record.get('at', ''))} {html.escape_text(verdict)}</title>"
+            f"<title>{html.escape_text(record.get('recorded_at', ''))} {html.escape_text(verdict)}</title>"
             "</rect>"
         )
     last = records[-1]
@@ -1192,9 +1312,17 @@ lists: outgoing (resolved links to `#entry-<name>`, unresolved marked
 `memory.resolution(documents, declared)` -- never re-derived, so the view
 resolves exactly as `lint` does, ADR 0001 included.
 
-In `render.run`, read the memory layer, stop like `lint` does when the
-directory or the index is missing, build the page, and report the second
-artifact on its own line.
+In `render.run`, read the memory layer, stop when the directory or the index
+is missing -- that is a read precondition, the same one `lint` stops on --
+build the page, and report the second artifact on its own line.
+
+**The view does not enforce.** There is no `gated_source` for this layer:
+`memory.py` reads and every rule lives in private functions of `lint`. So an
+entry with no line in `MEMORY.md` is still rendered, an unresolved reference
+is marked rather than hidden, and a document whose frontmatter will not parse
+is rendered with that stated in place of its fields. Hiding a record because
+`lint` would complain about it would make the view lie about what the
+repository holds, and `lint` is one command away.
 
 - [ ] **Step 4: Run the tests**
 
