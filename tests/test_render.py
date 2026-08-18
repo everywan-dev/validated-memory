@@ -701,3 +701,52 @@ def test_an_outgoing_href_matches_a_spaced_and_punctuated_name_anchor(
     assert outgoing_hrefs, "expected the wikilink to resolve to a link"
     for href in outgoing_hrefs:
         assert href[1:] in section_ids, f"{href} does not match any entry id"
+
+
+def test_only_existing_regenerates_what_is_there_and_creates_nothing(
+    run_cli, adopter_dir, write_unit
+):
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "knowledge.html").write_text("stale\n", encoding="utf-8")
+
+    result = run_cli("render", "--only-existing", cwd=adopter_dir)
+
+    assert result.returncode == 0
+    assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") != "stale\n"
+    assert not (adopter_dir / "memory.html").exists()
+
+
+def test_only_existing_is_fail_open_on_an_invalid_corpus(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: invented\n")
+    (adopter_dir / "knowledge.html").write_text("stale\n", encoding="utf-8")
+
+    unattended = run_cli("render", "--only-existing", cwd=adopter_dir)
+    explicit = run_cli("render", cwd=adopter_dir)
+
+    assert unattended.returncode == 0
+    assert "WARNING" in unattended.stderr
+    # Fail-open does NOT mean "publish a page built on rejected data": the
+    # artifact already on disk is left exactly as it was.
+    assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "stale\n"
+    assert explicit.returncode == 1
+
+
+def test_only_existing_with_neither_artifact_present_is_a_clean_no_op(
+    run_cli, adopter_dir, write_unit
+):
+    # Nobody has activated either view yet: `--only-existing` must not
+    # create one, and -- since there is nothing to regenerate -- it must
+    # not even read or validate the corpus to get there. An adopter who
+    # never ran `init --view` sees no output and no findings from the
+    # startup hook.
+    _scaffold(run_cli, adopter_dir, write_unit)
+
+    result = run_cli("render", "--only-existing", cwd=adopter_dir)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert not (adopter_dir / "knowledge.html").exists()
+    assert not (adopter_dir / "memory.html").exists()

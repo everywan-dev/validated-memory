@@ -13,7 +13,7 @@ from . import knowledge_view, memory_view, validate
 from . import memory as memory_module
 from . import verdicts as verdicts_module
 from .contract import ERROR
-from .findings import EXIT_ERROR, EXIT_OK, Finding
+from .findings import EXIT_ERROR, EXIT_OK, WARNING, Finding
 from .frontmatter import FrontmatterError
 from .frontmatter import parse as parse_frontmatter
 
@@ -27,17 +27,37 @@ ARTIFACTS = (KNOWLEDGE_ARTIFACT, MEMORY_ARTIFACT)
 
 
 def run(only_existing, stdout, stderr):
-    """Render the views. Returns an exit code."""
-    artifacts, ok = build_artifacts(stderr)
+    """Render the views. Returns an exit code.
+
+    `--only-existing` (the unattended mode a `SessionStart` hook runs on
+    every session) regenerates only the artifacts already present and
+    creates neither: with nothing on disk, the run is a clean no-op, before
+    the corpus is even read. It is also fail-open -- an ERROR that would
+    gate an explicit run downgrades to a WARNING here, and exits 0, because
+    a person who runs `render` by hand is entitled to be told the views
+    were not built, while a hook re-reporting the same ERROR on every
+    session start until someone fixes the corpus helps nobody. Fail-open
+    never means "write a page built on data the enforcement rejected": on
+    that path `build_artifacts` still returns no artifacts, so whatever is
+    already on disk is left exactly as it was.
+    """
+    if only_existing:
+        targets = [path for path in ARTIFACTS if Path(path).exists()]
+        if not targets:
+            return EXIT_OK
+    else:
+        targets = list(ARTIFACTS)
+
+    artifacts, ok = build_artifacts(stderr, downgrade=only_existing)
     if not ok:
-        return EXIT_ERROR
-    for path in ARTIFACTS:
+        return EXIT_OK if only_existing else EXIT_ERROR
+    for path in targets:
         action = write_if_changed(Path(path), artifacts[path])
         print(f"render: {action} {path}", file=stdout)
     return EXIT_OK
 
 
-def build_artifacts(stderr):
+def build_artifacts(stderr, downgrade=False):
     """Build every artifact's content in memory. Writes nothing.
 
     Returns `(artifacts, ok)`. On success `artifacts` maps each path in
@@ -52,9 +72,16 @@ def build_artifacts(stderr):
     written from a run that, as a whole, did not succeed. `--only-existing`
     (`init --view`) needs the same build-without-writing step, so it lives
     here once rather than being composed at each of those call sites too.
+
+    `downgrade`, set by `run`'s unattended mode, prints every ERROR finding
+    as a WARNING instead -- `ok` is computed from the real severity
+    regardless, so a downgraded run still returns `False` here and writes
+    nothing; only the printed severity and `run`'s exit code differ.
     """
-    documents, ok = validate.gated_source(None, stderr)
-    if not ok:
+    documents, findings = validate.collect_and_validate(None)
+    for finding in findings:
+        _print_finding(finding, stderr, downgrade)
+    if any(finding.severity == ERROR for finding in findings):
         return {}, False
 
     try:
@@ -82,13 +109,13 @@ def build_artifacts(stderr):
             error.message,
             line=error.lineno,
         )
-        print(finding.render(), file=stderr)
+        _print_finding(finding, stderr, downgrade)
         return {}, False
 
     memory_target = Path(memory_module.DEFAULT_DIR)
     precondition = _memory_precondition(memory_target)
     if precondition is not None:
-        print(precondition.render(), file=stderr)
+        _print_finding(precondition, stderr, downgrade)
         return {}, False
 
     memory_documents, memory_resolution = _memory_source(memory_target)
@@ -98,6 +125,21 @@ def build_artifacts(stderr):
         KNOWLEDGE_ARTIFACT: knowledge_content,
         MEMORY_ARTIFACT: memory_content,
     }, True
+
+
+def _print_finding(finding, stderr, downgrade):
+    """Print one finding, downgraded from ERROR to WARNING when `downgrade`.
+
+    Only the printed severity changes -- the caller still decides `ok` from
+    the finding's real severity, so a downgraded ERROR still stops the
+    build. This only ever softens what unattended mode reports; an
+    already-WARNING finding is printed unchanged either way.
+    """
+    if downgrade and finding.severity == ERROR:
+        finding = Finding(
+            WARNING, finding.location, finding.field, finding.message, line=finding.line
+        )
+    print(finding.render(), file=stderr)
 
 
 def _memory_precondition(target):
