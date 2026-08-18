@@ -459,6 +459,108 @@ def test_a_unit_superseded_twice_is_rendered_once_and_referenced_after(
     assert '<a href="#unit-kb-0001">' in page
 
 
+def test_a_chain_three_deep_nests_correctly_and_renders_each_unit_once(
+    run_cli, adopter_dir, write_unit
+):
+    # The one piece of non-obvious control flow on this branch: the walk is
+    # iterative with an explicit stack, not recursive. A chain three deep is
+    # enough to prove the nesting comes out right without re-testing the
+    # 200-deep run already done by hand.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: hypothesis\n", "# Oldest\n")
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: measured\nsupersedes:\n  - kb-0001\n",
+        "# Middle\n",
+    )
+    write_unit(
+        "kb-0003.md",
+        "id: kb-0003\nevidence: measured\nsupersedes:\n  - kb-0002\n",
+        "# Newest\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    # Each unit renders exactly once.
+    assert page.count('id="unit-kb-0001"') == 1
+    assert page.count('id="unit-kb-0002"') == 1
+    assert page.count('id="unit-kb-0003"') == 1
+
+    # Correct nesting: kb-0003 (top) contains kb-0002 inside its own chain,
+    # which contains kb-0001 inside its own chain -- each one level deeper.
+    assert (
+        '<div class="chain">\n<section class="unit superseded" id="unit-kb-0002"'
+        in page
+    )
+    assert (
+        '<div class="chain">\n<section class="unit superseded" id="unit-kb-0001"'
+        in page
+    )
+    index_3 = page.index('id="unit-kb-0003"')
+    index_2 = page.index('id="unit-kb-0002"')
+    index_1 = page.index('id="unit-kb-0001"')
+    assert index_3 < index_2 < index_1
+
+    # No repeat reference anywhere: a straight chain never re-enters a unit.
+    assert 'class="repeat"' not in page
+
+
+def test_a_diamond_below_one_root_renders_the_shared_unit_once(
+    run_cli, adopter_dir, write_unit
+):
+    # kb-0004 supersedes both kb-0002 and kb-0003, which both supersede
+    # kb-0001: a diamond, not a plain chain. `_unit_section` marks a unit
+    # `rendered` globally as soon as it is first reached, so the walk down
+    # kb-0004's second branch must find kb-0001 already rendered and emit an
+    # internal reference instead of a second copy -- a regression here (back
+    # to recursing, or dropping the shared `rendered` set) would either blow
+    # the stack or double-render kb-0001 silently.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: hypothesis\n", "# Shared root\n")
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: measured\nsupersedes:\n  - kb-0001\n",
+        "# Left branch\n",
+    )
+    write_unit(
+        "kb-0003.md",
+        "id: kb-0003\nevidence: measured\nsupersedes:\n  - kb-0001\n",
+        "# Right branch\n",
+    )
+    write_unit(
+        "kb-0004.md",
+        "id: kb-0004\nevidence: measured\nsupersedes:\n  - kb-0002\n  - kb-0003\n",
+        "# Confluence\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    # Each unit -- including the one two branches point at -- renders
+    # exactly once.
+    for unit_id in ("kb-0001", "kb-0002", "kb-0003", "kb-0004"):
+        assert page.count(f'id="unit-{unit_id}"') == 1, unit_id
+
+    # Correct nesting: kb-0004 is the only top-level section, and both
+    # branches are inside it.
+    index_4 = page.index('id="unit-kb-0004"')
+    index_2 = page.index('id="unit-kb-0002"')
+    index_3 = page.index('id="unit-kb-0003"')
+    index_1 = page.index('id="unit-kb-0001"')
+    assert index_4 < index_2
+    assert index_4 < index_3
+
+    # The second time the walk reaches kb-0001 (down the branch that is not
+    # the first to reach it), it is an internal reference -- one `<p
+    # class="repeat">` linking to the section already rendered on the first
+    # branch, not a second `<section>`.
+    assert page.count('class="repeat"') == 1
+    assert page.count('<a href="#unit-kb-0001">') == 1
+    repeat_index = page.index('class="repeat"')
+    assert repeat_index > index_1, "the repeat must come after the real section"
+
+
 def test_the_memory_page_lists_entries_with_their_references(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
 ):
