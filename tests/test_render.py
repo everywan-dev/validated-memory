@@ -280,6 +280,29 @@ def test_a_hostile_anchor_payload_is_text_and_never_live_markup(
     assert not [tag for tag, _ in page_elements(page) if tag == "script"]
 
 
+def test_the_anchor_payload_is_rendered_as_json_not_a_python_repr(
+    run_cli, adopter_dir, write_unit
+):
+    # A reader of this page has no Python: `json.dumps` is the form `probe`
+    # itself writes into the log, and the form both a person and a JSON
+    # parser can read back, unlike a Python `repr`.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n"
+        "    payload:\n      ref: main\n",
+        "# Title\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert '{"ref": "main"}' in page
+    assert "{'ref': 'main'}" not in page
+
+
 def test_a_verdict_log_record_that_is_not_json_is_reported_not_raised(
     run_cli, adopter_dir, write_unit
 ):

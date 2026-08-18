@@ -1,5 +1,6 @@
 """Builds `knowledge.html`: the curated layer, live conclusions first."""
 
+import json
 import re
 
 from . import derive, html, memory, svg, verdicts
@@ -22,6 +23,13 @@ def headline(body_text, unit_id):
     THIS IS THE BOUNDARY AND IT IS CLOSED. Extracting one line by a
     documented rule is not rendering the body. "And the first paragraph too"
     would be, and the design rejects it: bodies are shown verbatim.
+
+    "First" is by line position in the raw text, not by Markdown structure:
+    `HEADING_PATTERN` has no notion of a fenced code block, so a `#` line
+    inside one, ahead of the real heading, becomes the headline. This is a
+    known consequence of the rule as stated, not a bug -- rendering fenced
+    code differently would mean parsing the body's structure, which is
+    exactly what a verbatim block does not do.
     """
     match = HEADING_PATTERN.search(body_text)
     return match.group(1) if match else unit_id
@@ -125,7 +133,10 @@ def _unit_section(
     rendered again; that repeat rule is also what stops the walk from
     re-entering a shared ancestor. `render` validates before it renders, so
     `validate`'s rejection of a supersession cycle already guarantees this
-    walk is over a DAG -- there is no separate cycle guard here.
+    walk is over a DAG -- there is no separate cycle guard here. Likewise a
+    `supersedes` entry naming a unit outside the validated set is its own
+    contract ERROR (`_check_supersedes`) that gates before this ever runs,
+    so every `target` below is guaranteed to be a key of `states`.
     """
     if unit_id in rendered:
         return _repeat_reference(unit_id)
@@ -138,8 +149,6 @@ def _unit_section(
         if frame["index"] < len(frame["children"]):
             target = frame["children"][frame["index"]]
             frame["index"] += 1
-            if target not in states:
-                continue
             if target in rendered:
                 frame["pieces"].append(_repeat_reference(target))
                 continue
@@ -212,7 +221,12 @@ def _anchors(unit_id, anchors, grouped, shown_keys):
     # `payload` is a mapping the contract never looks inside -- the probe
     # interprets it, not the contract -- so it is arbitrary structure even
     # here, in the validated layer. `html.escape_text` stringifies before
-    # escaping, which is what keeps that from raising.
+    # escaping, which is what keeps that from raising. `json.dumps` is what
+    # it stringifies with, not `str`/`repr`: a reader of this page has no
+    # Python, and `json.dumps` is the same deterministic form `verdicts._canonical`
+    # already uses to key a record and the form `probe` writes into the log
+    # this page also displays -- `str` would instead show Python's
+    # single-quoted repr, `{'ref': 'main'}`, which is neither.
     if not anchors:
         return '<p class="meta">No anchors: this unit cannot expire.</p>\n'
     items = []
@@ -231,7 +245,8 @@ def _anchors(unit_id, anchors, grouped, shown_keys):
             f'<span class="system">{html.escape_text(anchor.get("system"))}</span> '
             f'<span class="kind">{html.escape_text(anchor.get("kind"))}</span> '
             f'<span class="captured">{html.escape_text(anchor.get("captured_at"))}</span>'
-            f'<pre class="payload">{html.escape_text(payload)}</pre>'
+            f'<pre class="payload">'
+            f'{html.escape_text(json.dumps(payload, sort_keys=True))}</pre>'
             f"{_history(grouped.get(key, []))}"
             "</li>"
         )
