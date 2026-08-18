@@ -582,6 +582,10 @@ def _unit_section(unit_id, data, state, bodies, view):
 
 
 def _anchors(anchors):
+    # `payload` is a mapping the contract never looks inside -- the probe
+    # interprets it, not the contract -- so it is arbitrary structure even
+    # here, in the validated layer. `html.escape_text` stringifies before
+    # escaping, which is what keeps that from raising.
     if not anchors:
         return '<p class="meta">No anchors: this unit cannot expire.</p>\n'
     items = []
