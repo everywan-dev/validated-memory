@@ -2,9 +2,10 @@
 
 The agent-memory layer is one Markdown file per fact, plus a one-line-per-
 entry index (`MEMORY.md`) at the root of the memory directory. `lint`
-enforces four things: the index and the files agree in both directions, each
-file's frontmatter is complete, a wikilink between memories names a real
-memory (or is flagged as pending), and the supersession convention -- a
+enforces five things: the index and the files agree in both directions, each
+file's frontmatter is complete, `name` matches the filename that is the
+memory's canonical identity, a wikilink between memories names a real memory
+(or is flagged as pending), and the supersession convention -- a
 `description` rewritten to start with `superseded by [[name]]` -- is either
 well formed or reported.
 """
@@ -168,17 +169,44 @@ def _lint_memories(documents):
             declared_names[name] = location
 
     valid_names = set(declared_names)
+    names_by_filename = _index_by_filename(parsed)
     for location, data, body in parsed:
         own_name = data.get("name")
         if not _is_non_empty_string(own_name):
             own_name = None
         description = data.get("description")
         findings.extend(
-            _check_description_wikilinks(location, own_name, description, valid_names)
+            _check_description_wikilinks(
+                location, own_name, description, valid_names, names_by_filename
+            )
         )
-        findings.extend(_check_wikilink_targets(location, "body", body, valid_names))
+        findings.extend(
+            _check_wikilink_targets(
+                location, "body", body, valid_names, names_by_filename
+            )
+        )
 
     return findings
+
+
+def _index_by_filename(parsed):
+    """Map each unambiguous filename (without `.md`) to the `name` it declares.
+
+    Used only to explain an unresolved wikilink: the writer reached for the
+    filename, which is the canonical identity, while resolution goes by `name`.
+    A filename carried by two memories in different subdirectories is left out
+    -- naming one of them as the cause would be a guess -- and so is one whose
+    `name` is missing or empty, which its own rule already reports.
+    """
+    names_by_filename = {}
+    for location, data, _body in parsed:
+        stem = PurePosixPath(location).stem
+        names_by_filename.setdefault(stem, []).append(data.get("name"))
+    return {
+        stem: names[0]
+        for stem, names in names_by_filename.items()
+        if len(names) == 1 and _is_non_empty_string(names[0])
+    }
 
 
 def _body(text):
@@ -194,7 +222,9 @@ def _body(text):
     return ""  # pragma: no cover - unreachable once `parse` has succeeded
 
 
-def _check_description_wikilinks(location, own_name, description, valid_names):
+def _check_description_wikilinks(
+    location, own_name, description, valid_names, names_by_filename
+):
     """Check the supersession marker (if any), then any remaining wikilink.
 
     A wikilink that opens a well-formed `superseded by [[name]]` marker is
@@ -240,11 +270,15 @@ def _check_description_wikilinks(location, own_name, description, valid_names):
                         f"supersession points at '{target}', which does not exist",
                     )
                 )
-    findings.extend(_check_wikilink_targets(location, "description", scan_text, valid_names))
+    findings.extend(
+        _check_wikilink_targets(
+            location, "description", scan_text, valid_names, names_by_filename
+        )
+    )
     return findings
 
 
-def _check_wikilink_targets(location, field, text, valid_names):
+def _check_wikilink_targets(location, field, text, valid_names, names_by_filename):
     if not isinstance(text, str):
         return []
     findings = []
@@ -254,23 +288,56 @@ def _check_wikilink_targets(location, field, text, valid_names):
         if target in valid_names or target in seen:
             continue
         seen.add(target)
-        findings.append(
-            Finding(
-                WARNING,
-                location,
-                field,
-                f"wikilink to '{target}' has no matching memory (not written yet)",
+        declared = names_by_filename.get(target)
+        if declared is None:
+            message = (
+                f"wikilink to '{target}' has no matching memory (not written yet)"
             )
-        )
+        else:
+            # The file is right there; what does not resolve is its `name`.
+            # Saying 'not written yet' here would point at the wrong repair.
+            message = (
+                f"wikilink to '{target}' has no matching memory; "
+                f"'{target}{MEMORY_SUFFIX}' declares name '{declared}'"
+            )
+        findings.append(Finding(WARNING, location, field, message))
     return findings
 
 
 def _check_memory(location, data):
     findings = []
-    findings.extend(_check_name(location, data))
+    name_findings = _check_name(location, data)
+    findings.extend(name_findings)
+    if not name_findings:
+        findings.extend(_check_filename_identity(location, data))
     findings.extend(_check_description(location, data))
     findings.extend(_check_type(location, data))
     return findings
+
+
+def _check_filename_identity(location, data):
+    """Check `name` against the filename, which is the canonical identity.
+
+    When the two disagree the filename wins and `name` is repaired to match it,
+    never the other way round: a third of a real corpus carries titles in
+    `name` -- spaces, dots, capitals -- for which no rename exists (ADR 0001).
+
+    This is a WARNING rather than an ERROR purely as a migration concession for
+    memory sets written before the rule. It becomes an ERROR in 2.0.0.
+    """
+    name = data["name"]
+    filename = PurePosixPath(location).stem
+    if name == filename:
+        return []
+    return [
+        Finding(
+            WARNING,
+            location,
+            "name",
+            f"'{name}' does not match the filename '{filename}'; the filename "
+            "is the canonical identity -- repair 'name' to match it",
+        )
+    ]
 
 
 def _check_name(location, data):

@@ -221,6 +221,165 @@ def test_a_wikilink_resolving_to_a_real_memory_is_not_a_finding(
     assert "WARNING" not in result.stderr
 
 
+# --- filename identity (ADR 0001) --------------------------------------------
+
+# The filename without `.md` is a memory's canonical identity; `name` is the
+# identifier wikilinks resolve against, and gives way to the filename when the
+# two disagree. Resolution itself is unchanged -- still by `name`.
+
+DIVERGING_MEMORY = """\
+name: Coffee Preference
+description: Prefers oat milk in coffee.
+metadata:
+  type: user
+"""
+
+
+def test_a_name_diverging_from_its_filename_warns_without_gating(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory("coffee-preference.md", DIVERGING_MEMORY)
+    write_index(HEALTHY_INDEX)
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "ERROR" not in result.stderr
+    assert "WARNING: memory/coffee-preference.md: name: " in result.stderr
+    assert "1 warning(s)" in result.stdout
+
+
+def test_the_divergence_warning_names_both_sides_and_the_repair(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory("coffee-preference.md", DIVERGING_MEMORY)
+    write_index(HEALTHY_INDEX)
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert "'Coffee Preference'" in result.stderr
+    assert "'coffee-preference'" in result.stderr
+    # The message states which side is canonical and which one gets repaired,
+    # so the reader never has to guess the direction of the fix.
+    assert "canonical" in result.stderr
+    assert "repair 'name'" in result.stderr
+
+
+def test_a_name_matching_its_filename_is_not_a_finding(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory("coffee-preference.md", HEALTHY_MEMORY)
+    write_index(HEALTHY_INDEX)
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING" not in result.stderr
+
+
+def test_a_memory_in_a_subdirectory_is_compared_by_its_filename(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # The comparison is against the filename alone, never the path the file
+    # sits at: a memory in a subdirectory whose `name` matches is clean.
+    write_memory("personal/coffee-preference.md", HEALTHY_MEMORY)
+    write_index("- [Coffee](personal/coffee-preference.md) — oat milk\n")
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING" not in result.stderr
+
+
+def test_an_incomplete_name_is_not_also_reported_as_diverging(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # A missing or empty `name` already gates on its own rule; piling the
+    # divergence warning on top would report the same defect twice.
+    write_memory(
+        "coffee-preference.md",
+        "description: Prefers oat milk in coffee.\nmetadata:\n  type: user\n",
+    )
+    write_index(HEALTHY_INDEX)
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: memory/coffee-preference.md: name: " in result.stderr
+    assert "0 warning(s)" in result.stdout
+
+
+def test_a_wikilink_to_a_diverging_file_names_the_cause(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # Without the hint this reads as "not written yet" about a file that is
+    # right there -- the wikilink is fine, the target's `name` is not.
+    write_memory("coffee-preference.md", DIVERGING_MEMORY)
+    write_memory(
+        "notes.md",
+        "name: notes\ndescription: Scratch notes.\nmetadata:\n  type: project\n",
+        body="Related: [[coffee-preference]].\n",
+    )
+    write_index(
+        HEALTHY_INDEX + "- [Notes](notes.md) — scratch notes\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: memory/notes.md: body: " in result.stderr
+    assert "coffee-preference.md" in result.stderr
+    assert "declares name 'Coffee Preference'" in result.stderr
+    assert "not written yet" not in result.stderr
+
+
+def test_a_wikilink_with_no_file_behind_it_keeps_the_generic_message(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory(
+        "coffee-preference.md", HEALTHY_MEMORY, body="Related: [[tea-preference]].\n"
+    )
+    write_index(HEALTHY_INDEX)
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "not written yet" in result.stderr
+    assert "declares name" not in result.stderr
+
+
+def test_an_ambiguous_filename_keeps_the_generic_wikilink_message(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # Two files in different subdirectories share a filename, so naming one of
+    # them as the cause would be a guess. The generic message stands.
+    write_memory(
+        "alpha/shared.md",
+        "name: alpha-fact\ndescription: One fact.\nmetadata:\n  type: project\n",
+    )
+    write_memory(
+        "beta/shared.md",
+        "name: beta-fact\ndescription: Another fact.\nmetadata:\n  type: project\n",
+    )
+    write_memory(
+        "notes.md",
+        "name: notes\ndescription: Scratch notes.\nmetadata:\n  type: project\n",
+        body="Related: [[shared]].\n",
+    )
+    write_index(
+        "- [Alpha](alpha/shared.md) — one fact\n"
+        "- [Beta](beta/shared.md) — another fact\n"
+        "- [Notes](notes.md) — scratch notes\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: memory/notes.md: body: " in result.stderr
+    assert "not written yet" in result.stderr
+    assert "declares name" not in result.stderr
+
+
 # --- supersession convention ------------------------------------------------
 
 
@@ -228,13 +387,16 @@ def test_a_well_formed_supersession_is_recognized_without_findings(
     adopter_dir, write_memory, write_index, run_cli
 ):
     write_memory(
-        "old.md",
+        "old-coffee-preference.md",
         "name: old-coffee-preference\n"
         "description: superseded by [[coffee-preference]]\n"
         "metadata:\n  type: user\n",
     )
-    write_memory("new.md", HEALTHY_MEMORY)
-    write_index("- [Old](old.md) — fixture entry\n- [New](new.md) — fixture entry\n")
+    write_memory("coffee-preference.md", HEALTHY_MEMORY)
+    write_index(
+        "- [Old](old-coffee-preference.md) — fixture entry\n"
+        "- [New](coffee-preference.md) — fixture entry\n"
+    )
 
     result = run_cli("lint", cwd=adopter_dir)
 
@@ -247,17 +409,17 @@ def test_a_malformed_supersession_marker_gates(
     adopter_dir, write_memory, write_index, run_cli
 ):
     write_memory(
-        "old.md",
+        "old-coffee-preference.md",
         "name: old-coffee-preference\n"
         "description: superseded by coffee-preference\n"
         "metadata:\n  type: user\n",
     )
-    write_index("- [Old](old.md) — fixture entry\n")
+    write_index("- [Old](old-coffee-preference.md) — fixture entry\n")
 
     result = run_cli("lint", cwd=adopter_dir)
 
     assert result.returncode == 1
-    assert "ERROR: memory/old.md: description: " in result.stderr
+    assert "ERROR: memory/old-coffee-preference.md: description: " in result.stderr
     assert "supersession" in result.stderr
 
 
@@ -265,17 +427,17 @@ def test_a_supersession_pointing_at_a_missing_memory_gates(
     adopter_dir, write_memory, write_index, run_cli
 ):
     write_memory(
-        "old.md",
+        "old-coffee-preference.md",
         "name: old-coffee-preference\n"
         "description: superseded by [[coffee-preference]]\n"
         "metadata:\n  type: user\n",
     )
-    write_index("- [Old](old.md) — fixture entry\n")
+    write_index("- [Old](old-coffee-preference.md) — fixture entry\n")
 
     result = run_cli("lint", cwd=adopter_dir)
 
     assert result.returncode == 1
-    assert "ERROR: memory/old.md: description: " in result.stderr
+    assert "ERROR: memory/old-coffee-preference.md: description: " in result.stderr
     assert "coffee-preference" in result.stderr
     assert "WARNING" not in result.stderr
 
@@ -284,17 +446,17 @@ def test_a_supersession_pointing_at_itself_gates(
     adopter_dir, write_memory, write_index, run_cli
 ):
     write_memory(
-        "old.md",
+        "old-coffee-preference.md",
         "name: old-coffee-preference\n"
         "description: superseded by [[old-coffee-preference]]\n"
         "metadata:\n  type: user\n",
     )
-    write_index("- [Old](old.md) — fixture entry\n")
+    write_index("- [Old](old-coffee-preference.md) — fixture entry\n")
 
     result = run_cli("lint", cwd=adopter_dir)
 
     assert result.returncode == 1
-    assert "ERROR: memory/old.md: description: " in result.stderr
+    assert "ERROR: memory/old-coffee-preference.md: description: " in result.stderr
     assert "itself" in result.stderr
 
 
@@ -362,14 +524,15 @@ def test_errors_and_warnings_are_reported_apart(
     adopter_dir, write_memory, write_index, run_cli
 ):
     write_memory(
-        "warned.md",
+        "coffee-preference.md",
         "name: coffee-preference\n"
         "description: See also [[tea-preference]].\n"
         "metadata:\n  type: user\n",
     )
-    write_memory("failed.md", "name: broken\nmetadata:\n  type: user\n")
+    write_memory("broken.md", "name: broken\nmetadata:\n  type: user\n")
     write_index(
-        "- [Warned](warned.md) — fixture entry\n- [Failed](failed.md) — fixture entry\n"
+        "- [Warned](coffee-preference.md) — fixture entry\n"
+        "- [Failed](broken.md) — fixture entry\n"
     )
 
     result = run_cli("lint", cwd=adopter_dir)

@@ -13,7 +13,7 @@ directly; `lint` only checks what is there.
 
 ```yaml
 ---
-name: short-kebab-slug        # required; unique across the memory set
+name: short-kebab-slug        # required; unique; must match the filename
 description: one-line summary # required
 metadata:
   type: user                  # required; user | project | feedback | reference
@@ -21,6 +21,13 @@ metadata:
 
 Body, in prose. May reference another memory with a [[wikilink]].
 ```
+
+**Name the file first, then copy that name into `name`.** The filename
+without `.md` is the memory's canonical identity, so the file
+`memory/short-kebab-slug.md` carries `name: short-kebab-slug`. Choose a slug, not a title: `name` is an
+identifier that wikilinks resolve against, not a label -- the human-readable
+title belongs in the index entry. `lint` warns when the two disagree, and the
+repair is always to rewrite `name`, never to rename the file.
 
 Add a matching bullet to `memory/MEMORY.md`:
 
@@ -50,6 +57,11 @@ itself, or at a name that does not exist, is malformed.
 `name`. A wikilink to a memory not written yet is a WARNING, not an ERROR --
 it marks something pending.
 
+Since `name` matches the filename, writing `[[short-kebab-slug]]` for the
+memory in `short-kebab-slug.md` is correct by construction. If `lint` says a
+wikilink has no matching memory but names a file that declares a different
+`name`, the link is fine and that file's `name` is what needs repairing.
+
 ## Verify
 
 ```
@@ -57,7 +69,8 @@ python3 -m validated_memory lint
 ```
 
 Enforces, over the whole memory set: the index and the files agree in both
-directions, every file's frontmatter is complete, every wikilink either
-resolves or is flagged pending, and the supersession marker (if any) is well
-formed. See the README's "Agent memory" section for the exact rules. Run it
-after any edit to memory files or the index.
+directions, every file's frontmatter is complete, every `name` matches its
+filename, every wikilink either resolves or is flagged pending, and the
+supersession marker (if any) is well formed. See the README's "Agent
+memory" section for the exact rules. Run it after any edit to memory files
+or the index.
