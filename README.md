@@ -427,6 +427,26 @@ version of its own, so it versions with the plugin. A memory whose `name` is
 missing or empty is not also reported as diverging -- that defect already has
 its own ERROR, and reporting it twice would say the same thing in two places.
 
+Because the filename is the identity, two memories **carrying the same
+filename** are two memories claiming the same identity. Two files in one
+directory cannot share a name, so this only arises across subdirectories, and
+it is a fact about the files: it is reported even when neither one's
+frontmatter parses.
+
+```
+WARNING: memory/beta/shared.md: filename: the filename 'shared' is also
+carried by memory/alpha/shared.md; the filename is the canonical identity,
+so these are two memories with the same identity -- rename one
+```
+
+Renaming is the repair here, and it does not contradict the rule above: what
+that rule forbids is renaming a file to match its `name`, and what collides
+here is two files, not a file and its `name`. Reporting it matters now
+because otherwise `lint` tells both files to repair `name` towards the same
+value, and following that advice lands on the duplicate-name ERROR with no
+warning it was coming. It is a WARNING for the same migration reason, and
+**becomes an ERROR in 2.0.0** alongside the divergence rule.
+
 Resolution itself is unchanged: still by `name`. What ADR 0001 settles is
 only which of the two fields gives way when they disagree -- see
 `docs/adr/0001-filename-is-the-canonical-memory-identity.md`.

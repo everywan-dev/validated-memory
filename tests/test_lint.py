@@ -635,6 +635,75 @@ def test_a_supersession_resolving_onto_a_diverging_successor_is_valid(
     assert "1 warning(s)" in result.stdout
 
 
+def test_two_memories_sharing_a_filename_are_reported(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # The filename is the canonical identity, so two files carrying the same
+    # one are two memories claiming the same identity. Without this, `lint`
+    # tells both to repair `name` towards the same value, and following that
+    # advice lands on the duplicate-name ERROR with no warning it was coming.
+    write_memory(
+        "alpha/shared.md",
+        "name: alpha-fact\ndescription: One fact.\nmetadata:\n  type: project\n",
+    )
+    write_memory(
+        "beta/shared.md",
+        "name: beta-fact\ndescription: Another fact.\nmetadata:\n  type: project\n",
+    )
+    write_index(
+        "- [Alpha](alpha/shared.md) — one fact\n"
+        "- [Beta](beta/shared.md) — another fact\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: memory/beta/shared.md: filename: " in result.stderr
+    assert "'shared'" in result.stderr
+    assert "memory/alpha/shared.md" in result.stderr
+
+
+def test_a_shared_filename_is_reported_even_when_one_file_does_not_parse(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # The collision is a fact about the files, not about their frontmatter.
+    write_memory("alpha/shared.md", "name: alpha-fact\ndescription: |\n  block\n")
+    write_memory(
+        "beta/shared.md",
+        "name: beta-fact\ndescription: Another fact.\nmetadata:\n  type: project\n",
+    )
+    write_index(
+        "- [Alpha](alpha/shared.md) — one fact\n"
+        "- [Beta](beta/shared.md) — another fact\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert "WARNING: memory/beta/shared.md: filename: " in result.stderr
+
+
+def test_distinct_filenames_across_subdirectories_are_not_a_collision(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    write_memory(
+        "alpha/alpha-fact.md",
+        "name: alpha-fact\ndescription: One fact.\nmetadata:\n  type: project\n",
+    )
+    write_memory(
+        "beta/beta-fact.md",
+        "name: beta-fact\ndescription: Another fact.\nmetadata:\n  type: project\n",
+    )
+    write_index(
+        "- [Alpha](alpha/alpha-fact.md) — one fact\n"
+        "- [Beta](beta/beta-fact.md) — another fact\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING" not in result.stderr
+
+
 # --- target resolution -------------------------------------------------------
 
 

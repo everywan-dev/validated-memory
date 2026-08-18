@@ -140,7 +140,7 @@ def _lint_memories(documents):
     the same two-pass shape `validate` uses for id declaration and supersedes
     resolution.
     """
-    findings = []
+    findings = _check_filename_collisions(documents)
     parsed = []
     for location, text in documents:
         try:
@@ -191,6 +191,41 @@ def _lint_memories(documents):
             _check_wikilink_targets(location, "body", body, resolution)
         )
 
+    return findings
+
+
+def _check_filename_collisions(documents):
+    """Report two memories claiming the same canonical identity.
+
+    Two files in one directory cannot share a name, so this only ever fires
+    across subdirectories. It is a fact about the files, so it is checked
+    before any frontmatter is read and holds even when neither file parses.
+
+    A WARNING for the same reason the divergence rule is one -- it becomes an
+    ERROR in 2.0.0 alongside it. Reporting it matters now because without it
+    `lint` tells both files to repair `name` towards the same value, and
+    following that advice lands on the duplicate-name ERROR unannounced.
+    """
+    findings = []
+    first_seen = {}
+    for location, _text in documents:
+        filename = _filename(location)
+        if not filename:
+            continue  # no identity at all; its own rule reports that
+        if filename not in first_seen:
+            first_seen[filename] = location
+            continue
+        findings.append(
+            Finding(
+                WARNING,
+                location,
+                "filename",
+                f"the filename '{filename}' is also carried by "
+                f"{first_seen[filename]}; the filename is the canonical "
+                "identity, so these are two memories with the same identity "
+                "-- rename one",
+            )
+        )
     return findings
 
 

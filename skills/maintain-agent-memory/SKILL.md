@@ -29,6 +29,10 @@ identifier that wikilinks resolve against, not a label -- the human-readable
 title belongs in the index entry. `lint` warns when the two disagree, and the
 repair is always to rewrite `name`, never to rename the file.
 
+Since the filename is the identity, no two memories may carry the same one --
+including across subdirectories. There the repair *is* renaming: what may
+never be renamed is a file being made to match its own `name`.
+
 Add a matching bullet to `memory/MEMORY.md`:
 
 ```markdown
