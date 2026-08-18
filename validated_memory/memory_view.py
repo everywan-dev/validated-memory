@@ -69,17 +69,31 @@ def _anchor(value, declared):
     supposed to keep separate.
 
     Each namespace still has to be injective on its own inputs for the
-    anchor to be unique, and the two rely on different facts to get there.
-    A declared name is `resolution.by_name`'s namespace: `lint` makes a
-    duplicate declared name an ERROR and `memory.resolution` only ever
-    admits an unambiguous one into `by_name`, so keying on the name is safe
-    for the names a link can actually target. A filename is not unique the
-    same way -- two memories in different subdirectories may share one, and
-    `lint` reports that as its own finding -- so the no-declared-name scheme
-    is keyed on `relpath` instead: the document's path relative to the
-    memory directory (`memory.documents` builds it as
-    `candidate.relative_to(target)`), which is unique by construction
-    across every document `memory` reads, unlike the bare filename.
+    anchor to be unique, and only one of the two can make that promise
+    unconditionally. The no-declared-name scheme is keyed on `relpath`,
+    not the bare filename: `relpath` -- the document's path relative to
+    the memory directory (`memory.documents` builds it as
+    `candidate.relative_to(target)`) -- is unique by construction across
+    every document `memory` reads, no matter what the corpus contains,
+    unlike the filename, which two memories in different subdirectories
+    may share (`lint` reports that as its own finding).
+
+    The declared-name scheme has no such guarantee, and does not claim
+    one. `memory.resolution` builds `by_name` as a plain set of declared
+    names (`{name for name in declared.values() if is_declared(name)}`),
+    with no uniqueness check -- that check exists only on the separate
+    `by_filename` table, over a different key. Two documents can declare
+    the same `name`, and both then anchor at the identical
+    `entry-name-<name>`: a real duplicate id inside this one namespace.
+    `lint` reports a duplicate declared name as an ERROR; this view
+    renders it anyway, per the "does not enforce" rule at the top of this
+    module. That is a known, accepted consequence of not enforcing, not
+    something the anchor scheme guards against -- and it predates this
+    fix, which only closed the *cross-scheme* collision. No anchor
+    spelling could close this one instead: with two entries claiming one
+    name, a `[[wikilink]]` to it is already ambiguous before an id is
+    ever built, and inventing a disambiguated anchor would let the page
+    imply a resolution `lint` does not make.
     """
     if declared:
         return f"entry-name-{value}"

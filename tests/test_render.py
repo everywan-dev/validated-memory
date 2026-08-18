@@ -801,6 +801,53 @@ def test_an_outgoing_href_to_a_declared_name_matches_that_sections_id_exactly(
     assert f"#{target_id}" in outgoing_hrefs
 
 
+def test_two_entries_declaring_the_same_name_both_render_at_the_shared_anchor(
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
+):
+    # Pins the one exposure this fix does not close: `memory.resolution`
+    # builds `by_name` as a plain set of declared names with no ambiguity
+    # check (the `len(names) == 1` filter lives only on the separate
+    # `by_filename` table), so two documents declaring the same `name`
+    # both land in `by_name` and both anchor at the identical
+    # `entry-name-<name>`. `lint` reports a duplicate declared `name` as
+    # an ERROR; this view does not gate on it (the "does not enforce"
+    # rule at the top of this module), so it renders both anyway rather
+    # than silently dropping one. No anchor scheme can disambiguate them
+    # -- a `[[wikilink]]` to the shared name is itself ambiguous -- so the
+    # assertion here is honest, not a fix: both entries appear, and both
+    # carry the same id.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_memory(
+        "first.md",
+        "name: alpha\ndescription: first claimant\nmetadata:\n  type: user\n",
+    )
+    write_memory(
+        "second.md",
+        "name: alpha\ndescription: second claimant\nmetadata:\n  type: user\n",
+    )
+    write_index(
+        "- [First](first.md) — first claimant\n"
+        "- [Second](second.md) — second claimant\n"
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    page = (adopter_dir / "memory.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    alpha_entries = [
+        attrs for tag, attrs in elements
+        if tag == "section" and attrs.get("class") == "entry"
+        and attrs.get("data-name") == "alpha"
+    ]
+    assert len(alpha_entries) == 2, (
+        f"expected both claimants rendered, got {alpha_entries}"
+    )
+    assert [attrs["id"] for attrs in alpha_entries] == [
+        "entry-name-alpha", "entry-name-alpha",
+    ]
+
+
 def test_an_unresolved_reference_is_not_linked_from_the_incoming_side_either(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
 ):
