@@ -12,7 +12,6 @@ import re
 
 import pytest
 
-
 # --- the full scaffold, from an empty directory -------------------------------
 
 
