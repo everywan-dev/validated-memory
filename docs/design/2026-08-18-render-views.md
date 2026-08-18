@@ -52,18 +52,7 @@ and `adopt` do it, with `PurePosixPath(href).as_posix()`. And what counts as a
 declared name is decided by `memory.is_declared(value)`, which exists once on
 purpose.
 
-Two limits of those readers are part of this design rather than hidden by it.
-
-**`verdicts.service_view()` reads the file outside its `try`**, so an
-unreadable or undecodable log escapes as `OSError` or `UnicodeDecodeError`,
-not as the `VerdictLogError` its docstring promises, and `derive` -- which
-catches only `VerdictLogError` -- shows a traceback. The same read also builds
-its dictionary key without checking that the three fields are strings, so a
-record like `{"unit": [], ...}` raises `TypeError` instead of a finding. Both
-are fixed here, in `verdicts.py`, as part of adding `history()`: the read is
-wrapped and the key fields are type-checked, each raising `VerdictLogError`
-like every other unreadable record. Fail-loud that fails as a traceback is not
-fail-loud.
+One limit of those readers is part of this design rather than hidden by it.
 
 **There is no `gated_source` for the memory layer.** `memory.py` reads; every
 rule lives in private functions of `lint`. The views therefore **do not
@@ -72,7 +61,15 @@ and its index exist, and a document's frontmatter parses -- and everything
 else stays `lint`'s business. A memory file with no index entry is still
 rendered, an unresolved reference is marked as unresolved, and a document
 whose frontmatter will not parse is rendered with that said in place of its
-fields. Hiding a record because `lint` would complain about it would make the
+fields.
+
+That makes the memory view the one place where **a frontmatter value can be
+any JSON type at all**, because nothing validated it first: a `description`
+that is a list, a `metadata.type` that is a mapping, a `name` that is a
+number. Every value reaching the page goes through escaping that stringifies
+first, and no membership test, sort or `.strip()` is applied to a value
+without checking its type. A view that raises `TypeError` shows a traceback
+where a page should be. Hiding a record because `lint` would complain about it would make the
 view lie about what the repository holds; `lint` is one command away and is
 the authority.
 
@@ -90,12 +87,16 @@ view.
 a subprocess, so a reader with no subcommand behind it could not be tested
 today. Its contract:
 
-- It lives beside `service_view` in `verdicts.py` and **shares its parsing
-  loop**: the loop is lifted out and both call it. A second loop is a second
-  opinion about which logs are acceptable, and the two will diverge.
-- It raises `VerdictLogError` with a line number on exactly what fails today:
-  a line that is not JSON, a record that is not an object, a missing field, a
-  verdict outside the ternary domain.
+- The shared loop already exists: `verdicts.records(root)` is public, yields
+  `(lineno, record)`, opens the file inside its `try` and raises
+  `VerdictLogError` for a file it cannot read or decode and for every line
+  that is not a JSON object. `service_view` is built on it. So `history()` is
+  built on it too and is one line -- **writing a second loop now would be
+  worse than before, because there would be two readers where there is one
+  good one.**
+- `VerdictLogError.lineno` is `None` when the fault is the file's rather than
+  a line's. `Finding.render()` already omits the `:N` in that case, and the
+  tests must cover both shapes.
 - It returns records in file order, uncollapsed. The twenty-record window is
   applied by the renderer, not by the reader.
 
@@ -145,8 +146,11 @@ repository that treats that churn as a defect.
 none. It is what the hook invokes, and it is what makes activation and
 deactivation mean something.
 
-**`--only-existing` is fail-open**: an invalid corpus is a WARNING and exit 0,
-not an ERROR. It is the unattended mode, and an ERROR there would mean a
+**`--only-existing` is fail-open, and does not regenerate**: an invalid corpus
+is a WARNING and exit 0, and the artifact already on disk is left exactly as
+it was. Publishing a page built on data the enforcement rejects is worse than
+showing an older page, and the hook would do it unattended on every session
+start. It is the unattended mode, and an ERROR there would mean a
 failure reported on every session start until someone fixes the corpus. Run
 explicitly, without the flag, the same invalid corpus is an ERROR that gates
 -- a person asking for the views is entitled to be told they were not built.
@@ -192,32 +196,33 @@ verdict. Expanded, it carries:
 - provenance;
 - the anchor's probe history, within the declared window;
 - **the chain backwards**: every unit this one supersedes, collapsed, each
-  carrying the same contents, nested as deeply as the chain runs.
+  carrying the same contents, nested as deeply as the chain runs. The walk is
+  **iterative, with an explicit stack**, not recursive: a chain's length is
+  written by people and has no bound, and `validate`'s own cycle detection is
+  iterative for the same reason.
 
 Nothing superseded appears at the top level; it appears inside the history of
 whatever replaced it. Because two units may both supersede the same one, the
 second appearance is an internal reference to the first, not a copy.
 
-### Units no live conclusion reaches
+### Why there is no "unreachable units" section
 
-Nothing in the package detects a supersession cycle, and the contract does not
-reject one: `_check_supersedes` rejects a self-supersession and a target that
-does not exist, and stops there. So `A supersedes B` with `B supersedes A`
-validates cleanly, `effective_states` marks *both* as superseded, and neither
-is anyone's root. Rendering only what hangs off a live conclusion would drop
-them from the page in silence -- the exact failure this project exists to
-prevent, in the artifact meant to prove it does not happen.
+An earlier draft ended the page with a section for every unit no live
+conclusion reaches, because a supersession cycle validated cleanly, left both
+units marked superseded, and would have dropped them from the page in silence.
 
-So the page ends with a final section, present only when it has content:
-every unit no live conclusion reaches, rendered with the same detail, under a
-heading that says what it is. `render` also reports a WARNING naming those
-ids, which does not gate.
+`validate` now rejects a cycle as an ERROR. That closes the hole at the
+source, and it closes this one too: `render` validates before rendering, so
+no rendering path can see a cycle, and `--only-existing` does not regenerate
+an invalid corpus either. With cycles rejected the supersession graph is a
+DAG, and in a finite DAG every unit reaches, backwards, a unit with no
+incoming edge -- an active one. The unreachable set is empty by construction,
+not merely improbable, so the section would have been code no test could
+exercise. It is recorded here so nobody designs it twice.
 
-The recursion terminates on the same set that prevents duplicate rendering: a
-unit already rendered is emitted as an internal reference, never re-entered.
-That is what makes "the number of unit sections equals the number of units" a
-real invariant rather than an aspiration -- it fails loudly on a corpus this
-rule forgets.
+What remains is the structural invariant the tests assert: the number of unit
+sections equals the number of units. That is what would catch a regression,
+without carrying dead code to do it.
 
 ### Headline
 
@@ -358,6 +363,14 @@ view does not pretend otherwise: when a unit has more than one anchor on the
 same `(system, kind)`, the history is shown once, marked as shared by those
 anchors. Showing the same records under each as if they were its own would be
 the view inventing a distinction the data does not carry.
+
+Fixing it properly means changing an append-only log format that already
+carries history -- recording the anchor's position (fragile: reordering
+anchors reassigns history) or a fingerprint of its payload (stable). That
+decision is open, and is not this design's to take. Forbidding two anchors to
+share a `(system, kind)` is not the way out: two refs of the same repository
+are legitimately `system: repo-a, kind: git_ref` twice, differing only in
+`payload.ref`.
 
 The key includes the unit: `verdicts.service_view()` builds it as
 `(record["unit"], record["system"], record["kind"])`, and `unit_verdict`

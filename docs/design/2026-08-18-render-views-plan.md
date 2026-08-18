@@ -753,87 +753,29 @@ def _unit_section(unit_id, data, state, bodies, view, states, rendered, top=True
     )
 ```
 
-- [ ] **Step 4: Write the failing test for a cycle**
-
-Nothing in the package detects a supersession cycle and the contract accepts
-one, so both units are marked superseded and neither is anyone's root. They
-must not vanish:
-
-```python
-def test_a_supersession_cycle_still_renders_every_unit_and_warns(
-    run_cli, adopter_dir, write_unit, page_elements
-):
-    run_cli("init", cwd=adopter_dir)
-    write_unit(
-        "kb-0001.md",
-        "id: kb-0001\nevidence: hypothesis\nsupersedes:\n  - kb-0002\n",
-        "# One\n",
-    )
-    write_unit(
-        "kb-0002.md",
-        "id: kb-0002\nevidence: hypothesis\nsupersedes:\n  - kb-0001\n",
-        "# Two\n",
-    )
-
-    result = run_cli("render", cwd=adopter_dir)
-    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
-    units = {
-        attrs["data-unit"]
-        for tag, attrs in page_elements(page)
-        if tag == "section" and attrs.get("class", "").startswith("unit")
-    }
-
-    assert result.returncode == 0
-    assert units == {"kb-0001", "kb-0002"}
-    assert "WARNING" in result.stderr
-    assert "no live conclusion reaches" in page
-```
-
-- [ ] **Step 5: Run it to verify it fails**
+- [ ] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/test_render.py -q`
-Expected: FAIL -- the page contains neither unit.
+Expected: PASS.
 
-- [ ] **Step 6: Implement the unreachable section**
-
-After the live conclusions, render every id in `states` that `rendered` never
-reached, under its own heading, with the same detail; return the list of those
-ids so `run` can report a WARNING naming them. The `rendered` set already
-terminates the recursion: a unit reached twice is emitted as an internal
-reference, never re-entered.
-
-```python
-def build(documents, basis, records):
-    ...
-    unreached = [unit_id for unit_id in sorted(states) if unit_id not in rendered]
-    if unreached:
-        parts.append("<h2>Units no live conclusion reaches</h2>")
-        parts.append(
-            '<p class="meta">Superseded by units that are themselves '
-            "superseded, in a cycle the contract does not reject. Shown here "
-            "so nothing is dropped in silence.</p>"
-        )
-        for unit_id in unreached:
-            data, state = states[unit_id]
-            parts.append(
-                _unit_section(unit_id, data, state, bodies, view, states,
-                              rendered, records, top=False)
-            )
-    return html.page(TITLE, "\n".join(parts)), unreached
-```
-
-- [ ] **Step 7: Run the tests**
-
-Run: `python3 -m pytest tests/test_render.py -q`
-Expected: PASS. The structural invariant from Task 3 -- one section per unit --
-now holds for every corpus, which is what makes it worth asserting.
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add validated_memory/knowledge_view.py validated_memory/render.py tests/test_render.py
-git commit -m "feat: la cadena se anida y nada queda fuera de la pagina, ni en un ciclo"
+git add validated_memory/knowledge_view.py tests/test_render.py
+git commit -m "feat: la cadena de supersesion se anida bajo la conclusion vigente"
 ```
+
+**Walk the chain iteratively, with an explicit stack — not with recursion.**
+A chain's length is written by people and has nothing bounding it, and
+`validate`'s own cycle detection is iterative for exactly this reason. The
+`rendered` set still does the work of emitting an internal reference instead
+of re-entering a unit already shown.
+
+There is no separate handling for a supersession cycle: `validate` rejects one
+as an ERROR, and `render` validates before it renders. With cycles rejected
+the graph is a DAG, so every unit reaches an active root backwards and the
+"unreachable" set is empty by construction. See the spec's "Why there is no
+'unreachable units' section".
 
 ---
 
@@ -905,6 +847,23 @@ def test_an_unreadable_verdict_log_stops_render_with_its_line(
     assert result.returncode == 1
     assert "verdicts.jsonl:1" in result.stderr
     assert not (adopter_dir / "knowledge.html").exists()
+
+
+def test_a_log_that_cannot_be_decoded_stops_render_without_a_line(
+    run_cli, adopter_dir, write_unit
+):
+    # `VerdictLogError.lineno` is None when the fault is the file's rather
+    # than a line's, and `Finding.render()` omits the `:N` in that case.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n", "# Title\n")
+    (adopter_dir / "verdicts.jsonl").write_bytes(b"\xff\xfe not utf-8\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "verdicts.jsonl:" not in result.stderr
+    assert "verdicts.jsonl" in result.stderr
+    assert not (adopter_dir / "knowledge.html").exists()
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -914,73 +873,22 @@ Expected: FAIL -- no history is rendered, and an unreadable log crashes.
 
 - [ ] **Step 3: Write the implementation**
 
-In `verdicts.py`, lift the parsing loop out of `service_view` and have both
-call it. A second loop is a second opinion about which logs are acceptable.
-
-Two existing defects are fixed in the same move, because `render` would
-otherwise inherit them: the file is read **outside** the current `try`, so an
-undecodable log escapes as `UnicodeDecodeError` rather than the promised
-`VerdictLogError`; and the key is built without checking the fields are
-strings, so `{"unit": [], ...}` raises `TypeError`. Fail-loud that fails as a
-traceback is not fail-loud:
+`verdicts.records(root)` is already public on `main`: it yields
+`(lineno, record)`, opens the file inside its `try`, and raises
+`VerdictLogError(None, ...)` for a file it cannot read or decode and
+`VerdictLogError(lineno, ...)` for a line that is not a JSON object.
+`service_view` is built on it. So `history` is built on it too, and **writing
+a second loop would be worse than duplicating one: there would be two readers
+where there is one good one.**
 
 ```python
-def _records(root):
-    """Yield every record in the log, in file order, or nothing when absent.
-
-    The single parsing loop. `service_view` collapses it to the latest per
-    key; `history` keeps it whole. Two loops would be two opinions about
-    which logs are acceptable, and they would diverge.
-    """
-    path = Path(root) / LOG_FILENAME
-    if not path.exists():
-        return
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        raise VerdictLogError(0, f"cannot be read: {error}") from error
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise VerdictLogError(lineno, f"not a JSON record: {error.msg}") from error
-        if not isinstance(record, dict):
-            raise VerdictLogError(lineno, "record is not a JSON object")
-        try:
-            key_fields = (record["unit"], record["system"], record["kind"])
-            verdict = record["verdict"]
-        except KeyError as error:
-            raise VerdictLogError(lineno, f"record is missing the {error} field") from error
-        for name, value in zip(("unit", "system", "kind"), key_fields):
-            if not isinstance(value, str):
-                raise VerdictLogError(
-                    lineno, f"the {name} field is not a string"
-                )
-        if verdict not in VERDICTS:
-            raise VerdictLogError(
-                lineno, f"'{verdict}' is not one of " + ", ".join(VERDICTS)
-            )
-        yield record
-
-
-def service_view(root=Path()):
-    """The latest verdict per `(unit, system, kind)`, or `{}` if never probed."""
-    return {
-        (record["unit"], record["system"], record["kind"]): record["verdict"]
-        for record in _records(root)
-    }
-
-
 def history(root=Path()):
     """Every record, in file order, uncollapsed.
 
     Windowing is the renderer's business, not the reader's: a reader that
     truncated would decide for every consumer at once.
     """
-    return list(_records(root))
+    return [record for _lineno, record in records(root)]
 ```
 
 In `knowledge_view`, take `records` and `total` as arguments to `build`,
@@ -1316,6 +1224,13 @@ In `render.run`, read the memory layer, stop when the directory or the index
 is missing -- that is a read precondition, the same one `lint` stops on --
 build the page, and report the second artifact on its own line.
 
+**Nothing validated these values, so nothing may assume their type.** A
+`description` can be a list, a `metadata.type` a mapping, a `name` a number:
+the frontmatter parser reads what is written and only `lint` judges it. Every
+value reaching the page is stringified by the escaping helper, and no
+membership test, sort or `.strip()` touches a value without a type check
+first. A `TypeError` here is a traceback where a page should be.
+
 **The view does not enforce.** There is no `gated_source` for this layer:
 `memory.py` reads and every rule lives in private functions of `lint`. So an
 entry with no line in `MEMORY.md` is still rendered, an unresolved reference
@@ -1372,6 +1287,9 @@ def test_only_existing_is_fail_open_on_an_invalid_corpus(
 
     assert unattended.returncode == 0
     assert "WARNING" in unattended.stderr
+    # Fail-open does NOT mean "publish a page built on rejected data": the
+    # artifact already on disk is left exactly as it was.
+    assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "stale\n"
     assert explicit.returncode == 1
 ```
 
