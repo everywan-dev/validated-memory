@@ -74,7 +74,7 @@ repository does not ship such a file: it is left to whoever adopts it.
 
 ## Status
 
-**1.1.0** -- v1 complete, plus static HTML views. Every subcommand is live:
+**1.1.1** -- v1 complete, plus static HTML views. Every subcommand is live:
 `validate` enforces the base contract and the adopter's declared extension;
 `lint` enforces the agent-memory layer; `derive` re-derives the knowledge
 index, with a `--check` gate, and reads real freshness verdicts; `probe`
