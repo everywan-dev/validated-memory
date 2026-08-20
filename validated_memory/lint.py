@@ -58,7 +58,19 @@ def _collect(target, explicit):
             )
         ]
 
-    documents = memory_module.documents(target)
+    try:
+        documents = memory_module.documents(target)
+    except memory_module.MemoryReadError as error:
+        # Same posture `render` takes: a file that is there but cannot be
+        # read is an ERROR naming it, never a traceback.
+        return [], [
+            Finding(
+                ERROR,
+                error.location,
+                "memory",
+                f"memory file could not be read: {error.reason}",
+            )
+        ]
     entries = memory_module.index_entries(index_path.read_text(encoding="utf-8"))
     findings = _check_sync(index_path.as_posix(), entries, documents)
 
