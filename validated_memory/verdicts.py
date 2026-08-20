@@ -124,6 +124,18 @@ def records(root=Path()):
         yield lineno, record
 
 
+def history(root=Path()):
+    """Every record, in file order, uncollapsed.
+
+    Windowing is the renderer's business, not the reader's: a reader that
+    truncated would decide for every consumer at once. Unlike `service_view`,
+    this does not validate the key fields or the verdict -- it hands back
+    exactly what `records` yields, and a caller that also needs the graded
+    view calls `service_view` too, which is where that validation lives.
+    """
+    return [record for _lineno, record in records(root)]
+
+
 def _keyed(lineno, record):
     """Return `(key, verdict)` for one record, or raise `VerdictLogError`.
 
@@ -154,7 +166,7 @@ def _keyed(lineno, record):
 
 
 def service_view(root=Path()):
-    """The latest verdict per `(unit, system, kind)`, or `{}` if never probed.
+    """The latest verdict per anchor -- `(unit, system, kind, payload)` -- or `{}` if never probed.
 
     Raises `VerdictLogError` on a log that cannot be read as records.
     """

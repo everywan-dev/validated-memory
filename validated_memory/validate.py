@@ -57,6 +57,22 @@ def resolve_target(path):
     return Path(path) if path else Path(DEFAULT_KNOWLEDGE_DIR)
 
 
+def basis_location(path):
+    """The basis line both `derive` and `render` print: `resolve_target(path)`,
+    with a trailing slash when it names a directory.
+
+    Shared rather than duplicated: both `derive.INDEX_FILENAME` and
+    `render`'s `knowledge.html` print this same string in their own "Basis:"
+    line, and a silent divergence between two copies of the same one-line
+    rule would be invisible to a reader comparing the two artifacts.
+    """
+    target = resolve_target(path)
+    location = target.as_posix()
+    if target.is_dir():
+        location += "/"
+    return location
+
+
 def _collect(target, explicit):
     location = target.as_posix()
     if not target.exists():

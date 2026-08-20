@@ -43,6 +43,22 @@ never deletes data. The plugin's `SessionStart` hook
 adopted project on every session start; running it by hand is only needed to
 wire a harness location the hook does not already know about.
 
+## Activate the HTML views (optional)
+
+```
+python3 -m validated_memory init --view
+```
+
+Creates `knowledge.html` and `memory.html` -- self-contained, static pages
+of the curated and agent-memory layers, readable with no plugin and no
+Python installed -- once each, reporting `created` / `kept` per item like
+every other item `init` manages. Activation is the presence of the file,
+not a setting: deleting one deactivates it, and running `init --view` again
+brings it back. The plugin's `SessionStart` hooks already include one
+(`hooks/refresh-views.sh`) that keeps whichever views are active fresh on
+every session start, so nothing further needs to be invoked by hand after
+this. See the README's `render` section for what each page shows.
+
 ## Verify the adoption
 
 Right after `init`, both enforcement commands must pass clean:

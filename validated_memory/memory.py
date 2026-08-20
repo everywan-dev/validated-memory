@@ -44,6 +44,19 @@ IndexEntry = namedtuple("IndexEntry", "title href note line")
 # writer reaches for.
 Resolution = namedtuple("Resolution", "by_name by_filename")
 
+
+class MemoryReadError(Exception):
+    """A memory file exists but its bytes cannot be read as text.
+
+    Carries the file at fault, so a consumer can turn the failure into a
+    finding naming it instead of a traceback naming this module.
+    """
+
+    def __init__(self, location, reason):
+        super().__init__(f"{location}: {reason}")
+        self.location = location
+        self.reason = reason
+
 # A parsed `superseded by [[name]]` marker. `target` is None when the marker
 # opened but no wikilink followed it, and then `remainder` is empty: nothing
 # after an unparseable marker can be read as an ordinary reference. Otherwise
@@ -70,17 +83,33 @@ def documents(target):
 
     The index itself is excluded: it is not a memory. Whether `target` or the
     index exist at all is the caller's business -- this reads what is there.
+    A file that is there but cannot be read as UTF-8 text raises
+    `MemoryReadError`: which severity that deserves is the caller's rule,
+    but the file at fault is only known here.
     """
     index_path = target / INDEX_FILENAME
-    return [
-        Document(
-            location=candidate.as_posix(),
-            relpath=candidate.relative_to(target).as_posix(),
-            text=candidate.read_text(encoding="utf-8"),
+    collected = []
+    for candidate in sorted(target.rglob(f"*{SUFFIX}")):
+        if not candidate.is_file() or candidate == index_path:
+            continue
+        try:
+            text = candidate.read_text(encoding="utf-8")
+        except UnicodeDecodeError as error:
+            raise MemoryReadError(
+                candidate.as_posix(), "not valid UTF-8"
+            ) from error
+        except OSError as error:
+            raise MemoryReadError(
+                candidate.as_posix(), error.strerror or str(error)
+            ) from error
+        collected.append(
+            Document(
+                location=candidate.as_posix(),
+                relpath=candidate.relative_to(target).as_posix(),
+                text=text,
+            )
         )
-        for candidate in sorted(target.rglob(f"*{SUFFIX}"))
-        if candidate.is_file() and candidate != index_path
-    ]
+    return collected
 
 
 def index_entries(text):

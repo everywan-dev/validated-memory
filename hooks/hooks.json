@@ -1,5 +1,5 @@
 {
-  "description": "Restores the validated-memory --harness-memory symlink for adopter projects on every session start.",
+  "description": "On every session start: restores the validated-memory --harness-memory symlink, and refreshes whichever HTML views an adopter project has already activated.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,6 +7,15 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/restore-memory-symlink.sh\"",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/refresh-views.sh\"",
             "timeout": 15
           }
         ]

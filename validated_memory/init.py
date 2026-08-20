@@ -21,11 +21,24 @@ project's `memory/` and parked aside as a `.bak` before the link is created
 (see `adopt.py`); anything else is left alone with a WARNING saying why. Both
 outcomes are fail-open, so a startup hook built on top of `init` can never
 break the session.
+
+With `--view`, `init` also creates `knowledge.html` and `memory.html` --
+once each. The views are optional, and activation is the presence of the
+artifact, not a configuration key (an unknown field in `validated-memory.md`
+is an ERROR that gates the other subcommands, so a key would brick an
+adopter's project rather than just leave the view inactive). This is why
+`--view` only ever creates: an artifact that already exists, even one
+edited by hand, is reported `kept` and left untouched, same as every other
+item `init` manages -- regenerating what is already there is `render`'s job
+(`render --only-existing`, wired to a `SessionStart` hook), not `init`'s. A
+corpus the renderer refuses is a WARNING here, never a gate: `init --view`
+simply creates nothing this run.
 """
 
+import os
 from pathlib import Path
 
-from . import adopt
+from . import adopt, render
 from .findings import ERROR, EXIT_ERROR, EXIT_OK, WARNING, Finding
 
 MEMORY_INDEX = """\
@@ -101,13 +114,14 @@ overwrites a file that already exists.
 """
 
 
-def run(harness_memory, stdout, stderr):
+def run(harness_memory, view, stdout, stderr):
     """Scaffold the adopter layout under the working directory.
 
     Returns an exit code: 0 unless an item could not be created. Even a
     harness-memory symlink `init` cannot restore is a WARNING, not an ERROR
     -- fail-open, so the caller (eventually a startup hook) never breaks the
-    session over it.
+    session over it. Same for `view`: a corpus the renderer refuses is a
+    WARNING, never a gate -- see `_ensure_views`.
     """
     findings = []
     created = 0
@@ -134,6 +148,12 @@ def run(harness_memory, stdout, stderr):
 
     if harness_memory is not None:
         findings.extend(_sync_symlink(harness_memory, stdout))
+
+    if view:
+        view_created, view_kept, view_findings = _ensure_views(stdout)
+        created += view_created
+        kept += view_kept
+        findings.extend(view_findings)
 
     errors = [finding for finding in findings if finding.severity == ERROR]
     warnings = [finding for finding in findings if finding.severity == WARNING]
@@ -216,3 +236,92 @@ def _sync_symlink(raw_path, stdout):
     except OSError as error:
         message = f"could not be linked to '{target}': {error}; session unaffected"
         return [Finding(WARNING, location, "symlink", message)]
+
+
+def _ensure_views(stdout):
+    """Create `knowledge.html` and `memory.html` once each.
+
+    Returns `(created, kept, findings)`, mirroring `_sync_symlink`'s shape
+    so `run` folds it into the same counters and prints every finding
+    exactly once, from its own central loop -- `build_artifacts` returns
+    findings rather than printing them, precisely so a caller like this one
+    is never in the position of also having something to print itself.
+
+    Same contract as every other item `init` manages: an artifact that
+    already exists is reported `kept` and never touched, hand-edited or not.
+    Only a missing artifact triggers a build, and that build goes through
+    `render.build_artifacts` -- the one place page composition lives, so
+    `init --view`, `render`, and the `--only-existing` startup hook never
+    each grow their own copy of it. Both artifacts are built together (one
+    `build_artifacts` call covers whichever are missing) before either is
+    written, matching `render`'s own all-or-nothing write order.
+
+    A corpus `build_artifacts` refuses is folded into the returned findings
+    as a WARNING -- `downgrade=True`, the same fail-open mode `render
+    --only-existing` uses -- and creates neither artifact; whichever of the
+    two already existed is still reported `kept`.
+
+    A write that fails at the OS level (permissions, a full disk, ...) is,
+    like `--harness-memory`, a WARNING rather than a crash or a gate: an
+    optional flag doing extra work must never break the rest of `init`'s
+    run over it. The write itself is atomic -- a temporary file, then a
+    rename, the same shape `render.write_if_changed` uses -- so a failure
+    can never leave a truncated page that the next run reports `kept`.
+
+    A broken symlink is the one shape `Path.exists()` reads as absent while
+    something is plainly there: writing would follow it and create a file
+    wherever it points, outside `init`'s remit. It gets a WARNING and is
+    left untouched -- the posture `--harness-memory` takes with a path that
+    is anything else real.
+    """
+    created = 0
+    kept = 0
+    findings = []
+    missing = [
+        name
+        for name in render.ARTIFACTS
+        if not (Path(name).is_symlink() or Path(name).exists())
+    ]
+    artifacts = {}
+    if missing:
+        artifacts, build_findings, ok = render.build_artifacts(downgrade=True)
+        findings.extend(build_findings)
+        if not ok:
+            artifacts = {}
+    for name in render.ARTIFACTS:
+        path = Path(name)
+        if path.is_symlink() and not path.exists():
+            findings.append(
+                Finding(
+                    WARNING, name, "create",
+                    "exists as a broken symlink; writing would follow it "
+                    "and create a file wherever it points, so init leaves "
+                    "it untouched",
+                )
+            )
+            continue
+        if path.exists():
+            print(f"init: kept {name}", file=stdout)
+            kept += 1
+            continue
+        if name not in artifacts:
+            continue
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            temporary.write_text(artifacts[name], encoding="utf-8")
+            os.replace(temporary, path)
+        except OSError as error:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            findings.append(
+                Finding(
+                    WARNING, name, "create",
+                    f"file could not be created: {error}",
+                )
+            )
+            continue
+        print(f"init: created {name}", file=stdout)
+        created += 1
+    return created, kept, findings
