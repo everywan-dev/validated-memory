@@ -50,7 +50,10 @@ def test_the_version_agrees_across_the_three_places_it_is_written():
 
 def test_the_marketplace_lists_this_plugin_from_this_repository():
     marketplace = _marketplace()
-    assert marketplace["name"]
+    # The README documents `/plugin install validated-memory@validated-memory`;
+    # the part after `@` is this name, so renaming the marketplace would break
+    # the documented install command.
+    assert marketplace["name"] == "validated-memory"
     assert marketplace["owner"]["name"]
 
     listed = marketplace["plugins"]
