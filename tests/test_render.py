@@ -1274,6 +1274,29 @@ def test_a_write_failure_gates_when_render_runs_explicitly(
     assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "stale\n"
 
 
+def test_duplicate_supersedes_entries_count_once_in_the_page(
+    run_cli, adopter_dir, write_unit
+):
+    # The frontmatter subset accepts a list naming the same id three times;
+    # the page must not multiply that into a "3 units" confluence of three
+    # identical rows. The set of superseded units is what the page states --
+    # here one unit, below the three-source threshold, so no confluence at
+    # all, exactly as a single-entry list renders.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: measured\nsupersedes:\n"
+        "  - kb-0001\n  - kb-0001\n  - kb-0001\n",
+        "# The replacement\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert "3 units superseded" not in page
+    assert "confluence" not in page
+
+
 def test_a_memory_file_that_cannot_be_read_is_a_finding_not_a_traceback(
     run_cli, adopter_dir, write_unit
 ):

@@ -170,7 +170,10 @@ def _new_frame(unit_id, data, state, top):
         "data": data,
         "state": state,
         "top": top,
-        "children": sorted(data.get("supersedes") or []),
+        # The frontmatter subset accepts a list naming the same id twice;
+        # the set is what the page must state, or a duplicated entry
+        # multiplies one unit into a "N units" confluence of identical rows.
+        "children": sorted(set(data.get("supersedes") or [])),
         "index": 0,
         "pieces": [],
     }
