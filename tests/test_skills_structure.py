@@ -145,3 +145,41 @@ def test_skills_and_docs_are_clean_room():
                 f"{path} mentions '{forbidden}', which is not allowed in this "
                 "self-contained, clean-room repo"
             )
+
+
+# The repository's public home. Mentioning the org that hosts the repo is
+# not an internal reference, so it is struck from the text before the scan;
+# the bare company name anywhere else still fails.
+PUBLIC_ORG = "everywan-dev"
+
+CLEAN_ROOM_SUFFIXES = {".py", ".sh", ".md", ".json", ".toml", ".yml", ".yaml"}
+CLEAN_ROOM_SKIPPED_DIRS = {".git", "build", "__pycache__", ".pytest_cache"}
+
+
+def test_the_whole_repository_is_clean_room():
+    # The narrower skills/docs scan above predates this one and stays as the
+    # fast gate; this exists because the one leak that happened came in
+    # through a file outside `skills/` -- an example path in the README, the
+    # hook and a test fixture.
+    this_test = Path(__file__).resolve()
+    scanned = 0
+    for path in sorted(REPO_ROOT.rglob("*")):
+        if path.suffix not in CLEAN_ROOM_SUFFIXES or not path.is_file():
+            continue
+        parts = path.relative_to(REPO_ROOT).parts
+        if any(
+            part in CLEAN_ROOM_SKIPPED_DIRS or part.endswith(".egg-info")
+            for part in parts
+        ):
+            continue
+        if path.resolve() == this_test:
+            continue
+        lowered = path.read_text(encoding="utf-8").lower()
+        lowered = lowered.replace(PUBLIC_ORG, "")
+        for forbidden in FORBIDDEN_MENTIONS:
+            assert forbidden.lower() not in lowered, (
+                f"{path} mentions '{forbidden}', which is not allowed in this "
+                "self-contained, clean-room repo"
+            )
+        scanned += 1
+    assert scanned > 20, "the walk found too few files to be the real repo"
