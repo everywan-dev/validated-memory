@@ -1,8 +1,11 @@
 """End-to-end tests for the `render` subcommand."""
 
 import json
+import os
 import re
 import shutil
+
+import pytest
 
 HISTORY_WINDOW = 20
 
@@ -1231,6 +1234,9 @@ def test_an_existing_artifact_that_is_not_valid_utf8_is_overwritten_not_raised(
     )
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
 def test_only_existing_is_fail_open_on_an_unwritable_working_directory(
     run_cli, adopter_dir, write_unit
 ):
@@ -1253,6 +1259,9 @@ def test_only_existing_is_fail_open_on_an_unwritable_working_directory(
     assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "stale\n"
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
 def test_a_write_failure_gates_when_render_runs_explicitly(
     run_cli, adopter_dir, write_unit
 ):
@@ -1272,6 +1281,43 @@ def test_a_write_failure_gates_when_render_runs_explicitly(
     assert "Traceback" not in result.stderr
     assert "ERROR" in result.stderr
     assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "stale\n"
+
+
+def test_only_existing_is_fail_open_when_the_artifact_cannot_be_replaced(
+    run_cli, adopter_dir, write_unit
+):
+    # The root-proof mirror of the reproduction above: a directory where the
+    # artifact belongs. The atomic rename onto it fails with `EISDIR` for
+    # every user, root included -- unlike permission bits, which root
+    # ignores -- so the fail-open contract stays pinned in the CI container
+    # too, where the test above can only be skipped.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "knowledge.html").mkdir()
+
+    result = run_cli("render", "--only-existing", cwd=adopter_dir)
+
+    assert result.returncode == 0
+    assert "Traceback" not in result.stderr
+    assert "WARNING: knowledge.html: write: file could not be written" in result.stderr
+    assert (adopter_dir / "knowledge.html").is_dir()
+    assert not list(adopter_dir.glob("knowledge.html.*.tmp"))
+
+
+def test_a_write_failure_gates_when_the_artifact_cannot_be_replaced(
+    run_cli, adopter_dir, write_unit
+):
+    # The gating half of the same root-proof reproduction: run explicitly and
+    # the write failure is an ERROR that gates, still without a traceback.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "knowledge.html").mkdir()
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "ERROR: knowledge.html: write: file could not be written" in result.stderr
+    assert (adopter_dir / "knowledge.html").is_dir()
+    assert not list(adopter_dir.glob("knowledge.html.*.tmp"))
 
 
 def test_duplicate_supersedes_entries_count_once_in_the_page(
