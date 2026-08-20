@@ -6,8 +6,48 @@ with the enforcement modules (agent-memory lint, contract validator, index
 deriver, freshness probes with a ternary verdict), and a bootstrap scaffold.
 
 Adopter projects keep only Markdown data and configuration; all code lives in
-the plugin, so fixes reach every adopter on update. The data stays readable
-without the plugin installed.
+the plugin, so a fix reaches every adopter that updates -- see "Installing"
+for what "updates" actually requires, which is not automatic. The data stays
+readable without the plugin installed.
+
+## Installing
+
+The repository is its own marketplace: `.claude-plugin/marketplace.json`
+lists the plugin `.claude-plugin/plugin.json` defines, with `source: "./"`.
+A manifest alone is only installable by someone who already has the directory
+on disk (`claude --plugin-dir ./`); the listing is what makes it installable
+from the repository URL.
+
+```
+/plugin marketplace add https://<host>/<group>/validated-memory.git
+/plugin install validated-memory@validated-memory
+```
+
+Any Git remote works, not only GitHub: a self-hosted GitLab, Bitbucket or
+Azure DevOps URL is fine, and a command you run yourself authenticates
+through the ordinary Git credential helpers. **Give every host except GitHub
+the full repository URL, scheme included** -- the bare `owner/repo`
+shorthand is a GitHub-only form, and a URL missing its scheme is rejected as
+an invalid shorthand rather than guessed.
+
+**Updating is not automatic, and this is the part to get right.** Auto-update
+is off by default for a marketplace that is not Anthropic's, so an adopter
+picks up a fix by running `/plugin marketplace update validated-memory`, or
+by turning auto-update on for this marketplace once, under
+`/plugin marketplace`. One caveat on auto-update: the background refresh
+disables Git credential helpers for its pull, so over HTTPS it cannot
+authenticate to a private repository -- add a private marketplace over SSH
+instead (a key in `ssh-agent` authenticates unattended), or stay on manual
+updates. And because `plugin.json` declares a `version`, the
+plugin is pinned to it: an adopter sees a change only when that number
+changes. Publishing a fix therefore means bumping the version, not only
+merging it -- a commit on the default branch reaches nobody on its own.
+
+To install it for a whole team without each person running the two commands,
+a project can declare the marketplace and enable the plugin in its own
+`.claude/settings.json`, and an administrator can do the same for an
+organisation. That is a decision about other people's sessions, so this
+repository does not ship such a file: it is left to whoever adopts it.
 
 ## Status
 
