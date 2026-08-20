@@ -35,6 +35,7 @@ corpus the renderer refuses is a WARNING here, never a gate: `init --view`
 simply creates nothing this run.
 """
 
+import os
 from pathlib import Path
 
 from . import adopt, render
@@ -263,12 +264,24 @@ def _ensure_views(stdout):
     A write that fails at the OS level (permissions, a full disk, ...) is,
     like `--harness-memory`, a WARNING rather than a crash or a gate: an
     optional flag doing extra work must never break the rest of `init`'s
-    run over it.
+    run over it. The write itself is atomic -- a temporary file, then a
+    rename, the same shape `render.write_if_changed` uses -- so a failure
+    can never leave a truncated page that the next run reports `kept`.
+
+    A broken symlink is the one shape `Path.exists()` reads as absent while
+    something is plainly there: writing would follow it and create a file
+    wherever it points, outside `init`'s remit. It gets a WARNING and is
+    left untouched -- the posture `--harness-memory` takes with a path that
+    is anything else real.
     """
     created = 0
     kept = 0
     findings = []
-    missing = [name for name in render.ARTIFACTS if not Path(name).exists()]
+    missing = [
+        name
+        for name in render.ARTIFACTS
+        if not (Path(name).is_symlink() or Path(name).exists())
+    ]
     artifacts = {}
     if missing:
         artifacts, build_findings, ok = render.build_artifacts(downgrade=True)
@@ -277,15 +290,31 @@ def _ensure_views(stdout):
             artifacts = {}
     for name in render.ARTIFACTS:
         path = Path(name)
+        if path.is_symlink() and not path.exists():
+            findings.append(
+                Finding(
+                    WARNING, name, "create",
+                    "exists as a broken symlink; writing would follow it "
+                    "and create a file wherever it points, so init leaves "
+                    "it untouched",
+                )
+            )
+            continue
         if path.exists():
             print(f"init: kept {name}", file=stdout)
             kept += 1
             continue
         if name not in artifacts:
             continue
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         try:
-            path.write_text(artifacts[name], encoding="utf-8")
+            temporary.write_text(artifacts[name], encoding="utf-8")
+            os.replace(temporary, path)
         except OSError as error:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
             findings.append(
                 Finding(
                     WARNING, name, "create",

@@ -376,6 +376,28 @@ def test_init_view_creates_both_artifacts_once_and_keeps_them(
     assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "edited by hand\n"
 
 
+def test_init_view_leaves_a_broken_symlink_alone_and_warns(run_cli, adopter_dir):
+    # `Path.exists()` follows symlinks, so a broken one reads as absent --
+    # but writing through it would create a file wherever it points, outside
+    # `init`'s remit. It is something real that is not the artifact: warn and
+    # leave it, the same posture `--harness-memory` takes with a path that is
+    # anything else real.
+    (adopter_dir / "elsewhere").mkdir()
+    target = adopter_dir / "elsewhere" / "page.html"
+    (adopter_dir / "knowledge.html").symlink_to(target)
+
+    result = run_cli("init", "--view", cwd=adopter_dir)
+
+    assert result.returncode == 0
+    assert "Traceback" not in result.stderr
+    assert "WARNING" in result.stderr
+    assert "symlink" in result.stderr
+    assert (adopter_dir / "knowledge.html").is_symlink()
+    assert not target.exists()
+    # The other artifact is unaffected by the neighbour's defect.
+    assert (adopter_dir / "memory.html").exists()
+
+
 def test_init_view_on_an_invalid_corpus_warns_without_gating(
     run_cli, adopter_dir, write_unit
 ):
