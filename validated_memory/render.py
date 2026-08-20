@@ -4,6 +4,20 @@ Two artifacts, `knowledge.html` and `memory.html`, written to the working
 directory. Each is self-contained and inert: no JavaScript, no request to the
 network, nothing to trust in an attachment. See
 docs/design/2026-08-18-render-views.md.
+
+Known, accepted limits of the writing model -- each self-heals on the next
+run, which the startup hook provides at every session start:
+
+- Atomicity is per artifact, not across the two: a write that succeeds for
+  the first page and fails for the second (reported as an ERROR, never
+  silently) leaves pages from two generations side by side.
+- Between concurrent sessions the last writer wins: a slower build finishing
+  after a newer one re-publishes what it built. Both are complete, valid
+  pages -- the pid-named temporary rules out interleaved bytes -- only the
+  vintage can regress until the next run.
+- The verdict log is read twice per build (`history`, then `service_view`);
+  a probe appending between the two reads can leave summary and history one
+  record apart on one page.
 """
 
 import os
