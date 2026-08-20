@@ -1274,6 +1274,40 @@ def test_a_write_failure_gates_when_render_runs_explicitly(
     assert (adopter_dir / "knowledge.html").read_text(encoding="utf-8") == "stale\n"
 
 
+def test_a_memory_file_that_cannot_be_read_is_a_finding_not_a_traceback(
+    run_cli, adopter_dir, write_unit
+):
+    # `documents` reads every memory file; one that is not valid UTF-8 must
+    # surface as an ERROR naming the file -- the same posture the unreadable
+    # verdict log already gets -- never a traceback.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "memory" / "broken.md").write_bytes(b"\xff\xfe not utf-8\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "ERROR" in result.stderr
+    assert "memory/broken.md" in result.stderr
+
+
+def test_only_existing_is_fail_open_on_a_memory_file_that_cannot_be_read(
+    run_cli, adopter_dir, write_unit
+):
+    # The unattended mirror: the same unreadable memory file must warn and
+    # exit 0, leaving the active page exactly as it was.
+    _scaffold(run_cli, adopter_dir, write_unit)
+    (adopter_dir / "memory.html").write_text("stale\n", encoding="utf-8")
+    (adopter_dir / "memory" / "broken.md").write_bytes(b"\xff\xfe not utf-8\n")
+
+    result = run_cli("render", "--only-existing", cwd=adopter_dir)
+
+    assert result.returncode == 0
+    assert "Traceback" not in result.stderr
+    assert "WARNING" in result.stderr
+    assert (adopter_dir / "memory.html").read_text(encoding="utf-8") == "stale\n"
+
+
 def test_only_existing_is_fail_open_on_an_invalid_corpus(
     run_cli, adopter_dir, write_unit
 ):

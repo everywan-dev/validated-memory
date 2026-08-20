@@ -141,7 +141,19 @@ def build_artifacts(downgrade=False):
         findings.append(_downgraded(precondition, downgrade))
         return {}, findings, False
 
-    memory_documents, memory_resolution = _memory_source(memory_target)
+    try:
+        memory_documents, memory_resolution = _memory_source(memory_target)
+    except memory_module.MemoryReadError as error:
+        # Same shape the unreadable verdict log gets above: a finding naming
+        # the file, never a traceback.
+        finding = Finding(
+            ERROR,
+            error.location,
+            "memory",
+            f"memory file could not be read: {error.reason}",
+        )
+        findings.append(_downgraded(finding, downgrade))
+        return {}, findings, False
     # `_memory_precondition` already confirmed `memory_target` exists and
     # holds an index, so it is a directory by the time we reach here -- the
     # trailing slash always applies, the same convention `basis_location`
