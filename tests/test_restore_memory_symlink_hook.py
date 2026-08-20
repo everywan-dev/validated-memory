@@ -319,7 +319,7 @@ def test_the_project_slug_replaces_every_non_alphanumeric_character(tmp_path):
     # not just '/'. Getting this wrong plants the symlink in a directory the
     # harness never reads, which fails silently: `init` reports success and the
     # memory simply never shows up.
-    project_dir = tmp_path / "odoo_ecosystem.v2" / "odoo_migration"
+    project_dir = tmp_path / "data_tools.v2" / "import_jobs"
     memory_dir = _write_adopter_project(project_dir)
     config_dir = tmp_path / "config"
 

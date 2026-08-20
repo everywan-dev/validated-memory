@@ -31,8 +31,8 @@
 # itself uses under `~/.claude/projects/` -- one directory per project, named
 # after the project's own path with every character that is not a letter or a
 # digit replaced by '-'. That covers '_' and '.', not just '/': a project at
-# `/home/u/Claude/odoo_ecosystem/odoo_migration` lands under
-# `-home-u-Claude-odoo-ecosystem-odoo-migration`, and `/home/u/.ssh` under
+# `/home/u/Claude/data_tools.v2/import_jobs` lands under
+# `-home-u-Claude-data-tools-v2-import-jobs`, and `/home/u/.ssh` under
 # `-home-u--ssh`. Getting this wrong fails silently -- `init` reports success
 # against a directory the harness never reads -- so it is pinned by a test.
 #

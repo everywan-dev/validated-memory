@@ -838,8 +838,8 @@ Claude Code lays out `~/.claude/projects/` -- one directory per project,
 keyed by the project's own path with **every character that is not a letter
 or a digit** replaced by `-` -- and re-runs `init --harness-memory` against
 it, with its stdout silenced. That rule covers `_` and `.`, not only `/`:
-`/home/u/Claude/odoo_ecosystem/odoo_migration` is keyed
-`-home-u-Claude-odoo-ecosystem-odoo-migration`. Getting it wrong is the one
+`/home/u/Claude/data_tools.v2/import_jobs` is keyed
+`-home-u-Claude-data-tools-v2-import-jobs`. Getting it wrong is the one
 failure here that is silent rather than fail-open -- `init` reports success
 against a directory the harness never reads, and the memory simply never
 shows up -- so the rule is pinned by a test rather than left to the
