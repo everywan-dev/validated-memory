@@ -31,8 +31,9 @@ CLI as a subprocess.
 - No generation timestamp anywhere in an artifact.
 - An artifact whose content is unchanged is not rewritten.
 - The only attribute in a page carrying an external URL is `href` on `<a>`.
-- History window: 20 records per `(unit, system, kind)`, most recent first,
-  with the true total stated on the page.
+- History window: 20 records per anchor -- keyed `(unit, system, kind,
+  payload)`, the anchor's full identity -- most recent first, with the true
+  total stated on the page.
 - Artifacts: `knowledge.html` and `memory.html`, in the working directory.
 - Commit messages: Conventional Commits, in Spanish, matching the repo's log.
 
@@ -370,7 +371,7 @@ git commit -m "feat: render escribe knowledge.html y no reescribe lo que no camb
 **Interfaces:**
 - Consumes: `derive.effective_states(documents) -> {id: (data, state)}`,
   `derive.unit_verdict(unit_id, anchors, view) -> UnitVerdict`,
-  `verdicts.service_view(root) -> {(unit, system, kind): verdict}`,
+  `verdicts.service_view(root) -> {anchor key (unit, system, kind, payload): verdict}`,
   `memory.body(text) -> str`, `frontmatter.parse(text) -> dict`
 - Produces: `knowledge_view.headline(body_text, unit_id) -> str`
 
@@ -801,8 +802,10 @@ the graph is a DAG, so every unit reaches an active root backwards and the
 
 **Interfaces:**
 - Produces: `verdicts.history(root=Path()) -> [dict]` -- every record, in file
-  order, uncollapsed, sharing `service_view`'s parsing and raising the same
-  `VerdictLogError(lineno, message)`.
+  order, uncollapsed, sharing the line-level parsing (`records`) and its
+  `VerdictLogError(lineno, message)`. Field validation stays in
+  `service_view`, which `render` calls alongside `history` -- a direct
+  consumer that needs validated records calls both, as `render` does.
 - Consumes: `verdicts.LOG_FILENAME`, `findings.Finding`, `contract.ERROR`
 
 - [ ] **Step 1: Write the failing tests**
@@ -838,7 +841,8 @@ def test_the_history_window_shows_twenty_and_states_the_true_total(
     )
     _log(adopter_dir, [
         {"unit": "kb-0001", "system": "repo", "kind": "git_ref",
-         "verdict": "current", "recorded_at": f"2026-01-{day:02d}T00:00:00Z"}
+         "payload": {}, "verdict": "current",
+         "recorded_at": f"2026-01-{day:02d}T00:00:00Z"}
         for day in range(1, 26)
     ])
 

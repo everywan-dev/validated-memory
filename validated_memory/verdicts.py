@@ -166,7 +166,7 @@ def _keyed(lineno, record):
 
 
 def service_view(root=Path()):
-    """The latest verdict per `(unit, system, kind)`, or `{}` if never probed.
+    """The latest verdict per anchor -- `(unit, system, kind, payload)` -- or `{}` if never probed.
 
     Raises `VerdictLogError` on a log that cannot be read as records.
     """

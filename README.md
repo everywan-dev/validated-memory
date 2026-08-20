@@ -49,7 +49,7 @@ non-zero = ERROR (gates).
 ### `init`
 
 ```
-python3 -m validated_memory init [--harness-memory PATH]
+python3 -m validated_memory init [--harness-memory PATH] [--view]
 ```
 
 Scaffolds a new adopter project in the working directory: `knowledge/`
