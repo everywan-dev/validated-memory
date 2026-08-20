@@ -1,16 +1,43 @@
 # validated-memory
 
-A Claude Code plugin that packages a validated-memory method for agent projects
-as a portable component: skills that make the convention invocable, a single CLI
-with the enforcement modules (agent-memory lint, contract validator, index
-deriver, freshness probes with a ternary verdict), and a bootstrap scaffold.
+[![CI](https://github.com/everywan-dev/validated-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/everywan-dev/validated-memory/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Adopter projects keep only Markdown data and configuration; all code lives in
-the plugin, so a fix reaches every adopter that updates -- see "Installing"
-for what "updates" actually requires, which is not automatic. The data stays
-readable without the plugin installed.
+**Agent memory rots silently.** An agent writes down a fact in March; by June
+the world has moved on, and nothing tells you. Memory systems for agents
+compete on recall -- none of them tracks whether what is recalled is still
+true.
+
+validated-memory makes knowledge expiry the first-class problem. Every fact
+states how it is known (`measured | verifiable | hypothesis`) and what it
+depends on -- re-checkable anchors -- and freshness probes answer with a
+ternary verdict, `current | drifted | unknown`, that says "could not tell"
+rather than guess. Nothing is ever deleted: a fact stops being true only by
+naming what replaced it. A false "still true" is the one answer this tool
+must never give.
+
+- **Enforced, not promised** -- `validate`, `lint` and `derive --check` are
+  CI gates; drift from the contract fails the build.
+- **Zero dependencies** -- Python 3 standard library only, and the data is
+  plain Markdown, readable without the plugin installed.
+- **Easy exit** -- abandon the tool and you keep ordinary Markdown files.
+
+It ships as a Claude Code plugin: skills that make the convention invocable,
+a single CLI with the enforcement modules (agent-memory lint, contract
+validator, index deriver, freshness probes), static HTML views, and a
+bootstrap scaffold. Adopter projects keep only Markdown data and
+configuration; all code lives in the plugin, so a fix reaches every adopter
+that updates -- see "Installing" for what "updates" actually requires, which
+is not automatic.
 
 ## Installing
+
+From GitHub, two commands inside Claude Code:
+
+```
+/plugin marketplace add everywan-dev/validated-memory
+/plugin install validated-memory@validated-memory
+```
 
 The repository is its own marketplace: `.claude-plugin/marketplace.json`
 lists the plugin `.claude-plugin/plugin.json` defines, with `source: "./"`.
@@ -18,17 +45,13 @@ A manifest alone is only installable by someone who already has the directory
 on disk (`claude --plugin-dir ./`); the listing is what makes it installable
 from the repository URL.
 
-```
-/plugin marketplace add https://<host>/<group>/validated-memory.git
-/plugin install validated-memory@validated-memory
-```
-
 Any Git remote works, not only GitHub: a self-hosted GitLab, Bitbucket or
-Azure DevOps URL is fine, and a command you run yourself authenticates
-through the ordinary Git credential helpers. **Give every host except GitHub
-the full repository URL, scheme included** -- the bare `owner/repo`
-shorthand is a GitHub-only form, and a URL missing its scheme is rejected as
-an invalid shorthand rather than guessed.
+Azure DevOps URL is fine (`/plugin marketplace add
+https://<host>/<group>/validated-memory.git`), and a command you run
+yourself authenticates through the ordinary Git credential helpers. **Give
+every host except GitHub the full repository URL, scheme included** -- the
+bare `owner/repo` shorthand is a GitHub-only form, and a URL missing its
+scheme is rejected as an invalid shorthand rather than guessed.
 
 **Updating is not automatic, and this is the part to get right.** Auto-update
 is off by default for a marketplace that is not Anthropic's, so an adopter
