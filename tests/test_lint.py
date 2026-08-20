@@ -784,3 +784,20 @@ def test_errors_and_warnings_are_reported_apart(
     assert result.returncode == 1
     assert "1 error(s)" in result.stdout
     assert "1 warning(s)" in result.stdout
+
+
+def test_a_memory_file_that_cannot_be_read_is_a_finding_not_a_traceback(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # Same posture `render` takes: `documents` raises `MemoryReadError`
+    # naming the file, and lint turns it into an ERROR -- never a traceback.
+    write_memory("fine.md", "name: fine\ndescription: ok\nmetadata:\n  type: user\n")
+    write_index("- [Fine](fine.md) — fixture entry\n")
+    (adopter_dir / "memory" / "broken.md").write_bytes(b"\xff\xfe not utf-8\n")
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "ERROR" in result.stderr
+    assert "memory/broken.md" in result.stderr
