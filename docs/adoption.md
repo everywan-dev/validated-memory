@@ -97,10 +97,29 @@ an opaque index mismatch. This plugin's own `.gitlab-ci.yml` runs `validate`,
 `lint` and the full test suite as its gate; add `derive --check` to a
 project's CI the same way once that project commits its index.
 
+**Version `verdicts.jsonl` alongside `knowledge-index.md`** (the v1
+persistence policy -- [ADR
+0003](adr/0003-the-adopter-versions-the-verdict-log-alongside-the-index.md)).
+The committed index bakes in verdicts read from the log, so a clean checkout
+without the log re-derives every anchor as `unknown` and `derive --check`
+fails for a reason no file in the checkout can explain. The log is
+append-only history -- the audit trail of what was probed and what came back
+-- so it belongs in the repository anyway. Two consequences to respect:
+
+- The log and the index are one coupled artifact. A pipeline or session
+  that probes must re-derive and commit **both together**; committing only
+  the appended log leaves an index that no longer matches it, and the next
+  clean checkout fails on exactly that mismatch.
+- Everything a record carries becomes versioned history: the anchor's
+  payload and the probe's `detail` output. Anchors must not carry secrets,
+  and a probe must not emit them in `detail` either.
+
 Run `python3 -m validated_memory probe` on whatever cadence fits the project
 (a scheduled job, a pre-release check, ...) before the `derive --check` gate,
 so the verdict column reflects current probing rather than going stale -- see
-[`probe`](reference/cli.md#probe).
+[`probe`](reference/cli.md#probe). When a probe run changes any verdict,
+re-derive and commit the log and the index in the same commit, per the
+policy above.
 
 ## 6. Activate the HTML views (optional)
 
