@@ -4,7 +4,7 @@ version = "1.2.0"
 description = "Validated memory for agent projects: evidence states, supersession without deletion, freshness probes with a ternary verdict."
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
