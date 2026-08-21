@@ -1,0 +1,30 @@
+name: validated-memory
+description: >-
+  Gate a repository on its validated-memory method: structural consistency
+  always, freshness only where the adopter opts in.
+inputs:
+  args:
+    description: >-
+      Arguments passed to `status` verbatim, e.g.
+      "--skip-index --fail-on drifted --max-verdict-age 30 --fail-on-aged".
+    required: false
+    default: ""
+  python-version:
+    description: Python used to run the CLI (stdlib only; any supported 3.x).
+    required: false
+    default: "3.12"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: validated-memory status
+      shell: bash
+      # `args` goes through the environment, never interpolated into the
+      # script: `${{ }}` inside `run:` would let a crafted input inject
+      # shell. Unquoted `$ARGS` is the point -- it word-splits into flags.
+      env:
+        ARGS: ${{ inputs.args }}
+      run: |
+        PYTHONPATH="$GITHUB_ACTION_PATH" python3 -m validated_memory status $ARGS

@@ -145,6 +145,25 @@ Exit codes: `0` = clean or WARNING-only findings; `1` = ERROR (gates);
 `2` = usage error. Full contracts in the
 **[CLI reference](docs/reference/cli.md)**.
 
+### Gate CI in three lines
+
+The repository is also a reusable GitHub Action that runs `status` — the
+CLI runs straight from the action's checkout, so the code that gates is
+exactly the code at the ref you name:
+
+```yaml
+- uses: everywan-dev/validated-memory@v1
+  with:
+    args: --fail-on drifted
+```
+
+Pinning, by decreasing rigor: a full commit SHA
+(`everywan-dev/validated-memory@<sha>`) for CI that must not trust a
+mutable ref, an immutable `vX.Y.Z` tag, or the moving `v1` major tag shown
+above for convenience. `args` is passed to
+[`status`](docs/reference/cli.md#status) verbatim; without it, structural
+consistency gates and freshness is only reported.
+
 Freshness is a loop, not a flag:
 
 <picture>
