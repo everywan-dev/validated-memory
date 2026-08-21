@@ -28,14 +28,14 @@ init: 5 created, 0 kept, 0 error(s), 0 warning(s)
 ```
 
 `init` already registers the bundled `git_ref` probe in
-`validated-memory.md` (see [the README's `init` section](../README.md#init)),
+`validated-memory.md` (see [the reference's `init` section](reference/cli.md#init)),
 so the unit below can be probed without any extra configuration.
 
 ## 2. Create a curated-knowledge unit
 
 This walkthrough anchors its unit to a small git repository at `repo/`
 (any repository `git` can reach works the same way -- see
-[The bundled `git_ref` probe](../README.md#the-bundled-git_ref-probe)).
+[The bundled `git_ref` probe](reference/cli.md#the-bundled-git_ref-probe)).
 Capture the commit its default branch is at:
 
 ```
@@ -65,8 +65,8 @@ anchors:
 The sample repository's default branch is at this commit.
 ```
 
-See the `create-knowledge-unit` skill and the README's
-[Base contract](../README.md#base-contract) for what each field means.
+See the `create-knowledge-unit` skill and the reference's
+[Base contract](reference/curated-knowledge.md#base-contract) for what each field means.
 
 ## 3. Validate
 
@@ -97,7 +97,7 @@ derive: 1 unit(s) indexed
 ```
 
 `unknown (sample-repo)` names the system behind the anchor that has never
-been checked -- fail-explicit, per the README's [`probe` section](../README.md#probe):
+been checked -- fail-explicit, per the reference's [`probe` section](reference/cli.md#probe):
 an anchor nobody has probed yet reads the same as one a probe failed to
 resolve, never as a silent pass.
 
@@ -112,8 +112,8 @@ probe: 1 anchor(s) probed across 1 unit(s): 1 current, 0 drifted, 0 unknown
 ```
 
 The ref has not moved since capture, so the recorded verdict is `current`
-(appended to `verdicts.jsonl`; see the README's
-[Probe contract](../README.md#probe)). The index on disk does not update by
+(appended to `verdicts.jsonl`; see the reference's
+[Probe contract](reference/cli.md#probe)). The index on disk does not update by
 itself -- see the next `derive` below.
 
 ## 6. Supersede: correct the unit, never edit it

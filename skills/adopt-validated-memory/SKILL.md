@@ -25,7 +25,7 @@ touched):
 
 `init` reports `init: created <path>` or `init: kept <path>` for each item,
 and is safe to re-run: it is idempotent and never overwrites a hand-edited
-file. See the README's `init` section for the full contract, including
+file. See the reference's `init` section (docs/reference/cli.md) for the full contract, including
 `--harness-memory` below.
 
 ## Wire the harness's persistent memory (optional)
@@ -57,7 +57,7 @@ not a setting: deleting one deactivates it, and running `init --view` again
 brings it back. The plugin's `SessionStart` hooks already include one
 (`hooks/refresh-views.sh`) that keeps whichever views are active fresh on
 every session start, so nothing further needs to be invoked by hand after
-this. See the README's `render` section for what each page shows.
+this. See the reference's `render` section (docs/reference/cli.md) for what each page shows.
 
 ## Verify the adoption
 
@@ -75,9 +75,9 @@ proceed until both commands are clean.
 ## Next steps
 
 - Declare adopter-specific fields by editing `knowledge-extension.md` -- see
-  the `create-knowledge-unit` skill and the README's "Declared extension"
+  the `create-knowledge-unit` skill and the reference's "Declared extension"
   section.
 - Register a probe for each anchor `kind` your units will use, by adding an
   entry under `probes:` in `validated-memory.md` -- see the `probe-freshness`
-  skill and the README's `probe` section.
+  skill and the reference's `probe` section (docs/reference/cli.md).
 - Start writing curated knowledge with the `create-knowledge-unit` skill.
