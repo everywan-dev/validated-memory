@@ -10,7 +10,7 @@ end, see [the walkthrough](walkthrough.md).
 
 Install `validated-memory` as a Claude Code plugin (however your harness
 manages plugins -- a marketplace, a local plugin path, or a checkout
-referenced directly). Once installed, its six skills are discovered from
+referenced directly). Once installed, its seven skills are discovered from
 `skills/*/SKILL.md` by directory convention, and its two startup hooks from
 `hooks/hooks.json` -- neither needs any registration inside the adopter
 project.
