@@ -5,8 +5,11 @@ description: >-
 inputs:
   args:
     description: >-
-      Arguments passed to `status` verbatim, e.g.
+      Whitespace-separated flags passed to `status`, e.g.
       "--skip-index --fail-on drifted --max-verdict-age 30 --fail-on-aged".
+      Split on whitespace only -- shell quoting is not interpreted. No
+      `status` flag needs a value with spaces (timestamps are ISO 8601
+      with a `T`).
     required: false
     default: ""
   python-version:
@@ -23,8 +26,11 @@ runs:
       shell: bash
       # `args` goes through the environment, never interpolated into the
       # script: `${{ }}` inside `run:` would let a crafted input inject
-      # shell. Unquoted `$ARGS` is the point -- it word-splits into flags.
+      # shell. Unquoted `$ARGS` is the point -- it word-splits into flags
+      # -- and `set -f` keeps that split from also globbing against the
+      # workspace.
       env:
         ARGS: ${{ inputs.args }}
       run: |
+        set -f
         PYTHONPATH="$GITHUB_ACTION_PATH" python3 -m validated_memory status $ARGS
