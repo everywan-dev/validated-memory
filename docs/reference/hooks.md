@@ -42,7 +42,7 @@ guide](../adoption.md) ("The startup hooks") for the adopter-facing summary.
 and `memory.html` is the presence of the artifact, not a configuration key:
 
 ```
-python3 -m validated_memory init --view
+python3 -P -m validated_memory init --view
 ```
 
 creates whichever of the two is missing and reports `created` / `kept` per

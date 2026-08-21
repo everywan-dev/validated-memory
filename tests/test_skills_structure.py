@@ -32,8 +32,12 @@ FRONTMATTER_PATTERN = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 # same line, counts: a usage placeholder like `<command>` starts with '<' and
 # never matches, and `[ \t]+` (not `\s+`) keeps a probe module invocation like
 # `python3 -m validated_memory.probes.git_ref`, followed by nothing else on
-# its line, from spilling over into the next line's leading word.
-COMMAND_PATTERN = re.compile(r"python3 -m validated_memory(?:\.\w+)*[ \t]+([a-zA-Z][\w-]*)")
+# its line, from spilling over into the next line's leading word. `-P` is
+# optional here (unlike in CLI_INVOCATION_PATTERN below): this pattern's job
+# is only naming a real subcommand, not gating the -P form itself.
+COMMAND_PATTERN = re.compile(
+    r"python3(?: -P)? -m validated_memory(?:\.\w+)*[ \t]+([a-zA-Z][\w-]*)"
+)
 
 FORBIDDEN_MENTIONS = ("everyWAN", "everywan", "odoo")
 
@@ -121,8 +125,11 @@ def test_every_documented_command_names_a_real_subcommand():
 
 # A CLI invocation proper: the module, not a dotted submodule like
 # `validated_memory.probes.git_ref` -- probe registrations are executed
-# without a shell, where an env-assignment prefix would be invalid.
-CLI_INVOCATION_PATTERN = re.compile(r"python3 -m validated_memory(?![.\w])")
+# without a shell, where an env-assignment prefix would be invalid. `-P` is
+# required, not optional, here: it is the module-shadowing fix (ADR 0006),
+# so a documented invocation without it must fail this gate, not merely
+# fail to be recognized as one.
+CLI_INVOCATION_PATTERN = re.compile(r"python3 -P -m validated_memory(?![.\w])")
 
 # The same idiom the hooks use: pin the plugin root while preserving any
 # PYTHONPATH the session already carries (an adopter's own probe modules may
@@ -133,10 +140,11 @@ PYTHONPATH_PREFIX = 'PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH
 def test_every_skill_command_sets_pythonpath_to_the_plugin_root():
     # Skills execute in the adopter's project, where the package is not
     # importable -- only the plugin checkout has it. The hooks already export
-    # PYTHONPATH before invoking the CLI; a bare `python3 -m validated_memory`
-    # in a skill fails with ModuleNotFoundError in every real session.
-    # Checked per invocation, not per line, so a chained second command
-    # (`... && python3 -m validated_memory lint`) cannot slip through bare.
+    # PYTHONPATH before invoking the CLI; a bare `python3 -P -m
+    # validated_memory` in a skill fails with ModuleNotFoundError in every
+    # real session. Checked per invocation, not per line, so a chained
+    # second command (`... && python3 -P -m validated_memory lint`) cannot
+    # slip through bare.
     for path in _skill_files():
         for number, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(), start=1

@@ -62,13 +62,13 @@ repository does not ship such a file: it is left to whoever adopts it.
 
 The enforcement CLI is an ordinary Python package with no third-party
 dependencies, so it also runs without Claude Code — in CI, or from a shell.
-Two ways to make `python3 -m validated_memory` importable:
+Two ways to make `python3 -P -m validated_memory` importable:
 
 - **From a checkout, via `PYTHONPATH`** — no installation at all:
 
   ```
   git clone https://github.com/everywan-dev/validated-memory.git
-  PYTHONPATH=./validated-memory python3 -m validated_memory --version
+  PYTHONPATH=./validated-memory python3 -P -m validated_memory --version
   ```
 
   This is how the plugin's own hooks invoke it, and how an adopter's CI can

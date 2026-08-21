@@ -75,7 +75,7 @@ wikilink has no matching memory but names a file that declares a different
 ## Verify
 
 ```
-PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m validated_memory lint
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m validated_memory lint
 ```
 
 Enforces, over the whole memory set: the index and the files agree in both

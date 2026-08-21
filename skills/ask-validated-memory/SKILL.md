@@ -20,7 +20,7 @@ the same name in the current project:
 5. The CLI's own help:
 
 ```
-PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m validated_memory --help
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m validated_memory --help
 ```
 
 The reference under `${CLAUDE_PLUGIN_ROOT}/docs/reference/` backs all of
@@ -34,7 +34,7 @@ them with per-command detail.
 - State which plugin version answered, from:
 
 ```
-PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m validated_memory --version
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m validated_memory --version
 ```
 
 - When the question is "why", answer from the ADR that records the
