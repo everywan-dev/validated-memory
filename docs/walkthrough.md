@@ -7,7 +7,10 @@ is exactly what [`tests/test_walkthrough.py`](../tests/test_walkthrough.py)
 runs; that test is the source of truth -- if this page and the test ever
 disagree, the test is right and this page gets corrected.
 
-Run every command from the adopter project's root. Values that are
+Run every command from the adopter project's root, with the package on
+`sys.path` -- from a plugin checkout, prefix each command with
+`PYTHONPATH=<plugin root>`, or install the package once; see
+[Installing](installing.md). Values that are
 generated fresh on each run -- the `Derived:` timestamp, the git commit sha
 -- are shown here as they looked on one real run; expect different ones,
 same shape, on yours.

@@ -116,6 +116,36 @@ def test_every_documented_command_names_a_real_subcommand():
             )
 
 
+# A CLI invocation proper: the module, not a dotted submodule like
+# `validated_memory.probes.git_ref` -- probe registrations are executed
+# without a shell, where an env-assignment prefix would be invalid.
+CLI_INVOCATION_PATTERN = re.compile(r"python3 -m validated_memory(?![.\w])")
+
+# The same idiom the hooks use: pin the plugin root while preserving any
+# PYTHONPATH the session already carries (an adopter's own probe modules may
+# only be importable through it).
+PYTHONPATH_PREFIX = 'PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" '
+
+
+def test_every_skill_command_sets_pythonpath_to_the_plugin_root():
+    # Skills execute in the adopter's project, where the package is not
+    # importable -- only the plugin checkout has it. The hooks already export
+    # PYTHONPATH before invoking the CLI; a bare `python3 -m validated_memory`
+    # in a skill fails with ModuleNotFoundError in every real session.
+    # Checked per invocation, not per line, so a chained second command
+    # (`... && python3 -m validated_memory lint`) cannot slip through bare.
+    for path in _skill_files():
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            for match in CLI_INVOCATION_PATTERN.finditer(line):
+                assert line[: match.start()].endswith(PYTHONPATH_PREFIX), (
+                    f"{path}:{number} invokes the CLI without pinning "
+                    f"PYTHONPATH: expected {PYTHONPATH_PREFIX!r} immediately "
+                    "before the invocation"
+                )
+
+
 def test_at_least_one_real_command_is_documented_per_skill():
     # Every skill's job is to point at the CLI surface, not reimplement it:
     # each one names at least one literal, real subcommand invocation.

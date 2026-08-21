@@ -23,6 +23,12 @@ From the adopter project's root:
 python3 -m validated_memory init
 ```
 
+The commands in this guide invoke the module directly, which requires the
+package on `sys.path`: from a plugin checkout, prefix each command with
+`PYTHONPATH=<plugin root>`, or install the package once -- see
+[Installing](installing.md). The plugin's own hooks and skills resolve this
+themselves.
+
 See the reference's [`init`](reference/cli.md#init) section for exactly what this
 creates. It is idempotent and safe to re-run: existing files are never
 touched.

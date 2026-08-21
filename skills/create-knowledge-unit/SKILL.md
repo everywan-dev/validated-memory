@@ -54,7 +54,7 @@ provenance: []                  # optional; where the native artifact lives
 ## Verify
 
 ```
-python3 -m validated_memory validate
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m validated_memory validate
 ```
 
 Run it over the whole `knowledge/` directory, not a single file:

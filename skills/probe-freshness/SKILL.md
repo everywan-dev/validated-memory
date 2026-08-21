@@ -8,7 +8,7 @@ description: Use when checking whether curated knowledge is still fresh, reading
 ## Run the probes
 
 ```
-python3 -m validated_memory probe
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m validated_memory probe
 ```
 
 Runs every anchor of every *active* unit (one superseded within the
@@ -26,7 +26,7 @@ A `drifted` or `unknown` verdict is data, not a finding: it never gates
 ## Read the verdicts
 
 ```
-python3 -m validated_memory derive
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m validated_memory derive
 ```
 
 `probe` only records; `derive` is what turns the recorded verdicts into the
