@@ -11,3 +11,6 @@
   asserting on exit codes, output, and produced files. Tests never import the
   package's internals.
 - Work on `feature/*` branches; never force-push `main`.
+- Commit messages: Conventional Commits, written in **English** (this
+  repository is public and English-only, overriding the inherited
+  Spanish-commits norm).

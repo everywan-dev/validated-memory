@@ -48,7 +48,8 @@ fourth:
 A unit's verdict is the worst of its anchors' verdicts (`drifted` >
 `unknown` > `current`), read from the `knowledge-index.md` table. The exact
 cell format -- including how systems behind an unknown anchor are listed --
-is `derive`'s algorithm, documented once in the README's `derive` section;
+is `derive`'s algorithm, documented once in the reference's `derive` section
+(docs/reference/cli.md);
 read the cell there, do not re-derive it by hand.
 
 ## Register a probe for a new anchor `kind`
@@ -57,6 +58,7 @@ Add an entry to the `probes:` map in `validated-memory.md`:
 `<kind>: <command>`. The command is run without a shell, receiving the
 anchor's envelope as JSON on stdin and answering
 `{"verdict": ..., "detail": ...}` as JSON on stdout, exit 0 -- see the
-README's "Probe contract" (under `probe`) for the exact shape. The plugin
+reference's "Probe contract" (under `probe`, docs/reference/cli.md) for the
+exact shape. The plugin
 ships one probe, `git_ref` (freshness of a git ref), already registered by
-`init`; see the README's "The bundled `git_ref` probe".
+`init`; see "The bundled `git_ref` probe" in docs/reference/cli.md.

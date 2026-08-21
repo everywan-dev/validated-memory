@@ -30,8 +30,8 @@ provenance: []                  # optional; where the native artifact lives
   project follows. Never reuse an id once written; a correction is a new
   unit (see `supersede-knowledge`).
 - **`evidence`** -- pick the state the knowledge actually has *right now*,
-  not the state you hope to reach (canonical definitions: the README's
-  "Base contract" section):
+  not the state you hope to reach (canonical definitions: the
+  "Base contract" section of docs/reference/curated-knowledge.md):
   - `measured` -- directly observed or computed, with a way to re-check it.
   - `verifiable` -- not directly measured, but checkable by someone who
     follows the provenance.
@@ -59,11 +59,13 @@ python3 -m validated_memory validate
 
 Run it over the whole `knowledge/` directory, not a single file:
 `supersedes` resolves against the validated set, so validating one file in
-isolation reports a real `supersedes` target as missing. See the README's
-"Base contract" section for the exact rules `validate` enforces (required
+isolation reports a real `supersedes` target as missing. See the
+"Base contract" section of docs/reference/curated-knowledge.md for the exact
+rules `validate` enforces (required
 fields, id form, anchor envelope shape, and so on) -- this skill only covers
 the data discipline, not the validator's error conditions.
 
 If the project declares an extension (`knowledge-extension.md`), your unit
 may also carry the fields it declares, on top of the base contract; an
-undeclared field is an ERROR. See the README's "Declared extension" section.
+undeclared field is an ERROR. See the "Declared extension" section of
+docs/reference/curated-knowledge.md.

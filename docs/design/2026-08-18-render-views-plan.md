@@ -136,7 +136,7 @@ Expected: PASS, no failures. The design document's red is gone.
 
 ```bash
 git add validated_memory/render.py validated_memory/cli.py tests/test_cli.py tests/test_skills_structure.py
-git commit -m "feat: registra el subcomando render en el CLI"
+git commit -m "feat: register the render subcommand in the CLI"
 ```
 
 ---
@@ -356,7 +356,7 @@ Expected: PASS.
 
 ```bash
 git add validated_memory/html.py validated_memory/knowledge_view.py validated_memory/render.py tests/test_render.py
-git commit -m "feat: render escribe knowledge.html y no reescribe lo que no cambia"
+git commit -m "feat: render writes knowledge.html and never rewrites what has not changed"
 ```
 
 ---
@@ -639,7 +639,7 @@ Expected: PASS.
 
 ```bash
 git add validated_memory/knowledge_view.py tests/conftest.py tests/test_render.py
-git commit -m "feat: la vista curada enseña titular, evidencia, veredicto, anclas y procedencia"
+git commit -m "feat: the curated view shows headline, evidence, verdict, anchors and provenance"
 ```
 
 ---
@@ -775,7 +775,7 @@ Expected: PASS.
 
 ```bash
 git add validated_memory/knowledge_view.py tests/test_render.py
-git commit -m "feat: la cadena de supersesion se anida bajo la conclusion vigente"
+git commit -m "feat: the supersession chain nests under the live conclusion"
 ```
 
 **Walk the chain iteratively, with an explicit stack — not with recursion.**
@@ -990,7 +990,7 @@ behaviour must not change.
 
 ```bash
 git add validated_memory/verdicts.py validated_memory/knowledge_view.py validated_memory/render.py tests/test_render.py
-git commit -m "feat: historial de sondeos por ancla con ventana declarada"
+git commit -m "feat: per-anchor probe history with a declared window"
 ```
 
 ---
@@ -1173,7 +1173,7 @@ guards the SVG.
 
 ```bash
 git add validated_memory/svg.py validated_memory/knowledge_view.py tests/test_render.py
-git commit -m "feat: franja de frescura y confluencia muchos-a-uno en SVG"
+git commit -m "feat: freshness strip and many-to-one confluence in SVG"
 ```
 
 ---
@@ -1283,7 +1283,7 @@ Expected: PASS.
 
 ```bash
 git add validated_memory/memory_view.py validated_memory/render.py tests/test_render.py
-git commit -m "feat: memory.html con las referencias entrantes y salientes de cada entrada"
+git commit -m "feat: memory.html with each entry's incoming and outgoing references"
 ```
 
 ---
@@ -1349,7 +1349,7 @@ Expected: PASS.
 
 ```bash
 git add validated_memory/render.py tests/test_render.py
-git commit -m "feat: --only-existing regenera solo lo activado y es fail-open"
+git commit -m "feat: --only-existing regenerates only what is active and is fail-open"
 ```
 
 ---
@@ -1418,7 +1418,7 @@ Expected: PASS.
 
 ```bash
 git add validated_memory/init.py validated_memory/cli.py tests/test_init.py
-git commit -m "feat: init --view crea las vistas una vez y despues las respeta"
+git commit -m "feat: init --view creates the views once and then leaves them alone"
 ```
 
 ---
@@ -1480,7 +1480,7 @@ Expected: PASS.
 
 ```bash
 git add hooks/refresh-views.sh hooks/hooks.json tests/test_hooks_manifest.py
-git commit -m "feat: hook de arranque que refresca solo las vistas ya activadas"
+git commit -m "feat: startup hook that refreshes only the already-activated views"
 ```
 
 ---
@@ -1528,7 +1528,7 @@ command names a real subcommand and that no doc mentions an internal project.
 
 ```bash
 git add README.md docs/adoption.md skills/adopt-validated-memory/SKILL.md pyproject.toml .claude-plugin/plugin.json validated_memory/__init__.py
-git commit -m "docs: documenta render y sube la version a 1.1.0"
+git commit -m "docs: document render and bump the version to 1.1.0"
 ```
 
 ---
