@@ -28,3 +28,24 @@ python3 -m pytest
 
 Everything must pass before a change is proposed; a behavior change comes
 with the test that pins it.
+
+## Releasing
+
+A release is one commit where `pyproject.toml`,
+`validated_memory/__init__.py` and `.claude-plugin/plugin.json` state the
+same version, tagged with that same version — see
+[ADR 0005](docs/adr/0005-a-release-is-one-commit-where-the-three-versions-agree.md).
+
+1. Bump the version in the three files, in one commit. Bumping
+   `plugin.json` is what reaches plugin users; a tag alone reaches none.
+2. Run the full suite; merge to `main`.
+3. Tag: `git tag vX.Y.Z`. Before pushing it, confirm the tag's version
+   equals the three files' at the tagged commit — the half of the
+   invariant no test can see.
+4. Re-point the convenience channel: `git tag -f v1 vX.Y.Z` — only ever at
+   a commit already carrying an immutable `vX.Y.Z` tag.
+5. Push the commit and the tags to **both** remotes. A tag on one remote
+   and not the other publishes two different truths.
+
+`vX.Y.Z` tags are immutable: a mistake in a release is fixed by the next
+release, never by moving a versioned tag. Only `v1` moves.
