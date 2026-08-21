@@ -34,7 +34,9 @@ plus an index, versioned in the adopter repo; the harness reads it through a
 symlink the plugin maintains ([reference](docs/reference/agent-memory.md)).
 **Curated knowledge** — units carrying identity, an evidence state, and
 anchors separated from provenance
-([reference](docs/reference/curated-knowledge.md)).
+([reference](docs/reference/curated-knowledge.md)). Adopter projects hold
+only Markdown data and configuration; all code stays in the plugin, so a fix
+reaches every adopter that updates.
 
 - **Enforced, not promised** — `validate`, `lint` and `derive --check` are
   CI gates; drift from the contract fails the build.

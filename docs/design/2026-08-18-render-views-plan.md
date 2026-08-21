@@ -1173,7 +1173,7 @@ guards the SVG.
 
 ```bash
 git add validated_memory/svg.py validated_memory/knowledge_view.py tests/test_render.py
-git commit -m "feat: franja de frescura y confluencia muchos-a-uno en SVG"
+git commit -m "feat: freshness strip and many-to-one confluence in SVG"
 ```
 
 ---
@@ -1349,7 +1349,7 @@ Expected: PASS.
 
 ```bash
 git add validated_memory/render.py tests/test_render.py
-git commit -m "feat: --only-existing regenera solo lo activado y es fail-open"
+git commit -m "feat: --only-existing regenerates only what is active and is fail-open"
 ```
 
 ---

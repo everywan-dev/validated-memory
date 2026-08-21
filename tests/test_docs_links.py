@@ -28,6 +28,10 @@ ASSETS_DIR = REPO_ROOT / "docs" / "assets"
 FENCE_PATTERN = re.compile(r"^(```|~~~).*?^\1\s*$", re.DOTALL | re.MULTILINE)
 CODE_SPAN_PATTERN = re.compile(r"`[^`\n]*`")
 LINK_PATTERN = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+# A badge link nests one link inside another: [![alt](img)](target). The
+# pattern above only sees the inner (img), so the outer target is matched
+# separately by its distinctive ')](' seam.
+WRAPPED_LINK_PATTERN = re.compile(r"\)\]\(([^)\s]+)\)")
 HEADING_PATTERN = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 PICTURE_PATTERN = re.compile(r"<picture>(.*?)</picture>", re.DOTALL)
 IMG_SRC_PATTERN = re.compile(r'(?:srcset|src)="([^"]+)"')
@@ -74,11 +78,12 @@ def _slugs(markdown_path):
 
 def _relative_links(path):
     text = _without_code(path.read_text(encoding="utf-8"))
-    for match in LINK_PATTERN.finditer(text):
-        target = match.group(1)
-        if target.startswith(("http://", "https://", "mailto:")):
-            continue
-        yield target
+    for pattern in (LINK_PATTERN, WRAPPED_LINK_PATTERN):
+        for match in pattern.finditer(text):
+            target = match.group(1)
+            if target.startswith(("http://", "https://", "mailto:")):
+                continue
+            yield target
 
 
 def test_every_relative_link_resolves():
@@ -112,10 +117,11 @@ def test_picture_blocks_are_complete_and_their_images_exist():
         for block in PICTURE_PATTERN.finditer(text):
             found_any = True
             content = block.group(1)
-            assert 'media="(prefers-color-scheme: dark)"' in content, (
-                f"{path.relative_to(REPO_ROOT)}: <picture> without a dark "
-                "source"
-            )
+            for scheme in ("dark", "light"):
+                assert f'media="(prefers-color-scheme: {scheme})"' in content, (
+                    f"{path.relative_to(REPO_ROOT)}: <picture> without a "
+                    f"{scheme} source"
+                )
             img = re.search(r"<img\b[^>]*>", content)
             assert img, f"{path.relative_to(REPO_ROOT)}: <picture> without an <img> fallback"
             assert 'alt="' in img.group(0), (
