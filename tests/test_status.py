@@ -33,6 +33,12 @@ anchors:
     payload: {}
 """
 
+CURRENT_PROBE = """\
+import sys, json
+sys.stdin.read()
+print(json.dumps({"verdict": "current"}))
+"""
+
 
 def _write_record(adopter_dir, **fields):
     path = adopter_dir / VERDICT_LOG
@@ -116,9 +122,16 @@ def test_a_hand_edited_index_fails_like_derive_check(adopter_dir, write_unit, ru
     assert index_path.read_text(encoding="utf-8") == mutated
 
 
-def test_status_never_writes_the_index_or_the_log(adopter_dir, write_unit, run_cli):
+def test_status_never_writes_the_index_or_the_log(
+    adopter_dir, write_document, write_unit, write_probe, run_cli
+):
+    # The unit carries a real, registered-kind anchor: if `status` ever ran
+    # `probe` by accident, this is exactly the anchor that would get
+    # appended to the log, so the log staying absent is not vacuous.
     run_cli("init", cwd=adopter_dir)
-    write_unit("kb-0001.md", ACTIVE_UNIT)
+    current_cmd = write_probe("probes/current_probe.py", CURRENT_PROBE)
+    write_document("validated-memory.md", f"probes:\n  git_ref: {current_cmd}\n")
+    write_unit("kb-0001.md", ONE_ANCHOR_UNIT)
     run_cli("derive", cwd=adopter_dir)
     before = (adopter_dir / INDEX_FILENAME).read_text(encoding="utf-8")
 
@@ -350,6 +363,41 @@ def test_boundary_age_equal_to_max_is_not_aged(adopter_dir, write_unit, run_cli)
     assert "status: age: 0 aged, 0 age-unknown (max 10 day(s))" in result.stdout
 
 
+def test_a_second_past_the_boundary_is_aged(adopter_dir, write_unit, run_cli):
+    # 10 days and one second before --as-of: strictly more than 10 days old,
+    # so `age > N` must gate even though whole-day truncation alone would
+    # still read this as "10 days old" -- the comparison has to use the full
+    # timedelta, not `.days`, which is only for the reported figure.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", ONE_ANCHOR_UNIT)
+    _write_record(
+        adopter_dir,
+        recorded_at="2026-08-10T23:59:59Z",
+        unit="kb-0001",
+        system="repo-a",
+        kind="git_ref",
+        payload={},
+        verdict="current",
+        detail=None,
+    )
+
+    result = run_cli(
+        "status",
+        "--skip-index",
+        "--max-verdict-age",
+        "10",
+        "--as-of",
+        AS_OF,
+        cwd=adopter_dir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: kb-0001: repo-a/git_ref: verdict is 10 day(s) old (max 10)" in (
+        result.stderr
+    )
+    assert "status: age: 1 aged, 0 age-unknown (max 10 day(s))" in result.stdout
+
+
 def test_recorded_at_absent_is_age_unknown_under_the_flag(
     adopter_dir, write_unit, run_cli
 ):
@@ -511,6 +559,79 @@ def test_an_anchor_never_probed_is_not_reported_as_age_unknown(
     assert "status: age: 0 aged, 0 age-unknown (max 10 day(s))" in result.stdout
 
 
+def test_as_of_with_a_non_utc_offset_is_normalized_to_utc(
+    adopter_dir, write_unit, run_cli
+):
+    # 2026-08-11T02:00:00+02:00 is the same instant as 2026-08-11T00:00:00Z,
+    # exactly 10 days after the recorded verdict: misreading the offset as
+    # if it were UTC would land on 2026-08-11T02:00:00Z, 10 days and two
+    # hours later, and age this anchor when it is not aged.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", ONE_ANCHOR_UNIT)
+    _write_record(
+        adopter_dir,
+        recorded_at="2026-08-01T00:00:00Z",
+        unit="kb-0001",
+        system="repo-a",
+        kind="git_ref",
+        payload={},
+        verdict="current",
+        detail=None,
+    )
+
+    result = run_cli(
+        "status",
+        "--skip-index",
+        "--max-verdict-age",
+        "10",
+        "--as-of",
+        "2026-08-11T02:00:00+02:00",
+        cwd=adopter_dir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "repo-a/git_ref" not in result.stderr
+    assert "status: age: 0 aged, 0 age-unknown (max 10 day(s))" in result.stdout
+
+
+def test_age_check_excludes_a_superseded_units_anchor(adopter_dir, write_unit, run_cli):
+    # kb-0001 is superseded by kb-0002 and carries a very old verdict; a
+    # superseded unit's verdicts describe knowledge already retired, so the
+    # age check must not report it as aged (or as age-unknown) either.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", ONE_ANCHOR_UNIT)
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: measured\nsupersedes:\n  - kb-0001\nanchors:\n"
+        "  - system: repo-b\n    kind: git_ref\n"
+        "    captured_at: 2026-08-01T00:00:00Z\n    payload: {}\n",
+    )
+    _write_record(
+        adopter_dir,
+        recorded_at="2000-01-01T00:00:00Z",
+        unit="kb-0001",
+        system="repo-a",
+        kind="git_ref",
+        payload={},
+        verdict="current",
+        detail=None,
+    )
+
+    result = run_cli(
+        "status",
+        "--skip-index",
+        "--max-verdict-age",
+        "10",
+        "--as-of",
+        AS_OF,
+        cwd=adopter_dir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "kb-0001" not in result.stderr
+    assert "status: age: 0 aged, 0 age-unknown (max 10 day(s))" in result.stdout
+
+
 # --- the verdict log's own read contract (shared with derive) --------------
 
 
@@ -550,6 +671,24 @@ def test_fail_on_rejects_an_unknown_verdict(adopter_dir, run_cli):
     result = run_cli("status", "--fail-on", "current", cwd=adopter_dir)
 
     assert result.returncode == 2
+
+
+def test_fail_on_aged_without_max_verdict_age_is_a_usage_error(adopter_dir, run_cli):
+    # Fail-explicit: nothing to bound age with means `--fail-on-aged` could
+    # never actually gate, and pretending it does is worse than refusing.
+    result = run_cli("status", "--fail-on-aged", cwd=adopter_dir)
+
+    assert result.returncode == 2
+    assert "--fail-on-aged" in result.stderr
+    assert "--max-verdict-age" in result.stderr
+
+
+def test_as_of_without_max_verdict_age_is_a_usage_error(adopter_dir, run_cli):
+    result = run_cli("status", "--as-of", AS_OF, cwd=adopter_dir)
+
+    assert result.returncode == 2
+    assert "--as-of" in result.stderr
+    assert "--max-verdict-age" in result.stderr
 
 
 def test_status_help_exits_clean(adopter_dir, run_cli):

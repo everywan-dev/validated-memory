@@ -11,7 +11,7 @@ out to those subcommands: `validate.collect_and_validate` runs once, its
 `recorded_at`. `status` never runs `probe`.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import derive as derive_module
@@ -215,15 +215,20 @@ def _age_findings(states, active_units, latest, as_of, max_verdict_age, fail_on_
                     )
                 )
                 continue
-            age_days = (as_of - parsed).days
-            if age_days > max_verdict_age:
+            delta = as_of - parsed
+            if delta > timedelta(days=max_verdict_age):
                 aged_count += 1
+                # `.days` alone would floor an over-threshold delta like
+                # "N days and one second" back down to N, matching the
+                # boundary it must not: the gate above compares the full
+                # timedelta (ADR 0004's strict `age > N`), and only the
+                # reported figure is floored to whole days.
                 findings.append(
                     Finding(
                         severity,
                         unit_id,
                         label,
-                        f"verdict is {age_days} day(s) old (max {max_verdict_age})",
+                        f"verdict is {delta.days} day(s) old (max {max_verdict_age})",
                     )
                 )
     return findings, aged_count, unknown_count

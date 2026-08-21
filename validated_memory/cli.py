@@ -161,6 +161,10 @@ def build_parser():
                     "time"
                 ),
             )
+            # Kept on the parsed namespace so `main` can raise a proper
+            # argparse usage error (this subparser's own usage line) for a
+            # combination no `type=`/`choices=` check can express on its own.
+            subparser.set_defaults(_status_subparser=subparser)
     return parser
 
 
@@ -180,6 +184,18 @@ def main(argv=None):
     if args.command == "render":
         return render.run(args.only_existing, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "status":
+        # Fail-explicit: an age flag with nothing to bound it would silently
+        # pretend to gate. `type=`/`choices=` cannot express a cross-flag
+        # requirement, so this checks it here and raises through the
+        # subparser -- the usual argparse usage error (exit 2), naming the
+        # flag and the subcommand's own usage line, not a generic one.
+        if args.max_verdict_age is None:
+            if args.fail_on_aged:
+                args._status_subparser.error(
+                    "--fail-on-aged requires --max-verdict-age"
+                )
+            if args.as_of is not None:
+                args._status_subparser.error("--as-of requires --max-verdict-age")
         return status.run(
             args.skip_index,
             args.fail_on,
