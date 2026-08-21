@@ -135,11 +135,17 @@ def test_adoption_and_walkthrough_docs_exist():
 
 # --- AC4: clean-room -----------------------------------------------------------
 
+# The repository's public home. Mentioning the org that hosts the repo is
+# not an internal reference, so it is struck from the text before both scans;
+# the bare company name anywhere else still fails.
+PUBLIC_ORG = "everywan-dev"
+
+
 
 def test_skills_and_docs_are_clean_room():
     for path in _skill_files() + _doc_files():
         text = path.read_text(encoding="utf-8")
-        lowered = text.lower()
+        lowered = text.lower().replace(PUBLIC_ORG, "")
         for forbidden in FORBIDDEN_MENTIONS:
             assert forbidden.lower() not in lowered, (
                 f"{path} mentions '{forbidden}', which is not allowed in this "
@@ -147,12 +153,7 @@ def test_skills_and_docs_are_clean_room():
             )
 
 
-# The repository's public home. Mentioning the org that hosts the repo is
-# not an internal reference, so it is struck from the text before the scan;
-# the bare company name anywhere else still fails.
-PUBLIC_ORG = "everywan-dev"
-
-CLEAN_ROOM_SUFFIXES = {".py", ".sh", ".md", ".json", ".toml", ".yml", ".yaml"}
+CLEAN_ROOM_SUFFIXES = {".py", ".sh", ".md", ".json", ".toml", ".yml", ".yaml", ".svg"}
 CLEAN_ROOM_SKIPPED_DIRS = {".git", "build", "__pycache__", ".pytest_cache"}
 
 
