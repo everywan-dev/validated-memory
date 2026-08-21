@@ -190,7 +190,7 @@ sessions once activated.
 
 ## Skills
 
-Five skills make the method invocable from an agent session, each naming the
+Six skills make the method invocable from an agent session, each naming the
 exact CLI invocation and the data discipline to follow — never reimplementing
 a rule the CLI already enforces:
 
@@ -203,6 +203,8 @@ a rule the CLI already enforces:
 - **`probe-freshness`** — probe, re-derive, read the ternary verdict.
 - **`maintain-agent-memory`** — record or supersede a memory fact, verify
   with `lint`.
+- **`ask-validated-memory`** — answer usage questions from the plugin's own
+  docs and `--help`, quoting exact invocations, never inventing a flag.
 
 ## Requirements and compatibility
 

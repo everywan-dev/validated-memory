@@ -67,8 +67,9 @@ def test_every_skill_directory_has_a_skill_md():
         assert (directory / "SKILL.md").is_file(), f"{directory} has no SKILL.md"
 
 
-def test_five_skills_are_present():
-    # Pinned by the ticket: adopt, create, supersede, probe, maintain.
+def test_the_skill_set_is_exactly_the_documented_one():
+    # The README and the adoption guide state this set; adding or removing
+    # a skill updates them and this pin in the same change.
     names = {path.parent.name for path in _skill_files()}
     assert names == {
         "adopt-validated-memory",
@@ -76,6 +77,7 @@ def test_five_skills_are_present():
         "supersede-knowledge",
         "probe-freshness",
         "maintain-agent-memory",
+        "ask-validated-memory",
     }
 
 
@@ -148,11 +150,15 @@ def test_every_skill_command_sets_pythonpath_to_the_plugin_root():
 
 def test_at_least_one_real_command_is_documented_per_skill():
     # Every skill's job is to point at the CLI surface, not reimplement it:
-    # each one names at least one literal, real subcommand invocation.
+    # each one carries at least one literal CLI invocation. Most name a
+    # subcommand; `ask-validated-memory` points at `--help` and
+    # `--version`, which is still the CLI and not a reimplementation --
+    # subcommand validity is the previous test's job.
     for path in _skill_files():
         text = path.read_text(encoding="utf-8")
-        commands = {match.group(1) for match in COMMAND_PATTERN.finditer(text)}
-        assert commands & REAL_SUBCOMMANDS, f"{path} names no real CLI subcommand"
+        assert CLI_INVOCATION_PATTERN.search(text), (
+            f"{path} carries no literal CLI invocation"
+        )
 
 
 # --- docs/ exist and cover the required topics --------------------------------
