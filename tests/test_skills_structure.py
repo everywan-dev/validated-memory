@@ -184,7 +184,10 @@ def test_skills_and_docs_are_clean_room():
 
 
 CLEAN_ROOM_SUFFIXES = {".py", ".sh", ".md", ".json", ".toml", ".yml", ".yaml", ".svg"}
-CLEAN_ROOM_SKIPPED_DIRS = {".git", "build", "__pycache__", ".pytest_cache"}
+# `.claude` holds harness-managed state, including agent worktrees under
+# `.claude/worktrees/` -- full checkouts of this repo whose files are not
+# part of this checkout's surface.
+CLEAN_ROOM_SKIPPED_DIRS = {".git", ".claude", "build", "__pycache__", ".pytest_cache"}
 
 
 def test_the_whole_repository_is_clean_room():
