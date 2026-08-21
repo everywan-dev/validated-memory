@@ -10,7 +10,7 @@ Adopting the plugin in a project is one command, run from the project root.
 ## Bootstrap the layout
 
 ```
-PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m validated_memory init
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m validated_memory init
 ```
 
 This scaffolds, creating each item only if missing (existing items are never
@@ -31,7 +31,7 @@ file. See the reference's `init` section (docs/reference/cli.md) for the full co
 ## Wire the harness's persistent memory (optional)
 
 ```
-PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m validated_memory init --harness-memory PATH
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m validated_memory init --harness-memory PATH
 ```
 
 Makes `PATH` a move-proof symlink to this project's `memory/` directory, so
@@ -46,7 +46,7 @@ wire a harness location the hook does not already know about.
 ## Activate the HTML views (optional)
 
 ```
-PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m validated_memory init --view
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m validated_memory init --view
 ```
 
 Creates `knowledge.html` and `memory.html` -- self-contained, static pages
@@ -64,8 +64,8 @@ this. See the reference's `render` section (docs/reference/cli.md) for what each
 Right after `init`, both enforcement commands must pass clean:
 
 ```
-PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m validated_memory validate
-PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m validated_memory lint
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m validated_memory validate
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m validated_memory lint
 ```
 
 `validate` may still report a WARNING for an empty `knowledge/` (no units to
