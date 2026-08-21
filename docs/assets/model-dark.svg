@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 336" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <!-- Two layers, one discipline -->
+  <g>
+    <rect x="20" y="16" width="430" height="212" rx="10" fill="#151b23" stroke="#3d444d" stroke-width="1.5"/>
+    <text x="44" y="52" font-size="16" font-weight="600" fill="#e6edf3">Agent memory</text>
+    <text x="44" y="80" font-size="13" fill="#9198a1">one Markdown file per fact, plus an index</text>
+    <text x="44" y="104" font-size="12.5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#e6edf3">memory/*.md · MEMORY.md</text>
+    <text x="44" y="136" font-size="13" fill="#9198a1">a fact retires by rewriting its description:</text>
+    <text x="44" y="160" font-size="12.5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#e6edf3">superseded by [[successor]]</text>
+    <rect x="44" y="180" width="64" height="28" rx="14" fill="#0d1117" stroke="#4493f8" stroke-width="1.5"/>
+    <text x="76" y="198" font-size="12.5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#4493f8">lint</text>
+    <text x="122" y="198" font-size="12" fill="#9198a1">enforces the convention</text>
+  </g>
+  <g>
+    <rect x="490" y="16" width="430" height="212" rx="10" fill="#151b23" stroke="#3d444d" stroke-width="1.5"/>
+    <text x="514" y="52" font-size="16" font-weight="600" fill="#e6edf3">Curated knowledge</text>
+    <text x="514" y="80" font-size="13" fill="#9198a1">units carrying identity and an evidence state</text>
+    <text x="514" y="104" font-size="12.5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#e6edf3">evidence: measured | verifiable | hypothesis</text>
+    <text x="514" y="136" font-size="13" fill="#9198a1">anchors name what each claim depends on:</text>
+    <text x="514" y="160" font-size="12.5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#e6edf3">anchors: [system · kind · payload]</text>
+    <rect x="514" y="180" width="94" height="28" rx="14" fill="#0d1117" stroke="#4493f8" stroke-width="1.5"/>
+    <text x="561" y="198" font-size="12.5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#4493f8">validate</text>
+    <rect x="618" y="180" width="140" height="28" rx="14" fill="#0d1117" stroke="#4493f8" stroke-width="1.5"/>
+    <text x="688" y="198" font-size="12.5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#4493f8">derive --check</text>
+    <text x="768" y="198" font-size="12" fill="#9198a1">CI gates</text>
+  </g>
+  <g>
+    <rect x="20" y="252" width="900" height="64" rx="10" fill="none" stroke="#3d444d" stroke-width="1.5" stroke-dasharray="4 4"/>
+    <text x="44" y="290" font-size="13.5" fill="#e6edf3">Nothing is ever deleted: a fact stops being true only by naming what replaced it.</text>
+    <rect x="614" y="270" width="120" height="28" rx="14" fill="#0d1117" stroke="#9198a1" stroke-width="1.2"/>
+    <text x="674" y="288" font-size="12.5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#9198a1">kb-0017 retired</text>
+    <path d="M 796 284 L 742 284" stroke="#9198a1" stroke-width="1.5" fill="none" marker-end="url(#arrow-muted)"/>
+    <rect x="800" y="270" width="112" height="28" rx="14" fill="#0d1117" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="856" y="288" font-size="12.5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#3fb950">kb-0042 live</text>
+    <text x="769" y="266" font-size="11" text-anchor="middle" fill="#9198a1">supersedes</text>
+  </g>
+  <defs>
+    <marker id="arrow-muted" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#9198a1"/>
+    </marker>
+  </defs>
+</svg>
