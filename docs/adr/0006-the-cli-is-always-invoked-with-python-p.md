@@ -20,10 +20,10 @@ check the Action exists to enforce.
 
 The decision: every documented and executed invocation of the CLI --
 hooks, the Action, skills, docs, and the test suite -- is
-`python3 -P -m validated_memory`. `-P` (`-safe-path`) excludes that
+`python3 -P -m validated_memory`. `-P` excludes that
 implicit current-directory entry from `sys.path` for `-m`, `-c` and a bare
 interpreter; it does not touch `PYTHONPATH`, so an explicit `PYTHONPATH`
-still resolves the real package. `-P` was added in Python 3.11 (PEP 706),
+still resolves the real package. `-P` was added in Python 3.11,
 so `requires-python` is raised to `>=3.11`.
 
 ## Considered options
