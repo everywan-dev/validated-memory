@@ -1,7 +1,7 @@
 # CLI reference
 
 ```
-python3 -m validated_memory <command>
+python3 -P -m validated_memory <command>
 ```
 
 Commands: [`init`](#init), [`lint`](#lint), [`validate`](#validate),
@@ -14,12 +14,14 @@ Exit codes: `0` = clean run or WARNING-only findings (does not gate);
 Running the module requires the package on `sys.path`: from a checkout,
 prefix commands with `PYTHONPATH=<plugin root>`, or install it with pip —
 see [Installing](../installing.md). The plugin's own hooks resolve this
-themselves.
+themselves. `-P` is not optional: without it, the current working
+directory could resolve `validated_memory` ahead of `PYTHONPATH` — see
+[ADR 0006](../adr/0006-the-cli-is-always-invoked-with-python-p.md).
 
 ### `init`
 
 ```
-python3 -m validated_memory init [--harness-memory PATH] [--view]
+python3 -P -m validated_memory init [--harness-memory PATH] [--view]
 ```
 
 Scaffolds a new adopter project in the working directory: `knowledge/`
@@ -133,7 +135,7 @@ named in the WARNING.
 ### `lint`
 
 ```
-python3 -m validated_memory lint [PATH]
+python3 -P -m validated_memory lint [PATH]
 ```
 
 Lints the agent-memory layer: every `*.md` file found under PATH, recursively,
@@ -153,7 +155,7 @@ explicit PATH that does not exist each stop the run before any file is read.
 ### `validate`
 
 ```
-python3 -m validated_memory validate [PATH]
+python3 -P -m validated_memory validate [PATH]
 ```
 
 Validates every `*.md` unit found under PATH, recursively; PATH may also be a
@@ -175,7 +177,7 @@ left out is reported as missing.
 ### `derive`
 
 ```
-python3 -m validated_memory derive [PATH] [--check]
+python3 -P -m validated_memory derive [PATH] [--check]
 ```
 
 Re-derives the curated-knowledge index from the units under PATH, resolved
@@ -245,7 +247,7 @@ finding (source validation, or a `--check` mismatch); `2` a usage error.
 ### `probe`
 
 ```
-python3 -m validated_memory probe [PATH]
+python3 -P -m validated_memory probe [PATH]
 ```
 
 Runs freshness probes over the anchors of every *active* curated-knowledge
@@ -391,7 +393,7 @@ traceback, and never exits non-zero.
 ### `render`
 
 ```
-python3 -m validated_memory render [--only-existing]
+python3 -P -m validated_memory render [--only-existing]
 ```
 
 Writes two self-contained HTML pages to the working directory -- alongside
@@ -474,7 +476,7 @@ a usage error.
 ### `status`
 
 ```
-python3 -m validated_memory status [--skip-index] [--fail-on {drifted,unknown}]
+python3 -P -m validated_memory status [--skip-index] [--fail-on {drifted,unknown}]
                                     [--max-verdict-age N] [--fail-on-aged]
                                     [--as-of TIMESTAMP]
 ```

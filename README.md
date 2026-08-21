@@ -69,11 +69,11 @@ Code — in CI, or from a shell — are covered in
 
 ## Quickstart
 
-From an empty directory (`python3 -m validated_memory` must be importable —
+From an empty directory (`python3 -P -m validated_memory` must be importable —
 see [Installing](docs/installing.md#running-the-cli-outside-the-plugin)):
 
 ```console
-$ python3 -m validated_memory init
+$ python3 -P -m validated_memory init
 init: created knowledge
 init: created memory
 init: created memory/MEMORY.md
@@ -105,13 +105,13 @@ anchors:
 Then enforce, probe, and derive:
 
 ```console
-$ python3 -m validated_memory validate
+$ python3 -P -m validated_memory validate
 validate: 1 unit(s) checked, 0 error(s), 0 warning(s)
 
-$ python3 -m validated_memory probe
+$ python3 -P -m validated_memory probe
 probe: 1 anchor(s) probed across 1 unit(s): 1 current, 0 drifted, 0 unknown
 
-$ python3 -m validated_memory derive
+$ python3 -P -m validated_memory derive
 derive: 1 unit(s) indexed
 ```
 
@@ -149,7 +149,18 @@ Exit codes: `0` = clean or WARNING-only findings; `1` = ERROR (gates);
 
 The repository is also a reusable GitHub Action that runs `status` — the
 CLI runs straight from the action's checkout, so the code that gates is
-exactly the code at the ref you name:
+exactly the code at the ref you name. Pin to a full commit SHA — copy it
+from the [release](https://github.com/everywan-dev/validated-memory/releases)
+you are adopting — for CI that must not trust a mutable ref:
+
+```yaml
+- uses: everywan-dev/validated-memory@<full commit SHA>
+  with:
+    args: --fail-on drifted
+```
+
+Less rigorous but more convenient, the moving `v1` major tag works the
+same way:
 
 ```yaml
 - uses: everywan-dev/validated-memory@v1
@@ -157,10 +168,9 @@ exactly the code at the ref you name:
     args: --fail-on drifted
 ```
 
-Pinning, by decreasing rigor: a full commit SHA
-(`everywan-dev/validated-memory@<sha>`) for CI that must not trust a
-mutable ref, an immutable `vX.Y.Z` tag, or the moving `v1` major tag shown
-above for convenience. `args` is passed to
+Pinning, by decreasing rigor: a full commit SHA for CI that must not trust
+a mutable ref, an immutable `vX.Y.Z` tag, or the moving `v1` major tag
+shown above for convenience. `args` is passed to
 [`status`](docs/reference/cli.md#status) verbatim; without it, structural
 consistency gates and freshness is only reported.
 
@@ -213,7 +223,7 @@ a rule the CLI already enforces:
 
 - **Version 1.1.1** — the v1 surface is complete: all six subcommands, five
   skills, two startup hooks, static HTML views.
-- **Python ≥ 3.9**, standard library only; pytest is the only development
+- **Python ≥ 3.11**, standard library only; pytest is the only development
   dependency.
 - **Claude Code** to run it as a plugin; the CLI stands alone everywhere
   else (CI, shell).

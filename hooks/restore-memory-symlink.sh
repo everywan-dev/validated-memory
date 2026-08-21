@@ -100,7 +100,7 @@ plugin_root="$(dirname "$script_dir")"
 (
   cd "$project_dir" 2>/dev/null || exit 0
   PYTHONPATH="$plugin_root${PYTHONPATH:+:$PYTHONPATH}" \
-    python3 -m validated_memory init --harness-memory "$harness_memory" >/dev/null
+    python3 -P -m validated_memory init --harness-memory "$harness_memory" >/dev/null
 )
 
 # Whatever happened inside the subshell above -- created, kept, re-pointed,

@@ -20,7 +20,7 @@ project.
 From the adopter project's root:
 
 ```
-python3 -m validated_memory init
+python3 -P -m validated_memory init
 ```
 
 The commands in this guide invoke the module directly, which requires the
@@ -52,8 +52,8 @@ it runs, `lint` is the check that the merge is sound.
 Right after bootstrapping, confirm both enforcement commands pass clean:
 
 ```
-python3 -m validated_memory validate
-python3 -m validated_memory lint
+python3 -P -m validated_memory validate
+python3 -P -m validated_memory lint
 ```
 
 ## 3. Declare an extension (optional)
@@ -84,9 +84,9 @@ If this project versions `knowledge-index.md`, add a CI step that fails when
 it has drifted from the units or from freshly recorded verdicts:
 
 ```
-python3 -m validated_memory validate
-python3 -m validated_memory lint
-python3 -m validated_memory derive --check
+python3 -P -m validated_memory validate
+python3 -P -m validated_memory lint
+python3 -P -m validated_memory derive --check
 ```
 
 `derive --check` recalculates the index in memory and compares it against
@@ -114,7 +114,7 @@ append-only history -- the audit trail of what was probed and what came back
   payload and the probe's `detail` output. Anchors must not carry secrets,
   and a probe must not emit them in `detail` either.
 
-Run `python3 -m validated_memory probe` on whatever cadence fits the project
+Run `python3 -P -m validated_memory probe` on whatever cadence fits the project
 (a scheduled job, a pre-release check, ...) before the `derive --check` gate,
 so the verdict column reflects current probing rather than going stale -- see
 [`probe`](reference/cli.md#probe). When a probe run changes any verdict,
@@ -130,7 +130,7 @@ what the project holds; see [`render`](reference/cli.md#render) for what each
 page shows. Activation is the presence of the file, not a setting:
 
 ```
-python3 -m validated_memory init --view
+python3 -P -m validated_memory init --view
 ```
 
 creates whichever of the two is missing and reports `created` / `kept` for

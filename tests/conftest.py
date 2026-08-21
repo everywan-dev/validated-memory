@@ -20,9 +20,10 @@ def run_cli():
     """Return a callable that invokes the CLI as a subprocess."""
 
     def _run(*args, cwd):
-        env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+        env = dict(os.environ)
+        env.setdefault("PYTHONPATH", str(REPO_ROOT))
         return subprocess.run(
-            [sys.executable, "-m", "validated_memory", *args],
+            [sys.executable, "-P", "-m", "validated_memory", *args],
             capture_output=True,
             text=True,
             cwd=cwd,

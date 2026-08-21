@@ -33,4 +33,4 @@ runs:
         ARGS: ${{ inputs.args }}
       run: |
         set -f
-        PYTHONPATH="$GITHUB_ACTION_PATH" python3 -m validated_memory status $ARGS
+        PYTHONPATH="$GITHUB_ACTION_PATH" python3 -P -m validated_memory status $ARGS

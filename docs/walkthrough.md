@@ -18,7 +18,7 @@ same shape, on yours.
 ## 1. Adopt the project
 
 ```
-python3 -m validated_memory init
+python3 -P -m validated_memory init
 ```
 
 ```
@@ -74,7 +74,7 @@ See the `create-knowledge-unit` skill and the reference's
 ## 3. Validate
 
 ```
-python3 -m validated_memory validate
+python3 -P -m validated_memory validate
 ```
 
 ```
@@ -84,7 +84,7 @@ validate: 1 unit(s) checked, 0 error(s), 0 warning(s)
 ## 4. Derive the index
 
 ```
-python3 -m validated_memory derive
+python3 -P -m validated_memory derive
 ```
 
 ```
@@ -107,7 +107,7 @@ resolve, never as a silent pass.
 ## 5. Probe
 
 ```
-python3 -m validated_memory probe
+python3 -P -m validated_memory probe
 ```
 
 ```
@@ -148,7 +148,7 @@ Re-checked and confirmed: same commit, upgraded to verifiable.
 ## 7. Derive again
 
 ```
-python3 -m validated_memory derive
+python3 -P -m validated_memory derive
 ```
 
 ```

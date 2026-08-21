@@ -58,7 +58,7 @@ plugin_root="$(dirname "$script_dir")"
 (
   cd "$project_dir" 2>/dev/null || exit 0
   PYTHONPATH="$plugin_root${PYTHONPATH:+:$PYTHONPATH}" \
-    python3 -m validated_memory render --only-existing >/dev/null
+    python3 -P -m validated_memory render --only-existing >/dev/null
 )
 
 # Whatever happened inside the subshell above -- nothing to render, one or
