@@ -30,14 +30,14 @@ record of what was believed and when; superseding preserves it.
 ## Steps
 
 ```
-python3 -m validated_memory validate
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m validated_memory validate
 ```
 
 Validate the whole `knowledge/` directory (not just the new file) so the
 `supersedes` reference resolves against the unit it points at.
 
 ```
-python3 -m validated_memory derive
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m validated_memory derive
 ```
 
 Re-derive `knowledge-index.md` afterwards, so its `state` column reflects

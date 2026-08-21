@@ -116,6 +116,24 @@ def test_every_documented_command_names_a_real_subcommand():
             )
 
 
+def test_every_skill_command_sets_pythonpath_to_the_plugin_root():
+    # Skills execute in the adopter's project, where the package is not
+    # importable -- only the plugin checkout has it. The hooks already export
+    # PYTHONPATH before invoking the CLI; a bare `python3 -m validated_memory`
+    # in a skill fails with ModuleNotFoundError in every real session.
+    prefix = 'PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python3 -m validated_memory'
+    for path in _skill_files():
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if "python3 -m validated_memory" not in line:
+                continue
+            assert line.strip().startswith(prefix), (
+                f"{path}:{number} invokes the CLI without pinning "
+                f'PYTHONPATH: expected the line to start with {prefix!r}'
+            )
+
+
 def test_at_least_one_real_command_is_documented_per_skill():
     # Every skill's job is to point at the CLI surface, not reimplement it:
     # each one names at least one literal, real subcommand invocation.
