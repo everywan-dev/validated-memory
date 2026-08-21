@@ -190,7 +190,7 @@ sessions once activated.
 
 ## Skills
 
-Six skills make the method invocable from an agent session, each naming the
+Seven skills make the method invocable from an agent session, each naming the
 exact CLI invocation and the data discipline to follow — never reimplementing
 a rule the CLI already enforces:
 
@@ -205,6 +205,9 @@ a rule the CLI already enforces:
   with `lint`.
 - **`ask-validated-memory`** — answer usage questions from the plugin's own
   docs and `--help`, quoting exact invocations, never inventing a flag.
+- **`bootstrap-from-repo`** — walk an adopter repository and propose
+  starting facts for both layers, under an explicit security perimeter;
+  only confirmed proposals are written.
 
 ## Requirements and compatibility
 
