@@ -14,10 +14,10 @@ and the discussion belongs before the diff.
   written in English.
 - Exit codes are a contract: `0` = clean or WARNING-only findings; `1` =
   ERROR (gates); `2` = usage error.
-- Tests are end-to-end only: they invoke the CLI as a subprocess over
-  fixture adopter trees and assert on exit codes, output, and produced
-  files. Tests never import the package's internals — new tests follow the
-  same seam.
+- Tests never import the package's internals. Enforcement is tested end to
+  end — the CLI as a subprocess over fixture adopter trees, asserting on
+  exit codes, output, and produced files; shipped content (docs, skills,
+  assets) is checked structurally. New tests follow the same seam.
 - Work on a `feature/*` branch; `main` is never force-pushed.
 
 ## Running the tests

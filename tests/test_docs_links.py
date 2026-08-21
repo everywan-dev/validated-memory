@@ -27,11 +27,12 @@ ASSETS_DIR = REPO_ROOT / "docs" / "assets"
 
 FENCE_PATTERN = re.compile(r"^(```|~~~).*?^\1\s*$", re.DOTALL | re.MULTILINE)
 CODE_SPAN_PATTERN = re.compile(r"`[^`\n]*`")
-LINK_PATTERN = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+# The optional trailing group accepts a link title: [x](file.md "title").
+LINK_PATTERN = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 # A badge link nests one link inside another: [![alt](img)](target). The
 # pattern above only sees the inner (img), so the outer target is matched
 # separately by its distinctive ')](' seam.
-WRAPPED_LINK_PATTERN = re.compile(r"\)\]\(([^)\s]+)\)")
+WRAPPED_LINK_PATTERN = re.compile(r"\)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING_PATTERN = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 PICTURE_PATTERN = re.compile(r"<picture>(.*?)</picture>", re.DOTALL)
 IMG_SRC_PATTERN = re.compile(r'(?:srcset|src)="([^"]+)"')
@@ -134,6 +135,25 @@ def test_picture_blocks_are_complete_and_their_images_exist():
                     "which does not exist"
                 )
     assert found_any, "expected at least one <picture> block in the prose"
+
+
+def test_inline_images_exist_and_carry_alt():
+    for path in _prose_files():
+        text = path.read_text(encoding="utf-8")
+        for img in re.finditer(r"<img\b[^>]*>", text):
+            tag = img.group(0)
+            assert 'alt="' in tag, (
+                f"{path.relative_to(REPO_ROOT)}: <img> without alt text"
+            )
+            for src in IMG_SRC_PATTERN.finditer(tag):
+                target = src.group(1)
+                if target.startswith(("http://", "https://")):
+                    continue
+                resolved = (path.parent / target).resolve()
+                assert resolved.exists(), (
+                    f"{path.relative_to(REPO_ROOT)} names '{target}', "
+                    "which does not exist"
+                )
 
 
 def test_light_and_dark_svg_variants_say_the_same_thing():

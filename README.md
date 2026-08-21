@@ -80,9 +80,31 @@ init: created memory/MEMORY.md
 init: created validated-memory.md
 init: created knowledge-extension.md
 init: 5 created, 0 kept, 0 error(s), 0 warning(s)
+```
 
-$ cat > knowledge/kb-0001.md   # one fact: id, evidence, an anchor to re-check
+Write one fact as `knowledge/kb-0001.md`, anchoring it to what a git ref
+resolves to today (`git rev-parse main`):
 
+```yaml
+---
+id: kb-0001
+evidence: measured
+anchors:
+  - system: this-repo
+    kind: git_ref
+    captured_at: 2026-08-21T10:00:00Z
+    payload:
+      repo: .
+      ref: refs/heads/main
+      commit: <the sha git rev-parse printed>
+---
+
+# The deploy branch is main, gated by the smoke suite
+```
+
+Then enforce, probe, and derive:
+
+```console
 $ python3 -m validated_memory validate
 validate: 1 unit(s) checked, 0 error(s), 0 warning(s)
 
@@ -195,9 +217,9 @@ Runtime code is Python 3, standard library only.
 python3 -m pytest
 ```
 
-Tests are end-to-end only: they invoke the CLI as a subprocess over fixture
-adopter trees and assert on exit codes, output, and produced files. Tests
-never import the package's internals. Contributions follow
+Tests never import the package's internals: enforcement is tested end to
+end, driving the CLI as a subprocess over fixture adopter trees; shipped
+content — docs, skills, assets — is checked structurally. Contributions follow
 [CONTRIBUTING.md](CONTRIBUTING.md); bugs and questions go to
 [issues](https://github.com/everywan-dev/validated-memory/issues).
 

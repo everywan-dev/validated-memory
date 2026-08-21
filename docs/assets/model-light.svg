@@ -29,13 +29,13 @@
     <text x="44" y="290" font-size="13.5" fill="#1f2328">Nothing is ever deleted: a fact stops being true only by naming what replaced it.</text>
     <rect x="614" y="270" width="120" height="28" rx="14" fill="#ffffff" stroke="#59636e" stroke-width="1.2"/>
     <text x="674" y="288" font-size="12.5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#59636e">kb-0017 retired</text>
-    <path d="M 796 284 L 742 284" stroke="#59636e" stroke-width="1.5" fill="none" marker-end="url(#arrow-muted)"/>
+    <path d="M 796 284 L 742 284" stroke="#59636e" stroke-width="1.5" fill="none" marker-end="url(#arrow-muted-light)"/>
     <rect x="800" y="270" width="112" height="28" rx="14" fill="#ffffff" stroke="#1a7f37" stroke-width="1.5"/>
     <text x="856" y="288" font-size="12.5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#1a7f37">kb-0042 live</text>
     <text x="769" y="266" font-size="11" text-anchor="middle" fill="#59636e">supersedes</text>
   </g>
   <defs>
-    <marker id="arrow-muted" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+    <marker id="arrow-muted-light" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
       <path d="M 0 0 L 8 4 L 0 8 z" fill="#59636e"/>
     </marker>
   </defs>
