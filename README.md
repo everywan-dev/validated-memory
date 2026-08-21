@@ -149,7 +149,18 @@ Exit codes: `0` = clean or WARNING-only findings; `1` = ERROR (gates);
 
 The repository is also a reusable GitHub Action that runs `status` — the
 CLI runs straight from the action's checkout, so the code that gates is
-exactly the code at the ref you name:
+exactly the code at the ref you name. Pin to a full commit SHA — copy it
+from the [release](https://github.com/everywan-dev/validated-memory/releases)
+you are adopting — for CI that must not trust a mutable ref:
+
+```yaml
+- uses: everywan-dev/validated-memory@<full commit SHA>
+  with:
+    args: --fail-on drifted
+```
+
+Less rigorous but more convenient, the moving `v1` major tag works the
+same way:
 
 ```yaml
 - uses: everywan-dev/validated-memory@v1
@@ -157,10 +168,9 @@ exactly the code at the ref you name:
     args: --fail-on drifted
 ```
 
-Pinning, by decreasing rigor: a full commit SHA
-(`everywan-dev/validated-memory@<sha>`) for CI that must not trust a
-mutable ref, an immutable `vX.Y.Z` tag, or the moving `v1` major tag shown
-above for convenience. `args` is passed to
+Pinning, by decreasing rigor: a full commit SHA for CI that must not trust
+a mutable ref, an immutable `vX.Y.Z` tag, or the moving `v1` major tag
+shown above for convenience. `args` is passed to
 [`status`](docs/reference/cli.md#status) verbatim; without it, structural
 consistency gates and freshness is only reported.
 

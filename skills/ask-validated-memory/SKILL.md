@@ -17,14 +17,12 @@ the same name in the current project:
 2. `${CLAUDE_PLUGIN_ROOT}/docs/adoption.md`
 3. `${CLAUDE_PLUGIN_ROOT}/docs/walkthrough.md`
 4. `${CLAUDE_PLUGIN_ROOT}/docs/adr/*.md` -- the reasons behind the rules
-5. The CLI's own help:
+5. `${CLAUDE_PLUGIN_ROOT}/docs/reference/*.md` -- per-command detail
+6. The CLI's own help:
 
 ```
 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m validated_memory --help
 ```
-
-The reference under `${CLAUDE_PLUGIN_ROOT}/docs/reference/` backs all of
-them with per-command detail.
 
 ## Rules
 
