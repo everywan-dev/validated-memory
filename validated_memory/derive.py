@@ -37,7 +37,7 @@ def run(path, check, stdout, stderr):
 
     basis = validate.basis_location(path)
     try:
-        rows = _rows(documents)
+        table = _rows(documents)
     except verdicts_module.VerdictLogError as error:
         # The log is the reader's source of verdicts: one it cannot parse is
         # reported like any other unreadable document, never served around.
@@ -50,7 +50,7 @@ def run(path, check, stdout, stderr):
         )
         print(finding.render(), file=stderr)
         return EXIT_ERROR
-    content = _render(rows, basis)
+    content = render_index(table, basis)
 
     index_path = Path(INDEX_FILENAME)
     if check:
@@ -93,15 +93,30 @@ def effective_states(documents):
 
 
 def _rows(documents):
-    """Compute one row per unit, sorted by id: state, evidence and verdict."""
+    """Compute one row per unit, sorted by id: state, evidence and verdict.
+
+    Reads the log itself, once: the private path `run` uses, where nothing
+    else needs `states` or the service view beforehand.
+    """
     states = effective_states(documents)
     view = verdicts_module.service_view()
-    rows = []
+    return rows(states, view)
+
+
+def rows(states, view):
+    """One row per unit, sorted by id: state, evidence and verdict.
+
+    Takes `effective_states(documents)` and a service view already computed,
+    so a caller that also needs either of them for something else -- `status`
+    grades freshness from the same `states` and `view` -- builds them once
+    and shares them, rather than this function reading the log again.
+    """
+    result = []
     for unit_id in sorted(states):
         data, state = states[unit_id]
         verdict = _verdict_cell(unit_id, data.get("anchors") or [], view)
-        rows.append((unit_id, state, data["evidence"], verdict))
-    return rows
+        result.append((unit_id, state, data["evidence"], verdict))
+    return result
 
 
 def unit_verdict(unit_id, anchors, view):
@@ -174,7 +189,7 @@ def _verdict_cell(unit_id, anchors, view):
     return graded.verdict
 
 
-def _render(rows, basis):
+def render_index(rows, basis):
     derived_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     derived_at = derived_at.replace("+00:00", "Z")
     lines = [
@@ -191,28 +206,50 @@ def _render(rows, basis):
     return "\n".join(lines) + "\n"
 
 
-def _check(index_path, content, stdout, stderr):
+def index_findings(content, index_path=None):
+    """Compare `content` (a recalculated index) against disk. Never writes.
+
+    Returns the findings `--check` gates on: empty when they match -- the
+    on-disk `Derived:` line is required but its timestamp is ignored, exactly
+    as `--check` defines -- one ERROR naming a missing file, or one ERROR
+    naming the first differing line, numbered as on disk. The seam `status`
+    shares with `derive --check` so a missing or stale index reads as the
+    same finding from both.
+    """
+    index_path = index_path or Path(INDEX_FILENAME)
     location = index_path.as_posix()
     if not index_path.exists():
-        print(
-            f"ERROR: {location}: index: file not found; "
-            "run 'validated-memory derive' first",
-            file=stderr,
-        )
-        return EXIT_ERROR
+        return [
+            Finding(
+                ERROR,
+                location,
+                "index",
+                "file not found; run 'validated-memory derive' first",
+            )
+        ]
 
     existing = index_path.read_text(encoding="utf-8")
     mismatch = _first_mismatch(existing.splitlines(), content.splitlines())
-    if mismatch is not None:
-        number, found, expected = mismatch
-        print(
-            f"ERROR: {location}: index: on-disk index does not match the "
-            f"recalculated index at line {number}: "
-            f"found {found}, expected {expected}",
-            file=stderr,
+    if mismatch is None:
+        return []
+    number, found, expected = mismatch
+    return [
+        Finding(
+            ERROR,
+            location,
+            "index",
+            f"on-disk index does not match the recalculated index at line "
+            f"{number}: found {found}, expected {expected}",
         )
-        return EXIT_ERROR
+    ]
 
+
+def _check(index_path, content, stdout, stderr):
+    findings = index_findings(content, index_path)
+    if findings:
+        for finding in findings:
+            print(finding.render(), file=stderr)
+        return EXIT_ERROR
     print("derive --check: index is up to date", file=stdout)
     return EXIT_OK
 

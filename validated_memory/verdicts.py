@@ -165,13 +165,27 @@ def _keyed(lineno, record):
     return anchor_key(*fields, payload), verdict
 
 
+def latest_records(root=Path()):
+    """The latest full record per anchor -- `(unit, system, kind, payload)` -- or `{}`.
+
+    Reads the log once. `service_view` is the plain verdict-only projection
+    of this; a caller that also needs a field the verdict cell does not
+    carry -- `status`'s age check needs `recorded_at` -- calls this instead,
+    so the log is still read only once even when both are wanted from the
+    same run.
+
+    Raises `VerdictLogError` on a log that cannot be read as records.
+    """
+    latest = {}
+    for lineno, record in records(root):
+        key, _verdict = _keyed(lineno, record)
+        latest[key] = record
+    return latest
+
+
 def service_view(root=Path()):
     """The latest verdict per anchor -- `(unit, system, kind, payload)` -- or `{}` if never probed.
 
     Raises `VerdictLogError` on a log that cannot be read as records.
     """
-    view = {}
-    for lineno, record in records(root):
-        key, verdict = _keyed(lineno, record)
-        view[key] = verdict
-    return view
+    return {key: record["verdict"] for key, record in latest_records(root).items()}

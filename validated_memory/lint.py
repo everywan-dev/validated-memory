@@ -28,10 +28,22 @@ MEMORY_TYPES = ("user", "project", "feedback", "reference")
 
 def run(path, stdout, stderr):
     """Lint every memory file under `path` and report findings. Returns an exit code."""
+    documents, findings = collect_and_lint(path)
+    return report("lint", len(documents), "memory file(s)", findings, stdout, stderr)
+
+
+def collect_and_lint(path):
+    """Collect the memory documents under `path` and lint them, without printing.
+
+    The front half `run` reports through `report`; `status` builds one
+    combined report across several checks and needs these findings on their
+    own, the same way `validate.collect_and_validate` gives it the curated
+    layer's.
+    """
     target = Path(path) if path else Path(DEFAULT_MEMORY_DIR)
     documents, findings = _collect(target, explicit=bool(path))
     findings.extend(_lint_memories(documents))
-    return report("lint", len(documents), "memory file(s)", findings, stdout, stderr)
+    return documents, findings
 
 
 def _collect(target, explicit):
