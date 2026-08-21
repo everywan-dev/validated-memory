@@ -7,7 +7,7 @@ package's internals.
 
 import pytest
 
-SUBCOMMANDS = ["init", "lint", "validate", "derive", "probe", "render"]
+SUBCOMMANDS = ["init", "lint", "validate", "derive", "probe", "render", "status"]
 
 
 def test_global_help_lists_every_subcommand(adopter_dir, run_cli):

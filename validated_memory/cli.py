@@ -9,7 +9,7 @@ Exit code convention:
 import argparse
 import sys
 
-from . import __version__, derive, init, lint, probe, render, validate
+from . import __version__, derive, init, lint, probe, render, status, validate
 
 SUBCOMMANDS = {
     "init": "Scaffold the validated-memory layout in an adopter project",
@@ -18,6 +18,7 @@ SUBCOMMANDS = {
     "derive": "Re-derive indexes and summaries from curated-knowledge units",
     "probe": "Run freshness probes and record ternary verdicts",
     "render": "Render static HTML views of the curated and agent-memory layers",
+    "status": "Report project consistency and freshness; read-only, never probes",
 }
 
 
@@ -109,6 +110,57 @@ def build_parser():
                     "create none (the startup hook's mode: fail-open)"
                 ),
             )
+        if name == "status":
+            subparser.add_argument(
+                "--skip-index",
+                action="store_true",
+                help=(
+                    f"skip the {derive.INDEX_FILENAME} gate entirely, for an "
+                    "adopter who does not version the derived index"
+                ),
+            )
+            subparser.add_argument(
+                "--fail-on",
+                action="append",
+                choices=(status.DRIFTED, status.UNKNOWN),
+                metavar="{drifted,unknown}",
+                dest="fail_on",
+                help=(
+                    "upgrade an active unit carrying this verdict to a "
+                    "gating ERROR; repeatable"
+                ),
+            )
+            subparser.add_argument(
+                "--max-verdict-age",
+                type=int,
+                metavar="N",
+                dest="max_verdict_age",
+                help=(
+                    "WARNING per active-unit anchor whose recorded verdict "
+                    "is more than N day(s) old (UTC, strict), or whose age "
+                    "cannot be determined"
+                ),
+            )
+            subparser.add_argument(
+                "--fail-on-aged",
+                action="store_true",
+                dest="fail_on_aged",
+                help=(
+                    "upgrade every finding --max-verdict-age emits -- aged "
+                    "and age-unknown alike -- to a gating ERROR"
+                ),
+            )
+            subparser.add_argument(
+                "--as-of",
+                type=status.parse_timestamp,
+                metavar="TIMESTAMP",
+                dest="as_of",
+                help=(
+                    "ISO 8601 timestamp (a trailing 'Z' accepted) to use as "
+                    "'now' for age computation; default the real current UTC "
+                    "time"
+                ),
+            )
     return parser
 
 
@@ -127,6 +179,16 @@ def main(argv=None):
         return probe.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "render":
         return render.run(args.only_existing, stdout=sys.stdout, stderr=sys.stderr)
+    if args.command == "status":
+        return status.run(
+            args.skip_index,
+            args.fail_on,
+            args.max_verdict_age,
+            args.fail_on_aged,
+            args.as_of,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
     return init.run(
         args.harness_memory, args.view, stdout=sys.stdout, stderr=sys.stderr
     )
