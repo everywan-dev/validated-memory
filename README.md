@@ -139,6 +139,7 @@ project, CI gate included.
 | [`derive`](docs/reference/cli.md#derive) | Re-derive the knowledge index; `--check` gates CI against drift |
 | [`probe`](docs/reference/cli.md#probe) | Run freshness probes; append ternary verdicts to the log |
 | [`render`](docs/reference/cli.md#render) | Write self-contained, inert HTML views of both layers |
+| [`status`](docs/reference/cli.md#status) | Read-only report: structural gates plus a reported (opt-in gated) freshness summary |
 
 Exit codes: `0` = clean or WARNING-only findings; `1` = ERROR (gates);
 `2` = usage error. Full contracts in the

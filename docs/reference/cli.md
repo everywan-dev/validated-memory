@@ -5,7 +5,8 @@ python3 -m validated_memory <command>
 ```
 
 Commands: [`init`](#init), [`lint`](#lint), [`validate`](#validate),
-[`derive`](#derive), [`probe`](#probe), [`render`](#render).
+[`derive`](#derive), [`probe`](#probe), [`render`](#render),
+[`status`](#status).
 
 Exit codes: `0` = clean run or WARNING-only findings (does not gate);
 `1` = ERROR (gates); `2` = usage error.
@@ -469,3 +470,72 @@ told they were not built.
 
 Exit codes: `0` clean, or WARNING-only findings; `1` an ERROR finding; `2`
 a usage error.
+
+### `status`
+
+```
+python3 -m validated_memory status [--skip-index] [--fail-on {drifted,unknown}]
+                                    [--max-verdict-age N] [--fail-on-aged]
+                                    [--as-of TIMESTAMP]
+```
+
+Read-only. Answers precisely: is this project *structurally consistent*, and
+what does its freshness look like -- not "is everything current", which the
+verdict-is-data contract deliberately does not gate on (see
+[ADR 0002](../adr/0002-status-gates-consistency-and-only-reports-freshness.md)).
+**Never runs `probe`**: `status` reports what the log already says, and a
+command that mutates the thing it reports on is not a status command.
+
+It computes one internal pass over the curated layer, the agent-memory
+layer, the derived index and the verdict log -- the same rules `validate`,
+`lint` and `derive --check` already enforce, reused rather than re-run, and
+the log read once -- and reports four sections:
+
+- **`validate:`** the curated layer against the base contract plus the
+  adopter's declared extension, exactly like `validate`.
+- **`lint:`** the agent-memory layer, exactly like `lint`. Independent of
+  the curated layer, so it runs and reports even when validation gates.
+- **`index:`** `knowledge-index.md` against the recalculated index, exactly
+  like `derive --check` -- a missing index is an ERROR pointing at running
+  `derive` first. Skipped entirely, no finding at all, with **`--skip-index`**
+  -- for an adopter who does not version the derived index. This section (and
+  freshness, and age) only runs when the curated layer validates clean: they
+  all need a valid source, the same precondition `derive` and `probe` share.
+- **`freshness:`** verdict counts (`current`/`drifted`/`unknown`) across
+  **active units only** -- a superseded unit's verdicts describe knowledge
+  already retired. Reported, never gated, unless the adopter opts in with
+  **`--fail-on drifted`** and/or **`--fail-on unknown`** (repeatable): an
+  active unit carrying that verdict then becomes a gating ERROR naming the
+  unit.
+
+**Verdict age** (see
+[ADR 0004](../adr/0004-verdict-age-belongs-to-status-never-to-the-derived-index.md)):
+**`--max-verdict-age N`** (integer days) emits a WARNING per active unit's
+anchor whose latest recorded verdict is more than `N` days old (UTC, strict
+`age > N`), naming the unit, the anchor (`system/kind`) and the age. An
+anchor whose latest record has no `recorded_at`, one that does not parse, or
+one in the future reads as `age unknown`, also a WARNING under the flag --
+without it, `recorded_at` is never read at all. An anchor never probed at
+all is not reported here a second time: the freshness section above already
+grades it `unknown`. **`--fail-on-aged`** upgrades every finding this check
+emits -- aged and age-unknown alike -- to a gating ERROR: an enforced age
+bound cannot be satisfied by an age that cannot be verified. **`--as-of
+TIMESTAMP`** (ISO 8601, a trailing `Z` accepted) substitutes "now" for age
+computation, for reproducible audits and tests; an invalid value is a usage
+error (exit 2). "Latest verdict per anchor" is still the log's append
+order, never re-sorted by `recorded_at` (see
+[ADR 0004](../adr/0004-verdict-age-belongs-to-status-never-to-the-derived-index.md)).
+
+```
+status: validate: 2 unit(s) checked, 0 error(s), 0 warning(s)
+status: lint: 3 memory file(s) checked, 0 error(s), 0 warning(s)
+status: index: up to date
+status: freshness: 2 active unit(s): 1 current, 1 drifted, 0 unknown
+status: age: 1 aged, 0 age-unknown (max 30 day(s))
+status: 0 error(s), 0 warning(s) overall
+```
+
+Exit codes: `0` clean, or WARNING-only findings (including a reported but
+not gated `drifted`/`unknown`/aged verdict); `1` an ERROR from any gate that
+ran (validation, lint, index, or an opted-in freshness/age upgrade); `2` a
+usage error.
