@@ -20,7 +20,7 @@ project.
 One decision precedes the bootstrap, because the bootstrap makes it for you
 if you do not: the first session start after adoption absorbs the harness's
 existing agent memory into this project's `memory/` (see [the startup
-hooks](#the-startup-hooks)), and in a repository that versions the layout
+hooks](#the-startup-hooks)), and in a repository that versions the layout,
 that memory is committed from then on.
 
 **Versioned** is the default and the method's premise -- knowledge and memory

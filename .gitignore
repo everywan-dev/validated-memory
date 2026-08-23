@@ -6,7 +6,7 @@ build/
 *.egg-info/
 .claude/worktrees/
 
-# validated-memory adoption of this repo (local only, not versioned here)
+# validated-memory layout, local to this clone
 /knowledge/
 /memory/
 /validated-memory.md

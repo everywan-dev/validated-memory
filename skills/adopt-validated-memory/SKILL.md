@@ -54,15 +54,17 @@ versions the layout, that memory is committed from then on.
 2. **If versioned: are the derived files versioned too?** `knowledge-index.md`
    and `verdicts.jsonl` are derived by `derive` and `probe`, and are either
    committed **together** or not at all -- the index bakes in verdicts read
-   from the log (the reference's ADR 0003). Versioning them is what lets CI
-   gate on `derive --check`; not versioning them means the clone re-derives
-   before it can read an index. Ignore both, or neither.
+   from the log (ADR 0003, `docs/adr/0003-the-adopter-versions-the-verdict-log-alongside-the-index.md`).
+   Versioning them is what lets CI gate on `derive --check`; not versioning
+   them means the clone re-derives before it can read an index. To ignore
+   them, append to `.gitignore` exactly these two lines of the list above:
+   `/knowledge-index.md` and `/verdicts.jsonl` -- both, or neither.
 
 3. **Activate the HTML views?** `knowledge.html` and `memory.html` are
    derived too, refreshed at every session start once they exist. Ask
    whether to create them; if the answer to the first question was
-   "versioned", ask whether these two are versioned or ignored -- same rule
-   as the other derived files.
+   "versioned", ask whether these two are versioned or ignored -- to ignore
+   them, append `/knowledge.html` and `/memory.html`.
 
 Record the answers in the adopter's own notes, then proceed.
 
