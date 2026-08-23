@@ -17,6 +17,7 @@ Two things are pinned:
   this method was studied on while writing this plugin.
 """
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -217,19 +218,23 @@ def _publishable_files():
     `.git`), fall back to walking the tree: the scan over-reads rather than
     under-reads.
     """
-    try:
-        listing = subprocess.run(
-            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-            capture_output=True,
-            cwd=REPO_ROOT,
-            check=True,
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], capture_output=True, cwd=REPO_ROOT, check=True
         ).stdout
+
+    try:
+        # A checkout without `.git` that sits inside some other repository
+        # would get that repository's index and ignore rules: only a git
+        # whose top level is this checkout answers for it.
+        toplevel = Path(os.fsdecode(git("rev-parse", "--show-toplevel").strip()))
+        if toplevel.resolve() != REPO_ROOT.resolve():
+            raise OSError("not this repository's top level")
+        listing = git("ls-files", "--cached", "--others", "--exclude-standard", "-z")
     except (OSError, subprocess.CalledProcessError):
         return sorted(REPO_ROOT.rglob("*"))
     return sorted(
-        REPO_ROOT / entry.decode("utf-8")
-        for entry in listing.split(b"\0")
-        if entry
+        REPO_ROOT / os.fsdecode(entry) for entry in listing.split(b"\0") if entry
     )
 
 
