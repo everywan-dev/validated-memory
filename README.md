@@ -204,8 +204,8 @@ Seven skills make the method invocable from an agent session, each naming the
 exact CLI invocation and the data discipline to follow — never reimplementing
 a rule the CLI already enforces:
 
-- **`adopt-validated-memory`** — bootstrap a project, wire the symlink,
-  verify with `validate` and `lint`.
+- **`adopt-validated-memory`** — decide what the repository versions,
+  bootstrap a project, wire the symlink, verify with `validate` and `lint`.
 - **`create-knowledge-unit`** — write a unit field by field, with the
   evidence-state discipline.
 - **`supersede-knowledge`** — correct knowledge with a successor, never by

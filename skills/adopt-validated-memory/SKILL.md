@@ -5,7 +5,66 @@ description: Use when a project wants to adopt the validated-memory method -- bo
 
 # Adopt validated-memory
 
-Adopting the plugin in a project is one command, run from the project root.
+Adopting the plugin in a project is one command, run from the project root
+-- preceded by one decision the command cannot make for the adopter.
+
+## Decide what this repository versions
+
+Ask before running anything (with the harness's question tool when there is
+one; otherwise in plain text, and wait for the answer). The decision is
+useless once `init` has run, because the first session start after adoption
+absorbs the harness's existing agent memory into this project's `memory/`
+(see "Wire the harness's persistent memory" below): in a repository that
+versions the layout, that memory is committed from then on.
+
+1. **Does this repository version the validated-memory layout?** Three
+   answers, none of them reversible for free:
+   - **Versioned** -- the default, and the method's premise: knowledge and
+     memory travel with the repository, every clone and every CI run sees
+     them, and supersession is history the repository keeps. Nothing to
+     write; go on to the next question.
+   - **Local, ignored** -- the layout stays in this clone and every remote
+     sees only the ignore rule. Append to the repository's `.gitignore`:
+
+     ```
+     # validated-memory layout, local to this clone
+     /knowledge/
+     /memory/
+     /validated-memory.md
+     /knowledge-extension.md
+     /knowledge-index.md
+     /verdicts.jsonl
+     /knowledge.html
+     /memory.html
+     ```
+
+     Anchored at the root on purpose: a fixture or a package named `memory`
+     deeper in the tree is not the layout.
+   - **Local, excluded** -- the same list appended to `.git/info/exclude`
+     instead. Nothing reaches any remote, not even the rule, and every clone
+     of the repository decides again for itself.
+
+   What git cannot do is answer **per remote**: a path is either in a
+   commit or not, and every remote that receives the commit receives the
+   same answer. An adopter who wants the data on one host and not on
+   another does not have a `.gitignore` question; they have a second
+   repository, holding the data, pushed only where it belongs -- and this
+   plugin does not orchestrate that. Say so rather than promising it.
+
+2. **If versioned: are the derived files versioned too?** `knowledge-index.md`
+   and `verdicts.jsonl` are derived by `derive` and `probe`, and are either
+   committed **together** or not at all -- the index bakes in verdicts read
+   from the log (the reference's ADR 0003). Versioning them is what lets CI
+   gate on `derive --check`; not versioning them means the clone re-derives
+   before it can read an index. Ignore both, or neither.
+
+3. **Activate the HTML views?** `knowledge.html` and `memory.html` are
+   derived too, refreshed at every session start once they exist. Ask
+   whether to create them; if the answer to the first question was
+   "versioned", ask whether these two are versioned or ignored -- same rule
+   as the other derived files.
+
+Record the answers in the adopter's own notes, then proceed.
 
 ## Bootstrap the layout
 

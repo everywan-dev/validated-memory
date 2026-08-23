@@ -15,7 +15,51 @@ referenced directly). Once installed, its seven skills are discovered from
 `hooks/hooks.json` -- neither needs any registration inside the adopter
 project.
 
-## 2. Bootstrap the layout
+## 2. Decide what this repository versions
+
+One decision precedes the bootstrap, because the bootstrap makes it for you
+if you do not: the first session start after adoption absorbs the harness's
+existing agent memory into this project's `memory/` (see [the startup
+hooks](#the-startup-hooks)), and in a repository that versions the layout
+that memory is committed from then on.
+
+**Versioned** is the default and the method's premise -- knowledge and memory
+travel with the repository, every clone and every CI run sees them, and
+supersession is history the repository keeps. A repository that instead keeps
+the layout **local to the clone** ignores it, either in the committed
+`.gitignore` (every remote sees the rule, none sees the data) or in
+`.git/info/exclude` (nothing reaches any remote, and each clone decides for
+itself). Either way the list is the same, anchored at the root so that a
+fixture or a package named `memory` deeper in the tree is not mistaken for
+the layout:
+
+```
+# validated-memory layout, local to this clone
+/knowledge/
+/memory/
+/validated-memory.md
+/knowledge-extension.md
+/knowledge-index.md
+/verdicts.jsonl
+/knowledge.html
+/memory.html
+```
+
+The last four lines are derived files; a repository that versions the layout
+still chooses, separately, whether to version them -- `knowledge-index.md`
+and `verdicts.jsonl` together or not at all (see [step 6](#6-gate-ci-on-the-derived-index)),
+and the two HTML views (see [step 7](#7-activate-the-html-views-optional)).
+
+What git cannot express is a **per-remote** answer: a path is either in a
+commit or not, and every remote that receives the commit receives the same
+answer. Wanting the data on one host and not on another is not a
+`.gitignore` question but a second repository, holding the data and pushed
+only where it belongs; this plugin does not orchestrate that.
+
+The `adopt-validated-memory` skill asks these questions before it runs
+`init`, and writes the ignore list for the "local" answers.
+
+## 3. Bootstrap the layout
 
 From the adopter project's root:
 
@@ -56,7 +100,7 @@ python3 -P -m validated_memory validate
 python3 -P -m validated_memory lint
 ```
 
-## 3. Declare an extension (optional)
+## 4. Declare an extension (optional)
 
 The base contract (see [Base contract](reference/curated-knowledge.md#base-contract)) is
 deliberately small. If units in this project need adopter-specific fields on
@@ -68,7 +112,7 @@ the base contract is enough: `init` already scaffolds a valid, empty
 extension (`fields: []`), and leaving it empty is a normal, supported end
 state, not a stub that must be filled in.
 
-## 4. Register probes
+## 5. Register probes
 
 For every anchor `kind` curated-knowledge units in this project will use,
 register the command that probes it under `probes:` in
@@ -78,7 +122,7 @@ plugin's bundled probe (see
 [The bundled `git_ref` probe](reference/cli.md#the-bundled-git_ref-probe));
 register any other `kind` this project's anchors use the same way.
 
-## 5. Gate CI on the derived index
+## 6. Gate CI on the derived index
 
 If this project versions `knowledge-index.md`, add a CI step that fails when
 it has drifted from the units or from freshly recorded verdicts:
@@ -121,7 +165,7 @@ so the verdict column reflects current probing rather than going stale -- see
 re-derive and commit the log and the index in the same commit, per the
 policy above.
 
-## 6. Activate the HTML views (optional)
+## 7. Activate the HTML views (optional)
 
 `render` writes two self-contained, static HTML pages -- `knowledge.html`
 for the curated layer and `memory.html` for the agent-memory layer -- so
@@ -166,7 +210,7 @@ The `.bak` it leaves behind is the only manual follow-up worth doing: once
 whenever the adopter wants -- the plugin never touches it again.
 
 `hooks/refresh-views.sh` keeps whichever HTML views this project has
-activated (see [step 6](#6-activate-the-html-views-optional) above)
+activated (see [step 7](#7-activate-the-html-views-optional) above)
 up to date, the same way: it re-runs `render --only-existing`, silencing
 its stdout, which regenerates only the artifacts already on disk and
 creates neither. A project that never ran `init --view` has no artifacts,
