@@ -52,8 +52,9 @@ without the plugin installed.
 
 **`--harness-memory PATH`** makes PATH a move-proof symlink to this
 project's `memory/` directory (absolute target), so the harness can read
-agent memory from wherever it expects it while the data stays versioned
-inside the adopter repo:
+agent memory from wherever it expects it while the data stays inside the
+adopter repo (versioned, if the adopter versions the layout -- see [the
+adoption guide](../adoption.md#2-decide-what-this-repository-versions)):
 
 - PATH missing: `init` creates the symlink (making parent directories as
   needed).

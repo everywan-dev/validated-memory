@@ -30,7 +30,7 @@ true" is the one answer this tool must never give.
 </picture>
 
 Two layers, one discipline. **Agent memory** — one Markdown file per fact
-plus an index, versioned in the adopter repo; the harness reads it through a
+plus an index, kept in the adopter repo; the harness reads it through a
 symlink the plugin maintains ([reference](docs/reference/agent-memory.md)).
 **Curated knowledge** — units carrying identity, an evidence state, and
 anchors separated from provenance
@@ -204,8 +204,8 @@ Seven skills make the method invocable from an agent session, each naming the
 exact CLI invocation and the data discipline to follow — never reimplementing
 a rule the CLI already enforces:
 
-- **`adopt-validated-memory`** — bootstrap a project, wire the symlink,
-  verify with `validate` and `lint`.
+- **`adopt-validated-memory`** — decide what the repository versions,
+  bootstrap a project, wire the symlink, verify with `validate` and `lint`.
 - **`create-knowledge-unit`** — write a unit field by field, with the
   evidence-state discipline.
 - **`supersede-knowledge`** — correct knowledge with a successor, never by

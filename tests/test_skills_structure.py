@@ -17,7 +17,9 @@ Two things are pinned:
   this method was studied on while writing this plugin.
 """
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -205,6 +207,37 @@ CLEAN_ROOM_SUFFIXES = {".py", ".sh", ".md", ".json", ".toml", ".yml", ".yaml", "
 CLEAN_ROOM_SKIPPED_DIRS = {".git", ".claude", "build", "__pycache__", ".pytest_cache"}
 
 
+def _publishable_files():
+    """Every file a commit could carry: tracked, plus untracked and not ignored.
+
+    The clean-room surface is what can leave this checkout, so git-ignored
+    files are out of it by definition -- this repository adopts its own
+    plugin with the layout kept local (`/memory/` and friends in
+    `.gitignore`), and the agent memory living there is the adopter's, not
+    the plugin's. Without a usable git (a tarball, a checkout with no
+    `.git`), fall back to walking the tree: the scan over-reads rather than
+    under-reads.
+    """
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], capture_output=True, cwd=REPO_ROOT, check=True
+        ).stdout
+
+    try:
+        # A checkout without `.git` that sits inside some other repository
+        # would get that repository's index and ignore rules: only a git
+        # whose top level is this checkout answers for it.
+        toplevel = Path(os.fsdecode(git("rev-parse", "--show-toplevel").strip()))
+        if toplevel.resolve() != REPO_ROOT.resolve():
+            raise OSError("not this repository's top level")
+        listing = git("ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    except (OSError, subprocess.CalledProcessError):
+        return sorted(REPO_ROOT.rglob("*"))
+    return sorted(
+        REPO_ROOT / os.fsdecode(entry) for entry in listing.split(b"\0") if entry
+    )
+
+
 def test_the_whole_repository_is_clean_room():
     # The narrower skills/docs scan above predates this one and stays as the
     # fast gate; this exists because the one leak that happened came in
@@ -212,7 +245,7 @@ def test_the_whole_repository_is_clean_room():
     # hook and a test fixture.
     this_test = Path(__file__).resolve()
     scanned = 0
-    for path in sorted(REPO_ROOT.rglob("*")):
+    for path in _publishable_files():
         if path.suffix not in CLEAN_ROOM_SUFFIXES or not path.is_file():
             continue
         parts = path.relative_to(REPO_ROOT).parts
