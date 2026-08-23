@@ -5,3 +5,13 @@ __pycache__/
 build/
 *.egg-info/
 .claude/worktrees/
+
+# validated-memory adoption of this repo (local only, not versioned here)
+/knowledge/
+/memory/
+/validated-memory.md
+/knowledge-extension.md
+/knowledge-index.md
+/verdicts.jsonl
+/knowledge.html
+/memory.html
