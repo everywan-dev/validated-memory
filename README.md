@@ -221,8 +221,10 @@ a rule the CLI already enforces:
 
 ## Requirements and compatibility
 
-- **Version 1.1.1** — the v1 surface is complete: all six subcommands, five
-  skills, two startup hooks, static HTML views.
+- **The v1 surface is complete** — every subcommand in the [CLI
+  reference](docs/reference/cli.md), every skill listed above, both startup
+  hooks, and the static HTML views. The version this clone ships is declared
+  in `pyproject.toml` and the plugin manifest, not restated here.
 - **Python ≥ 3.11**, standard library only; pytest is the only development
   dependency.
 - **Claude Code** to run it as a plugin; the CLI stands alone everywhere
