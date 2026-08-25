@@ -164,6 +164,24 @@ unenforceable exactly where it silently loses data. The skill emits quoted
 values because the CLI would reject anything else, which is this project's
 normal order: the CLI is the authority, the skill follows it.
 
+The scan is **bounded to one block**, and that is what makes it sound without
+duplicating the parser or widening it with lexical metadata:
+
+- The `rationale` block starts at the top-level key line `rationale:` -- indent
+  zero -- and ends at the next line with indent zero. The tokenizer's own rules
+  define that region (`validated_memory/frontmatter.py:68-80`): indentation is
+  spaces, tabs are rejected outright, and blank or `#`-only lines are skipped.
+- Inside that region, every line whose key is `question`, `label` or `reason`
+  must carry a value starting with `"` or `'`.
+- Nothing outside the region is examined, so an anchor payload with a key named
+  `reason` is untouched -- which a naive regex over the whole document would
+  have flagged.
+- Inside the region there is nothing else those three names could belong to:
+  the envelope is closed, so any other key is already an ERROR from the parsed
+  check.
+- The line number comes free from the scan, so the finding points at the
+  offending line instead of at the unit.
+
 Option order is presentation order and is preserved. Mapping key order carries
 no meaning: the renderer emits its own fixed order.
 
@@ -452,18 +470,31 @@ TDD applies. Beyond the per-feature tests:
 - **The app page's script policy**: exactly one `<script>`, inline, no `src`.
   The forbidden-API scan over the script source is a lint and is described as
   one -- it cannot prove the absence of an indirect call. What constrains the
-  page at runtime is a Content-Security-Policy `<meta>`, `default-src 'none';
-  connect-src 'none'; img-src 'none'` with inline style and script allowed:
-  the one `http-equiv` the app page's whitelist admits, and which the strict
-  whitelist still forbids.
-- **A documentation-sync test.** Five places enumerate the contract by hand --
-  `README.md`, `docs/reference/curated-knowledge.md`, `docs/walkthrough.md`,
-  `skills/create-knowledge-unit/SKILL.md` and the `EXTENSION_STUB` at
-  `validated_memory/init.py:86-87` -- with nothing tying any of them to
-  `contract.py`. They are not homogeneous: the README and the walkthrough hold
-  valid examples that legitimately omit optional fields, so equality against
-  `BASE_FIELDS` is the wrong test. The canonical enumerations are marked with
-  an explicit comment marker, and only the marked blocks are compared.
+  page at runtime is a Content-Security-Policy `<meta>`: `default-src 'none';
+  connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; script-src
+  'unsafe-inline'`. `connect-src 'none'` is the part that matters -- it is what
+  makes "never phones home" a runtime property instead of a lint.
+
+  **The same CSP goes on both pages, byte for byte.** Putting it only on the
+  app page would make the two documents differ by two elements, and the
+  equivalence test could no longer be "remove the script". On the inert page
+  the policy permits an inline script that is not there, which the strict
+  whitelist independently proves; the cost is a permission nobody uses, and
+  the gain is that the two pages differ by exactly one element. The strict
+  whitelist's `http-equiv` rule narrows accordingly: `refresh` stays
+  forbidden, and this exact CSP is the only `http-equiv` either page may
+  carry.
+- **A documentation-sync test over the two canonical enumerations.** Exactly
+  two blocks enumerate the whole base contract: `docs/reference/curated-knowledge.md:14-24`
+  and `skills/create-knowledge-unit/SKILL.md:15-27`. Both are marked and both
+  are compared against `BASE_FIELDS` for equality. The other three places that
+  show a unit -- `README.md:88-103`, `docs/walkthrough.md:54-69` and
+  `docs/walkthrough.md:129-146` -- are **partial by design**: none carries
+  `provenance`, because none of those examples needs it. They are excluded by
+  name, and the exclusion is written into the test, so a future reader learns
+  the difference from the test instead of guessing it. The `EXTENSION_STUB`
+  prose at `validated_memory/init.py:86-87` names the base fields in a
+  sentence and is checked as a set of names, not as a block.
 - **Determinism re-pinned** over both artifacts: a second run reports
   `unchanged`, leaves the bytes identical and `st_mtime_ns` untouched.
 - **Adversarial content** through `question`, `label` and `reason`: nothing
@@ -476,7 +507,9 @@ TDD applies. Beyond the per-feature tests:
   versioning decision, per ADR 0007. The existing pins compare the skill's
   list against exactly what the CLI creates at the root and against the
   guide's copy (`tests/test_adoption_decisions.py:116-125`); both go red until
-  all three agree, which is the point of having them.
+  all three agree, which is the point of having them. The comparison runs the
+  CLI to see what it creates at the root, so it exercises `init --view --app`
+  and not only `init`.
 
 ## Versioning and release
 
@@ -563,10 +596,10 @@ very record this field exists to make trustworthy.
   covers simple cases; a real need for either is another contract revision.
 - A rationale can go stale while its claim stays current: anchors prove the
   claim, not that the reasoning still holds.
-- The quoting rule is enforceable by test only for what reaches the parser
-  intact. An unquoted reason truncated at ` #` is lost before validation; the
-  skill that writes units is the real guard, and the test pins the behaviour
-  so nobody rediscovers it by accident.
+- The quoting rule is enforced by the CLI, over the raw text, so an unquoted
+  value is an ERROR before anything reads what the parser kept. What remains
+  outside its reach is text that is quoted and still wrong -- a reason that
+  says something untrue is a contract-valid unit.
 - Two artifacts mean two pages to keep in step. The progressive-enhancement
   test is what stops them diverging in content; nothing stops them diverging
   in style except keeping one stylesheet per page and using it in both.
