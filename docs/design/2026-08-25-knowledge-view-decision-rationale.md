@@ -40,8 +40,9 @@ is not rewritten. Three of its decisions are superseded here, and only these:
   that never carries content the inert one lacks. See
   [Two artifacts](#two-artifacts).
 
-No ADR from 0001 to 0007 is superseded. Three new ADRs are written; see
-[ADRs](#adrs).
+No ADR from 0001 to 0007 is superseded except ADR 0005 on one point, the
+number of moving channels; see [ADRs](#adrs), where four new ADRs are
+listed.
 
 ## Scope
 
@@ -148,8 +149,20 @@ is therefore part of the contract, not advice:
   stays in the unit body or in `provenance`.
 
 A plain scalar may contain quotes, colons and leading hyphens without trouble;
-the earlier claim that "a value cannot contain its own quote character" is
-true only of a quoted scalar using that character as its delimiter.
+the claim that "a value cannot contain its own quote character" is true only
+of a quoted scalar using that character as its delimiter
+(`validated_memory/frontmatter.py:198-203`).
+
+**The CLI enforces the rule; the skill does not.** The parser returns the same
+string for a quoted and an unquoted scalar, so `_check_rationale` cannot tell
+them apart from the parsed mapping alone -- and by then ` #` and everything
+after it is already gone. `validate_documents` receives `(location, text)`
+pairs, so the check reads the **raw frontmatter text**: a `question`, `label`
+or `reason` whose value does not begin with `"` or `'` is an ERROR, whether or
+not it contains a `#`. Making only the `#` case an ERROR would leave the rule
+unenforceable exactly where it silently loses data. The skill emits quoted
+values because the CLI would reject anything else, which is this project's
+normal order: the CLI is the authority, the skill follows it.
 
 Option order is presentation order and is preserved. Mapping key order carries
 no meaning: the renderer emits its own fixed order.
@@ -172,9 +185,16 @@ structural defect is an ERROR:
 - Two options whose `label.strip()` collide, or which collide after
   whitespace collapsing. Exact-string comparison is not enough: `"A"` and
   `"A "` are different strings that draw as the same node.
-- A `label`, `question` or `reason` carrying a Unicode bidirectional control
-  character. They reorder text visually without changing the string, which is
-  a spoofing surface on a page meant to be sent to third parties.
+- A `question`, `label` or `reason` written as an unquoted scalar in the raw
+  frontmatter, per the rule above.
+- A `question`, `label` or `reason` containing one of the bidirectional
+  **embedding, override or isolate** controls: U+202A, U+202B, U+202C,
+  U+202D, U+202E, U+2066, U+2067, U+2068, U+2069. They reorder text visually
+  without changing the string, on a page meant to be sent to third parties.
+  The set is enumerated, not derived from `unicodedata.category(ch) == "Cf"`,
+  which would also reject legitimate formatting characters. The bidirectional
+  **marks** -- U+200E, U+200F, U+061C -- are allowed: they resolve direction
+  for mixed text and are how correct Arabic and Hebrew content is written.
 
 No new WARNING. A missing `rationale` is valid; `evidence: hypothesis` with a
 rationale is valid and describes a conclusion not yet proven; many options are
@@ -214,25 +234,50 @@ unit that supersedes the old one. A typographical correction remains a repair.
 - **`knowledge-app.html`** -- only when it already exists. Same content, same
   diagrams, plus one inline script that adds search, filters and pan/zoom.
 
-**Activation is presence**, exactly as it already is for the views themselves
-(`docs/reference/hooks.md:56-62`): `render` regenerates `knowledge-app.html`
-if the file is there and never creates it on its own. The adoption skill
-creates it once, when the adopter says yes. This is why there is **no profile
-manifest and no new configuration key anywhere** -- in particular not in
-`validated-memory.md`, whose `CONFIG_FIELDS` is closed to `extension`,
-`id_prefix` and `probes` (`validated_memory/extension.py:16`) and where an
-unknown key gates every consumer of the configuration
-(`validated_memory/extension.py:164-182`).
+**Activation is presence**, which is already this project's idiom for the
+views: `init --view` creates whichever artifact is missing, never regenerates
+one that exists, and deleting a file deactivates it
+(`docs/reference/hooks.md:41-54`). `knowledge-app.html` becomes a third item
+of that same command, behind `init --view --app`, which the adoption skill
+passes when the adopter says yes. There is therefore **no profile manifest and
+no new configuration key** -- in particular not in `validated-memory.md`,
+whose `CONFIG_FIELDS` is closed to `extension`, `id_prefix` and `probes`
+(`validated_memory/extension.py:16`) and where an unknown key gates every
+consumer of the configuration (`validated_memory/extension.py:164-182`).
 
-Consequences that follow, and are the point of splitting the file in two:
+The full matrix, because "activation by presence" is underspecified without
+it:
 
-- The inert artifact never stops existing. Whoever prints it, mails it or
-  archives it gets the same file whether or not the adopter enabled the app.
-- `--only-existing`, the startup hook's mode, needs no new rule: it already
-  means "regenerate what is there, create nothing".
+| State | `render` | `render --only-existing` |
+|---|---|---|
+| Neither view exists | writes the two views, not the app | writes nothing (`validated_memory/render.py:65-70`) |
+| Views exist, no app | rewrites the views | rewrites the views |
+| App exists, `knowledge.html` missing | writes both | writes both -- see below |
+| App exists and is empty | fills it | fills it |
+| App deleted | not recreated | not recreated |
+
+The third row is the one new rule: **the app never outlives the canonical
+page**. If `knowledge-app.html` is present, `knowledge.html` is written even
+under `--only-existing`, which otherwise creates nothing. Without that rule the
+hook could regenerate an interactive page while the inert one stayed deleted,
+and the artifact this design calls canonical would be the one that is missing.
+
+Two consequences stated rather than glossed:
+
+- **Deleting the app is how you deactivate it**, so if the adopter versions
+  the file, an accidental deletion and a deliberate deactivation are the same
+  state -- visible in `git status`, which is where a versioned artifact is
+  meant to be reviewed. The adoption decision about versioning covers all
+  three files, not two.
+- **Atomicity is per artifact, not across the set.** That is an accepted,
+  documented limit of the writing model already
+  (`validated_memory/render.py:8-17`): a failure between writes leaves pages
+  from two generations side by side, and the next run heals it. A third
+  artifact widens that existing window; it does not open a new kind of
+  problem, and this design does not pretend to close it.
 - The strict self-containment test keeps applying to `knowledge.html`
-  unchanged. `knowledge-app.html` gets its own, explicitly weaker, policy --
-  written as its own whitelist, not as a relaxation of the strict one.
+  unchanged. `knowledge-app.html` gets its own, explicitly weaker whitelist,
+  written as its own policy rather than as a relaxation of the strict one.
 
 ### No third-party code
 
@@ -262,9 +307,10 @@ The script is subject to a policy the tests enforce; see
 ### Overview
 
 - **Counts** by evidence state crossed with verdict, over **active units
-  only**, which is what `status` counts
-  (`validated_memory/status.py:143-165`). Superseded units are counted
-  separately, as one number, not folded into the same table.
+  only**. "Active only" follows `status`, which grades exactly the active set
+  (`validated_memory/status.py:143-165`); the cross itself is new -- `status`
+  counts verdicts, not the pairing. Superseded units are counted separately,
+  as one number, not folded into the same table.
 - **A map of the corpus**, which is a *navigation index* -- links to cards,
   not the cards themselves. This is what makes multi-valued grouping
   well-defined: a unit with anchors in three systems appears as a link in
@@ -276,22 +322,25 @@ The script is subject to a policy the tests enforce; see
   (`validated_memory/verdicts.py:68-93`). An anchor whose payload changed has
   no record under its new key and is unprobed, which is the honest reading.
 
-The grouping axis is a total function with no configuration:
+The grouping axis is **always `anchors[].system`**. An earlier draft let a
+single declared extension enum take the axis over; that is withdrawn.
+Declaring a second enum is an additive schema change that does not even bump
+the schema version (`docs/reference/curated-knowledge.md:128-133`), so the
+page would silently reorganize itself from a semantic axis to the anchor
+system the moment an adopter added an unrelated field. A page that rearranges
+itself on a change nobody made to it is worse than a page grouped by a coarser
+axis.
 
-1. If the adopter's declared extension contains **exactly one** field of type
-   `enum`, that field is the axis. An extension may declare zero, one or many
-   enum fields and has no notion of a principal one
-   (`validated_memory/extension.py:102-131`), so "exactly one" is the only
-   rule that picks an axis without inventing a setting.
-2. Otherwise the axis is `anchors[].system`.
-3. Units the axis does not classify -- no anchors, or the enum field absent,
-   which extension fields always may be
-   (`validated_memory/contract.py:90-103`) -- go to an explicit
-   "unclassified" group. They are never dropped: a unit that cannot expire, or
-   carries no topic, is a fact about the corpus.
+The rest of the rule is fixed so the output is a function of the corpus alone:
 
-The page states which axis it used and why, in one line, so a reader is never
-guessing.
+- Units with no anchors go to an explicit **unclassified** group. They are
+  never dropped: a unit that cannot expire is a fact about the corpus.
+- Several anchors on the same system count once for that unit.
+- Groups are ordered by name and units within a group by id, both by plain
+  codepoint sort. No locale, no collation.
+- The map indexes **active units**. Superseded units stay reachable from the
+  card of the unit that superseded them, which is where the view already
+  nests them (`validated_memory/knowledge_view.py:61-71`).
 
 This requires the `Extension` object to reach the view.
 `validate.collect_and_validate` builds it and currently discards it
@@ -393,10 +442,20 @@ TDD applies. Beyond the per-feature tests:
   whitelist. `knowledge.html` and `memory.html` keep the strict policy;
   `knowledge-app.html` gets its own whitelist that admits exactly one
   attribute-less `<script>` and nothing else.
-- **The app page's script policy**: one inline `<script>`, no `src`, and none
-  of the forbidden APIs, asserted over the script's source text.
-- **Progressive enhancement**: every unit id, headline, badge and rationale
-  string in `knowledge.html` appears in `knowledge-app.html`'s source.
+- **Progressive enhancement, proved by construction.** The renderer builds
+  the inert document once and inserts the script into that exact byte
+  sequence; nothing is rendered twice. The test removes the single `<script>`
+  element from `knowledge-app.html` and asserts the remainder equals
+  `knowledge.html` **byte for byte**. Asserting that some strings appear in
+  both pages would pass while bodies, anchors, provenance or supersession
+  chains were missing, or while the text lived only in a hidden attribute.
+- **The app page's script policy**: exactly one `<script>`, inline, no `src`.
+  The forbidden-API scan over the script source is a lint and is described as
+  one -- it cannot prove the absence of an indirect call. What constrains the
+  page at runtime is a Content-Security-Policy `<meta>`, `default-src 'none';
+  connect-src 'none'; img-src 'none'` with inline style and script allowed:
+  the one `http-equiv` the app page's whitelist admits, and which the strict
+  whitelist still forbids.
 - **A documentation-sync test.** Five places enumerate the contract by hand --
   `README.md`, `docs/reference/curated-knowledge.md`, `docs/walkthrough.md`,
   `skills/create-knowledge-unit/SKILL.md` and the `EXTENSION_STUB` at
@@ -409,9 +468,15 @@ TDD applies. Beyond the per-feature tests:
   `unchanged`, leaves the bytes identical and `st_mtime_ns` untouched.
 - **Adversarial content** through `question`, `label` and `reason`: nothing
   lands live in the HTML, in the SVG, or inside the app page's script.
-- **The silent-truncation case**: a unit written with an unquoted ` #` in a
-  reason, asserting what the parser does with it, so the rule is pinned by a
-  test and not only by prose.
+- **The unquoted-scalar case**: a unit whose `reason` is an unquoted scalar,
+  with and without a `#`, is an ERROR from the CLI -- the rule is pinned where
+  it is enforced, not only in prose.
+- **The adoption twin lists.** `knowledge-app.html` is a new root artifact, so
+  it enters the skill's ignore list, the adoption guide's copy of it, and the
+  versioning decision, per ADR 0007. The existing pins compare the skill's
+  list against exactly what the CLI creates at the root and against the
+  guide's copy (`tests/test_adoption_decisions.py:116-125`); both go red until
+  all three agree, which is the point of having them.
 
 ## Versioning and release
 
@@ -440,9 +505,12 @@ Migration facts for the release notes:
   the schema **and** in every unit that used it. That is a mechanical rename
   forced by a major version, not a content correction, and it is the one
   documented exception to "units already written are never rewritten"
-  (`docs/reference/curated-knowledge.md:128-133`). Bumping `extension.version`
-  does nothing on its own: `load` reads `schema` and never acts on `version`
-  (`validated_memory/extension.py:64-73`).
+  (`docs/reference/curated-knowledge.md:128-133`). Renaming the field also
+  **narrows** their schema, which by their own contract bumps
+  `extension.version` -- but that bump is a record, not a mechanism: `load`
+  reads `schema` and never acts on `version`
+  (`validated_memory/extension.py:64-73`), so nothing migrates on their
+  behalf.
 
 There is no mass backfill. Nothing can reconstruct what was considered and
 why, and inferring it from bodies, commits or supersession would fabricate the
@@ -460,6 +528,13 @@ very record this field exists to make trustworthy.
 - **The plugin ships no third-party runtime code.** Diagrams are generated,
   CSS and script are ours, and nothing is fetched at render time or at read
   time.
+- **A major channel per major version.** ADR 0005 names `v1` as *the* moving
+  convenience channel and says "Only `v1` moves"
+  (`docs/adr/0005-a-release-is-one-commit-where-the-three-versions-agree.md:22-25`,
+  `CONTRIBUTING.md:39-51`). Opening `v2` generalizes that decision, so it is
+  recorded as an ADR that supersedes ADR 0005 on this point alone -- not as an
+  edit to `CONTRIBUTING.md` that leaves the ADR saying something else. The
+  README and its tests still recommend `@v1` and are updated with it.
 
 ## Rejected alternatives
 
@@ -517,5 +592,7 @@ Each step leaves the suite green and the repository coherent.
    to the shared rules.
 8. `knowledge-app.html`: the script, its whitelist, the enhancement test, and
    the adoption question that creates the file.
-9. Reference documentation, `CONTRIBUTING.md`'s release procedure, the `v2`
-   channel, and the 2.0.0 release.
+9. Adoption: the `--app` item in `init --view`, the skill's question, and the
+   three twin lists ADR 0007 requires.
+10. Reference documentation, the `v2` channel ADR, `CONTRIBUTING.md`'s release
+    procedure, the README's pinning guidance, and the 2.0.0 release.
