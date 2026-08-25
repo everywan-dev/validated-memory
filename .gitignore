@@ -15,3 +15,13 @@ build/
 /verdicts.jsonl
 /knowledge.html
 /memory.html
+
+# How this repository is worked on, not what it publishes: agent team
+# configuration, its own working notes and session log. Local to this clone.
+/.codex/
+/AGENTS.md
+/CLAUDE.local.md
+/MEMORY.md
+/TODO.md
+/SESSION.md
+/tests/test_codex_agents.py
