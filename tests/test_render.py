@@ -1900,3 +1900,121 @@ def test_the_overview_says_so_when_there_is_nothing_unprobed(
         "Nothing outstanding: every anchor of an active unit has a verdict "
         "recorded under its current key."
     ) in page
+
+
+def _map_block(page):
+    """The map's markup alone, so an assertion cannot match a card below it."""
+    return page[page.index("<h2>Map</h2>") : page.index("<h2>Unprobed anchors</h2>")]
+
+
+def test_the_map_groups_active_units_by_anchor_system(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    # Anchored in two systems: a link in each group, and still one card.
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: alpha\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n"
+        "  - system: beta\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Anchored twice over\n",
+    )
+    # Two anchors on ONE system: counted once for that unit.
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: measured\nanchors:\n"
+        "  - system: alpha\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload:\n      ref: main\n"
+        "  - system: alpha\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload:\n      ref: next\n",
+        "# Two refs of one system\n",
+    )
+    write_unit("kb-0003.md", "id: kb-0003\nevidence: measured\n", "# No anchors\n")
+    write_unit(
+        "kb-0004.md",
+        "id: kb-0004\nevidence: measured\nsupersedes:\n  - kb-0005\n",
+        "# The replacement\n",
+    )
+    write_unit(
+        "kb-0005.md",
+        "id: kb-0005\nevidence: measured\nanchors:\n"
+        "  - system: zulu\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Superseded\n",
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    block = _map_block(page)
+
+    assert result.returncode == 0, result.stderr
+    # Groups by name, and the unclassified group last however the names sort.
+    alpha = block.index('<span class="group-name">alpha</span>')
+    beta = block.index('<span class="group-name">beta</span>')
+    unclassified = block.index(
+        '<span class="group-name">unclassified (no anchors)</span>'
+    )
+    assert alpha < beta < unclassified
+    assert "zulu" not in block, "a superseded unit's system"
+    # No group carries an id: nothing links to one, and a system name is
+    # arbitrary text that has no business in a DOM id.
+    assert "<li class=\"group\" id=" not in block
+    # Multi-valued grouping: two links, one card.
+    assert block.count('href="#unit-kb-0001"') == 2
+    assert page.count('id="unit-kb-0001"') == 1
+    # Several anchors on one system count once for that unit.
+    assert block.count('href="#unit-kb-0002"') == 1
+    # Units with no anchors are never dropped.
+    assert block.count('href="#unit-kb-0003"') == 1
+    assert block.count('href="#unit-kb-0004"') == 1
+    # The map indexes active units; a superseded one stays reachable from the
+    # card of the unit that superseded it.
+    assert "kb-0005" not in block
+
+
+def test_the_map_links_carry_the_headline_not_only_the_id(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md", "id: kb-0001\nevidence: measured\n", "# A claim worth reading\n"
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    block = _map_block((adopter_dir / "knowledge.html").read_text(encoding="utf-8"))
+
+    assert '<a href="#unit-kb-0001">A claim worth reading</a>' in block
+    assert '<code class="id">kb-0001</code>' in block
+
+
+def test_a_system_named_unclassified_and_the_no_anchors_group_are_both_shown(
+    run_cli, adopter_dir, write_unit
+):
+    # No group carries an id, so a label is the only thing telling two groups
+    # apart on the page -- which is why the group of units with no anchors is
+    # labelled `unclassified (no anchors)` and not `unclassified`. It is also
+    # always last, whatever the system names sort as.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: unclassified\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Anchored in a system with an awkward name\n",
+    )
+    write_unit("kb-0002.md", "id: kb-0002\nevidence: measured\n", "# No anchors\n")
+
+    run_cli("render", cwd=adopter_dir)
+    block = _map_block((adopter_dir / "knowledge.html").read_text(encoding="utf-8"))
+
+    # The exact-string match is what keeps the two apart: the system group's
+    # span closes right after the word, and the other one does not.
+    named = block.index('<span class="group-name">unclassified</span>')
+    no_anchors = block.index(
+        '<span class="group-name">unclassified (no anchors)</span>'
+    )
+    assert named < no_anchors
+    assert block.count('href="#unit-kb-0001"') == 1
+    assert block.count('href="#unit-kb-0002"') == 1

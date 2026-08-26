@@ -48,6 +48,18 @@ HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 COUNT_ROWS = EVIDENCE_STATES
 COUNT_COLUMNS = verdicts.VERDICTS
 
+# The label carried by the group of units with no anchors. With no id on a
+# group, a label is the only thing telling two groups apart on the page, so
+# it says what the group IS rather than borrowing a word an adopter's system
+# may legitimately be called: a corpus with a system named `unclassified`
+# renders that group and this one distinctly, one after the other.
+UNCLASSIFIED = "unclassified (no anchors)"
+
+# One group of the map: `name` is the label, `units` the ids linked from it,
+# sorted. There is no id: nothing links to a group, and a system name is
+# arbitrary text with no business in a DOM id.
+Group = namedtuple("Group", "name units")
+
 # One unit, read once.
 #
 # `state` is `derive.effective_states`' string: "active", or
@@ -204,6 +216,57 @@ def counts(corpus):
         unit = corpus.units[unit_id]
         table[(unit.data["evidence"], unit.graded.verdict)] += 1
     return table
+
+
+def groups(corpus):
+    """The map's groups: active units by `anchors[].system`, unclassified last.
+
+    The axis is ALWAYS `anchors[].system`. A declared extension enum cannot
+    take it over: declaring a second enum is an additive schema change that
+    does not even bump the schema version
+    (`docs/reference/curated-knowledge.md`), so the page would silently
+    reorganize itself the moment an adopter added an unrelated field. A page
+    that rearranges itself on a change nobody made to it is worse than a page
+    grouped by a coarser axis.
+
+    Multi-valued, and well defined because the map is a navigation index and
+    not a second rendering: a unit anchored in three systems is a link in
+    three groups while its card is still rendered exactly once. Several
+    anchors on the same system count once for that unit -- `Unit.systems` is
+    already the distinct set.
+
+    A unit with no anchors goes to an explicit `unclassified (no anchors)`
+    group rather than being dropped: a unit that cannot expire is a fact
+    about the corpus. That group is always emitted last, whatever its label
+    sorts as, and it is built separately from the system groups -- so an
+    adopter whose corpus has a system called `unclassified` gets two groups,
+    labelled differently, and not a merge.
+
+    No group carries a DOM id. Nothing links to one, and `anchors[].system`
+    is validated only as a non-empty string, so a system name can hold
+    whitespace or a URL: neither belongs in an id.
+
+    Active units only. A superseded unit stays reachable from the card of the
+    unit that superseded it, which is where the view already nests it.
+    Groups by name, units within a group by id, both plain codepoint sorts.
+    """
+    by_system = {}
+    unclassified = []
+    for unit_id in corpus.active:
+        systems = corpus.units[unit_id].systems
+        if not systems:
+            unclassified.append(unit_id)
+            continue
+        for system in systems:
+            by_system.setdefault(system, []).append(unit_id)
+
+    result = [
+        Group(system, tuple(sorted(by_system[system])))
+        for system in sorted(by_system)
+    ]
+    if unclassified:
+        result.append(Group(UNCLASSIFIED, tuple(sorted(unclassified))))
+    return tuple(result)
 
 
 def unprobed(corpus):

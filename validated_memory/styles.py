@@ -42,6 +42,11 @@ table.counts th[scope="row"], table.counts thead th:first-child {
 table.counts tr.total th, table.counts td.total { font-weight: 600; }
 ul.unprobed { list-style: none; padding-left: 0; }
 ul.unprobed li { margin-bottom: .5rem; }
+ul.groups { list-style: none; padding-left: 0; }
+li.group { margin-bottom: .75rem; }
+.group-name { font-weight: 600; }
+ul.group-units { list-style: none; padding-left: 1rem; margin-top: .25rem;
+                 border-left: 2px solid rgba(127,127,127,0.35); }
 """
 
 MEMORY = """

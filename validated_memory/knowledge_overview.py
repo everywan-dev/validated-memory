@@ -21,6 +21,7 @@ def build(corpus):
     return (
         '<section class="overview" id="overview">\n'
         + _counts(corpus)
+        + _map(corpus)
         + _unprobed(corpus)
         + "</section>"
     )
@@ -64,6 +65,32 @@ def _counts(corpus):
         f'<p class="meta">{len(corpus.active)} active unit(s) counted above; '
         f"{len(corpus.superseded)} superseded unit(s) counted separately, "
         "each shown inside the card of the unit that superseded it.</p>\n"
+    )
+
+
+def _map(corpus):
+    groups = corpus_module.groups(corpus)
+    if not groups:
+        return "<h2>Map</h2>\n<p class=\"meta\">No active units to map.</p>\n"
+    items = []
+    for group in groups:
+        links = "\n".join(
+            f'<li><a href="#unit-{html.escape_attribute(unit_id)}">'
+            f"{html.escape_text(corpus.units[unit_id].headline)}</a> "
+            f'<code class="id">{html.escape_text(unit_id)}</code></li>'
+            for unit_id in group.units
+        )
+        items.append(
+            '<li class="group">'
+            f'<span class="group-name">{html.escape_text(group.name)}</span> '
+            f'<span class="meta">{len(group.units)} unit(s)</span>\n'
+            f'<ul class="group-units">\n{links}\n</ul>\n</li>'
+        )
+    return (
+        "<h2>Map</h2>\n"
+        '<p class="meta">Active units by anchor system. A unit anchored in '
+        "several systems is listed in each; its card is rendered once.</p>\n"
+        '<ul class="groups">\n' + "\n".join(items) + "\n</ul>\n"
     )
 
 
