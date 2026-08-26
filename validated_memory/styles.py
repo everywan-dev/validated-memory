@@ -73,6 +73,7 @@ li.option.chosen { border-width: 2px; }
 .disposition { font-size: .8em; text-transform: uppercase;
                letter-spacing: .05em; }
 .reason { margin: .25rem 0 0; }
+svg { display: block; margin: .5rem 0; max-width: 100%; }
 """
 
 MEMORY = """

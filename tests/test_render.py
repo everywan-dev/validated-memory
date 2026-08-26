@@ -185,6 +185,7 @@ SELF_CONTAINED_ELEMENTS = {
     "h1", "p", "span", "code", "pre", "ul", "li", "div", "a",
     "section", "details", "summary",
     "svg", "rect", "text", "line",
+    "desc",
     "h2", "table", "thead", "tbody", "tr", "th", "td",
 }
 
@@ -238,9 +239,13 @@ SELF_CONTAINED_ATTRIBUTES = {
     ("rect", "width"),
     ("rect", "height"),
     ("rect", "fill"),
+    ("rect", "stroke"),
+    ("rect", "stroke-dasharray"),
     ("text", "x"),
     ("text", "y"),
     ("text", "font-size"),
+    ("text", "fill"),
+    ("text", "text-anchor"),
     ("line", "x1"),
     ("line", "y1"),
     ("line", "x2"),
@@ -1258,10 +1263,13 @@ def test_a_null_recorded_at_reads_as_absent_in_the_list_and_the_strip_alike(
     run_cli, adopter_dir, write_unit, page_elements
 ):
     # `recorded_at` is not a key field and nothing validates it, so an
-    # explicit `null` is a legal record. `html.escape_text` (the history
-    # list) and `html.escape_attribute` (the strip's `aria-label`) must spell
-    # an absent value the same way -- not "" in one place and the literal
-    # word "None" in the other.
+    # explicit `null` is a legal record. Wherever it reaches the page it must
+    # spell an absent value the same way -- "" and never the literal word
+    # "None" -- and it reaches the page twice: in the history list and in
+    # each band's own <title>, both through `html.escape_text`. The strip's
+    # `aria-label` no longer quotes it at all, being built from the record
+    # count and the last verdict, so the assertion on that attribute is now
+    # a guard that the label stays free of record fields.
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -1351,6 +1359,77 @@ def test_a_confluence_is_drawn_when_three_units_are_superseded_at_once(
             if tag == "svg" and attrs.get("class") == "confluence"]
 
 
+def _two_diagram_fixture(run_cli, adopter_dir, write_unit):
+    """A corpus that draws a confluence and a freshness strip, and no more."""
+    run_cli("init", cwd=adopter_dir)
+    for old in ("kb-0001", "kb-0002", "kb-0003"):
+        write_unit(f"{old}.md", f"id: {old}\nevidence: hypothesis\n", f"# {old}\n")
+    write_unit(
+        "kb-0004.md",
+        "id: kb-0004\nevidence: measured\nsupersedes:\n"
+        "  - kb-0001\n  - kb-0002\n  - kb-0003\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# The one that replaced them\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "drifted", "recorded_at": "2026-02-01T00:00:00Z"},
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "unknown", "recorded_at": "2026-03-01T00:00:00Z"},
+    ])
+
+
+def test_the_two_existing_diagrams_carry_a_title_and_a_desc(
+    run_cli, adopter_dir, write_unit, page_elements, page_events
+):
+    _two_diagram_fixture(run_cli, adopter_dir, write_unit)
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    assert result.returncode == 0, result.stderr
+    assert {
+        attrs.get("class") for tag, attrs in elements if tag == "svg"
+    } == {"freshness", "confluence"}
+    # One <desc> per diagram. The strip also carries a <title> per band, so
+    # titles outnumber descs; descs are one apiece and that is the count to
+    # assert.
+    assert len([tag for tag, _ in elements if tag == "desc"]) == 2
+    # The one thing the strip's description exists to deny.
+    assert "Not a time axis" in page
+    _assert_self_contained(page, page_events)
+
+
+def test_each_freshness_band_differs_in_shape_and_in_text_not_only_colour(
+    run_cli, adopter_dir, write_unit
+):
+    # "State differs in shape and in text, not only in fill." Three bands,
+    # one per verdict: a full-height solid band, a full-height dashed band,
+    # and a half-height band -- each with its own one-character mark on top.
+    # Printed in black and white, or read by someone who cannot tell the
+    # three fills apart, the strip still says which is which.
+    _two_diagram_fixture(run_cli, adopter_dir, write_unit)
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    strip = page[page.index('<svg class="freshness"') :].split("</svg>")[0]
+
+    assert '>+</text>' in strip
+    assert '>!</text>' in strip
+    assert '>?</text>' in strip
+    assert 'height="24" fill="#2e7d32">' in strip
+    assert (
+        'height="24" fill="#c62828" stroke="currentColor" '
+        'stroke-dasharray="3 2">'
+    ) in strip
+    assert 'y="12" width=' in strip
+    assert 'height="12" fill="#757575">' in strip
+
+
 SVG_FORBIDDEN_ELEMENTS = {"use", "image", "iframe", "object", "embed", "script"}
 
 
@@ -1376,9 +1455,10 @@ def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
         "# The one that replaced them\n",
     )
     # A hostile `recorded_at` -- angle brackets and a quote -- on the LAST
-    # record: this is the one value both the strip's per-band <title> and
-    # its right-edge aria-label read, so it is the sharpest place a missed
-    # escape would show up as live markup.
+    # record: the band's own <title> is the one place the strip shows a
+    # record field at all, so it is the sharpest place a missed escape would
+    # show up as live markup. The strip's aria-label is built from a count
+    # and a verdict and quotes no record field.
     _log(adopter_dir, [
         {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
          "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
