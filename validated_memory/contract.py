@@ -14,6 +14,14 @@ from .frontmatter import FrontmatterError, parse
 EVIDENCE_STATES = ("measured", "verifiable", "hypothesis")
 BASE_FIELDS = ("id", "evidence", "supersedes", "anchors", "provenance", "rationale")
 ANCHOR_FIELDS = ("system", "kind", "captured_at", "payload")
+RATIONALE_FIELDS = ("question", "options")
+OPTION_FIELDS = ("label", "disposition", "reason")
+DISPOSITIONS = ("chosen", "rejected")
+# The bidirectional embeddings, overrides, pop and isolates: they reorder
+# what a reader sees without changing the string. The bidirectional MARKS --
+# U+200E, U+200F, U+061C -- are deliberately absent: they resolve direction
+# for mixed text and are how correct Arabic and Hebrew is written.
+BIDI_CONTROLS = "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ISO_PATTERN = re.compile(
@@ -83,6 +91,7 @@ def _check_unit(location, data, extension=None):
     findings.extend(_check_supersedes_shape(location, data))
     findings.extend(_check_anchors(location, data))
     findings.extend(_check_provenance(location, data))
+    findings.extend(_check_rationale(location, data))
     findings.extend(_check_extension_fields(location, data, extension))
     return findings
 
@@ -360,6 +369,171 @@ def _check_provenance(location, data):
                 "from anchors",
             )
         ]
+    return []
+
+
+def _check_rationale(location, data):
+    """The rationale envelope: closed, exactly one chosen, labels distinct.
+
+    Absent is valid and silent: most units are measurements and record no
+    choice between alternatives.
+    """
+    if "rationale" not in data:
+        return []
+    rationale = data["rationale"]
+    if not isinstance(rationale, dict):
+        return [
+            Finding(
+                ERROR,
+                location,
+                "rationale",
+                f"{_describe(rationale)} is not a mapping",
+            )
+        ]
+
+    findings = []
+    for key in rationale:
+        if key not in RATIONALE_FIELDS:
+            findings.append(
+                Finding(
+                    ERROR,
+                    location,
+                    "rationale",
+                    f"unknown key '{key}'; a rationale declares "
+                    + ", ".join(RATIONALE_FIELDS),
+                )
+            )
+    findings.extend(
+        _check_rationale_text(location, "rationale.question", rationale, "question")
+    )
+
+    if "options" not in rationale:
+        findings.append(
+            Finding(ERROR, location, "rationale.options", "required field is missing")
+        )
+        return findings
+    options = rationale["options"]
+    if not isinstance(options, list):
+        findings.append(
+            Finding(
+                ERROR,
+                location,
+                "rationale.options",
+                f"{_describe(options)} is not a list",
+            )
+        )
+        return findings
+    if len(options) < 2:
+        findings.append(
+            Finding(
+                ERROR,
+                location,
+                "rationale.options",
+                f"a rationale declares at least two options; found {len(options)}",
+            )
+        )
+
+    chosen = 0
+    seen_labels = {}
+    for index, option in enumerate(options):
+        field = f"rationale.options[{index}]"
+        if not isinstance(option, dict):
+            findings.append(
+                Finding(ERROR, location, field, f"{_describe(option)} is not a mapping")
+            )
+            continue
+        for key in option:
+            if key not in OPTION_FIELDS:
+                findings.append(
+                    Finding(
+                        ERROR,
+                        location,
+                        field,
+                        f"unknown key '{key}'; an option declares "
+                        + ", ".join(OPTION_FIELDS),
+                    )
+                )
+        findings.extend(
+            _check_rationale_text(location, f"{field}.label", option, "label")
+        )
+        findings.extend(
+            _check_rationale_text(location, f"{field}.reason", option, "reason")
+        )
+
+        if "disposition" not in option:
+            findings.append(
+                Finding(
+                    ERROR,
+                    location,
+                    f"{field}.disposition",
+                    "required field is missing",
+                )
+            )
+        elif option["disposition"] not in DISPOSITIONS:
+            findings.append(
+                Finding(
+                    ERROR,
+                    location,
+                    f"{field}.disposition",
+                    f"{_describe(option['disposition'])} is not one of "
+                    + ", ".join(DISPOSITIONS),
+                )
+            )
+        elif option["disposition"] == "chosen":
+            chosen += 1
+
+        label = option.get("label")
+        if isinstance(label, str) and label.strip():
+            # Compared after collapsing whitespace: 'A' and 'A ' are
+            # different strings that would draw as the same node.
+            collapsed = " ".join(label.split())
+            if collapsed in seen_labels:
+                findings.append(
+                    Finding(
+                        ERROR,
+                        location,
+                        f"{field}.label",
+                        f"collides with rationale.options[{seen_labels[collapsed]}]"
+                        ".label; two options would draw as one node",
+                    )
+                )
+            else:
+                seen_labels[collapsed] = index
+
+    if options and chosen != 1:
+        findings.append(
+            Finding(
+                ERROR,
+                location,
+                "rationale.options",
+                f"exactly one option is 'chosen'; found {chosen}",
+            )
+        )
+    return findings
+
+
+def _check_rationale_text(location, field, mapping, key):
+    """One of the three text values: present, a non-empty string, no bidi controls."""
+    if key not in mapping:
+        return [Finding(ERROR, location, field, "required field is missing")]
+    value = mapping[key]
+    if not isinstance(value, str) or not value.strip():
+        return [
+            Finding(
+                ERROR, location, field, f"{_describe(value)} is not a non-empty string"
+            )
+        ]
+    for char in value:
+        if char in BIDI_CONTROLS:
+            return [
+                Finding(
+                    ERROR,
+                    location,
+                    field,
+                    f"carries the bidirectional control U+{ord(char):04X}, which "
+                    "reorders what a reader sees without changing the string",
+                )
+            ]
     return []
 
 

@@ -171,6 +171,100 @@ INVALID_FIELDS = [
         "id: kb-0001\nevidence: measured\nprovenance: docs/source.md\n",
         "provenance",
     ),
+    (
+        "rationale_not_a_mapping",
+        'id: kb-0001\nevidence: measured\nrationale: "yes"\n',
+        "rationale",
+    ),
+    (
+        "rationale_unknown_key",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  consequences: "none"\n  options:\n    - label: "A"\n'
+        '      disposition: chosen\n      reason: "R"\n    - label: "B"\n'
+        '      disposition: rejected\n      reason: "R"\n',
+        "rationale",
+    ),
+    (
+        "rationale_question_missing",
+        'id: kb-0001\nevidence: measured\nrationale:\n  options:\n'
+        '    - label: "A"\n      disposition: chosen\n      reason: "R"\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "rationale.question",
+    ),
+    (
+        "rationale_options_missing",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n',
+        "rationale.options",
+    ),
+    (
+        "rationale_options_too_few",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n',
+        "rationale.options",
+    ),
+    (
+        "rationale_no_chosen_option",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: rejected\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+        "rationale.options",
+    ),
+    (
+        "rationale_two_chosen_options",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: chosen\n'
+        '      reason: "R"\n',
+        "rationale.options",
+    ),
+    (
+        "rationale_option_not_a_mapping",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - "A"\n    - label: "B"\n      disposition: chosen\n'
+        '      reason: "R"\n',
+        "rationale.options[0]",
+    ),
+    (
+        "rationale_option_unknown_key",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n      weight: "3"\n    - label: "B"\n'
+        '      disposition: rejected\n      reason: "R"\n',
+        "rationale.options[0]",
+    ),
+    (
+        "rationale_option_reason_missing",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "rationale.options[0].reason",
+    ),
+    (
+        "rationale_option_disposition_out_of_domain",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: maybe\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: chosen\n'
+        '      reason: "R"\n',
+        "rationale.options[0].disposition",
+    ),
+    (
+        "rationale_labels_collide_after_whitespace",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "A "\n      disposition: rejected\n'
+        '      reason: "R"\n',
+        "rationale.options[1].label",
+    ),
+    (
+        "rationale_label_carries_a_bidi_override",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A\u202eB"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+        "rationale.options[0].label",
+    ),
 ]
 
 
@@ -186,6 +280,26 @@ def test_every_invalid_unit_gates_naming_unit_and_field(adopter_dir, write_unit,
         assert expected in result.stderr, (
             f"{name}: missing finding for field '{field}'\n{result.stderr}"
         )
+
+
+def test_a_rationale_may_carry_right_to_left_text_and_bidi_marks(
+    adopter_dir, write_unit, run_cli
+):
+    # U+200F is a bidirectional MARK, not an embedding, override or isolate:
+    # it is how correct mixed Arabic and Hebrew text is written.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "\u200fما هي الخطة؟"\n'
+        '  options:\n    - label: "אלף"\n'
+        '      disposition: chosen\n      reason: "\u200fالسبب"\n'
+        '    - label: "בית"\n      disposition: rejected\n'
+        '      reason: "\u200fسبب آخر"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_missing_frontmatter_is_an_error(adopter_dir, run_cli):
