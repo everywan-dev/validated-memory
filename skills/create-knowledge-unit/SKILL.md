@@ -12,6 +12,7 @@ creates one; `validate` only checks what you wrote.
 
 ## The base contract, field by field
 
+<!-- canonical-base-contract -->
 ```yaml
 ---
 id: kb-0001                    # required; stable, unique; matches the adopter's id_prefix
@@ -23,6 +24,15 @@ anchors:                        # optional; without anchors a unit cannot expire
     captured_at: 2026-08-12T00:00:00Z
     payload: {}                 # interpreted by the probe, not by validate
 provenance: []                  # optional; where the native artifact lives
+rationale:                      # optional; how this conclusion was chosen
+  question: "..."               # required inside rationale; quoted
+  options:                      # at least two; exactly one 'chosen'
+    - label: "..."              # quoted
+      disposition: chosen       # chosen | rejected
+      reason: "..."             # quoted
+    - label: "..."
+      disposition: rejected
+      reason: "..."
 ---
 ```
 
@@ -50,6 +60,14 @@ provenance: []                  # optional; where the native artifact lives
   - Provenance is *not* probed: it records where the native artifact (a
     query, a document, a conversation) lives, for a human to go look. Put a
     link or a citation there, not something you expect a probe to check.
+- **`rationale`** -- optional; most units are measurements and record no
+  choice between alternatives. When present: a `question`, at least two
+  `options`, and exactly one `disposition: chosen`. Quote `question`,
+  `label` and `reason` (`"..."` or `'...'`) -- an unquoted value loses
+  everything from ` #` onward before `validate` can see it. A backslash has
+  no representation in a quoted scalar either, so text needing one is
+  rephrased. Full rules: the "Base contract" section of
+  docs/reference/curated-knowledge.md.
 
 ## Verify
 

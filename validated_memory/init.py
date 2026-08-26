@@ -85,7 +85,7 @@ fields: []
 
 This is the adopter's curated-knowledge schema: it declares the fields a
 unit's frontmatter may carry, on top of the base contract (`id`, `evidence`,
-`supersedes`, `anchors`, `provenance`). No fields are declared yet
+`supersedes`, `anchors`, `provenance`, `rationale`). No fields are declared yet
 (`fields: []`) -- `validate` still enforces the base contract alone until you
 add some.
 

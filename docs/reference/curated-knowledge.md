@@ -11,6 +11,7 @@ are documented in the [CLI reference](cli.md).
 
 Every curated-knowledge unit is a Markdown file whose frontmatter carries:
 
+<!-- canonical-base-contract -->
 ```yaml
 id: <stable-unique-id>          # required; letters, digits, '.', '_', '-'
 evidence: measured              # required; measured | verifiable | hypothesis
@@ -21,7 +22,33 @@ anchors:                        # optional; without anchors a unit cannot expire
     captured_at: 2026-08-11T10:00:00Z   # ISO-8601 date or timestamp
     payload: {}                 # mapping; interpreted by the probe, not here
 provenance: []                  # optional; where the native artifact lives
+rationale:                      # optional; how this conclusion was chosen
+  question: "..."               # required inside rationale; quoted
+  options:                      # at least two; exactly one 'chosen'
+    - label: "..."              # quoted
+      disposition: chosen       # chosen | rejected
+      reason: "..."             # quoted
+    - label: "..."
+      disposition: rejected
+      reason: "..."
 ```
+
+`rationale` records how a conclusion was chosen: the question, the options
+considered, which one was taken and why each was taken or left. It holds no
+reference to another unit, so it adds no relation and cannot form a cycle:
+`supersedes` remains the only relation between units. A rejected option is not
+false and not superseded -- it was considered and not chosen, here.
+
+**The three text values are quoted.** In a plain scalar the frontmatter subset
+treats ` #` as the start of a comment, so `reason: keep the # here` becomes
+`keep the` before anything validates it. `validate` therefore rejects an
+unquoted `question`, `label` or `reason`, whether or not it contains `#`.
+Prefer `"` and fall back to `'` when the text contains a double quote; text
+containing both has no representation, because quoted scalars admit no
+backslash escapes. Text containing a backslash has no representation either:
+the parser rejects a backslash inside a quoted scalar, and the rule rejects
+the unquoted form -- such text is rephrased. Each value is one line: long-form
+argument belongs in the unit body or in `provenance`.
 
 The three evidence states say how a claim is backed, and never mix planes:
 
