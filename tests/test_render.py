@@ -239,10 +239,19 @@ def _wrapped(body):
 # are caught today, by the attribute loop or the `http-equiv` rule, and are
 # here so that they stay caught once the element whitelist takes that job
 # over -- an `<iframe>` with no attributes at all would slip through the
-# attribute loop exactly as `<script>` does. The last five are the holes:
-# an element with no attributes, an `<a>` that is legal outside an `<svg>`
-# and forbidden inside one (in either case), an `<svg>` that is never closed,
-# and a `<style>` element whose own text fetches from the network.
+# attribute loop exactly as `<script>` does. `bare_script` is the element
+# check's own hole: no attributes at all, so the attribute loop never runs.
+# `anchor_inside_svg` and `uppercase_anchor_inside_svg` are the nesting rule,
+# case-folded and not: an `<a>` that is legal outside an `<svg>` and
+# forbidden inside one. `unclosed_svg` is not another nesting case -- it
+# proves the depth counter itself, not just the rule it drives: its `<a>` is
+# only ever "inside" the `<svg>` because the `<svg>` never closes, so the
+# depth never decrements, and it must still be rejected with the same
+# "an <a> inside an <svg>" message as the closed cases above. The positive
+# control below pins the other side of that same fact: a real `<a href>`,
+# placed after an `<svg>` that DOES close, is accepted. `style_import` is
+# the last hole, a `<style>` element whose own text fetches from the
+# network.
 HOSTILE_BODIES = {
     "iframe": '<iframe src="https://example.invalid/"></iframe>',
     "meta_refresh": '<meta http-equiv="refresh" content="0">',
@@ -257,9 +266,16 @@ HOSTILE_BODIES = {
         '<svg class="rationale"><A HREF="#unit-kb-0001">'
         '<text x="0" y="0">kb-0001</text></A></svg>'
     ),
+    # Never closed: `<text>` is the svg's only real child, and the `<a>`
+    # that follows would be a legitimate link after a closed `</svg>` --
+    # which is exactly what the positive control below accepts. Here the
+    # `</svg>` never comes, so the depth counter never decrements and the
+    # `<a>` is still counted as nested: this proves the counter itself, not
+    # just the nesting rule, which `anchor_inside_svg` above already covers
+    # with a `<svg>` that does close.
     "unclosed_svg": (
-        '<svg class="rationale"><a href="#unit-kb-0001">'
-        '<text x="0" y="0">kb-0001</text></a>'
+        '<svg class="rationale"><text x="0" y="0">ok</text>'
+        '<a href="#unit-kb-0001">doc</a>'
     ),
     "style_import": "<style>@import url(https://example.invalid/x.css);</style>",
 }
@@ -276,9 +292,18 @@ def test_the_self_containment_scan_accepts_a_page_built_from_the_whitelist(
 ):
     # The positive control: a page made only of whitelisted elements and
     # pairs passes, so the cases above are proving the scan catches each
-    # hostile body rather than proving the scan rejects everything.
+    # hostile body rather than proving the scan rejects everything. The
+    # trailing `<svg>...</svg>` followed by a real `<a href>` pins the other
+    # side of `unclosed_svg`: a link of the same shape, after an `<svg>`
+    # that DOES close, is accepted -- so `unclosed_svg`'s rejection is shown
+    # to come from the missing close, not from something else about that
+    # shape.
     _assert_self_contained(
-        _wrapped('<p class="basis">Basis: 0 unit(s) under knowledge/</p>'),
+        _wrapped(
+            '<p class="basis">Basis: 0 unit(s) under knowledge/</p>'
+            '<svg class="rationale"><text x="0" y="0">ok</text></svg>'
+            '<a href="https://example.invalid/doc">doc</a>'
+        ),
         page_events,
     )
 
