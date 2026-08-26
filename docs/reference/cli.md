@@ -443,11 +443,10 @@ verdict, reports superseded units as one separate figure rather than folding
 them into the same table, maps the corpus by `anchors[].system` (a unit
 anchored in several systems is a link in each group; units with no anchors
 land in an explicit `unclassified (no anchors)` group, listed last), and
-queues the
-anchors of active units with no verdict recorded under their current key
-`(unit, system, kind, payload)` -- never probed, or probed before the payload
-changed. The map is an index of links, never a second copy of the cards,
-which is what lets one unit appear in several groups while its card is
+queues the anchors of active units with no verdict recorded under their
+current key `(unit, system, kind, payload)` -- never probed, or probed before
+the payload changed. The map is an index of links, never a second copy of the
+cards, which is what lets one unit appear in several groups while its card is
 rendered exactly once.
 
 Each card carries, in this fixed order: the headline and `id`, badges for
@@ -472,7 +471,9 @@ and colour, and never a time axis), a many-to-one confluence drawn only when
 three or more units are superseded at once, and a rationale tree drawn only
 for a unit that carries one. Nothing a diagram shows lives only in the
 diagram: past 48 characters a question is drawn as `?` and a label as `#n`,
-and the full text is read from the card beside the drawing.
+and once a rationale has more than eight options every label is drawn as `#n`
+regardless of its length; either way, the full text is read from the card
+beside the drawing.
 
 **`memory.html`** lists entries by filename, each with its outgoing and
 incoming references -- the wikilink graph, walkable entry by entry rather
