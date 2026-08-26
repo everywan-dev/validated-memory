@@ -185,6 +185,7 @@ SELF_CONTAINED_ELEMENTS = {
     "h1", "p", "span", "code", "pre", "ul", "li", "div", "a",
     "section", "details", "summary",
     "svg", "rect", "text", "line",
+    "h2", "table", "thead", "tbody", "tr", "th", "td",
 }
 
 
@@ -241,6 +242,10 @@ SELF_CONTAINED_ATTRIBUTES = {
     ("line", "x2"),
     ("line", "y2"),
     ("line", "stroke"),
+    ("table", "class"),
+    ("tr", "class"),
+    ("th", "scope"),
+    ("td", "class"),
     ("line", "stroke-width"),
 }
 
@@ -1756,3 +1761,142 @@ def test_a_corpus_with_a_declared_extension_still_renders(
 
     assert result.returncode == 0, result.stderr
     assert "kb-0001" in (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+
+def _overview_fixture(run_cli, adopter_dir, write_unit):
+    """Four active units and one superseded, spanning the counts table.
+
+    kb-0001 measured + probed current; kb-0002 hypothesis + an anchor never
+    probed; kb-0003 verifiable, no anchors; kb-0004 measured, no anchors,
+    superseding kb-0005, whose own anchor was never probed either.
+    """
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Measured and current\n",
+    )
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: hypothesis\nanchors:\n"
+        "  - system: gitlab\n    kind: file-hash\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Never probed\n",
+    )
+    write_unit(
+        "kb-0003.md", "id: kb-0003\nevidence: verifiable\n", "# No anchors\n"
+    )
+    write_unit(
+        "kb-0004.md",
+        "id: kb-0004\nevidence: measured\nsupersedes:\n  - kb-0005\n",
+        "# The replacement\n",
+    )
+    write_unit(
+        "kb-0005.md",
+        "id: kb-0005\nevidence: measured\nanchors:\n"
+        "  - system: zulu\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Superseded, and never probed\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0001", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
+    ])
+
+
+def test_the_overview_counts_active_units_by_evidence_crossed_with_verdict(
+    run_cli, adopter_dir, write_unit
+):
+    _overview_fixture(run_cli, adopter_dir, write_unit)
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        '<tr><th scope="row">measured</th><td>1</td><td>0</td><td>1</td>'
+        '<td class="total">2</td></tr>'
+    ) in page
+    assert (
+        '<tr><th scope="row">verifiable</th><td>0</td><td>0</td><td>1</td>'
+        '<td class="total">1</td></tr>'
+    ) in page
+    assert (
+        '<tr><th scope="row">hypothesis</th><td>0</td><td>0</td><td>1</td>'
+        '<td class="total">1</td></tr>'
+    ) in page
+    assert (
+        '<tr class="total"><th scope="row">total</th><td class="total">1</td>'
+        '<td class="total">0</td><td class="total">3</td>'
+        '<td class="total">4</td></tr>'
+    ) in page
+    # Superseded units are one separate number, never folded into the table:
+    # the two populations must not be addable by accident.
+    assert (
+        "4 active unit(s) counted above; 1 superseded unit(s) counted separately"
+    ) in page
+
+
+def test_the_unprobed_queue_lists_anchors_of_active_units_only(
+    run_cli, adopter_dir, write_unit
+):
+    _overview_fixture(run_cli, adopter_dir, write_unit)
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    queue = page.split('<ul class="unprobed">')[1].split("</ul>")[0]
+
+    assert "1 anchor(s) of active units have no verdict under their current key" in page
+    assert "kb-0002" in queue
+    # kb-0001 has a record under its current key; kb-0005 has none but is
+    # superseded, and `probe` never probes it, so listing it would be a queue
+    # item nobody can drain.
+    assert "kb-0001" not in queue
+    assert "kb-0005" not in queue
+
+
+def test_an_anchor_whose_payload_changed_is_unprobed_again(
+    run_cli, adopter_dir, write_unit
+):
+    # The key is `(unit, system, kind, payload)`. A record written against
+    # the old payload says nothing about what the anchor points at now, so
+    # the anchor has no record under its current key and is unprobed. That is
+    # the honest reading, and it is why the queue is keyed and not counted.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload:\n      ref: next\n",
+        "# Repointed\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0001", "system": "repo", "kind": "git_ref",
+         "payload": {"ref": "main"},
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
+    ])
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    queue = page.split('<ul class="unprobed">')[1].split("</ul>")[0]
+
+    assert "kb-0001" in queue
+    assert '{"ref": "next"}' in queue
+
+
+def test_the_overview_says_so_when_there_is_nothing_unprobed(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n", "# No anchors\n")
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert '<ul class="unprobed">' not in page
+    assert (
+        "Nothing outstanding: every anchor of an active unit has a verdict "
+        "recorded under its current key."
+    ) in page

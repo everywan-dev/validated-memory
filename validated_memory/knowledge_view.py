@@ -1,6 +1,6 @@
 """Builds `knowledge.html`: the curated layer, live conclusions first."""
 
-from . import html, styles, svg, verdicts
+from . import html, knowledge_overview, styles, svg, verdicts
 from . import corpus as corpus_module
 
 TITLE = "Curated knowledge"
@@ -48,6 +48,7 @@ def build(corpus):
         f"belong to an anchor shown below; at most {HISTORY_WINDOW} shown "
         "per anchor.</p>"
     )
+    parts.append(knowledge_overview.build(corpus))
     parts.extend(sections)
     return html.page(TITLE, "\n".join(parts), styles.KNOWLEDGE)
 

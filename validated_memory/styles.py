@@ -30,6 +30,18 @@ summary { cursor: pointer; }
 .chain { border-left: 3px solid rgba(127,127,127,0.4); margin-left: .5rem;
          padding-left: 1rem; }
 .meta { color: rgba(127,127,127,1); font-size: .9em; }
+h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em;
+     margin: 1.25rem 0 .5rem; }
+.overview { border: 1px solid rgba(127,127,127,0.35); border-radius: .5rem;
+            padding: .25rem 1rem 1rem; margin-bottom: 2rem; }
+table.counts { border-collapse: collapse; }
+table.counts th, table.counts td { border: 1px solid rgba(127,127,127,0.35);
+                                   padding: .25rem .6rem; text-align: right; }
+table.counts th[scope="row"], table.counts thead th:first-child {
+    text-align: left; }
+table.counts tr.total th, table.counts td.total { font-weight: 600; }
+ul.unprobed { list-style: none; padding-left: 0; }
+ul.unprobed li { margin-bottom: .5rem; }
 """
 
 MEMORY = """

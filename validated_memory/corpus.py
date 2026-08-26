@@ -37,9 +37,16 @@ from collections import namedtuple
 
 from . import derive, verdicts
 from . import memory as memory_module
+from .contract import EVIDENCE_STATES
 from .frontmatter import parse as parse_frontmatter
 
 HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
+
+# The counts table's axes, in the order the page draws them. Both come from
+# the domains the rest of the codebase already fixes, so a new evidence state
+# or a new verdict grows the table without touching the renderer.
+COUNT_ROWS = EVIDENCE_STATES
+COUNT_COLUMNS = verdicts.VERDICTS
 
 # One unit, read once.
 #
@@ -172,6 +179,68 @@ def _group_history(records):
         )
         grouped.setdefault(key, []).append(record)
     return grouped
+
+
+def counts(corpus):
+    """Active units counted by evidence state crossed with aggregate verdict.
+
+    Active only, following `status`, which grades exactly the active set
+    (`validated_memory/status.py:143-165`): a superseded unit is not probed,
+    so a verdict for it is a number nobody can act on. The cross itself is
+    new -- `status` counts verdicts, not the pairing. Superseded units are
+    reported as one separate figure, `len(corpus.superseded)`, and never
+    folded in here, so the two populations cannot be added up by accident.
+
+    Dense over the full product of `COUNT_ROWS` and `COUNT_COLUMNS`, so a
+    zero cell is a real zero and the table's shape is a function of the
+    domains rather than of the corpus.
+    """
+    table = {
+        (evidence, verdict): 0
+        for evidence in COUNT_ROWS
+        for verdict in COUNT_COLUMNS
+    }
+    for unit_id in corpus.active:
+        unit = corpus.units[unit_id]
+        table[(unit.data["evidence"], unit.graded.verdict)] += 1
+    return table
+
+
+def unprobed(corpus):
+    """Anchors of active units with no record under their current key.
+
+    The key is the one `verdicts.anchor_key` builds -- `(unit, system, kind,
+    payload)` -- so an anchor whose payload changed has no record under its
+    new key and is listed here. That is the honest reading: the old record
+    describes something the anchor no longer points at. Membership in
+    `corpus.view` is what is tested, not the graded verdict: an anchor whose
+    latest record says `unknown` HAS been probed, and a queue that conflated
+    the two would ask someone to re-run a probe that already answered.
+
+    Active units only, for the reason the counts are: `probe` probes the
+    anchors of active units alone (`derive.effective_states`), so a
+    superseded unit's anchor would be a queue item nobody can drain.
+
+    Ordered by unit id, then system, then kind, then the payload's canonical
+    JSON -- all plain codepoint sorts, so the queue is a function of the
+    corpus and not of dictionary order.
+    """
+    rows = []
+    for unit_id in corpus.active:
+        for key, anchor in anchor_rows(corpus, unit_id):
+            if key in corpus.view:
+                continue
+            rows.append(
+                (unit_id, anchor.get("system"), anchor.get("kind"), anchor.get("payload"))
+            )
+    return tuple(
+        sorted(
+            rows,
+            key=lambda row: (
+                row[0], str(row[1]), str(row[2]), canonical_payload(row[3])
+            ),
+        )
+    )
 
 
 def anchor_rows(corpus, unit_id):
