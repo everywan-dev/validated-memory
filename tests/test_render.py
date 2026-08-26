@@ -211,6 +211,10 @@ SELF_CONTAINED_ATTRIBUTES = {
     ("section", "data-unit"),
     ("section", "data-state"),
     ("section", "data-name"),
+    ("section", "data-evidence"),
+    ("section", "data-verdict"),
+    ("span", "dir"),
+    ("p", "dir"),
     ("p", "class"),
     ("span", "class"),
     ("code", "class"),
@@ -2018,3 +2022,136 @@ def test_a_system_named_unclassified_and_the_no_anchors_group_are_both_shown(
     assert named < no_anchors
     assert block.count('href="#unit-kb-0001"') == 1
     assert block.count('href="#unit-kb-0002"') == 1
+
+
+RATIONALE_UNIT = """\
+id: kb-0001
+evidence: verifiable
+provenance:
+  - https://example.invalid/doc
+anchors:
+  - system: repo
+    kind: git_ref
+    captured_at: 2026-01-01T00:00:00Z
+    payload: {}
+rationale:
+  question: "How should knowledge views be delivered?"
+  options:
+    - label: "Generate a complete static artifact"
+      disposition: chosen
+      reason: "It stays readable without Python, JavaScript or network access."
+    - label: "Build an interactive application"
+      disposition: rejected
+      reason: "It makes the reader depend on a runtime."
+"""
+
+
+def _card_fixture(run_cli, adopter_dir, write_unit):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", RATIONALE_UNIT, "# The delivery decision\n\nProse.\n")
+
+
+def test_the_card_renders_its_parts_in_the_fixed_order(
+    run_cli, adopter_dir, write_unit
+):
+    _card_fixture(run_cli, adopter_dir, write_unit)
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    card = page[page.index('id="unit-kb-0001"') :]
+
+    assert result.returncode == 0, result.stderr
+    order = [
+        "</summary>",
+        '<ul class="anchors">',
+        '<div class="rationale">',
+        '<ul class="provenance">',
+        '<pre class="body">',
+    ]
+    positions = [card.index(marker) for marker in order]
+    assert positions == sorted(positions), dict(zip(order, positions))
+
+
+def test_the_card_carries_its_evidence_and_verdict_as_data_attributes(
+    run_cli, adopter_dir, write_unit, page_elements
+):
+    # The badge text is on the summary, unchanged; the machine-readable state
+    # is on the section, beside `data-state`, because a filter hides a card
+    # and not a span.
+    _card_fixture(run_cli, adopter_dir, write_unit)
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    section = next(
+        attrs for tag, attrs in page_elements(page)
+        if tag == "section" and attrs.get("data-unit") == "kb-0001"
+    )
+
+    assert section["data-evidence"] == "verifiable"
+    assert section["data-verdict"] == "unknown"
+    assert section["data-state"] == "active"
+    assert '<span class="evidence">verifiable</span>' in page
+    assert '<span class="verdict">unknown</span>' in page
+
+
+def test_the_rationale_is_on_the_card_in_full(
+    run_cli, adopter_dir, write_unit
+):
+    _card_fixture(run_cli, adopter_dir, write_unit)
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert (
+        '<p class="question" dir="auto">How should knowledge views be '
+        "delivered?</p>"
+    ) in page
+    assert '<li class="option chosen">' in page
+    assert '<li class="option rejected">' in page
+    assert '<span class="option-number">1</span>' in page
+    assert '<span class="option-number">2</span>' in page
+    assert 'Generate a complete static artifact' in page
+    assert "It makes the reader depend on a runtime." in page
+
+
+def test_a_unit_with_no_rationale_gets_no_rationale_block(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n", "# Just a fact\n")
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert 'class="rationale"' not in page
+
+
+def test_hostile_rationale_text_never_becomes_live_markup(
+    run_cli, adopter_dir, write_unit
+):
+    # `question`, `label` and `reason` are adopter text that reaches an HTML
+    # file meant to be sent to third parties. The contract validates their
+    # shape, never their content.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "<script>alert(1)</script>"\n'
+        '  options:\n'
+        '    - label: "<svg onload=alert(2)></svg>"\n'
+        '      disposition: chosen\n'
+        '      reason: "</pre><script>alert(3)</script>"\n'
+        '    - label: "plain"\n      disposition: rejected\n'
+        '      reason: "also plain"\n',
+        "# Hostile\n",
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert result.returncode == 0, result.stderr
+    assert "<script>alert(1)</script>" not in page
+    assert "<script>alert(3)</script>" not in page
+    assert "<svg onload=alert(2)>" not in page
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
+    assert "&lt;svg onload=alert(2)&gt;&lt;/svg&gt;" in page

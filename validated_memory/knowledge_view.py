@@ -120,19 +120,59 @@ def _render_section(corpus, frame, shown_keys):
     return (
         f'<section class="{css_class}" id="unit-{html.escape_attribute(unit.unit_id)}"'
         f' data-unit="{html.escape_attribute(unit.unit_id)}"'
-        f' data-state="{html.escape_attribute(unit.state)}">\n'
+        f' data-state="{html.escape_attribute(unit.state)}"'
+        f' data-evidence="{html.escape_attribute(unit.data["evidence"])}"'
+        f' data-verdict="{html.escape_attribute(unit.graded.verdict)}">\n'
         "<details>\n<summary>"
         f'<span class="headline">{html.escape_text(unit.headline)}</span> '
         f'<code class="id">{html.escape_text(unit.unit_id)}</code> '
         f'<span class="evidence">{html.escape_text(unit.data["evidence"])}</span> '
         f'<span class="verdict">{html.escape_text(unit.graded.verdict)}</span>'
         "</summary>\n"
-        f'<pre class="body">{html.escape_text(unit.body)}</pre>\n'
         f"{_anchors(corpus, unit.unit_id, shown_keys)}"
-        f"{_provenance(unit.data.get('provenance') or [])}"
+        f"{_rationale(unit)}"
         f"{confluence}"
         f"{chain}"
+        f"{_provenance(unit.data.get('provenance') or [])}"
+        f'<pre class="body">{html.escape_text(unit.body)}</pre>\n'
         "</details>\n</section>"
+    )
+
+
+def _rationale(unit):
+    """The unit's rationale: the question, then every option in full.
+
+    Drawn only for a unit that carries one -- most units are measurements,
+    record no choice between alternatives, and must not be nagged into
+    inventing one.
+
+    `rejected` is written as itself and nowhere near the words used for
+    supersession or for a failed verdict: an option was considered and not
+    chosen HERE. It is not false, and it is not superseded.
+
+    This list is the complete text, always. The diagram beside it may fall
+    back to a number for a label it cannot fit; nothing it shows is missing
+    from here.
+    """
+    rationale = unit.data.get("rationale")
+    if not rationale:
+        return ""
+    items = []
+    for position, option in enumerate(rationale["options"], start=1):
+        items.append(
+            f'<li class="option {html.escape_attribute(option["disposition"])}">'
+            f'<span class="option-number">{position}</span> '
+            f'<span class="disposition">{html.escape_text(option["disposition"])}</span> '
+            f'<span class="label" dir="auto">{html.escape_text(option["label"])}</span>'
+            f'<p class="reason" dir="auto">{html.escape_text(option["reason"])}</p>'
+            "</li>"
+        )
+    return (
+        '<div class="rationale">\n'
+        f'<p class="question" dir="auto">'
+        f'{html.escape_text(rationale["question"])}</p>\n'
+        '<ul class="options">\n' + "\n".join(items) + "\n</ul>\n"
+        "</div>\n"
     )
 
 
