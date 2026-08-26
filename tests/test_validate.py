@@ -4,6 +4,8 @@ Fixtures are synthetic adopter trees: a `knowledge/` directory holding curated
 knowledge units, each a Markdown file whose frontmatter carries the contract.
 """
 
+import pytest
+
 VALID_UNIT = """\
 id: kb-0001
 evidence: measured
@@ -300,6 +302,206 @@ def test_a_rationale_may_carry_right_to_left_text_and_bidi_marks(
     result = run_cli("validate", cwd=adopter_dir)
 
     assert result.returncode == 0, result.stderr
+    assert "rationale" not in result.stderr
+
+
+BIDI_CONTROL_CODEPOINTS = [
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
+    "\u2066",
+    "\u2067",
+    "\u2068",
+    "\u2069",
+]
+
+
+@pytest.mark.parametrize(
+    "control",
+    BIDI_CONTROL_CODEPOINTS,
+    ids=[f"U+{ord(c):04X}" for c in BIDI_CONTROL_CODEPOINTS],
+)
+def test_each_bidi_control_inside_a_quoted_question_is_an_error(
+    control, adopter_dir, write_unit, run_cli
+):
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        f'  question: "Q{control}?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "rationale.question: " in result.stderr
+
+
+@pytest.mark.parametrize(
+    "mark", ['\u200e', '\u061c'], ids=["U+200E", "U+061C"]
+)
+def test_further_bidi_marks_pass_clean_beside_the_rtl_guard(
+    mark, adopter_dir, write_unit, run_cli
+):
+    # These two marks, alongside U+200F above, are how correct
+    # mixed-direction text is written -- not embeddings, overrides or
+    # isolates -- so the contract passes them through untouched.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        f'  question: "{mark}Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "rationale" not in result.stderr
+
+
+# --- rationale quoting: enforced over the raw text ---------------------------
+
+
+def test_an_unquoted_rationale_value_is_an_error_with_its_line(
+    adopter_dir, write_unit, run_cli
+):
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        "      reason: keep the # literal here\n"
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md:9: rationale.reason: " in result.stderr
+
+
+def test_an_unquoted_rationale_value_is_an_error_even_without_a_hash(
+    adopter_dir, write_unit, run_cli
+):
+    # The rule is "quoted", not "quoted when it would lose text": a rule
+    # that only fires on the character that silently truncates is a rule
+    # nobody can rely on.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: Q?\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "rationale.question: " in result.stderr
+
+
+def test_an_unquoted_value_is_an_error_with_a_space_before_the_colon(
+    adopter_dir, write_unit, run_cli
+):
+    # The parser accepts a space before the colon (the key is
+    # key.strip() after partition(":")), so the quoting scan has to
+    # accept it too.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question : Q?\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md:5: rationale.question: " in result.stderr
+
+
+def test_an_unquoted_value_is_an_error_when_the_block_key_has_a_space_before_its_colon(
+    adopter_dir, write_unit, run_cli
+):
+    # `rationale :` is the same key line as `rationale:` to the parser,
+    # so it has to open the same scanning region.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale :\n  question: Q?\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md:5: rationale.question: " in result.stderr
+
+
+def test_an_unquoted_value_is_an_error_after_a_non_breaking_space(
+    adopter_dir, write_unit, run_cli
+):
+    # The parser's own value.strip() treats a non-breaking space the
+    # same as an ASCII space, so a value that starts right after one is
+    # still unquoted.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        "      reason:\u00a0R\n    - label: \"B\"\n      disposition: rejected\n"
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md:9: rationale.reason: " in result.stderr
+
+
+def test_an_unquoted_label_written_as_a_list_item_is_an_error(
+    adopter_dir, write_unit, run_cli
+):
+    # The only test of the pattern's list-dash branch: an option's
+    # opening line, `    - label: ...`, rather than a plain key: value
+    # line.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        "  options:\n    - label: A\n      disposition: chosen\n"
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md:7: rationale.label: " in result.stderr
+
+
+def test_an_anchor_payload_key_named_reason_is_not_touched_by_the_rule(
+    adopter_dir, write_unit, run_cli
+):
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n'
+        "anchors:\n  - system: adopter-repo\n"
+        "    kind: git_ref\n    captured_at: 2026-08-11\n    payload:\n"
+        "      reason: plain and unquoted on purpose\n",
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "rationale." not in result.stderr
 
 
 def test_missing_frontmatter_is_an_error(adopter_dir, run_cli):
@@ -317,8 +519,9 @@ def test_missing_frontmatter_is_an_error(adopter_dir, run_cli):
 def test_a_contract_finding_names_the_unit_and_field_without_a_line(
     adopter_dir, write_unit, run_cli
 ):
-    # A contract rule speaks about the unit as a whole, so it carries no line;
-    # only the parser knows where it stopped (see the frontmatter tests).
+    # A structural rule speaks about the unit as a whole, so it carries no
+    # line; the parser and the rationale quoting scan, which read the raw
+    # text, do carry one (see the frontmatter tests and the quoting tests).
     write_unit("kb-0001.md", "id: kb-0001\nanchors: []\n")
 
     result = run_cli("validate", cwd=adopter_dir)

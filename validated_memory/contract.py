@@ -28,6 +28,14 @@ ISO_PATTERN = re.compile(
     r"^(\d{4}-\d{2}-\d{2})"
     r"(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$"
 )
+# A key line inside the rationale block, with or without the list dash that
+# introduces an option: `      reason: "..."` and `    - label: "..."`. The
+# whitespace around the colon matches whatever the parser accepts: a space
+# before it, and any whitespace after it -- including a non-breaking space,
+# since the parser's own `value.strip()` treats it the same as an ASCII space.
+RATIONALE_TEXT_LINE = re.compile(
+    r"^(\s*)(?:-\s+)?(question|label|reason)\s*:\s*(\S.*)$"
+)
 
 
 def validate_documents(documents, extension=None):
@@ -49,11 +57,12 @@ def validate_documents(documents, extension=None):
                 )
             )
             continue
-        units.append((location, data))
+        units.append((location, data, text))
 
     declared = {}
-    for location, data in units:
+    for location, data, text in units:
         findings.extend(_check_unit(location, data, extension))
+        findings.extend(_check_rationale_quoting(location, text))
         unit_id = data.get("id")
         if not _is_valid_id(unit_id):
             continue
@@ -69,7 +78,7 @@ def validate_documents(documents, extension=None):
         else:
             declared[unit_id] = location
 
-    for location, data in units:
+    for location, data, _text in units:
         findings.extend(_check_supersedes(location, data, declared))
     findings.extend(_check_supersession_cycles(units, declared))
     return findings
@@ -215,7 +224,7 @@ def _check_supersession_cycles(units, declared):
     it is left out here so the same defect is not reported twice.
     """
     edges = {}
-    for _location, data in units:
+    for _location, data, _text in units:
         unit_id = data.get("id")
         # `_is_valid_id` first, always: an `id` or a `supersedes` entry can be
         # any JSON value, and an unhashable one reaching `in declared` raises
@@ -535,6 +544,62 @@ def _check_rationale_text(location, field, mapping, key):
                 )
             ]
     return []
+
+
+def _check_rationale_quoting(location, text):
+    """The three rationale text values must be quoted in the raw frontmatter.
+
+    The parser returns the same Python string for `reason: "x"` and
+    `reason: x`, so nothing downstream of it can tell them apart -- and in a
+    plain scalar everything from ' #' onward is already gone. This scan reads
+    the raw text instead, bounded to the `rationale` block: from its
+    top-level key line to the next line at indent zero. Outside that region
+    nothing is examined, so an anchor payload with a key named `reason` is
+    untouched -- which a scan over the whole document would have flagged.
+    Inside it, those three names can belong to nothing else: the envelope is
+    closed, so any other key is already an ERROR from `_check_rationale`.
+
+    Indentation rules are the tokenizer's own (`frontmatter._tokenize`):
+    spaces only, tabs rejected outright, blank and comment-only lines
+    skipped. Lines are numbered from `text.split("\\n")`, matching how the
+    parser numbers them.
+    """
+    findings = []
+    delimiters = 0
+    inside = False
+    for number, line in enumerate(text.split("\n"), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 0 and stripped == "---":
+            delimiters += 1
+            if delimiters == 2:
+                break
+            continue
+        if indent == 0:
+            # The parser accepts `rationale :` and `rationale:   # comment`
+            # as the same key line, so the region has to open on the same
+            # condition it does.
+            inside = bool(re.match(r"^rationale\s*:(\s|$)", stripped))
+            continue
+        if not inside:
+            continue
+        match = RATIONALE_TEXT_LINE.match(line)
+        if match is None:
+            continue
+        if match.group(3)[0] not in "\"'":
+            findings.append(
+                Finding(
+                    ERROR,
+                    location,
+                    f"rationale.{match.group(2)}",
+                    "value is not quoted; an unquoted scalar loses everything "
+                    "from ' #' onward, before validation can see it",
+                    line=number,
+                )
+            )
+    return findings
 
 
 def _is_valid_id(value):
