@@ -165,11 +165,13 @@ directory. A one-line summary goes to stdout; findings go to stderr as
 
 ```
 SEVERITY: <unit>: <field>: <message>
-SEVERITY: <unit>:<line>: <field>: <message>    # parse errors only
+SEVERITY: <unit>:<line>: <field>: <message>    # parse errors and the rationale quoting rule
 ```
 
-A contract rule speaks about the unit as a whole, so it reports no line. Only
-the parser reports one, because only the parser knows where it stopped.
+Most contract rules speak about the unit as a whole and report no line. Two
+report one: the parser, which knows where it stopped, and the `rationale`
+quoting rule, which reads the raw frontmatter text (see the curated-knowledge
+reference).
 
 Supersession resolves against the validated set: validate the whole knowledge
 directory, not a single file, or a `supersedes` entry pointing at a unit you

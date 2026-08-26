@@ -25,10 +25,10 @@ provenance: []                  # optional; where the native artifact lives
 rationale:                      # optional; how this conclusion was chosen
   question: "..."               # required inside rationale; quoted
   options:                      # at least two; exactly one 'chosen'
-    - label: "..."              # quoted
+    - label: "<the option taken>"    # quoted
       disposition: chosen       # chosen | rejected
       reason: "..."             # quoted
-    - label: "..."
+    - label: "<the option not taken>"
       disposition: rejected
       reason: "..."
 ```
@@ -49,6 +49,17 @@ backslash escapes. Text containing a backslash has no representation either:
 the parser rejects a backslash inside a quoted scalar, and the rule rejects
 the unquoted form -- such text is rephrased. Each value is one line: long-form
 argument belongs in the unit body or in `provenance`.
+
+**Labels are distinct, and no text value carries a bidi control.** An
+option's `label` is compared against every other option's after collapsing
+internal whitespace, so `"A"` and `"A "` count as the same label: two options
+that collapse to one are an ERROR, since they would draw as one node. And
+`question`, `label` and `reason` may not carry a bidirectional embedding,
+override or isolate control (U+202A-U+202E, U+2066-U+2069) -- an ERROR naming
+the exact code point, because each one reorders what a reader sees without
+changing the string. The bidirectional marks U+200E, U+200F and U+061C are
+allowed: they resolve direction inside mixed text and are how correct
+right-to-left text is written, not how it is disguised.
 
 The three evidence states say how a claim is backed, and never mix planes:
 

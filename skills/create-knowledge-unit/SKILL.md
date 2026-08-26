@@ -27,10 +27,10 @@ provenance: []                  # optional; where the native artifact lives
 rationale:                      # optional; how this conclusion was chosen
   question: "..."               # required inside rationale; quoted
   options:                      # at least two; exactly one 'chosen'
-    - label: "..."              # quoted
+    - label: "<the option taken>"    # quoted
       disposition: chosen       # chosen | rejected
       reason: "..."             # quoted
-    - label: "..."
+    - label: "<the option not taken>"
       disposition: rejected
       reason: "..."
 ---
@@ -62,11 +62,15 @@ rationale:                      # optional; how this conclusion was chosen
     link or a citation there, not something you expect a probe to check.
 - **`rationale`** -- optional; most units are measurements and record no
   choice between alternatives. When present: a `question`, at least two
-  `options`, and exactly one `disposition: chosen`. Quote `question`,
-  `label` and `reason` (`"..."` or `'...'`) -- an unquoted value loses
-  everything from ` #` onward before `validate` can see it. A backslash has
-  no representation in a quoted scalar either, so text needing one is
-  rephrased. Full rules: the "Base contract" section of
+  `options`, and exactly one `disposition: chosen`. Option `label`s must be
+  distinct after collapsing whitespace -- two that collapse to the same
+  label are an ERROR. Quote `question`, `label` and `reason` (`"..."` or
+  `'...'`) -- an unquoted value loses everything from ` #` onward before
+  `validate` can see it. A backslash has no representation in a quoted
+  scalar either, so text needing one is rephrased. None of the three may
+  carry a bidirectional embedding, override or isolate control -- the
+  bidirectional marks that write correct right-to-left text are allowed,
+  disguising direction is not. Full rules: the "Base contract" section of
   docs/reference/curated-knowledge.md.
 
 ## Verify
