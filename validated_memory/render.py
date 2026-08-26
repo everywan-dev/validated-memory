@@ -115,7 +115,7 @@ def build_artifacts(downgrade=False):
     here and writes nothing; only the returned severity and `run`'s exit
     code differ.
     """
-    documents, validation_findings = validate.collect_and_validate(None)
+    documents, _extension, validation_findings = validate.collect_and_validate(None)
     has_error = any(finding.severity == ERROR for finding in validation_findings)
     findings = [_downgraded(finding, downgrade) for finding in validation_findings]
     if has_error:

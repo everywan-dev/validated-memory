@@ -57,7 +57,7 @@ def run(skip_index, fail_on, max_verdict_age, fail_on_aged, as_of, stdout, stder
     findings = []
     summaries = []
 
-    documents, validation_findings = validate.collect_and_validate(None)
+    documents, _extension, validation_findings = validate.collect_and_validate(None)
     findings.extend(validation_findings)
     summaries.append(
         _section_summary("validate", len(documents), "unit(s)", validation_findings)

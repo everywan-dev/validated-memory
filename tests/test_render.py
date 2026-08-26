@@ -1711,3 +1711,48 @@ def test_only_existing_regenerates_memory_when_only_memory_exists(
     assert result.returncode == 0
     assert (adopter_dir / "memory.html").read_text(encoding="utf-8") != "stale\n"
     assert not (adopter_dir / "knowledge.html").exists()
+
+
+def test_an_extension_that_cannot_be_loaded_stops_render_and_writes_nothing(
+    run_cli, adopter_dir, write_unit, write_document
+):
+    # `collect_and_validate` loads the declared extension and, from this task
+    # on, hands it to the renderer instead of discarding it. The failure path
+    # must not soften on the way: an extension that will not load is one
+    # blocking finding, no documents, and no page -- rendering the base
+    # contract alone would report a pass the adopter never asked for.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n")
+    write_document("validated-memory.md", "extension:\n  schema: gone.md\n  version: \"1\"\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "ERROR" in result.stderr
+    assert not (adopter_dir / "knowledge.html").exists()
+    assert not (adopter_dir / "memory.html").exists()
+
+
+def test_a_corpus_with_a_declared_extension_still_renders(
+    run_cli, adopter_dir, write_unit, write_document
+):
+    # The other half: a schema that loads must reach the renderer without
+    # changing what it draws. Nothing on the page shows an extension field
+    # yet, and nothing in this plan ever will, so this is the guard that
+    # threading the object through changed no output.
+    run_cli("init", cwd=adopter_dir)
+    write_document(
+        "knowledge-extension.md",
+        "fields:\n  - name: owner\n    type: string\n",
+    )
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nowner: platform-team\n",
+        "# A claim\n",
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "kb-0001" in (adopter_dir / "knowledge.html").read_text(encoding="utf-8")

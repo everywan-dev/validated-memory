@@ -12,7 +12,7 @@ UNIT_SUFFIX = ".md"
 
 def run(path, stdout, stderr):
     """Validate every unit under `path` and report findings. Returns an exit code."""
-    documents, findings = collect_and_validate(path)
+    documents, _extension, findings = collect_and_validate(path)
     return report("validate", len(documents), "unit(s)", findings, stdout, stderr)
 
 
@@ -23,7 +23,7 @@ def gated_source(path, stderr):
     returns `(documents, ok)`, where a False `ok` means an ERROR finding
     gates and the source must not be consumed.
     """
-    documents, findings = collect_and_validate(path)
+    documents, _extension, findings = collect_and_validate(path)
     for finding in findings:
         print(finding.render(), file=stderr)
     ok = not any(finding.severity == ERROR for finding in findings)
@@ -35,8 +35,14 @@ def collect_and_validate(path):
 
     The shared front half of every consumer that needs a valid source: load
     the declared extension, read the units, apply the contract. Returns
-    `(documents, findings)`; when the extension cannot be loaded, there are no
-    documents and the single blocking finding.
+    `(documents, extension, findings)`; when the extension cannot be loaded,
+    there are no documents, no extension, and the single blocking finding.
+
+    The extension is returned rather than dropped because a reader of the
+    corpus may need to know what the adopter declared -- this function is the
+    one place that loads it, and a caller that wanted it would otherwise have
+    to load it a second time and risk disagreeing with the validation that
+    just ran.
     """
     try:
         extension = extension_module.load(Path())
@@ -44,12 +50,12 @@ def collect_and_validate(path):
         # An extension that cannot be loaded stops the run: validating units
         # against the base contract alone would report a pass the adopter did
         # not ask for.
-        return [], [
+        return [], None, [
             Finding(ERROR, error.location, error.field, error.message, line=error.line)
         ]
     documents, findings = _collect(resolve_target(path), explicit=bool(path))
     findings.extend(validate_documents(documents, extension))
-    return documents, findings
+    return documents, extension, findings
 
 
 def resolve_target(path):
