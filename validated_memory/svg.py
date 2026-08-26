@@ -56,6 +56,11 @@ def _diagram(class_name, width, height, label, description, body):
 
     Both are built by the caller out of closed-domain values only; see the
     module docstring for why nothing adopter-authored may reach them.
+
+    `class_name`, `label` and `description` are escaped here, by the shell.
+    `body` is inserted verbatim -- it is the caller's job to have already
+    escaped everything inside it, since the shell has no way to tell markup
+    from text once the two are concatenated into one string.
     """
     return (
         f'<svg class="{html.escape_attribute(class_name)}" role="img" '
@@ -95,12 +100,20 @@ def freshness_strip(records):
         outline = (
             f' stroke="currentColor" stroke-dasharray="{dash}"' if dash else ""
         )
+        # The mark sits vertically centred in its own band: `top +
+        # band_height // 2` is the band's own midline, and `+ 4` compensates
+        # for a 12px glyph's baseline sitting below its visual centre. A
+        # full-height band centres at 16; the half-height band starts lower
+        # (`top` is 12, not 0), so its midline -- and its mark -- moves down
+        # with it, to 22, keeping the glyph inside the shorter box instead
+        # of centred on a band twice its height.
+        baseline = top + band_height // 2 + 4
         bands.append(
             f'<rect x="{index * band:.2f}" y="{top}" width="{band:.2f}" '
             f'height="{band_height}" fill="{COLOURS[verdict]}"{outline}>'
             f"<title>{html.escape_text(record.get('recorded_at', ''))} {html.escape_text(verdict)}</title>"
             "</rect>"
-            f'<text x="{index * band + band / 2:.2f}" y="16" '
+            f'<text x="{index * band + band / 2:.2f}" y="{baseline}" '
             'text-anchor="middle" font-size="12" fill="#ffffff">'
             f"{html.escape_text(MARKS[verdict])}</text>"
         )

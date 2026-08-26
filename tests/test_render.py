@@ -1401,6 +1401,13 @@ def test_the_two_existing_diagrams_carry_a_title_and_a_desc(
     assert len([tag for tag, _ in elements if tag == "desc"]) == 2
     # The one thing the strip's description exists to deny.
     assert "Not a time axis" in page
+    assert 'role="img"' in page
+    # The strip's own <title>, built from the record count and the last
+    # verdict -- the fixture's three records, oldest to newest, end unknown.
+    assert (
+        "<title>Probe history: 3 record(s), oldest to newest, "
+        "ending unknown</title>"
+    ) in page
     _assert_self_contained(page, page_events)
 
 
@@ -1418,9 +1425,9 @@ def test_each_freshness_band_differs_in_shape_and_in_text_not_only_colour(
     page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
     strip = page[page.index('<svg class="freshness"') :].split("</svg>")[0]
 
-    assert '>+</text>' in strip
-    assert '>!</text>' in strip
-    assert '>?</text>' in strip
+    assert 'fill="#ffffff">+</text>' in strip
+    assert 'fill="#ffffff">!</text>' in strip
+    assert 'fill="#ffffff">?</text>' in strip
     assert 'height="24" fill="#2e7d32">' in strip
     assert (
         'height="24" fill="#c62828" stroke="currentColor" '
@@ -1428,6 +1435,9 @@ def test_each_freshness_band_differs_in_shape_and_in_text_not_only_colour(
     ) in strip
     assert 'y="12" width=' in strip
     assert 'height="12" fill="#757575">' in strip
+    # A non-mark text -- the confluence diagram's own unit-id label --
+    # carries the page's colour scheme instead of the marks' fixed white.
+    assert 'fill="currentColor">kb-0001</text>' in page
 
 
 SVG_FORBIDDEN_ELEMENTS = {"use", "image", "iframe", "object", "embed", "script"}
