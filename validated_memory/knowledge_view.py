@@ -3,7 +3,7 @@
 import json
 import re
 
-from . import derive, html, memory, svg, verdicts
+from . import derive, html, memory, styles, svg, verdicts
 from .frontmatter import parse as parse_frontmatter
 
 TITLE = "Curated knowledge"
@@ -88,7 +88,7 @@ def build(documents, basis, records, view):
         "per anchor.</p>"
     )
     parts.extend(sections)
-    return html.page(TITLE, "\n".join(parts))
+    return html.page(TITLE, "\n".join(parts), styles.KNOWLEDGE)
 
 
 def _group_history(records):

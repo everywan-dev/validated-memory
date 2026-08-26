@@ -20,7 +20,7 @@ reader functions in `memory.py` that already guard with `isinstance`.
 
 from collections import namedtuple
 
-from . import html
+from . import html, styles
 from . import memory as memory_module
 from .frontmatter import FrontmatterError
 from .frontmatter import parse as parse_frontmatter
@@ -126,7 +126,7 @@ def build(documents, basis, resolution):
         # document's real name happening to equal this one's filename.
         referrers = incoming.get(record.identity, []) if record.declared else []
         parts.append(_entry_section(record, resolution, referrers))
-    return html.page(TITLE, "\n".join(parts))
+    return html.page(TITLE, "\n".join(parts), styles.MEMORY)
 
 
 def _read(document):

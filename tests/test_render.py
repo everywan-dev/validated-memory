@@ -17,6 +17,105 @@ def _log(adopter_dir, records):
     )
 
 
+# `memory.html`, byte for byte, as the CLI renders it today over the fixture
+# tree in the test below. The 2.0.0 design leaves the memory view's markup,
+# content and styling untouched -- only its stylesheet moves out of the shared
+# constant -- so the whole page is pinned rather than sampled: a stylesheet
+# edit meant for `knowledge.html` that reaches this one changes bytes here and
+# nowhere a substring assertion would look.
+MEMORY_PAGE = """\
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent memory</title>
+<style>
+:root { color-scheme: light dark; }
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+       margin: 2rem auto; max-width: 60rem; padding: 0 1rem; line-height: 1.5; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: rgba(127,127,127,0.12); padding: .75rem; border-radius: .25rem; }
+summary { cursor: pointer; }
+.chain { border-left: 3px solid rgba(127,127,127,0.4); margin-left: .5rem;
+         padding-left: 1rem; }
+.meta { color: rgba(127,127,127,1); font-size: .9em; }
+</style>
+</head>
+<body>
+<h1>Agent memory</h1>
+<p class="basis">Basis: 1 memory file(s) under memory/</p>
+<section class="entry" id="entry-name-coffee" data-name="coffee">
+<details>
+<summary><code class="filename">coffee</code> <span class="relpath">coffee.md</span></summary>
+<p class="name">coffee</p>
+<p class="description">oat milk</p>
+<p class="type">user</p>
+<pre class="body">
+Memory body.
+</pre>
+<p class="meta">No outgoing references.</p>
+<p class="meta">No incoming references.</p>
+</details>
+</section>
+</body>
+</html>
+"""
+
+
+def test_the_memory_page_is_byte_for_byte_what_it_was_before_the_split(
+    run_cli, adopter_dir, write_unit, write_memory, write_index
+):
+    # No `init` here on purpose: `init` writes an adopter configuration and a
+    # schema stub, and this page must be a function of the memory directory
+    # alone. `render` needs only the knowledge directory, the memory
+    # directory and its index.
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\n",
+        "# The first conclusion\n\nSupporting prose.\n",
+    )
+    write_memory(
+        "coffee.md",
+        "name: coffee\ndescription: oat milk\nmetadata:\n  type: user\n",
+    )
+    write_index("- [Coffee](coffee.md) — oat milk\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert (adopter_dir / "memory.html").read_text(encoding="utf-8") == MEMORY_PAGE
+
+
+def test_a_second_run_leaves_the_memory_page_identical_and_untouched(
+    run_cli, adopter_dir, write_unit, write_memory, write_index
+):
+    # The determinism pin `knowledge.html` has had since the views shipped
+    # (`test_a_second_run_reports_unchanged_and_leaves_the_bytes_identical`),
+    # now over the other artifact too: both pages carry the guarantee, and
+    # from this task on they carry separate stylesheets, so one of them could
+    # acquire a non-deterministic value without the other noticing.
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n", "# A claim\n")
+    write_memory(
+        "coffee.md",
+        "name: coffee\ndescription: oat milk\nmetadata:\n  type: user\n",
+    )
+    write_index("- [Coffee](coffee.md) — oat milk\n")
+    run_cli("render", cwd=adopter_dir)
+    first = (adopter_dir / "memory.html").read_bytes()
+    stamp = (adopter_dir / "memory.html").stat().st_mtime_ns
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "render: unchanged memory.html" in result.stdout
+    assert (adopter_dir / "memory.html").read_bytes() == first
+    # Identical bytes alone would pass an implementation that rewrites the
+    # same content and prints `unchanged`. The file must not be touched.
+    assert (adopter_dir / "memory.html").stat().st_mtime_ns == stamp
+
+
 def _scaffold(run_cli, adopter_dir, write_unit):
     run_cli("init", cwd=adopter_dir)
     write_unit(
