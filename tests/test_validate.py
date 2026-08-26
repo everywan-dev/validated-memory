@@ -4,6 +4,8 @@ Fixtures are synthetic adopter trees: a `knowledge/` directory holding curated
 knowledge units, each a Markdown file whose frontmatter carries the contract.
 """
 
+import pytest
+
 VALID_UNIT = """\
 id: kb-0001
 evidence: measured
@@ -29,6 +31,34 @@ anchors:
     captured_at: 2026-08-11
     payload: {}
 """
+
+RATIONALE_UNIT = """\
+id: kb-0003
+evidence: verifiable
+rationale:
+  question: "How should knowledge views be delivered?"
+  options:
+    - label: "Generate a complete static artifact"
+      disposition: chosen
+      reason: "It stays readable without Python, JavaScript or network access."
+    - label: "Build an interactive application"
+      disposition: rejected
+      reason: "It makes the reader depend on a runtime."
+anchors:
+  - system: adopter-repo
+    kind: git_ref
+    captured_at: 2026-08-11T10:00:00Z
+    payload: {}
+"""
+
+
+def test_a_unit_carrying_a_rationale_passes_clean(adopter_dir, write_unit, run_cli):
+    write_unit("kb-0003.md", RATIONALE_UNIT)
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "rationale" not in result.stderr
 
 
 def test_valid_units_pass_clean(adopter_dir, write_unit, run_cli):
@@ -143,6 +173,100 @@ INVALID_FIELDS = [
         "id: kb-0001\nevidence: measured\nprovenance: docs/source.md\n",
         "provenance",
     ),
+    (
+        "rationale_not_a_mapping",
+        'id: kb-0001\nevidence: measured\nrationale: "yes"\n',
+        "rationale",
+    ),
+    (
+        "rationale_unknown_key",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  consequences: "none"\n  options:\n    - label: "A"\n'
+        '      disposition: chosen\n      reason: "R"\n    - label: "B"\n'
+        '      disposition: rejected\n      reason: "R"\n',
+        "rationale",
+    ),
+    (
+        "rationale_question_missing",
+        'id: kb-0001\nevidence: measured\nrationale:\n  options:\n'
+        '    - label: "A"\n      disposition: chosen\n      reason: "R"\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "rationale.question",
+    ),
+    (
+        "rationale_options_missing",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n',
+        "rationale.options",
+    ),
+    (
+        "rationale_options_too_few",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n',
+        "rationale.options",
+    ),
+    (
+        "rationale_no_chosen_option",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: rejected\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+        "rationale.options",
+    ),
+    (
+        "rationale_two_chosen_options",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: chosen\n'
+        '      reason: "R"\n',
+        "rationale.options",
+    ),
+    (
+        "rationale_option_not_a_mapping",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - "A"\n    - label: "B"\n      disposition: chosen\n'
+        '      reason: "R"\n',
+        "rationale.options[0]",
+    ),
+    (
+        "rationale_option_unknown_key",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n      weight: "3"\n    - label: "B"\n'
+        '      disposition: rejected\n      reason: "R"\n',
+        "rationale.options[0]",
+    ),
+    (
+        "rationale_option_reason_missing",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "rationale.options[0].reason",
+    ),
+    (
+        "rationale_option_disposition_out_of_domain",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: maybe\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: chosen\n'
+        '      reason: "R"\n',
+        "rationale.options[0].disposition",
+    ),
+    (
+        "rationale_labels_collide_after_whitespace",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "A "\n      disposition: rejected\n'
+        '      reason: "R"\n',
+        "rationale.options[1].label",
+    ),
+    (
+        "rationale_label_carries_a_bidi_override",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A\u202eB"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+        "rationale.options[0].label",
+    ),
 ]
 
 
@@ -160,6 +284,292 @@ def test_every_invalid_unit_gates_naming_unit_and_field(adopter_dir, write_unit,
         )
 
 
+def test_an_empty_options_list_is_one_finding_naming_the_count(
+    adopter_dir, write_unit, run_cli
+):
+    # An empty list is falsy, so `if options and chosen != 1` never fires
+    # alongside the "too few" check: one finding, not two, for one defect.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q"\n'
+        '  options: []\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert result.stderr.count("rationale.options: ") == 1
+    line = next(
+        text_line
+        for text_line in result.stderr.splitlines()
+        if "rationale.options: " in text_line
+    )
+    assert "at least two options; found 0" in line
+
+
+def test_a_rationale_may_carry_right_to_left_text_and_bidi_marks(
+    adopter_dir, write_unit, run_cli
+):
+    # U+200F is a bidirectional MARK, not an embedding, override or isolate:
+    # it is how correct mixed Arabic and Hebrew text is written.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "\u200fما هي الخطة؟"\n'
+        '  options:\n    - label: "אלף"\n'
+        '      disposition: chosen\n      reason: "\u200fالسبب"\n'
+        '    - label: "בית"\n      disposition: rejected\n'
+        '      reason: "\u200fسبب آخر"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "rationale" not in result.stderr
+
+
+BIDI_CONTROL_CODEPOINTS = [
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
+    "\u2066",
+    "\u2067",
+    "\u2068",
+    "\u2069",
+]
+
+
+@pytest.mark.parametrize(
+    "control",
+    BIDI_CONTROL_CODEPOINTS,
+    ids=[f"U+{ord(c):04X}" for c in BIDI_CONTROL_CODEPOINTS],
+)
+def test_each_bidi_control_inside_a_quoted_question_is_an_error(
+    control, adopter_dir, write_unit, run_cli
+):
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        f'  question: "Q{control}?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "rationale.question: " in result.stderr
+    assert f"U+{ord(control):04X}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "mark", ['\u200e', '\u061c'], ids=["U+200E", "U+061C"]
+)
+def test_further_bidi_marks_pass_clean_beside_the_rtl_guard(
+    mark, adopter_dir, write_unit, run_cli
+):
+    # These two marks, alongside U+200F above, are how correct
+    # mixed-direction text is written -- not embeddings, overrides or
+    # isolates -- so the contract passes them through untouched.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        f'  question: "{mark}Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "rationale" not in result.stderr
+
+
+# --- rationale quoting: enforced over the raw text ---------------------------
+
+
+def test_an_unquoted_rationale_value_is_an_error_with_its_line(
+    adopter_dir, write_unit, run_cli
+):
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        "      reason: keep the # literal here\n"
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md:9: rationale.reason: " in result.stderr
+
+
+def test_an_unquoted_rationale_value_is_an_error_even_without_a_hash(
+    adopter_dir, write_unit, run_cli
+):
+    # The rule is "quoted", not "quoted when it would lose text": a rule
+    # that only fires on the character that silently truncates is a rule
+    # nobody can rely on.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: Q?\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "rationale.question: " in result.stderr
+
+
+def test_an_unquoted_value_is_an_error_with_a_space_before_the_colon(
+    adopter_dir, write_unit, run_cli
+):
+    # The parser accepts a space before the colon (the key is
+    # key.strip() after partition(":")), so the quoting scan has to
+    # accept it too.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question : Q?\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md:5: rationale.question: " in result.stderr
+
+
+def test_an_unquoted_value_is_an_error_when_the_block_key_has_a_space_before_its_colon(
+    adopter_dir, write_unit, run_cli
+):
+    # `rationale :` is the same key line as `rationale:` to the parser,
+    # so it has to open the same scanning region.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale :\n  question: Q?\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md:5: rationale.question: " in result.stderr
+
+
+def test_an_unquoted_value_is_an_error_when_the_block_key_ends_in_a_comment(
+    adopter_dir, write_unit, run_cli
+):
+    # `frontmatter._cut_comment` returns "" for a remainder that starts with
+    # "#", so the parser takes `rationale:#comment` as the same block key
+    # line as `rationale:`; the scan has to open the region on it too.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:#comment\n  question: Q?\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md:5: rationale.question: " in result.stderr
+    assert "rationale.options" not in result.stderr
+
+
+def test_an_unquoted_value_is_an_error_after_a_non_breaking_space(
+    adopter_dir, write_unit, run_cli
+):
+    # The parser's own value.strip() treats a non-breaking space the
+    # same as an ASCII space, so a value that starts right after one is
+    # still unquoted.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        "      reason:\u00a0R\n    - label: \"B\"\n      disposition: rejected\n"
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md:9: rationale.reason: " in result.stderr
+
+
+def test_an_unquoted_label_written_as_a_list_item_is_an_error(
+    adopter_dir, write_unit, run_cli
+):
+    # The only test of the pattern's list-dash branch: an option's
+    # opening line, `    - label: ...`, rather than a plain key: value
+    # line.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        "  options:\n    - label: A\n      disposition: chosen\n"
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0001.md:7: rationale.label: " in result.stderr
+
+
+def test_an_anchor_payload_key_named_reason_is_not_touched_by_the_rule(
+    adopter_dir, write_unit, run_cli
+):
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n'
+        "anchors:\n  - system: adopter-repo\n"
+        "    kind: git_ref\n    captured_at: 2026-08-11\n    payload:\n"
+        "      reason: plain and unquoted on purpose\n",
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "rationale." not in result.stderr
+
+
+def test_the_closing_fence_stops_the_scan_before_the_document_body(
+    adopter_dir, write_unit, run_cli
+):
+    # The document body, after the closing "---", is not frontmatter at all
+    # -- even when it happens to look exactly like an unquoted rationale
+    # block starting at column 0.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+        body="rationale:\n  question: unquoted in the body\n",
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "rationale." not in result.stderr
+
+
 def test_missing_frontmatter_is_an_error(adopter_dir, run_cli):
     path = adopter_dir / "knowledge" / "no-frontmatter.md"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -175,8 +585,9 @@ def test_missing_frontmatter_is_an_error(adopter_dir, run_cli):
 def test_a_contract_finding_names_the_unit_and_field_without_a_line(
     adopter_dir, write_unit, run_cli
 ):
-    # A contract rule speaks about the unit as a whole, so it carries no line;
-    # only the parser knows where it stopped (see the frontmatter tests).
+    # A structural rule speaks about the unit as a whole, so it carries no
+    # line; the parser and the rationale quoting scan, which read the raw
+    # text, do carry one (see the frontmatter tests and the quoting tests).
     write_unit("kb-0001.md", "id: kb-0001\nanchors: []\n")
 
     result = run_cli("validate", cwd=adopter_dir)

@@ -12,13 +12,33 @@ from .findings import ERROR, WARNING, Finding
 from .frontmatter import FrontmatterError, parse
 
 EVIDENCE_STATES = ("measured", "verifiable", "hypothesis")
-BASE_FIELDS = ("id", "evidence", "supersedes", "anchors", "provenance")
+BASE_FIELDS = ("id", "evidence", "supersedes", "anchors", "provenance", "rationale")
 ANCHOR_FIELDS = ("system", "kind", "captured_at", "payload")
+RATIONALE_FIELDS = ("question", "options")
+OPTION_FIELDS = ("label", "disposition", "reason")
+DISPOSITIONS = ("chosen", "rejected")
+# The bidirectional embeddings, overrides, pop and isolates: they reorder
+# what a reader sees without changing the string. The bidirectional MARKS --
+# U+200E, U+200F, U+061C -- are deliberately absent: they resolve direction
+# for mixed text and are how correct Arabic and Hebrew is written.
+BIDI_CONTROLS = "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ISO_PATTERN = re.compile(
     r"^(\d{4}-\d{2}-\d{2})"
     r"(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$"
+)
+# The rationale block's own top-level key line, e.g. `rationale:`,
+# `rationale :` or `rationale:#comment` -- the parser's own rule for where a
+# key ends and a comment or block begins (`frontmatter._cut_comment`).
+RATIONALE_BLOCK_START = re.compile(r"^rationale\s*:(\s|$|#)")
+# A key line inside the rationale block, with or without the list dash that
+# introduces an option: `      reason: "..."` and `    - label: "..."`. The
+# whitespace around the colon matches whatever the parser accepts: a space
+# before it, and any whitespace after it -- including a non-breaking space,
+# since the parser's own `value.strip()` treats it the same as an ASCII space.
+RATIONALE_TEXT_LINE = re.compile(
+    r"^\s*(?:-\s+)?(question|label|reason)\s*:\s*(\S.*)$"
 )
 
 
@@ -41,11 +61,12 @@ def validate_documents(documents, extension=None):
                 )
             )
             continue
-        units.append((location, data))
+        units.append((location, data, text))
 
     declared = {}
-    for location, data in units:
+    for location, data, text in units:
         findings.extend(_check_unit(location, data, extension))
+        findings.extend(_check_rationale_quoting(location, text))
         unit_id = data.get("id")
         if not _is_valid_id(unit_id):
             continue
@@ -61,7 +82,7 @@ def validate_documents(documents, extension=None):
         else:
             declared[unit_id] = location
 
-    for location, data in units:
+    for location, data, _text in units:
         findings.extend(_check_supersedes(location, data, declared))
     findings.extend(_check_supersession_cycles(units, declared))
     return findings
@@ -83,6 +104,7 @@ def _check_unit(location, data, extension=None):
     findings.extend(_check_supersedes_shape(location, data))
     findings.extend(_check_anchors(location, data))
     findings.extend(_check_provenance(location, data))
+    findings.extend(_check_rationale(location, data))
     findings.extend(_check_extension_fields(location, data, extension))
     return findings
 
@@ -206,7 +228,7 @@ def _check_supersession_cycles(units, declared):
     it is left out here so the same defect is not reported twice.
     """
     edges = {}
-    for _location, data in units:
+    for _location, data, _text in units:
         unit_id = data.get("id")
         # `_is_valid_id` first, always: an `id` or a `supersedes` entry can be
         # any JSON value, and an unhashable one reaching `in declared` raises
@@ -361,6 +383,224 @@ def _check_provenance(location, data):
             )
         ]
     return []
+
+
+def _check_rationale(location, data):
+    """The rationale envelope: closed, exactly one chosen, labels distinct.
+
+    Absent is valid and silent: most units are measurements and record no
+    choice between alternatives.
+    """
+    if "rationale" not in data:
+        return []
+    rationale = data["rationale"]
+    if not isinstance(rationale, dict):
+        return [
+            Finding(
+                ERROR,
+                location,
+                "rationale",
+                f"{_describe(rationale)} is not a mapping",
+            )
+        ]
+
+    findings = []
+    for key in rationale:
+        if key not in RATIONALE_FIELDS:
+            findings.append(
+                Finding(
+                    ERROR,
+                    location,
+                    "rationale",
+                    f"unknown key '{key}'; a rationale declares "
+                    + ", ".join(RATIONALE_FIELDS),
+                )
+            )
+    findings.extend(
+        _check_rationale_text(location, "rationale.question", rationale, "question")
+    )
+
+    if "options" not in rationale:
+        findings.append(
+            Finding(ERROR, location, "rationale.options", "required field is missing")
+        )
+        return findings
+    options = rationale["options"]
+    if not isinstance(options, list):
+        findings.append(
+            Finding(
+                ERROR,
+                location,
+                "rationale.options",
+                f"{_describe(options)} is not a list",
+            )
+        )
+        return findings
+    if len(options) < 2:
+        findings.append(
+            Finding(
+                ERROR,
+                location,
+                "rationale.options",
+                f"a rationale declares at least two options; found {len(options)}",
+            )
+        )
+
+    chosen = 0
+    seen_labels = {}
+    for index, option in enumerate(options):
+        field = f"rationale.options[{index}]"
+        if not isinstance(option, dict):
+            findings.append(
+                Finding(ERROR, location, field, f"{_describe(option)} is not a mapping")
+            )
+            continue
+        for key in option:
+            if key not in OPTION_FIELDS:
+                findings.append(
+                    Finding(
+                        ERROR,
+                        location,
+                        field,
+                        f"unknown key '{key}'; an option declares "
+                        + ", ".join(OPTION_FIELDS),
+                    )
+                )
+        findings.extend(
+            _check_rationale_text(location, f"{field}.label", option, "label")
+        )
+        findings.extend(
+            _check_rationale_text(location, f"{field}.reason", option, "reason")
+        )
+
+        if "disposition" not in option:
+            findings.append(
+                Finding(
+                    ERROR,
+                    location,
+                    f"{field}.disposition",
+                    "required field is missing",
+                )
+            )
+        elif option["disposition"] not in DISPOSITIONS:
+            findings.append(
+                Finding(
+                    ERROR,
+                    location,
+                    f"{field}.disposition",
+                    f"{_describe(option['disposition'])} is not one of "
+                    + ", ".join(DISPOSITIONS),
+                )
+            )
+        elif option["disposition"] == "chosen":
+            chosen += 1
+
+        label = option.get("label")
+        if isinstance(label, str) and label.strip():
+            # Compared after collapsing whitespace: 'A' and 'A ' are
+            # different strings that would draw as the same node.
+            collapsed = " ".join(label.split())
+            if collapsed in seen_labels:
+                findings.append(
+                    Finding(
+                        ERROR,
+                        location,
+                        f"{field}.label",
+                        f"collides with rationale.options[{seen_labels[collapsed]}]"
+                        ".label; two options would draw as one node",
+                    )
+                )
+            else:
+                seen_labels[collapsed] = index
+
+    if options and chosen != 1:
+        findings.append(
+            Finding(
+                ERROR,
+                location,
+                "rationale.options",
+                f"exactly one option is 'chosen'; found {chosen}",
+            )
+        )
+    return findings
+
+
+def _check_rationale_text(location, field, mapping, key):
+    """One of the three text values: present, a non-empty string, no bidi controls."""
+    if key not in mapping:
+        return [Finding(ERROR, location, field, "required field is missing")]
+    value = mapping[key]
+    if not isinstance(value, str) or not value.strip():
+        return [
+            Finding(
+                ERROR, location, field, f"{_describe(value)} is not a non-empty string"
+            )
+        ]
+    for char in value:
+        if char in BIDI_CONTROLS:
+            return [
+                Finding(
+                    ERROR,
+                    location,
+                    field,
+                    f"carries the bidirectional control U+{ord(char):04X}, which "
+                    "reorders what a reader sees without changing the string",
+                )
+            ]
+    return []
+
+
+def _check_rationale_quoting(location, text):
+    """The three rationale text values must be quoted in the raw frontmatter.
+
+    The parser returns the same Python string for `reason: "x"` and
+    `reason: x`, so nothing downstream of it can tell them apart -- and in a
+    plain scalar everything from ' #' onward is already gone. This scan reads
+    the raw text instead, bounded to the `rationale` block: from its
+    top-level key line to the next line at indent zero. Outside that region
+    nothing is examined, so an anchor payload with a key named `reason` is
+    untouched -- which a scan over the whole document would have flagged.
+    Inside it, those three names can belong to nothing else: the envelope is
+    closed, so any other key is already an ERROR from `_check_rationale`.
+
+    Indentation rules are the tokenizer's own (`frontmatter._tokenize`):
+    spaces only, tabs rejected outright, blank and comment-only lines
+    skipped. Lines are numbered from `text.split("\\n")`, matching how the
+    parser numbers them.
+    """
+    findings = []
+    delimiters = 0
+    inside = False
+    for number, line in enumerate(text.split("\n"), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 0 and stripped == "---":
+            delimiters += 1
+            if delimiters == 2:
+                break
+            continue
+        if indent == 0:
+            inside = bool(RATIONALE_BLOCK_START.match(stripped))
+            continue
+        if not inside:
+            continue
+        match = RATIONALE_TEXT_LINE.match(line)
+        if match is None:
+            continue
+        if match.group(2)[0] not in "\"'":
+            findings.append(
+                Finding(
+                    ERROR,
+                    location,
+                    f"rationale.{match.group(1)}",
+                    "value is not quoted; an unquoted scalar loses everything "
+                    "from ' #' onward, before validation can see it",
+                    line=number,
+                )
+            )
+    return findings
 
 
 def _is_valid_id(value):
