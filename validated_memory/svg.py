@@ -1,4 +1,4 @@
-"""The generated diagrams: an anchor's freshness over time, and a confluence.
+"""The three generated diagrams: freshness, confluence and rationale.
 
 All inline SVG, generated deterministically from the data alone, and all of
 them obey one set of rules -- written once, here, because a rule kept in
@@ -25,6 +25,14 @@ probe text. An attribute is the one place on the page where a stray `://`
 would breach the self-containment rule, and `recorded_at`, a `label` and a
 `question` are all values nothing constrains. They reach the page as escaped
 text instead, which is where they belong.
+
+Two guarantees, and only two: these drawings are BYTE-DETERMINISTIC, and they
+are NOT promised to look the same on every platform. An SVG `<text>` does not
+wrap, and no layout computed without font metrics can promise "it fits",
+"nothing is truncated" and "it is legible" at once for arbitrary adopter text
+-- CJK, emoji sequences, combining marks and right-to-left text break any
+character-count estimate. Hence `LABEL_LIMIT` below, which is deterministic
+rather than clever.
 """
 
 from . import html
@@ -44,6 +52,26 @@ SHAPES = {
     "drifted": (0, BAND_HEIGHT, "3 2"),
     "unknown": (BAND_HEIGHT // 2, BAND_HEIGHT // 2, None),
 }
+
+# A label at or under this many characters is drawn inside its node; above
+# it, the node draws its number and the full text is read from the list
+# beside the diagram. A character count is not a width, which is exactly why
+# this is a fallback and not an estimate.
+LABEL_LIMIT = 48
+# Above this many options every node draws its number, whatever its label
+# measures: past this point a column of numbers reads better than a column of
+# half-fitting text, and a uniform rule never leaves a reader wondering why
+# one node is numbered and its neighbour is not.
+NUMBERED_ABOVE = 8
+# The rationale diagram is a top-down tree of full-width rows: the question
+# across the top, the options indented beneath it. A side-by-side layout is
+# what would force two different thresholds -- a narrow left-hand question
+# column overflows into the option column long before `LABEL_LIMIT`
+# characters -- and one threshold every node can honour is worth more than a
+# layout that looks more like a graph.
+ROW_HEIGHT = 34
+BOX_HEIGHT = 28
+OPTION_INDENT = 24
 
 
 def _diagram(class_name, width, height, label, description, body):
@@ -165,4 +193,97 @@ def confluence(superseded_ids, successor_id):
         "that replaced them all on the right. Every id drawn here is also a "
         "card nested below this one.",
         "".join(lines),
+    )
+
+
+def rationale(unit_id, record):
+    """One diagram per unit that carries a rationale: the question, then the options.
+
+    A top-down tree of fixed depth: the question in a full-width row across
+    the top, one full-width row per option indented beneath it, and one line
+    from the question down to each. No edges between options and no edge
+    leaving the unit -- a rationale holds no reference to anything, so there
+    is no global graph here and no hairball to avoid. Size and edge count are
+    linear in the number of options.
+
+    Every node is a full-width row precisely so that ONE threshold governs
+    them all. Laid out side by side, the question would sit in a narrow
+    column and overflow into the options well before `LABEL_LIMIT`
+    characters, and a drawing with two different limits is one a reader
+    cannot predict.
+
+    The chosen option is told apart three ways at once, none of them colour:
+    a rounded, heavier border, the word `chosen` drawn inside the node, and
+    its position in the numbered list beside the diagram.
+
+    Nothing is omitted and nothing is silently truncated. Text at or under
+    `LABEL_LIMIT` characters is drawn inline; above it -- or, for an option,
+    past `NUMBERED_ABOVE` options, where the whole diagram switches to
+    numbers at once -- the node draws `#n`, or `?` for the question, and the
+    reader finds the full text beside the drawing. The `<desc>` says so,
+    inside the drawing.
+
+    The label, the `aria-label` and the `<desc>` name the unit and count the
+    options, and quote no adopter text at all: a `question` is unconstrained,
+    so one carrying `://` would put a URL in an SVG attribute (which the
+    page's self-containment rule allows nowhere but `a[href]`), and one past
+    the threshold would contradict the fallback the drawing has just applied.
+
+    Every coordinate here is an integer, so no float formatting can differ
+    between platforms: the same rationale renders the same bytes.
+
+    `record` is a validated rationale mapping: `question` is a non-empty
+    string and `options` a list of at least two mappings, each with `label`,
+    `disposition` and `reason`, exactly one of them `chosen`. It is named
+    `record` rather than `rationale` so that it does not shadow this
+    function.
+    """
+    options = record["options"]
+    question = record["question"]
+    numbered = len(options) > NUMBERED_ABOVE
+    height = ROW_HEIGHT * (len(options) + 1) + 6
+    parts = [
+        f'<rect x="0" y="0" width="{WIDTH - 4}" height="{BOX_HEIGHT}" rx="4" '
+        'fill="none" stroke="currentColor" stroke-width="1"/>',
+        '<text x="8" y="18" font-size="12" fill="currentColor">'
+        f"{html.escape_text(question if len(question) <= LABEL_LIMIT else '?')}"
+        "</text>",
+    ]
+    for position, option in enumerate(options, start=1):
+        y = ROW_HEIGHT * position
+        chosen = option["disposition"] == "chosen"
+        label = option["label"]
+        drawn = (
+            label
+            if not numbered and len(label) <= LABEL_LIMIT
+            else f"#{position}"
+        )
+        parts.append(
+            f'<line x1="12" y1="{BOX_HEIGHT}" x2="{OPTION_INDENT}" '
+            f'y2="{y + BOX_HEIGHT // 2}" stroke="currentColor" '
+            'stroke-width="1"/>'
+            f'<g id="rationale-{html.escape_attribute(unit_id)}-{position}">'
+            f'<rect x="{OPTION_INDENT}" y="{y}" '
+            f'width="{WIDTH - OPTION_INDENT - 4}" height="{BOX_HEIGHT}" '
+            f'rx="{8 if chosen else 0}" fill="none" stroke="currentColor" '
+            f'stroke-width="{3 if chosen else 1}"/>'
+            f'<text x="{OPTION_INDENT + 8}" y="{y + 18}" font-size="11" '
+            f'fill="currentColor">{html.escape_text(option["disposition"])}</text>'
+            f'<text x="{OPTION_INDENT + 70}" y="{y + 18}" font-size="12" '
+            f'fill="currentColor">{html.escape_text(drawn)}</text>'
+            "</g>"
+        )
+    return _diagram(
+        "rationale",
+        WIDTH,
+        height,
+        f"Rationale of {unit_id}: {len(options)} options considered, one chosen",
+        "The question across the top, one row per option beneath it, and no "
+        "edge between options or out of this unit. The chosen option is drawn "
+        "with a rounded, heavier border and the word 'chosen'. A node showing "
+        "'#n', or a question showing '?', means the text ran past 48 "
+        "characters and could not be drawn: the full text is beside this "
+        "drawing -- the question just above it, an option at position n of "
+        "the list.",
+        "".join(parts),
     )

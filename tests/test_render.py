@@ -184,7 +184,7 @@ SELF_CONTAINED_ELEMENTS = {
     "html", "head", "meta", "title", "style", "body",
     "h1", "p", "span", "code", "pre", "ul", "li", "div", "a",
     "section", "details", "summary",
-    "svg", "rect", "text", "line",
+    "svg", "rect", "text", "line", "g",
     "desc",
     "h2", "table", "thead", "tbody", "tr", "th", "td",
 }
@@ -234,6 +234,7 @@ SELF_CONTAINED_ATTRIBUTES = {
     ("svg", "width"),
     ("svg", "height"),
     ("svg", "aria-label"),
+    ("g", "id"),
     ("rect", "x"),
     ("rect", "y"),
     ("rect", "width"),
@@ -241,6 +242,8 @@ SELF_CONTAINED_ATTRIBUTES = {
     ("rect", "fill"),
     ("rect", "stroke"),
     ("rect", "stroke-dasharray"),
+    ("rect", "rx"),
+    ("rect", "stroke-width"),
     ("text", "x"),
     ("text", "y"),
     ("text", "font-size"),
@@ -1461,7 +1464,12 @@ def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
         "id: kb-0004\nevidence: measured\nsupersedes:\n"
         "  - kb-0001\n  - kb-0002\n  - kb-0003\nanchors:\n"
         "  - system: repo\n    kind: git_ref\n"
-        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n"
+        'rationale:\n  question: "Which of the three?"\n  options:\n'
+        '    - label: "<script>alert(4)</script>"\n'
+        '      disposition: chosen\n      reason: "It replaced them."\n'
+        '    - label: "Leave all three standing"\n'
+        '      disposition: rejected\n      reason: "They disagreed."\n',
         "# The one that replaced them\n",
     )
     # A hostile `recorded_at` -- angle brackets and a quote -- on the LAST
@@ -1484,8 +1492,10 @@ def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
     # The page really does draw both diagrams -- asserted by count, not just
     # "any svg", so this test cannot go vacuous the way the reused one did.
     svgs = [(tag, attrs) for tag, attrs in elements if tag == "svg"]
-    assert len(svgs) == 2, svgs
-    assert {attrs.get("class") for _, attrs in svgs} == {"freshness", "confluence"}
+    assert len(svgs) == 3, svgs
+    assert {attrs.get("class") for _, attrs in svgs} == {
+        "freshness", "confluence", "rationale",
+    }
 
     # The hostile `recorded_at` reaches the page escaped, inside the strip's
     # <title>, never as an unescaped tag.
@@ -1499,6 +1509,258 @@ def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
         for name, value in attrs.items():
             assert not name.lower().startswith("on"), f"{tag}[{name}] is an event attribute"
 
+    _assert_self_contained(page, page_events)
+
+
+LONG_LABEL = "A label written out at such length that no node could hold it, ever"
+LONG_QUESTION = "A question put at such length that no node could ever hold it all"
+
+
+def _all_three_fixture(run_cli, adopter_dir, write_unit):
+    """A corpus that draws every diagram: a confluence, a strip, a rationale."""
+    run_cli("init", cwd=adopter_dir)
+    for old in ("kb-0001", "kb-0002", "kb-0003"):
+        write_unit(f"{old}.md", f"id: {old}\nevidence: hypothesis\n", f"# {old}\n")
+    write_unit(
+        "kb-0004.md",
+        "id: kb-0004\nevidence: measured\nsupersedes:\n"
+        "  - kb-0001\n  - kb-0002\n  - kb-0003\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n"
+        'rationale:\n  question: "Which of the three?"\n  options:\n'
+        '    - label: "Replace all three"\n'
+        '      disposition: chosen\n      reason: "They disagreed."\n'
+        '    - label: "Leave all three standing"\n'
+        '      disposition: rejected\n      reason: "They disagreed."\n',
+        "# The one that replaced them\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "drifted", "recorded_at": "2026-02-01T00:00:00Z"},
+    ])
+
+
+def _rationale_diagram(page):
+    return page[page.index('<svg class="rationale"') :].split("</svg>")[0]
+
+
+def test_all_three_diagrams_carry_a_title_and_a_desc(
+    run_cli, adopter_dir, write_unit, page_elements, page_events
+):
+    _all_three_fixture(run_cli, adopter_dir, write_unit)
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    assert result.returncode == 0, result.stderr
+    assert {
+        attrs.get("class") for tag, attrs in elements if tag == "svg"
+    } == {"freshness", "confluence", "rationale"}
+    assert len([tag for tag, _ in elements if tag == "desc"]) == 3
+    _assert_self_contained(page, page_events)
+
+
+def test_a_page_with_all_three_diagrams_renders_the_same_bytes_twice(
+    run_cli, adopter_dir, write_unit
+):
+    # The determinism pin over the page that actually draws every diagram.
+    # SVG is where a non-deterministic value would hide -- an id built from
+    # `hash()`, a float formatted one way here and another there, a clock in
+    # a label -- and the pin that has existed since the views shipped
+    # (`test_a_second_run_reports_unchanged_and_leaves_the_bytes_identical`)
+    # runs over a corpus that draws no diagram at all.
+    _all_three_fixture(run_cli, adopter_dir, write_unit)
+    run_cli("render", cwd=adopter_dir)
+    first = (adopter_dir / "knowledge.html").read_bytes()
+    stamp = (adopter_dir / "knowledge.html").stat().st_mtime_ns
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "render: unchanged knowledge.html" in result.stdout
+    assert (adopter_dir / "knowledge.html").read_bytes() == first
+    # Identical bytes alone would pass an implementation that rewrites the
+    # same content and prints `unchanged`. The file must not be touched.
+    assert (adopter_dir / "knowledge.html").stat().st_mtime_ns == stamp
+
+
+def test_the_rationale_diagram_is_drawn_for_that_unit_and_no_other(
+    run_cli, adopter_dir, write_unit
+):
+    # One page, two units: only the one carrying a rationale gets a diagram.
+    # A per-page diagram instead of a per-unit one would pass a test over a
+    # corpus of one and fail every real corpus.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "Which?"\n  options:\n'
+        '    - label: "A"\n      disposition: chosen\n      reason: "R"\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "# With a rationale\n",
+    )
+    write_unit("kb-0002.md", "id: kb-0002\nevidence: measured\n", "# Without one\n")
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert page.count('<svg class="rationale"') == 1
+    assert page.count('id="rationale-kb-0001-1"') == 1
+    assert "rationale-kb-0002" not in page
+
+
+def test_text_too_long_to_draw_falls_back_and_stays_on_the_page(
+    run_cli, adopter_dir, write_unit
+):
+    # An SVG <text> does not wrap, and a character count is not a width --
+    # which is exactly why the fallback is a fallback and not an estimate.
+    # One threshold governs every node, question included: nothing is omitted
+    # and nothing is truncated, the node says "?" or "#2" and the page says
+    # the rest.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        f'  question: "{LONG_QUESTION}"\n  options:\n'
+        '    - label: "Short"\n      disposition: chosen\n'
+        '      reason: "Fits."\n'
+        f'    - label: "{LONG_LABEL}"\n      disposition: rejected\n'
+        '      reason: "Does not fit."\n',
+        "# Fallback\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    diagram = _rationale_diagram(page)
+
+    assert len(LONG_QUESTION) > 48 and len(LONG_LABEL) > 48
+    assert ">?</text>" in diagram
+    assert LONG_QUESTION not in diagram
+    assert ">#2</text>" in diagram
+    assert LONG_LABEL not in diagram
+    assert ">Short</text>" in diagram
+    # The complete text is on the page, beside the diagram, both of them.
+    assert f'<p class="question" dir="auto">{LONG_QUESTION}</p>' in page
+    assert f'<span class="label" dir="auto">{LONG_LABEL}</span>' in page
+
+
+def test_above_eight_options_every_node_is_numbered(
+    run_cli, adopter_dir, write_unit
+):
+    options = "".join(
+        f'    - label: "Option {n}"\n'
+        f'      disposition: {"chosen" if n == 1 else "rejected"}\n'
+        f'      reason: "Reason {n}"\n'
+        for n in range(1, 10)
+    )
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "Which of the nine?"\n  options:\n' + options,
+        "# Nine options\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    diagram = _rationale_diagram(page)
+
+    assert ">#1</text>" in diagram
+    assert ">#9</text>" in diagram
+    assert "Option 1" not in diagram
+    # Every option is still on the page, in full.
+    for n in range(1, 10):
+        assert f'<span class="label" dir="auto">Option {n}</span>' in page
+
+
+def test_the_rationale_diagram_element_ids_derive_from_the_unit_and_position(
+    run_cli, adopter_dir, write_unit
+):
+    # Deterministic ids, never `hash()`, which is salted per process: the
+    # same corpus must render the same bytes on every run and every machine.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "Which?"\n  options:\n'
+        '    - label: "A"\n      disposition: chosen\n      reason: "R"\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "# Ids\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert 'id="rationale-kb-0001-1"' in page
+    assert 'id="rationale-kb-0001-2"' in page
+
+
+def test_the_chosen_option_differs_in_shape_and_in_text_not_only_in_fill(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "Which?"\n  options:\n'
+        '    - label: "A"\n      disposition: chosen\n      reason: "R"\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "# Shapes\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    diagram = _rationale_diagram(page)
+
+    # Shape: the chosen node is rounded and heavier.
+    assert 'rx="8"' in diagram and 'stroke-width="3"' in diagram
+    assert 'rx="0"' in diagram and 'stroke-width="1"' in diagram
+    # Text: the disposition is drawn, not implied by colour.
+    assert ">chosen</text>" in diagram
+    assert ">rejected</text>" in diagram
+
+
+def test_hostile_rationale_text_never_becomes_live_markup_inside_the_svg(
+    run_cli, adopter_dir, write_unit, page_elements, page_events
+):
+    # Two hostile shapes at once. The label tries to close the <text> element
+    # it is drawn in; the question carries a URL, which is the one thing no
+    # attribute on this page but `a[href]` may hold -- so it must reach the
+    # drawing as a text node and never as part of a title, an aria-label or
+    # a description.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "Which host? https://example.invalid/x"\n  options:\n'
+        '    - label: "</text><script>alert(2)</script>"\n'
+        '      disposition: chosen\n      reason: "R"\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "# Hostile drawing\n",
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    diagram = _rationale_diagram(page)
+
+    assert result.returncode == 0, result.stderr
+    assert "<script>alert(2)</script>" not in page
+    assert not [tag for tag, _ in page_elements(page) if tag == "script"]
+    # The diagram's own words name the unit and count the options; no
+    # adopter text is in them.
+    assert (
+        'aria-label="Rationale of kb-0001: 2 options considered, one chosen"'
+    ) in diagram
+    # The question is drawn, as a text node, because it fits.
+    assert "Which host? https://example.invalid/x</text>" in diagram
+    # And it is on the card in full, escaped as text.
+    assert (
+        '<p class="question" dir="auto">Which host? '
+        'https://example.invalid/x</p>'
+    ) in page
     _assert_self_contained(page, page_events)
 
 
@@ -2200,6 +2462,8 @@ def test_the_rationale_is_on_the_card_in_full(
     assert '<li class="option rejected">' in page
     assert '<span class="option-number">1</span>' in page
     assert '<span class="option-number">2</span>' in page
+    assert '<span class="disposition">chosen</span>' in page
+    assert '<p class="reason" dir="auto">' in page
     assert 'Generate a complete static artifact' in page
     assert "It makes the reader depend on a runtime." in page
 

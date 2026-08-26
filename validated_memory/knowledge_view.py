@@ -140,7 +140,7 @@ def _render_section(corpus, frame, shown_keys):
 
 
 def _rationale(unit):
-    """The unit's rationale: the question, then every option in full.
+    """The unit's rationale: the question, the diagram, then every option in full.
 
     Drawn only for a unit that carries one -- most units are measurements,
     record no choice between alternatives, and must not be nagged into
@@ -150,9 +150,9 @@ def _rationale(unit):
     supersession or for a failed verdict: an option was considered and not
     chosen HERE. It is not false, and it is not superseded.
 
-    This list is the complete text, always. The diagram beside it may fall
-    back to a number for a label it cannot fit; nothing it shows is missing
-    from here.
+    This list is the complete text, always. The diagram above it may fall
+    back to `?` for a question or `#n` for a label it cannot fit; nothing it
+    shows is missing from here, which is what "never load-bearing" means.
     """
     rationale = unit.data.get("rationale")
     if not rationale:
@@ -171,6 +171,7 @@ def _rationale(unit):
         '<div class="rationale">\n'
         f'<p class="question" dir="auto">'
         f'{html.escape_text(rationale["question"])}</p>\n'
+        f"{svg.rationale(unit.unit_id, rationale)}\n"
         '<ul class="options">\n' + "\n".join(items) + "\n</ul>\n"
         "</div>\n"
     )
