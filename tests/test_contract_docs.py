@@ -39,7 +39,7 @@ def _base_fields():
     )
     declaration = re.search(r"^BASE_FIELDS = \((.*?)\)", source, re.DOTALL | re.MULTILINE)
     assert declaration, "BASE_FIELDS is no longer a parenthesised tuple literal"
-    return set(re.findall(r'"([a-z_]+)"', declaration.group(1)))
+    return set(re.findall(r'"([A-Za-z_][A-Za-z0-9_.-]*)"', declaration.group(1)))
 
 
 def test_every_canonical_block_names_exactly_the_base_contract():

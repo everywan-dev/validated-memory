@@ -38,7 +38,7 @@ RATIONALE_BLOCK_START = re.compile(r"^rationale\s*:(\s|$|#)")
 # before it, and any whitespace after it -- including a non-breaking space,
 # since the parser's own `value.strip()` treats it the same as an ASCII space.
 RATIONALE_TEXT_LINE = re.compile(
-    r"^(\s*)(?:-\s+)?(question|label|reason)\s*:\s*(\S.*)$"
+    r"^\s*(?:-\s+)?(question|label|reason)\s*:\s*(\S.*)$"
 )
 
 
@@ -589,12 +589,12 @@ def _check_rationale_quoting(location, text):
         match = RATIONALE_TEXT_LINE.match(line)
         if match is None:
             continue
-        if match.group(3)[0] not in "\"'":
+        if match.group(2)[0] not in "\"'":
             findings.append(
                 Finding(
                     ERROR,
                     location,
-                    f"rationale.{match.group(2)}",
+                    f"rationale.{match.group(1)}",
                     "value is not quoted; an unquoted scalar loses everything "
                     "from ' #' onward, before validation can see it",
                     line=number,
