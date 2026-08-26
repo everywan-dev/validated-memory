@@ -444,6 +444,26 @@ def test_an_unquoted_value_is_an_error_when_the_block_key_has_a_space_before_its
     assert "ERROR: knowledge/kb-0001.md:5: rationale.question: " in result.stderr
 
 
+def test_an_unquoted_value_is_an_error_when_the_block_key_ends_in_a_comment(
+    adopter_dir, write_unit, run_cli
+):
+    # `frontmatter._cut_comment` returns "" for a remainder that starts with
+    # "#", so the parser takes `rationale:#comment` as the same block key
+    # line as `rationale:`; the scan has to open the region on it too.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:#comment\n  question: Q?\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "rationale.question: " in result.stderr
+
+
 def test_an_unquoted_value_is_an_error_after_a_non_breaking_space(
     adopter_dir, write_unit, run_cli
 ):
@@ -496,6 +516,27 @@ def test_an_anchor_payload_key_named_reason_is_not_touched_by_the_rule(
         "anchors:\n  - system: adopter-repo\n"
         "    kind: git_ref\n    captured_at: 2026-08-11\n    payload:\n"
         "      reason: plain and unquoted on purpose\n",
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "rationale." not in result.stderr
+
+
+def test_the_closing_fence_stops_the_scan_before_the_document_body(
+    adopter_dir, write_unit, run_cli
+):
+    # The document body, after the closing "---", is not frontmatter at all
+    # -- even when it happens to look exactly like an unquoted rationale
+    # block starting at column 0.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+        body="rationale:\n  question: unquoted in the body\n",
     )
 
     result = run_cli("validate", cwd=adopter_dir)

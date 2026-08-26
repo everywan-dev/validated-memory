@@ -28,6 +28,10 @@ ISO_PATTERN = re.compile(
     r"^(\d{4}-\d{2}-\d{2})"
     r"(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$"
 )
+# The rationale block's own top-level key line, e.g. `rationale:`,
+# `rationale :` or `rationale:#comment` -- the parser's own rule for where a
+# key ends and a comment or block begins (`frontmatter._cut_comment`).
+RATIONALE_BLOCK_START = re.compile(r"^rationale\s*:(\s|$|#)")
 # A key line inside the rationale block, with or without the list dash that
 # introduces an option: `      reason: "..."` and `    - label: "..."`. The
 # whitespace around the colon matches whatever the parser accepts: a space
@@ -578,10 +582,7 @@ def _check_rationale_quoting(location, text):
                 break
             continue
         if indent == 0:
-            # The parser accepts `rationale :` and `rationale:   # comment`
-            # as the same key line, so the region has to open on the same
-            # condition it does.
-            inside = bool(re.match(r"^rationale\s*:(\s|$)", stripped))
+            inside = bool(RATIONALE_BLOCK_START.match(stripped))
             continue
         if not inside:
             continue
