@@ -284,6 +284,29 @@ def test_every_invalid_unit_gates_naming_unit_and_field(adopter_dir, write_unit,
         )
 
 
+def test_an_empty_options_list_is_one_finding_naming_the_count(
+    adopter_dir, write_unit, run_cli
+):
+    # An empty list is falsy, so `if options and chosen != 1` never fires
+    # alongside the "too few" check: one finding, not two, for one defect.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q"\n'
+        '  options: []\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert result.stderr.count("rationale.options: ") == 1
+    line = next(
+        text_line
+        for text_line in result.stderr.splitlines()
+        if "rationale.options: " in text_line
+    )
+    assert "at least two options; found 0" in line
+
+
 def test_a_rationale_may_carry_right_to_left_text_and_bidi_marks(
     adopter_dir, write_unit, run_cli
 ):
@@ -339,6 +362,7 @@ def test_each_bidi_control_inside_a_quoted_question_is_an_error(
 
     assert result.returncode == 1
     assert "rationale.question: " in result.stderr
+    assert f"U+{ord(control):04X}" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -461,7 +485,8 @@ def test_an_unquoted_value_is_an_error_when_the_block_key_ends_in_a_comment(
     result = run_cli("validate", cwd=adopter_dir)
 
     assert result.returncode == 1
-    assert "rationale.question: " in result.stderr
+    assert "ERROR: knowledge/kb-0001.md:5: rationale.question: " in result.stderr
+    assert "rationale.options" not in result.stderr
 
 
 def test_an_unquoted_value_is_an_error_after_a_non_breaking_space(
