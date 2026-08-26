@@ -17,6 +17,105 @@ def _log(adopter_dir, records):
     )
 
 
+# `memory.html`, byte for byte, as the CLI renders it today over the fixture
+# tree in the test below. The 2.0.0 design leaves the memory view's markup,
+# content and styling untouched -- only its stylesheet moves out of the shared
+# constant -- so the whole page is pinned rather than sampled: a stylesheet
+# edit meant for `knowledge.html` that reaches this one changes bytes here and
+# nowhere a substring assertion would look.
+MEMORY_PAGE = """\
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent memory</title>
+<style>
+:root { color-scheme: light dark; }
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+       margin: 2rem auto; max-width: 60rem; padding: 0 1rem; line-height: 1.5; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: rgba(127,127,127,0.12); padding: .75rem; border-radius: .25rem; }
+summary { cursor: pointer; }
+.chain { border-left: 3px solid rgba(127,127,127,0.4); margin-left: .5rem;
+         padding-left: 1rem; }
+.meta { color: rgba(127,127,127,1); font-size: .9em; }
+</style>
+</head>
+<body>
+<h1>Agent memory</h1>
+<p class="basis">Basis: 1 memory file(s) under memory/</p>
+<section class="entry" id="entry-name-coffee" data-name="coffee">
+<details>
+<summary><code class="filename">coffee</code> <span class="relpath">coffee.md</span></summary>
+<p class="name">coffee</p>
+<p class="description">oat milk</p>
+<p class="type">user</p>
+<pre class="body">
+Memory body.
+</pre>
+<p class="meta">No outgoing references.</p>
+<p class="meta">No incoming references.</p>
+</details>
+</section>
+</body>
+</html>
+"""
+
+
+def test_the_memory_page_is_byte_for_byte_what_it_was_before_the_split(
+    run_cli, adopter_dir, write_unit, write_memory, write_index
+):
+    # No `init` here on purpose: `init` writes an adopter configuration and a
+    # schema stub, and this page must be a function of the memory directory
+    # alone. `render` needs only the knowledge directory, the memory
+    # directory and its index.
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\n",
+        "# The first conclusion\n\nSupporting prose.\n",
+    )
+    write_memory(
+        "coffee.md",
+        "name: coffee\ndescription: oat milk\nmetadata:\n  type: user\n",
+    )
+    write_index("- [Coffee](coffee.md) — oat milk\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert (adopter_dir / "memory.html").read_text(encoding="utf-8") == MEMORY_PAGE
+
+
+def test_a_second_run_leaves_the_memory_page_identical_and_untouched(
+    run_cli, adopter_dir, write_unit, write_memory, write_index
+):
+    # The determinism pin `knowledge.html` has had since the views shipped
+    # (`test_a_second_run_reports_unchanged_and_leaves_the_bytes_identical`),
+    # now over the other artifact too: both pages carry the guarantee, and
+    # from this task on they carry separate stylesheets, so one of them could
+    # acquire a non-deterministic value without the other noticing.
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n", "# A claim\n")
+    write_memory(
+        "coffee.md",
+        "name: coffee\ndescription: oat milk\nmetadata:\n  type: user\n",
+    )
+    write_index("- [Coffee](coffee.md) — oat milk\n")
+    run_cli("render", cwd=adopter_dir)
+    first = (adopter_dir / "memory.html").read_bytes()
+    stamp = (adopter_dir / "memory.html").stat().st_mtime_ns
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "render: unchanged memory.html" in result.stdout
+    assert (adopter_dir / "memory.html").read_bytes() == first
+    # Identical bytes alone would pass an implementation that rewrites the
+    # same content and prints `unchanged`. The file must not be touched.
+    assert (adopter_dir / "memory.html").stat().st_mtime_ns == stamp
+
+
 def _scaffold(run_cli, adopter_dir, write_unit):
     run_cli("init", cwd=adopter_dir)
     write_unit(
@@ -71,6 +170,26 @@ def test_an_error_finding_stops_the_run_and_writes_nothing(
     assert not (adopter_dir / "knowledge.html").exists()
 
 
+# The complete set of elements either view is allowed to emit anywhere on the
+# page. This exists because the attribute whitelist below cannot stand on its
+# own: the scan walks a tag's attributes, so an element carrying NONE of them
+# -- `<script>` with inline content is precisely that shape -- has no pairs
+# to check and was admitted silently. A new element joins this set in the same
+# commit that first emits it.
+#
+# `title` covers two different elements the parser cannot tell apart: the
+# document's `<title>` in `<head>`, and the `<title>` inside an `<svg>` or an
+# `<svg>` band. Both are legitimate, and neither can carry a URL.
+SELF_CONTAINED_ELEMENTS = {
+    "html", "head", "meta", "title", "style", "body",
+    "h1", "p", "span", "code", "pre", "ul", "li", "div", "a",
+    "section", "details", "summary",
+    "svg", "rect", "text", "line", "g",
+    "desc",
+    "h2", "table", "thead", "tbody", "tr", "th", "td",
+}
+
+
 # The complete set of (element, attribute) pairs either view is allowed to
 # emit anywhere on the page. This is a real whitelist, not a blacklist of
 # attributes known to carry a URL: a blacklist misses a *relative* `href` on
@@ -93,6 +212,10 @@ SELF_CONTAINED_ATTRIBUTES = {
     ("section", "data-unit"),
     ("section", "data-state"),
     ("section", "data-name"),
+    ("section", "data-evidence"),
+    ("section", "data-verdict"),
+    ("span", "dir"),
+    ("p", "dir"),
     ("p", "class"),
     ("span", "class"),
     ("code", "class"),
@@ -111,36 +234,85 @@ SELF_CONTAINED_ATTRIBUTES = {
     ("svg", "width"),
     ("svg", "height"),
     ("svg", "aria-label"),
+    ("g", "id"),
     ("rect", "x"),
     ("rect", "y"),
     ("rect", "width"),
     ("rect", "height"),
     ("rect", "fill"),
+    ("rect", "stroke"),
+    ("rect", "stroke-dasharray"),
+    ("rect", "rx"),
+    ("rect", "stroke-width"),
     ("text", "x"),
     ("text", "y"),
     ("text", "font-size"),
+    ("text", "fill"),
+    ("text", "text-anchor"),
     ("line", "x1"),
     ("line", "y1"),
     ("line", "x2"),
     ("line", "y2"),
     ("line", "stroke"),
+    ("table", "class"),
+    ("tr", "class"),
+    ("th", "scope"),
+    ("td", "class"),
     ("line", "stroke-width"),
 }
 
 
-def _assert_self_contained(page, page_elements):
+def _assert_self_contained(page, page_events):
     """The self-containment scan both pages' tests share.
 
     A real whitelist over the parsed document, not a blacklist of
-    substrings: every (element, attribute) pair anywhere on the page must be
-    in `SELF_CONTAINED_ATTRIBUTES`, `("a", "href")` is the only pair allowed
-    to carry an external URL, and no `<meta>` is an `http-equiv` refresh.
+    substrings: every element must be in `SELF_CONTAINED_ELEMENTS`, every
+    (element, attribute) pair in `SELF_CONTAINED_ATTRIBUTES`,
+    `("a", "href")` is the only pair allowed to carry an external URL, and no
+    `<meta>` is an `http-equiv`.
+
+    Three of those rules need more than a flat list of start tags, which is
+    why this walks an event stream:
+
+    - The element check is not redundant with the attribute check: an element
+      with no attributes has no pairs, so without it a bare `<script>` passes.
+    - Inside an `<svg>`, no `a` element and no `href` attribute on anything:
+      a diagram carries no href of any kind, and `("a", "href")` is exempt
+      from the URL check, so nothing else here would catch one. Depth is
+      counted rather than matched, so an `<svg>` that is never closed leaves
+      everything after it inside a diagram -- which is the conservative
+      reading, and the one that fails loudly.
+    - A `<style>` element's own text is content nothing else inspects, and
+      `@import` or a `url(...)` in it fetches from the network as surely as
+      a remote stylesheet link would.
+
     Kept as one helper so `knowledge.html` and `memory.html` cannot drift
-    apart on what "self-contained" means. Returns the parsed elements so a
-    caller can run further checks over the same parse.
+    apart on what "self-contained" means. Returns the start tags, so a caller
+    can run further checks over the same parse.
     """
-    elements = page_elements(page)
-    for tag, attrs in elements:
+    elements = []
+    styles = []
+    svg_depth = 0
+    style_depth = 0
+    for event in page_events(page):
+        if event[0] == "data":
+            if style_depth:
+                styles.append(event[1])
+            continue
+        if event[0] == "end":
+            if event[1] == "svg" and svg_depth:
+                svg_depth -= 1
+            if event[1] == "style" and style_depth:
+                style_depth -= 1
+            continue
+        _kind, tag, attrs = event
+        elements.append((tag, attrs))
+        assert tag in SELF_CONTAINED_ELEMENTS, (
+            f"<{tag}> is outside the self-containment whitelist"
+        )
+        if svg_depth:
+            assert tag != "a", f"an <a> inside an <svg>: {attrs}"
+            assert "href" not in attrs, f"<{tag} href> inside an <svg>: {attrs}"
         if tag == "meta":
             assert "http-equiv" not in attrs, f"<meta http-equiv> found: {attrs}"
         for name, value in attrs.items():
@@ -155,7 +327,124 @@ def _assert_self_contained(page, page_elements):
             assert "ping" not in attrs
             if attrs.get("target") == "_blank":
                 assert attrs.get("rel") == "noopener noreferrer"
+        if tag == "svg":
+            svg_depth += 1
+        if tag == "style":
+            style_depth += 1
+    for css in styles:
+        folded = css.casefold()
+        assert "@import" not in folded, f"a <style> block imports: {css[:120]!r}"
+        assert "url(" not in folded, f"a <style> block fetches a url: {css[:120]!r}"
+    # An `<svg>` or a `<style>` that never closes must fail loudly rather
+    # than silently stop scanning: the depth counters above are what the
+    # nesting rule and the CSS check both rely on, so a counter left nonzero
+    # here means either element (or both) was still open when the document
+    # ran out, and everything after it was never really outside the element
+    # its author thought they had closed.
+    assert svg_depth == 0, "an <svg> was never closed"
+    assert style_depth == 0, "a <style> was never closed"
     return elements
+
+
+def _wrapped(body):
+    """A minimal, otherwise-legal page carrying `body` in its `<body>`.
+
+    The shell is made only of whitelisted elements and pairs, so a failure
+    can only come from `body` -- which is what the control below establishes.
+    """
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        "<title>Curated knowledge</title>\n<style>body { color: red; }</style>\n"
+        f"</head>\n<body>\n<h1>Curated knowledge</h1>\n{body}\n</body>\n</html>\n"
+    )
+
+
+# One case per way a page could stop being self-contained. The first four
+# are caught today, by the attribute loop or the `http-equiv` rule, and are
+# here so that they stay caught once the element whitelist takes that job
+# over -- an `<iframe>` with no attributes at all would slip through the
+# attribute loop exactly as `<script>` does. `bare_script` is the element
+# check's own hole: no attributes at all, so the attribute loop never runs.
+# `anchor_inside_svg` and `uppercase_anchor_inside_svg` are the nesting rule,
+# case-folded and not: an `<a>` that is legal outside an `<svg>` and
+# forbidden inside one. `unclosed_svg` is not another nesting case -- it
+# proves the depth counter itself, not just the rule it drives: its `<a>` is
+# only ever "inside" the `<svg>` because the `<svg>` never closes, so the
+# depth never decrements, and it must still be rejected with the same
+# "an <a> inside an <svg>" message as the closed cases above. The positive
+# control below pins the other side of that same fact: a real `<a href>`,
+# placed after an `<svg>` that DOES close, is accepted. `style_import` is
+# the last hole, a `<style>` element whose own text fetches from the
+# network.
+HOSTILE_BODIES = {
+    "iframe": '<iframe src="https://example.invalid/"></iframe>',
+    "meta_refresh": '<meta http-equiv="refresh" content="0">',
+    "svg_image": '<svg class="freshness"><image href="band.png"/></svg>',
+    "svg_use": '<svg class="freshness"><use href="#band"/></svg>',
+    "bare_script": "<script>alert(1)</script>",
+    "anchor_inside_svg": (
+        '<svg class="rationale"><a href="#unit-kb-0001">'
+        '<text x="0" y="0">kb-0001</text></a></svg>'
+    ),
+    "uppercase_anchor_inside_svg": (
+        '<svg class="rationale"><A HREF="#unit-kb-0001">'
+        '<text x="0" y="0">kb-0001</text></A></svg>'
+    ),
+    # Never closed: `<text>` is the svg's only real child, and the `<a>`
+    # that follows would be a legitimate link after a closed `</svg>` --
+    # which is exactly what the positive control below accepts. Here the
+    # `</svg>` never comes, so the depth counter never decrements and the
+    # `<a>` is still counted as nested: this proves the counter itself, not
+    # just the nesting rule, which `anchor_inside_svg` above already covers
+    # with a `<svg>` that does close.
+    "unclosed_svg": (
+        '<svg class="rationale"><text x="0" y="0">ok</text>'
+        '<a href="#unit-kb-0001">doc</a>'
+    ),
+    # The depth counter's own hole, distinct from `unclosed_svg` above: that
+    # case is caught by the nesting rule (an `<a href>` still "inside" an
+    # `<svg>` that never closes), which would keep catching it even if the
+    # `svg_depth == 0` assertion at the end of the scan were deleted. Here
+    # there is nothing hostile nested inside at all -- the only thing wrong
+    # with this body is that its one `<svg>` never closes -- so this case can
+    # only be caught by that final assertion.
+    "unclosed_svg_nothing_after": '<svg class="rationale"><text x="0" y="0">ok</text>',
+    "style_import": "<style>@import url(https://example.invalid/x.css);</style>",
+    # Case-folded: `@IMPORT URL(` fetches from the network exactly as
+    # `@import url(` does, and a substring check that only matches the
+    # lowercase spelling would wave it through.
+    "style_import_uppercase": (
+        "<style>@IMPORT URL(https://example.invalid/x.css);</style>"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(HOSTILE_BODIES))
+def test_the_self_containment_scan_rejects_hostile_markup(name, page_events):
+    with pytest.raises(AssertionError):
+        _assert_self_contained(_wrapped(HOSTILE_BODIES[name]), page_events)
+
+
+def test_the_self_containment_scan_accepts_a_page_built_from_the_whitelist(
+    page_events
+):
+    # The positive control: a page made only of whitelisted elements and
+    # pairs passes, so the cases above are proving the scan catches each
+    # hostile body rather than proving the scan rejects everything. The
+    # trailing `<svg>...</svg>` followed by a real `<a href>` pins the other
+    # side of `unclosed_svg`: a link of the same shape, after an `<svg>`
+    # that DOES close, is accepted -- so `unclosed_svg`'s rejection is shown
+    # to come from the missing close, not from something else about that
+    # shape.
+    _assert_self_contained(
+        _wrapped(
+            '<p class="basis">Basis: 0 unit(s) under knowledge/</p>'
+            '<svg class="rationale"><text x="0" y="0">ok</text></svg>'
+            '<a href="https://example.invalid/doc">doc</a>'
+        ),
+        page_events,
+    )
 
 
 def test_every_unit_has_a_section_with_its_headline_and_grades(
@@ -211,7 +500,7 @@ def test_hostile_content_never_becomes_live_markup(
 
 
 def test_only_an_anchor_href_ever_carries_an_external_url(
-    run_cli, adopter_dir, write_unit, page_elements
+    run_cli, adopter_dir, write_unit, page_events
 ):
     run_cli("init", cwd=adopter_dir)
     write_unit(
@@ -222,7 +511,7 @@ def test_only_an_anchor_href_ever_carries_an_external_url(
 
     run_cli("render", cwd=adopter_dir)
     page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
-    elements = _assert_self_contained(page, page_elements)
+    elements = _assert_self_contained(page, page_events)
 
     assert any(
         tag == "a" and attrs.get("href") == "https://example.invalid/doc"
@@ -968,7 +1257,7 @@ def test_a_non_string_description_does_not_raise(
 
 
 def test_hostile_memory_content_never_becomes_live_markup(
-    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_events
 ):
     # `memory_view` renders the same kind of adopter-authored freeform text
     # as `knowledge_view` (body, description, metadata), so it carries the
@@ -991,7 +1280,7 @@ def test_hostile_memory_content_never_becomes_live_markup(
     assert 'a "quoted" &lt;tag&gt;' in page
     assert "user" in page
 
-    elements = _assert_self_contained(page, page_elements)
+    elements = _assert_self_contained(page, page_events)
     assert not [tag for tag, _ in elements if tag == "script"]
 
 
@@ -999,10 +1288,13 @@ def test_a_null_recorded_at_reads_as_absent_in_the_list_and_the_strip_alike(
     run_cli, adopter_dir, write_unit, page_elements
 ):
     # `recorded_at` is not a key field and nothing validates it, so an
-    # explicit `null` is a legal record. `html.escape_text` (the history
-    # list) and `html.escape_attribute` (the strip's `aria-label`) must spell
-    # an absent value the same way -- not "" in one place and the literal
-    # word "None" in the other.
+    # explicit `null` is a legal record. Wherever it reaches the page it must
+    # spell an absent value the same way -- "" and never the literal word
+    # "None" -- and it reaches the page twice: in the history list and in
+    # each band's own <title>, both through `html.escape_text`. The strip's
+    # `aria-label` no longer quotes it at all, being built from the record
+    # count and the last verdict, so the assertion on that attribute is now
+    # a guard that the label stays free of record fields.
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -1092,11 +1384,92 @@ def test_a_confluence_is_drawn_when_three_units_are_superseded_at_once(
             if tag == "svg" and attrs.get("class") == "confluence"]
 
 
+def _two_diagram_fixture(run_cli, adopter_dir, write_unit):
+    """A corpus that draws a confluence and a freshness strip, and no more."""
+    run_cli("init", cwd=adopter_dir)
+    for old in ("kb-0001", "kb-0002", "kb-0003"):
+        write_unit(f"{old}.md", f"id: {old}\nevidence: hypothesis\n", f"# {old}\n")
+    write_unit(
+        "kb-0004.md",
+        "id: kb-0004\nevidence: measured\nsupersedes:\n"
+        "  - kb-0001\n  - kb-0002\n  - kb-0003\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# The one that replaced them\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "drifted", "recorded_at": "2026-02-01T00:00:00Z"},
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "unknown", "recorded_at": "2026-03-01T00:00:00Z"},
+    ])
+
+
+def test_the_two_existing_diagrams_carry_a_title_and_a_desc(
+    run_cli, adopter_dir, write_unit, page_elements, page_events
+):
+    _two_diagram_fixture(run_cli, adopter_dir, write_unit)
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    assert result.returncode == 0, result.stderr
+    assert {
+        attrs.get("class") for tag, attrs in elements if tag == "svg"
+    } == {"freshness", "confluence"}
+    # One <desc> per diagram. The strip also carries a <title> per band, so
+    # titles outnumber descs; descs are one apiece and that is the count to
+    # assert.
+    assert len([tag for tag, _ in elements if tag == "desc"]) == 2
+    # The one thing the strip's description exists to deny.
+    assert "Not a time axis" in page
+    assert 'role="img"' in page
+    # The strip's own <title>, built from the record count and the last
+    # verdict -- the fixture's three records, oldest to newest, end unknown.
+    assert (
+        "<title>Probe history: 3 record(s), oldest to newest, "
+        "ending unknown</title>"
+    ) in page
+    _assert_self_contained(page, page_events)
+
+
+def test_each_freshness_band_differs_in_shape_and_in_text_not_only_colour(
+    run_cli, adopter_dir, write_unit
+):
+    # "State differs in shape and in text, not only in fill." Three bands,
+    # one per verdict: a full-height solid band, a full-height dashed band,
+    # and a half-height band -- each with its own one-character mark on top.
+    # Printed in black and white, or read by someone who cannot tell the
+    # three fills apart, the strip still says which is which.
+    _two_diagram_fixture(run_cli, adopter_dir, write_unit)
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    strip = page[page.index('<svg class="freshness"') :].split("</svg>")[0]
+
+    assert 'fill="#ffffff">+</text>' in strip
+    assert 'fill="#ffffff">!</text>' in strip
+    assert 'fill="#ffffff">?</text>' in strip
+    assert 'height="24" fill="#2e7d32">' in strip
+    assert (
+        'height="24" fill="#c62828" stroke="currentColor" '
+        'stroke-dasharray="3 2">'
+    ) in strip
+    assert 'y="12" width=' in strip
+    assert 'height="12" fill="#757575">' in strip
+    # A non-mark text -- the confluence diagram's own unit-id label --
+    # carries the page's colour scheme instead of the marks' fixed white.
+    assert 'fill="currentColor">kb-0001</text>' in page
+
+
 SVG_FORBIDDEN_ELEMENTS = {"use", "image", "iframe", "object", "embed", "script"}
 
 
 def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
-    run_cli, adopter_dir, write_unit, page_elements
+    run_cli, adopter_dir, write_unit, page_elements, page_events
 ):
     # A page where BOTH diagrams are actually drawn: a confluence (three
     # units superseded at once) and a freshness strip (several probes of one
@@ -1113,13 +1486,19 @@ def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
         "id: kb-0004\nevidence: measured\nsupersedes:\n"
         "  - kb-0001\n  - kb-0002\n  - kb-0003\nanchors:\n"
         "  - system: repo\n    kind: git_ref\n"
-        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n"
+        'rationale:\n  question: "Which of the three?"\n  options:\n'
+        '    - label: "<script>alert(4)</script>"\n'
+        '      disposition: chosen\n      reason: "It replaced them."\n'
+        '    - label: "Leave all three standing"\n'
+        '      disposition: rejected\n      reason: "They disagreed."\n',
         "# The one that replaced them\n",
     )
     # A hostile `recorded_at` -- angle brackets and a quote -- on the LAST
-    # record: this is the one value both the strip's per-band <title> and
-    # its right-edge aria-label read, so it is the sharpest place a missed
-    # escape would show up as live markup.
+    # record: the band's own <title> is the one place the strip shows a
+    # record field at all, so it is the sharpest place a missed escape would
+    # show up as live markup. The strip's aria-label is built from a count
+    # and a verdict and quotes no record field.
     _log(adopter_dir, [
         {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
          "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
@@ -1135,8 +1514,10 @@ def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
     # The page really does draw both diagrams -- asserted by count, not just
     # "any svg", so this test cannot go vacuous the way the reused one did.
     svgs = [(tag, attrs) for tag, attrs in elements if tag == "svg"]
-    assert len(svgs) == 2, svgs
-    assert {attrs.get("class") for _, attrs in svgs} == {"freshness", "confluence"}
+    assert len(svgs) == 3, svgs
+    assert {attrs.get("class") for _, attrs in svgs} == {
+        "freshness", "confluence", "rationale",
+    }
 
     # The hostile `recorded_at` reaches the page escaped, inside the strip's
     # <title>, never as an unescaped tag.
@@ -1150,7 +1531,279 @@ def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
         for name, value in attrs.items():
             assert not name.lower().startswith("on"), f"{tag}[{name}] is an event attribute"
 
-    _assert_self_contained(page, page_elements)
+    _assert_self_contained(page, page_events)
+
+
+LONG_LABEL = "A label written out at such length that no node could hold it, ever"
+LONG_QUESTION = "A question put at such length that no node could ever hold it all"
+
+
+def _all_three_fixture(run_cli, adopter_dir, write_unit):
+    """A corpus that draws every diagram: a confluence, a strip, a rationale.
+
+    kb-0001 carries a second anchor, on a different system (`gitlab`) and
+    never probed, so the determinism check below also covers a page with
+    more than one anchor group on it -- the two-diagram fixture above never
+    has more than one. kb-0004's rationale carries nine options, past
+    `NUMBERED_ABOVE`, so that same check also covers the numbered fallback
+    layout, not just the two-option case the other rationale tests use.
+    """
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: hypothesis\nanchors:\n"
+        "  - system: gitlab\n    kind: file-hash\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# kb-0001\n",
+    )
+    for old in ("kb-0002", "kb-0003"):
+        write_unit(f"{old}.md", f"id: {old}\nevidence: hypothesis\n", f"# {old}\n")
+    options = "".join(
+        f'    - label: "Option {n}"\n'
+        f'      disposition: {"chosen" if n == 1 else "rejected"}\n'
+        f'      reason: "Reason {n}"\n'
+        for n in range(1, 10)
+    )
+    write_unit(
+        "kb-0004.md",
+        "id: kb-0004\nevidence: measured\nsupersedes:\n"
+        "  - kb-0001\n  - kb-0002\n  - kb-0003\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n"
+        'rationale:\n  question: "Which of the three?"\n  options:\n' + options,
+        "# The one that replaced them\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
+        {"unit": "kb-0004", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "drifted", "recorded_at": "2026-02-01T00:00:00Z"},
+    ])
+
+
+def _rationale_diagram(page):
+    return page[page.index('<svg class="rationale"') :].split("</svg>")[0]
+
+
+def test_all_three_diagrams_carry_a_title_and_a_desc(
+    run_cli, adopter_dir, write_unit, page_elements, page_events
+):
+    _all_three_fixture(run_cli, adopter_dir, write_unit)
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    elements = page_elements(page)
+
+    assert result.returncode == 0, result.stderr
+    assert {
+        attrs.get("class") for tag, attrs in elements if tag == "svg"
+    } == {"freshness", "confluence", "rationale"}
+    assert len([tag for tag, _ in elements if tag == "desc"]) == 3
+    _assert_self_contained(page, page_events)
+
+
+def test_a_page_with_all_three_diagrams_renders_the_same_bytes_twice(
+    run_cli, adopter_dir, write_unit
+):
+    # The determinism pin over the page that actually draws every diagram.
+    # SVG is where a non-deterministic value would hide -- an id built from
+    # `hash()`, a float formatted one way here and another there, a clock in
+    # a label -- and the pin that has existed since the views shipped
+    # (`test_a_second_run_reports_unchanged_and_leaves_the_bytes_identical`)
+    # runs over a corpus that draws no diagram at all.
+    _all_three_fixture(run_cli, adopter_dir, write_unit)
+    run_cli("render", cwd=adopter_dir)
+    first = (adopter_dir / "knowledge.html").read_bytes()
+    stamp = (adopter_dir / "knowledge.html").stat().st_mtime_ns
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "render: unchanged knowledge.html" in result.stdout
+    assert (adopter_dir / "knowledge.html").read_bytes() == first
+    # Identical bytes alone would pass an implementation that rewrites the
+    # same content and prints `unchanged`. The file must not be touched.
+    assert (adopter_dir / "knowledge.html").stat().st_mtime_ns == stamp
+
+
+def test_the_rationale_diagram_is_drawn_for_that_unit_and_no_other(
+    run_cli, adopter_dir, write_unit
+):
+    # One page, two units: only the one carrying a rationale gets a diagram.
+    # A per-page diagram instead of a per-unit one would pass a test over a
+    # corpus of one and fail every real corpus.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "Which?"\n  options:\n'
+        '    - label: "A"\n      disposition: chosen\n      reason: "R"\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "# With a rationale\n",
+    )
+    write_unit("kb-0002.md", "id: kb-0002\nevidence: measured\n", "# Without one\n")
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert page.count('<svg class="rationale"') == 1
+    assert page.count('id="rationale-kb-0001-1"') == 1
+    assert "rationale-kb-0002" not in page
+
+
+def test_text_too_long_to_draw_falls_back_and_stays_on_the_page(
+    run_cli, adopter_dir, write_unit
+):
+    # An SVG <text> does not wrap, and a character count is not a width --
+    # which is exactly why the fallback is a fallback and not an estimate.
+    # One threshold governs every node, question included: nothing is omitted
+    # and nothing is truncated, the node says "?" or "#2" and the page says
+    # the rest.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        f'  question: "{LONG_QUESTION}"\n  options:\n'
+        '    - label: "Short"\n      disposition: chosen\n'
+        '      reason: "Fits."\n'
+        f'    - label: "{LONG_LABEL}"\n      disposition: rejected\n'
+        '      reason: "Does not fit."\n',
+        "# Fallback\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    diagram = _rationale_diagram(page)
+
+    assert len(LONG_QUESTION) > 48 and len(LONG_LABEL) > 48
+    assert ">?</text>" in diagram
+    assert LONG_QUESTION not in diagram
+    assert ">#2</text>" in diagram
+    assert LONG_LABEL not in diagram
+    assert ">Short</text>" in diagram
+    # The complete text is on the page, beside the diagram, both of them.
+    assert f'<p class="question" dir="auto">{LONG_QUESTION}</p>' in page
+    assert f'<span class="label" dir="auto">{LONG_LABEL}</span>' in page
+
+
+def test_above_eight_options_every_node_is_numbered(
+    run_cli, adopter_dir, write_unit
+):
+    options = "".join(
+        f'    - label: "Option {n}"\n'
+        f'      disposition: {"chosen" if n == 1 else "rejected"}\n'
+        f'      reason: "Reason {n}"\n'
+        for n in range(1, 10)
+    )
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "Which of the nine?"\n  options:\n' + options,
+        "# Nine options\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    diagram = _rationale_diagram(page)
+
+    for n in range(1, 10):
+        assert f">#{n}</text>" in diagram
+        assert f"Option {n}" not in diagram
+    # Every option is still on the page, in full.
+    for n in range(1, 10):
+        assert f'<span class="label" dir="auto">Option {n}</span>' in page
+
+
+def test_the_rationale_diagram_element_ids_derive_from_the_unit_and_position(
+    run_cli, adopter_dir, write_unit
+):
+    # Deterministic ids, never `hash()`, which is salted per process: the
+    # same corpus must render the same bytes on every run and every machine.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "Which?"\n  options:\n'
+        '    - label: "A"\n      disposition: chosen\n      reason: "R"\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "# Ids\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert 'id="rationale-kb-0001-1"' in page
+    assert 'id="rationale-kb-0001-2"' in page
+
+
+def test_the_chosen_option_differs_in_shape_and_in_text_not_only_in_fill(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "Which?"\n  options:\n'
+        '    - label: "A"\n      disposition: chosen\n      reason: "R"\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "# Shapes\n",
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    diagram = _rationale_diagram(page)
+
+    # Shape: the chosen node is rounded and heavier.
+    assert 'rx="8"' in diagram and 'stroke-width="3"' in diagram
+    assert 'rx="0"' in diagram and 'stroke-width="1"' in diagram
+    # Text: the disposition is drawn, not implied by colour.
+    assert ">chosen</text>" in diagram
+    assert ">rejected</text>" in diagram
+
+
+def test_hostile_rationale_text_never_becomes_live_markup_inside_the_svg(
+    run_cli, adopter_dir, write_unit, page_elements, page_events
+):
+    # Two hostile shapes at once. The label tries to close the <text> element
+    # it is drawn in; the question carries a URL, which is the one thing no
+    # attribute on this page but `a[href]` may hold -- so it must reach the
+    # drawing as a text node and never as part of a title, an aria-label or
+    # a description.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "Which host? https://example.invalid/x"\n  options:\n'
+        '    - label: "</text><script>alert(2)</script>"\n'
+        '      disposition: chosen\n      reason: "R"\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+        "# Hostile drawing\n",
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    diagram = _rationale_diagram(page)
+
+    assert result.returncode == 0, result.stderr
+    assert "<script>alert(2)</script>" not in page
+    assert not [tag for tag, _ in page_elements(page) if tag == "script"]
+    # The hostile label is drawn, not dropped -- escaped, as a text node,
+    # exactly like any other label short enough to fit inline.
+    assert "&lt;/text&gt;&lt;script&gt;alert(2)&lt;/script&gt;" in diagram
+    # The diagram's own words name the unit and count the options; no
+    # adopter text is in them.
+    assert (
+        'aria-label="Rationale of kb-0001: 2 options considered, one chosen"'
+    ) in diagram
+    # The question is drawn, as a text node, because it fits.
+    assert "Which host? https://example.invalid/x</text>" in diagram
+    # And it is on the card in full, escaped as text.
+    assert (
+        '<p class="question" dir="auto">Which host? '
+        'https://example.invalid/x</p>'
+    ) in page
+    _assert_self_contained(page, page_events)
 
 
 def test_an_outgoing_href_matches_a_spaced_and_punctuated_name_anchor(
@@ -1461,3 +2114,461 @@ def test_only_existing_regenerates_memory_when_only_memory_exists(
     assert result.returncode == 0
     assert (adopter_dir / "memory.html").read_text(encoding="utf-8") != "stale\n"
     assert not (adopter_dir / "knowledge.html").exists()
+
+
+def test_an_extension_that_cannot_be_loaded_stops_render_and_writes_nothing(
+    run_cli, adopter_dir, write_unit, write_document
+):
+    # `collect_and_validate` loads the declared extension and, from this task
+    # on, hands it to the renderer instead of discarding it. The failure path
+    # must not soften on the way: an extension that will not load is one
+    # blocking finding, no documents, and no page -- rendering the base
+    # contract alone would report a pass the adopter never asked for.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n")
+    write_document("validated-memory.md", "extension:\n  schema: gone.md\n  version: \"1\"\n")
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert "ERROR" in result.stderr
+    assert not (adopter_dir / "knowledge.html").exists()
+    assert not (adopter_dir / "memory.html").exists()
+
+
+def test_a_corpus_with_a_declared_extension_still_renders(
+    run_cli, adopter_dir, write_unit, write_document
+):
+    # The other half: a schema that loads must reach the renderer without
+    # changing what it draws. Nothing on the page shows an extension field
+    # yet, and nothing in this plan ever will, so this is the guard that
+    # threading the object through changed no output.
+    run_cli("init", cwd=adopter_dir)
+    write_document(
+        "knowledge-extension.md",
+        "fields:\n  - name: owner\n    type: string\n",
+    )
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nowner: platform-team\n",
+        "# A claim\n",
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "kb-0001" in (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+
+def _overview_fixture(run_cli, adopter_dir, write_unit):
+    """Four active units and one superseded, spanning the counts table.
+
+    kb-0001 measured + probed current; kb-0002 hypothesis + an anchor never
+    probed; kb-0003 verifiable, no anchors; kb-0004 measured, no anchors,
+    superseding kb-0005, whose own anchor was never probed either.
+    """
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Measured and current\n",
+    )
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: hypothesis\nanchors:\n"
+        "  - system: gitlab\n    kind: file-hash\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Never probed\n",
+    )
+    write_unit(
+        "kb-0003.md", "id: kb-0003\nevidence: verifiable\n", "# No anchors\n"
+    )
+    write_unit(
+        "kb-0004.md",
+        "id: kb-0004\nevidence: measured\nsupersedes:\n  - kb-0005\n",
+        "# The replacement\n",
+    )
+    write_unit(
+        "kb-0005.md",
+        "id: kb-0005\nevidence: measured\nanchors:\n"
+        "  - system: zulu\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Superseded, and never probed\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0001", "system": "repo", "kind": "git_ref", "payload": {},
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
+    ])
+
+
+def test_the_overview_counts_active_units_by_evidence_crossed_with_verdict(
+    run_cli, adopter_dir, write_unit
+):
+    _overview_fixture(run_cli, adopter_dir, write_unit)
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        '<tr><th scope="row">measured</th><td>1</td><td>0</td><td>1</td>'
+        '<td class="total">2</td></tr>'
+    ) in page
+    assert (
+        '<tr><th scope="row">verifiable</th><td>0</td><td>0</td><td>1</td>'
+        '<td class="total">1</td></tr>'
+    ) in page
+    assert (
+        '<tr><th scope="row">hypothesis</th><td>0</td><td>0</td><td>1</td>'
+        '<td class="total">1</td></tr>'
+    ) in page
+    assert (
+        '<tr class="total"><th scope="row">total</th><td class="total">1</td>'
+        '<td class="total">0</td><td class="total">3</td>'
+        '<td class="total">4</td></tr>'
+    ) in page
+    # Superseded units are one separate number, never folded into the table:
+    # the two populations must not be addable by accident.
+    assert (
+        "4 active unit(s) counted above; 1 superseded unit(s) counted separately"
+    ) in page
+
+
+def test_the_unprobed_queue_lists_anchors_of_active_units_only(
+    run_cli, adopter_dir, write_unit
+):
+    _overview_fixture(run_cli, adopter_dir, write_unit)
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    queue = page.split('<ul class="unprobed">')[1].split("</ul>")[0]
+
+    assert "1 anchor(s) of active units have no verdict under their current key" in page
+    assert "kb-0002" in queue
+    # kb-0001 has a record under its current key; kb-0005 has none but is
+    # superseded, and `probe` never probes it, so listing it would be a queue
+    # item nobody can drain.
+    assert "kb-0001" not in queue
+    assert "kb-0005" not in queue
+
+
+def test_an_anchor_whose_payload_changed_is_unprobed_again(
+    run_cli, adopter_dir, write_unit
+):
+    # The key is `(unit, system, kind, payload)`. A record written against
+    # the old payload says nothing about what the anchor points at now, so
+    # the anchor has no record under its current key and is unprobed. That is
+    # the honest reading, and it is why the queue is keyed and not counted.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: repo\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload:\n      ref: next\n",
+        "# Repointed\n",
+    )
+    _log(adopter_dir, [
+        {"unit": "kb-0001", "system": "repo", "kind": "git_ref",
+         "payload": {"ref": "main"},
+         "verdict": "current", "recorded_at": "2026-01-01T00:00:00Z"},
+    ])
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    queue = page.split('<ul class="unprobed">')[1].split("</ul>")[0]
+
+    assert "kb-0001" in queue
+    assert '{"ref": "next"}' in queue
+
+
+def test_the_overview_says_so_when_there_is_nothing_unprobed(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n", "# No anchors\n")
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert '<ul class="unprobed">' not in page
+    assert (
+        "Nothing outstanding: every anchor of an active unit has a verdict "
+        "recorded under its current key."
+    ) in page
+
+
+def _map_block(page):
+    """The map's markup alone, so an assertion cannot match a card below it."""
+    return page[page.index("<h2>Map</h2>") : page.index("<h2>Unprobed anchors</h2>")]
+
+
+def test_the_map_groups_active_units_by_anchor_system(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    # Anchored in two systems: a link in each group, and still one card.
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: alpha\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n"
+        "  - system: beta\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Anchored twice over\n",
+    )
+    # Two anchors on ONE system: counted once for that unit.
+    write_unit(
+        "kb-0002.md",
+        "id: kb-0002\nevidence: measured\nanchors:\n"
+        "  - system: alpha\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload:\n      ref: main\n"
+        "  - system: alpha\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload:\n      ref: next\n",
+        "# Two refs of one system\n",
+    )
+    write_unit("kb-0003.md", "id: kb-0003\nevidence: measured\n", "# No anchors\n")
+    write_unit(
+        "kb-0004.md",
+        "id: kb-0004\nevidence: measured\nsupersedes:\n  - kb-0005\n",
+        "# The replacement\n",
+    )
+    write_unit(
+        "kb-0005.md",
+        "id: kb-0005\nevidence: measured\nanchors:\n"
+        "  - system: zulu\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Superseded\n",
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    block = _map_block(page)
+
+    assert result.returncode == 0, result.stderr
+    # Groups by name, and the unclassified group last however the names sort.
+    alpha = block.index('<span class="group-name">alpha</span>')
+    beta = block.index('<span class="group-name">beta</span>')
+    unclassified = block.index(
+        '<span class="group-name">unclassified (no anchors)</span>'
+    )
+    assert alpha < beta < unclassified
+    assert "zulu" not in block, "a superseded unit's system"
+    # No group carries an id: nothing links to one, and a system name is
+    # arbitrary text that has no business in a DOM id.
+    assert "<li class=\"group\" id=" not in block
+    # Multi-valued grouping: two links, one card.
+    assert block.count('href="#unit-kb-0001"') == 2
+    assert page.count('id="unit-kb-0001"') == 1
+    # Several anchors on one system count once for that unit.
+    assert block.count('href="#unit-kb-0002"') == 1
+    # Units with no anchors are never dropped.
+    assert block.count('href="#unit-kb-0003"') == 1
+    assert block.count('href="#unit-kb-0004"') == 1
+    # The map indexes active units; a superseded one stays reachable from the
+    # card of the unit that superseded it.
+    assert "kb-0005" not in block
+
+
+def test_the_map_links_carry_the_headline_not_only_the_id(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md", "id: kb-0001\nevidence: measured\n", "# A claim worth reading\n"
+    )
+
+    run_cli("render", cwd=adopter_dir)
+    block = _map_block((adopter_dir / "knowledge.html").read_text(encoding="utf-8"))
+
+    assert '<a href="#unit-kb-0001">A claim worth reading</a>' in block
+    assert '<code class="id">kb-0001</code>' in block
+
+
+def test_a_system_named_unclassified_and_the_no_anchors_group_are_both_shown(
+    run_cli, adopter_dir, write_unit
+):
+    # No group carries an id, so a label is the only thing telling two groups
+    # apart on the page -- which is why the group of units with no anchors is
+    # labelled `unclassified (no anchors)` and not `unclassified`. It is also
+    # always last, whatever the system names sort as.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: unclassified\n    kind: git_ref\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# Anchored in a system with an awkward name\n",
+    )
+    write_unit("kb-0002.md", "id: kb-0002\nevidence: measured\n", "# No anchors\n")
+
+    run_cli("render", cwd=adopter_dir)
+    block = _map_block((adopter_dir / "knowledge.html").read_text(encoding="utf-8"))
+
+    # The exact-string match is what keeps the two apart: the system group's
+    # span closes right after the word, and the other one does not.
+    named = block.index('<span class="group-name">unclassified</span>')
+    no_anchors = block.index(
+        '<span class="group-name">unclassified (no anchors)</span>'
+    )
+    assert named < no_anchors
+    assert block.count('href="#unit-kb-0001"') == 1
+    assert block.count('href="#unit-kb-0002"') == 1
+
+
+RATIONALE_UNIT = """\
+id: kb-0001
+evidence: verifiable
+provenance:
+  - https://example.invalid/doc
+anchors:
+  - system: repo
+    kind: git_ref
+    captured_at: 2026-01-01T00:00:00Z
+    payload: {}
+rationale:
+  question: "How should knowledge views be delivered?"
+  options:
+    - label: "Generate a complete static artifact"
+      disposition: chosen
+      reason: "It stays readable without Python, JavaScript or network access."
+    - label: "Build an interactive application"
+      disposition: rejected
+      reason: "It makes the reader depend on a runtime."
+supersedes:
+  - kb-0002
+  - kb-0003
+  - kb-0004
+"""
+
+
+def _card_fixture(run_cli, adopter_dir, write_unit):
+    run_cli("init", cwd=adopter_dir)
+    # Three superseded stubs, so kb-0001's own card carries a confluence and
+    # a chain too -- the fixed-order test below needs both to be on the page
+    # at once, alongside the anchors, the rationale and the provenance the
+    # other two tests sharing this fixture already exercise.
+    for old in ("kb-0002", "kb-0003", "kb-0004"):
+        write_unit(f"{old}.md", f"id: {old}\nevidence: hypothesis\n", f"# {old}\n")
+    write_unit("kb-0001.md", RATIONALE_UNIT, "# The delivery decision\n\nProse.\n")
+
+
+def test_the_card_renders_its_parts_in_the_fixed_order(
+    run_cli, adopter_dir, write_unit
+):
+    _card_fixture(run_cli, adopter_dir, write_unit)
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    card = page[page.index('id="unit-kb-0001"') :]
+
+    assert result.returncode == 0, result.stderr
+    # The first five markers appear once each in the outer card's own
+    # preamble, before the chain recurses into any nested section's own
+    # markup -- `.index` (the first occurrence in the slice) is guaranteed
+    # to find the outer card's own. `<ul class="provenance">` and
+    # `<pre class="body">` are different: every section in the chain below
+    # renders its own `<pre class="body">` (a unit's body is never omitted,
+    # even a stub's), so only the LAST occurrence in the slice -- `.rindex`
+    # -- is guaranteed to be the outer card's own, coming after every nested
+    # section the chain contains.
+    leading = [
+        "</summary>",
+        '<ul class="anchors">',
+        '<div class="rationale">',
+        '<svg class="confluence"',
+        '<div class="chain">',
+    ]
+    trailing = ['<ul class="provenance">', '<pre class="body">']
+    positions = [card.index(marker) for marker in leading]
+    positions += [card.rindex(marker) for marker in trailing]
+    assert positions == sorted(positions), dict(zip(leading + trailing, positions))
+
+
+def test_the_card_carries_its_evidence_and_verdict_as_data_attributes(
+    run_cli, adopter_dir, write_unit, page_elements
+):
+    # The badge text is on the summary, unchanged; the machine-readable state
+    # is on the section, beside `data-state`, because a filter hides a card
+    # and not a span.
+    _card_fixture(run_cli, adopter_dir, write_unit)
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    section = next(
+        attrs for tag, attrs in page_elements(page)
+        if tag == "section" and attrs.get("data-unit") == "kb-0001"
+    )
+
+    assert section["data-evidence"] == "verifiable"
+    assert section["data-verdict"] == "unknown"
+    assert section["data-state"] == "active"
+    assert '<span class="evidence">verifiable</span>' in page
+    assert '<span class="verdict">unknown</span>' in page
+
+
+def test_the_rationale_is_on_the_card_in_full(
+    run_cli, adopter_dir, write_unit
+):
+    _card_fixture(run_cli, adopter_dir, write_unit)
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert (
+        '<p class="question" dir="auto">How should knowledge views be '
+        "delivered?</p>"
+    ) in page
+    assert '<li class="option chosen">' in page
+    assert '<li class="option rejected">' in page
+    assert '<span class="option-number">1</span>' in page
+    assert '<span class="option-number">2</span>' in page
+    assert '<span class="disposition">chosen</span>' in page
+    assert '<p class="reason" dir="auto">' in page
+    assert 'Generate a complete static artifact' in page
+    assert "It makes the reader depend on a runtime." in page
+
+
+def test_a_unit_with_no_rationale_gets_no_rationale_block(
+    run_cli, adopter_dir, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n", "# Just a fact\n")
+
+    run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert 'class="rationale"' not in page
+
+
+def test_hostile_rationale_text_never_becomes_live_markup(
+    run_cli, adopter_dir, write_unit
+):
+    # `question`, `label` and `reason` are adopter text that reaches an HTML
+    # file meant to be sent to third parties. The contract validates their
+    # shape, never their content.
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n'
+        '  question: "<script>alert(1)</script>"\n'
+        '  options:\n'
+        '    - label: "<svg onload=alert(2)></svg>"\n'
+        '      disposition: chosen\n'
+        '      reason: "</pre><script>alert(3)</script>"\n'
+        '    - label: "plain"\n      disposition: rejected\n'
+        '      reason: "also plain"\n',
+        "# Hostile\n",
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+
+    assert result.returncode == 0, result.stderr
+    assert "<script>alert(1)</script>" not in page
+    assert "<script>alert(3)</script>" not in page
+    assert "<svg onload=alert(2)>" not in page
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
+    assert "&lt;svg onload=alert(2)&gt;&lt;/svg&gt;" in page

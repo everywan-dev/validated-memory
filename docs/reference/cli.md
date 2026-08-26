@@ -435,24 +435,45 @@ in a monospaced block; the one line extracted from it is the headline,
 taken from the body's first heading and falling back to the unit's `id`
 when there is none.
 
-**`knowledge.html`** lists live conclusions ordered by `id` -- the one
-ordering that does not move on its own, unlike freshness or recency, which
-a routine `probe` would reshuffle on the next session. Each entry expands
-to its body, every anchor's envelope and provenance, the anchor's probe
-history, and the supersession chain that led to it, nested as deep as the
-chain runs; a superseded unit never appears at the top level, only inside
-the history of whatever replaced it. The page states how many records the
-verdict log holds in total and how many belong to an anchor shown on the
-page -- two totals, not one, because the log outlives the corpus (nothing
-prunes a record whose unit or anchor is gone), so a single total could
-never be reconciled by a reader against the histories in front of them.
-Probe history itself shows at most 20 records per anchor, most recent
-first, and each anchor's own history repeats the disclosure for itself --
-`N record(s) for this anchor; showing M` -- which is what actually lets a
-reader tell a full history from a truncated one. Two diagrams, both inline
-SVG: a freshness strip per anchor (one band per probe, in log order,
-coloured and labelled by verdict) and a many-to-one confluence, drawn only
-when three or more units are superseded at once.
+**`knowledge.html`** opens with an overview and then lists live conclusions
+ordered by `id` -- the one ordering that does not move on its own, unlike
+freshness or recency, which a routine `probe` would reshuffle on the next
+session. The overview counts active units by evidence state crossed with
+verdict, reports superseded units as one separate figure rather than folding
+them into the same table, maps the corpus by `anchors[].system` (a unit
+anchored in several systems is a link in each group; units with no anchors
+land in an explicit `unclassified (no anchors)` group, listed last), and
+queues the anchors of active units with no verdict recorded under their
+current key `(unit, system, kind, payload)` -- never probed, or probed before
+the payload changed. The map is an index of links, never a second copy of the
+cards, which is what lets one unit appear in several groups while its card is
+rendered exactly once.
+
+Each card carries, in this fixed order: the headline and `id`, badges for
+evidence state and verdict, every anchor's envelope and probe history, the
+unit's `rationale` where it has one, the supersession chain that led to it
+nested as deep as the chain runs, `provenance`, and the body. A superseded
+unit never appears at the top level, only inside the chain of whatever
+replaced it. The page states how many records the verdict log holds in total
+and how many belong to an anchor shown on the page -- two totals, not one,
+because the log outlives the corpus (nothing prunes a record whose unit or
+anchor is gone), so a single total could never be reconciled by a reader
+against the histories in front of them. Probe history itself shows at most 20
+records per anchor, most recent first, and each anchor's own history repeats
+the disclosure for itself -- `N record(s) for this anchor; showing M` --
+which is what actually lets a reader tell a full history from a truncated
+one.
+
+Three diagrams, all inline SVG, all generated from the data with no
+third-party code, and each carrying a title and a description: a freshness
+strip per anchor (one band per probe, in log order, told apart by shape, mark
+and colour, and never a time axis), a many-to-one confluence drawn only when
+three or more units are superseded at once, and a rationale tree drawn only
+for a unit that carries one. Nothing a diagram shows lives only in the
+diagram: past 48 characters a question is drawn as `?` and a label as `#n`,
+and once a rationale has more than eight options every label is drawn as `#n`
+regardless of its length; either way, the full text is read from the card
+beside the drawing.
 
 **`memory.html`** lists entries by filename, each with its outgoing and
 incoming references -- the wikilink graph, walkable entry by entry rather

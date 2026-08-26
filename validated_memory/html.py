@@ -7,19 +7,6 @@ after: a `<pre>` block does not escape anything by itself.
 
 import html as _html
 
-STYLESHEET = """
-:root { color-scheme: light dark; }
-body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-       margin: 2rem auto; max-width: 60rem; padding: 0 1rem; line-height: 1.5; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      background: rgba(127,127,127,0.12); padding: .75rem; border-radius: .25rem; }
-summary { cursor: pointer; }
-.chain { border-left: 3px solid rgba(127,127,127,0.4); margin-left: .5rem;
-         padding-left: 1rem; }
-.meta { color: rgba(127,127,127,1); font-size: .9em; }
-"""
-
 
 def escape_text(value):
     """Escape `value` for use as text content. Never returns markup."""
@@ -41,13 +28,20 @@ def escape_attribute(value):
     return _html.escape(str(value), quote=True)
 
 
-def page(title, body):
-    """Wrap `body` in the document shell. `title` is escaped; `body` is markup."""
+def page(title, body, stylesheet):
+    """Wrap `body` in the document shell. `title` is escaped; `body` is markup.
+
+    `stylesheet` is the caller's own -- this module holds none. A view that
+    wants to restyle itself edits its own constant in `styles`, and cannot
+    reach another view's by doing so. It is inlined verbatim: CSS has no
+    escaping that survives being parsed as CSS, so passing anything
+    adopter-authored here would be an injection, and no caller does.
+    """
     return (
         "<!doctype html>\n"
         '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"<title>{escape_text(title)}</title>\n"
-        f"<style>{STYLESHEET}</style>\n</head>\n<body>\n"
+        f"<style>{stylesheet}</style>\n</head>\n<body>\n"
         f"{body}\n</body>\n</html>\n"
     )

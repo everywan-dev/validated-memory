@@ -110,11 +110,25 @@ class _Collector(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.elements = []
+        self.events = []
 
     def handle_starttag(self, tag, attrs):
         self.elements.append((tag, dict(attrs)))
+        self.events.append(("start", tag, dict(attrs)))
 
-    handle_startendtag = handle_starttag
+    def handle_startendtag(self, tag, attrs):
+        # A self-closing tag opens and closes at once, so it emits both
+        # events: a consumer tracking depth must not see `<line/>` as an
+        # element that never closes.
+        self.elements.append((tag, dict(attrs)))
+        self.events.append(("start", tag, dict(attrs)))
+        self.events.append(("end", tag))
+
+    def handle_endtag(self, tag):
+        self.events.append(("end", tag))
+
+    def handle_data(self, data):
+        self.events.append(("data", data))
 
 
 @pytest.fixture
@@ -130,5 +144,27 @@ def page_elements():
         collector = _Collector()
         collector.feed(text)
         return collector.elements
+
+    return _parse
+
+
+@pytest.fixture
+def page_events():
+    """Parse a page into a flat event stream: start tags, end tags and text.
+
+    `page_elements` reports start tags only, so it can say nothing about
+    nesting or about what an element contains -- and two rules of this
+    project's pages need both: an `<a>` is forbidden inside an `<svg>` while
+    being the one linkable element outside it, and a `<style>` element's own
+    text must not fetch anything. `html.parser` lowercases every tag and
+    attribute name, so a consumer never has to case-fold.
+
+    This reads the artifact as data; it imports nothing from the package.
+    """
+
+    def _parse(text):
+        collector = _Collector()
+        collector.feed(text)
+        return collector.events
 
     return _parse

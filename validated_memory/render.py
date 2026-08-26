@@ -23,7 +23,7 @@ run, which the startup hook provides at every session start:
 import os
 from pathlib import Path
 
-from . import knowledge_view, memory_view, validate
+from . import corpus, knowledge_view, memory_view, validate
 from . import memory as memory_module
 from . import verdicts as verdicts_module
 from .contract import ERROR
@@ -115,7 +115,7 @@ def build_artifacts(downgrade=False):
     here and writes nothing; only the returned severity and `run`'s exit
     code differ.
     """
-    documents, validation_findings = validate.collect_and_validate(None)
+    documents, extension, validation_findings = validate.collect_and_validate(None)
     has_error = any(finding.severity == ERROR for finding in validation_findings)
     findings = [_downgraded(finding, downgrade) for finding in validation_findings]
     if has_error:
@@ -123,7 +123,7 @@ def build_artifacts(downgrade=False):
 
     try:
         # Both reads of the log happen here, together, before either is
-        # handed to `knowledge_view.build`: `service_view` is the one that
+        # handed to `corpus.build`: `service_view` is the one that
         # validates (it raises on a record such as an explicit
         # `payload: null`), and it must run before `build` groups `history`'s
         # records by key -- keeping both calls at this one site, rather than
@@ -132,7 +132,9 @@ def build_artifacts(downgrade=False):
         records = verdicts_module.history()
         view = verdicts_module.service_view()
         knowledge_content = knowledge_view.build(
-            documents, validate.basis_location(None), records, view
+            corpus.build(
+                documents, validate.basis_location(None), extension, records, view
+            )
         )
     except verdicts_module.VerdictLogError as error:
         # Same shape `derive` reports: a log this reader cannot parse is a
