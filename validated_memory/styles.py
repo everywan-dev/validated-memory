@@ -63,8 +63,8 @@ ul.group-units { list-style: none; padding-left: 1rem; margin-top: .25rem;
 [data-verdict="unknown"] > details > summary .verdict {
     background: rgba(117,117,117,0.18); }
 ul.options, ul.anchors, ul.provenance { list-style: none; padding-left: 0; }
-.rationale { border-left: 3px solid rgba(127,127,127,0.35);
-             padding-left: 1rem; margin: .75rem 0; }
+div.rationale { border-left: 3px solid rgba(127,127,127,0.35);
+                padding-left: 1rem; margin: .75rem 0; }
 .question { font-weight: 600; }
 li.option { border: 1px solid rgba(127,127,127,0.35); border-radius: .35rem;
             padding: .4rem .6rem; margin-bottom: .4rem; }

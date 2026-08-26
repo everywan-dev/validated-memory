@@ -215,11 +215,11 @@ def _anchors(corpus, unit_id, shown_keys):
 def _history(matching):
     """This anchor's probe history: at most `HISTORY_WINDOW` records, newest first.
 
-    `matching` is already this anchor's own records (`_group_history` keys on
-    the same `anchor_key` computed above), oldest first; reversed here so the
-    most recent probe reads first, then windowed. The disclosure line states
-    the anchor's true total before the window, so a reader never mistakes a
-    partial history for a complete one.
+    `matching` is already this anchor's own records (`corpus._group_history`
+    keys on the same `anchor_key` computed above), oldest first; reversed
+    here so the most recent probe reads first, then windowed. The disclosure
+    line states the anchor's true total before the window, so a reader never
+    mistakes a partial history for a complete one.
 
     The freshness strip below the list is drawn from `shown` -- the same
     windowed records the text history displays, put back in oldest-first

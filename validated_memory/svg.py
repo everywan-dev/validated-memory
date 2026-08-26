@@ -120,7 +120,6 @@ def freshness_strip(records):
     if not records:
         return ""
     count = len(records)
-    band = WIDTH / count
     bands = []
     for index, record in enumerate(records):
         verdict = record["verdict"]
@@ -136,12 +135,20 @@ def freshness_strip(records):
         # with it, to 22, keeping the glyph inside the shorter box instead
         # of centred on a band twice its height.
         baseline = top + band_height // 2 + 4
+        # Integer division, not `WIDTH / count`: computing each band's own
+        # edges from the index (rather than a running float total) is what
+        # keeps every band's width an integer and the strip byte-identical
+        # across platforms, and it still tiles the full width exactly --
+        # `right` of one band is `left` of the next, with no gap and no
+        # float rounding to drift between them.
+        left = index * WIDTH // count
+        right = (index + 1) * WIDTH // count
         bands.append(
-            f'<rect x="{index * band:.2f}" y="{top}" width="{band:.2f}" '
+            f'<rect x="{left}" y="{top}" width="{right - left}" '
             f'height="{band_height}" fill="{COLOURS[verdict]}"{outline}>'
             f"<title>{html.escape_text(record.get('recorded_at', ''))} {html.escape_text(verdict)}</title>"
             "</rect>"
-            f'<text x="{index * band + band / 2:.2f}" y="{baseline}" '
+            f'<text x="{(left + right) // 2}" y="{baseline}" '
             'text-anchor="middle" font-size="12" fill="#ffffff">'
             f"{html.escape_text(MARKS[verdict])}</text>"
         )
@@ -167,21 +174,26 @@ def confluence(superseded_ids, successor_id):
     Below three, a chain is two boxes and an arrow saying what one line of
     text already says.
     """
-    if len(superseded_ids) < 3:
-        return ""
+    # Deduplicated first, so the guard below and the rows drawn after it
+    # always count the same set: a caller passing the same id three times
+    # over must see the guard refuse it exactly as a genuine two-id list
+    # would, not a "3 units" drawing over one actual row.
     ordered = sorted(set(superseded_ids))
+    if len(ordered) < 3:
+        return ""
     height = len(ordered) * 28 + 12
+    midline = height // 2
     lines = []
     for index, unit_id in enumerate(ordered):
         y = index * 28 + 14
         lines.append(
             f'<text x="4" y="{y + 4}" font-size="12" fill="currentColor">'
             f"{html.escape_text(unit_id)}</text>"
-            f'<line x1="120" y1="{y}" x2="300" y2="{height / 2}" '
+            f'<line x1="120" y1="{y}" x2="300" y2="{midline}" '
             'stroke="currentColor" stroke-width="1"/>'
         )
     lines.append(
-        f'<text x="308" y="{height / 2 + 4}" font-size="12" fill="currentColor">'
+        f'<text x="308" y="{midline + 4}" font-size="12" fill="currentColor">'
         f"{html.escape_text(successor_id)}</text>"
     )
     return _diagram(
@@ -281,7 +293,7 @@ def rationale(unit_id, record):
         "The question across the top, one row per option beneath it, and no "
         "edge between options or out of this unit. The chosen option is drawn "
         "with a rounded, heavier border and the word 'chosen'. A node showing "
-        "'#n', or a question showing '?', means the text ran past 48 "
+        f"'#n', or a question showing '?', means the text ran past {LABEL_LIMIT} "
         "characters and could not be drawn: the full text is beside this "
         "drawing -- the question just above it, an option at position n of "
         "the list.",

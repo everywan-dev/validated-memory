@@ -123,7 +123,7 @@ def build_artifacts(downgrade=False):
 
     try:
         # Both reads of the log happen here, together, before either is
-        # handed to `knowledge_view.build`: `service_view` is the one that
+        # handed to `corpus.build`: `service_view` is the one that
         # validates (it raises on a record such as an explicit
         # `payload: null`), and it must run before `build` groups `history`'s
         # records by key -- keeping both calls at this one site, rather than
