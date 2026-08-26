@@ -332,8 +332,17 @@ def _assert_self_contained(page, page_events):
         if tag == "style":
             style_depth += 1
     for css in styles:
-        assert "@import" not in css, f"a <style> block imports: {css[:120]!r}"
-        assert "url(" not in css, f"a <style> block fetches a url: {css[:120]!r}"
+        folded = css.casefold()
+        assert "@import" not in folded, f"a <style> block imports: {css[:120]!r}"
+        assert "url(" not in folded, f"a <style> block fetches a url: {css[:120]!r}"
+    # An `<svg>` or a `<style>` that never closes must fail loudly rather
+    # than silently stop scanning: the depth counters above are what the
+    # nesting rule and the CSS check both rely on, so a counter left nonzero
+    # here means either element (or both) was still open when the document
+    # ran out, and everything after it was never really outside the element
+    # its author thought they had closed.
+    assert svg_depth == 0, "an <svg> was never closed"
+    assert style_depth == 0, "a <style> was never closed"
     return elements
 
 
@@ -393,7 +402,21 @@ HOSTILE_BODIES = {
         '<svg class="rationale"><text x="0" y="0">ok</text>'
         '<a href="#unit-kb-0001">doc</a>'
     ),
+    # The depth counter's own hole, distinct from `unclosed_svg` above: that
+    # case is caught by the nesting rule (an `<a href>` still "inside" an
+    # `<svg>` that never closes), which would keep catching it even if the
+    # `svg_depth == 0` assertion at the end of the scan were deleted. Here
+    # there is nothing hostile nested inside at all -- the only thing wrong
+    # with this body is that its one `<svg>` never closes -- so this case can
+    # only be caught by that final assertion.
+    "unclosed_svg_nothing_after": '<svg class="rationale"><text x="0" y="0">ok</text>',
     "style_import": "<style>@import url(https://example.invalid/x.css);</style>",
+    # Case-folded: `@IMPORT URL(` fetches from the network exactly as
+    # `@import url(` does, and a substring check that only matches the
+    # lowercase spelling would wave it through.
+    "style_import_uppercase": (
+        "<style>@IMPORT URL(https://example.invalid/x.css);</style>"
+    ),
 }
 
 
@@ -477,7 +500,7 @@ def test_hostile_content_never_becomes_live_markup(
 
 
 def test_only_an_anchor_href_ever_carries_an_external_url(
-    run_cli, adopter_dir, write_unit, page_elements, page_events
+    run_cli, adopter_dir, write_unit, page_events
 ):
     run_cli("init", cwd=adopter_dir)
     write_unit(
@@ -1234,8 +1257,7 @@ def test_a_non_string_description_does_not_raise(
 
 
 def test_hostile_memory_content_never_becomes_live_markup(
-    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements,
-    page_events
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_events
 ):
     # `memory_view` renders the same kind of adopter-authored freeform text
     # as `knowledge_view` (body, description, metadata), so it carries the
@@ -1517,21 +1539,38 @@ LONG_QUESTION = "A question put at such length that no node could ever hold it a
 
 
 def _all_three_fixture(run_cli, adopter_dir, write_unit):
-    """A corpus that draws every diagram: a confluence, a strip, a rationale."""
+    """A corpus that draws every diagram: a confluence, a strip, a rationale.
+
+    kb-0001 carries a second anchor, on a different system (`gitlab`) and
+    never probed, so the determinism check below also covers a page with
+    more than one anchor group on it -- the two-diagram fixture above never
+    has more than one. kb-0004's rationale carries nine options, past
+    `NUMBERED_ABOVE`, so that same check also covers the numbered fallback
+    layout, not just the two-option case the other rationale tests use.
+    """
     run_cli("init", cwd=adopter_dir)
-    for old in ("kb-0001", "kb-0002", "kb-0003"):
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: hypothesis\nanchors:\n"
+        "  - system: gitlab\n    kind: file-hash\n"
+        "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n",
+        "# kb-0001\n",
+    )
+    for old in ("kb-0002", "kb-0003"):
         write_unit(f"{old}.md", f"id: {old}\nevidence: hypothesis\n", f"# {old}\n")
+    options = "".join(
+        f'    - label: "Option {n}"\n'
+        f'      disposition: {"chosen" if n == 1 else "rejected"}\n'
+        f'      reason: "Reason {n}"\n'
+        for n in range(1, 10)
+    )
     write_unit(
         "kb-0004.md",
         "id: kb-0004\nevidence: measured\nsupersedes:\n"
         "  - kb-0001\n  - kb-0002\n  - kb-0003\nanchors:\n"
         "  - system: repo\n    kind: git_ref\n"
         "    captured_at: 2026-01-01T00:00:00Z\n    payload: {}\n"
-        'rationale:\n  question: "Which of the three?"\n  options:\n'
-        '    - label: "Replace all three"\n'
-        '      disposition: chosen\n      reason: "They disagreed."\n'
-        '    - label: "Leave all three standing"\n'
-        '      disposition: rejected\n      reason: "They disagreed."\n',
+        'rationale:\n  question: "Which of the three?"\n  options:\n' + options,
         "# The one that replaced them\n",
     )
     _log(adopter_dir, [
@@ -1668,9 +1707,9 @@ def test_above_eight_options_every_node_is_numbered(
     page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
     diagram = _rationale_diagram(page)
 
-    assert ">#1</text>" in diagram
-    assert ">#9</text>" in diagram
-    assert "Option 1" not in diagram
+    for n in range(1, 10):
+        assert f">#{n}</text>" in diagram
+        assert f"Option {n}" not in diagram
     # Every option is still on the page, in full.
     for n in range(1, 10):
         assert f'<span class="label" dir="auto">Option {n}</span>' in page
@@ -1749,6 +1788,9 @@ def test_hostile_rationale_text_never_becomes_live_markup_inside_the_svg(
     assert result.returncode == 0, result.stderr
     assert "<script>alert(2)</script>" not in page
     assert not [tag for tag, _ in page_elements(page) if tag == "script"]
+    # The hostile label is drawn, not dropped -- escaped, as a text node,
+    # exactly like any other label short enough to fit inline.
+    assert "&lt;/text&gt;&lt;script&gt;alert(2)&lt;/script&gt;" in diagram
     # The diagram's own words name the unit and count the options; no
     # adopter text is in them.
     assert (
@@ -2395,11 +2437,21 @@ rationale:
     - label: "Build an interactive application"
       disposition: rejected
       reason: "It makes the reader depend on a runtime."
+supersedes:
+  - kb-0002
+  - kb-0003
+  - kb-0004
 """
 
 
 def _card_fixture(run_cli, adopter_dir, write_unit):
     run_cli("init", cwd=adopter_dir)
+    # Three superseded stubs, so kb-0001's own card carries a confluence and
+    # a chain too -- the fixed-order test below needs both to be on the page
+    # at once, alongside the anchors, the rationale and the provenance the
+    # other two tests sharing this fixture already exercise.
+    for old in ("kb-0002", "kb-0003", "kb-0004"):
+        write_unit(f"{old}.md", f"id: {old}\nevidence: hypothesis\n", f"# {old}\n")
     write_unit("kb-0001.md", RATIONALE_UNIT, "# The delivery decision\n\nProse.\n")
 
 
@@ -2413,15 +2465,26 @@ def test_the_card_renders_its_parts_in_the_fixed_order(
     card = page[page.index('id="unit-kb-0001"') :]
 
     assert result.returncode == 0, result.stderr
-    order = [
+    # The first five markers appear once each in the outer card's own
+    # preamble, before the chain recurses into any nested section's own
+    # markup -- `.index` (the first occurrence in the slice) is guaranteed
+    # to find the outer card's own. `<ul class="provenance">` and
+    # `<pre class="body">` are different: every section in the chain below
+    # renders its own `<pre class="body">` (a unit's body is never omitted,
+    # even a stub's), so only the LAST occurrence in the slice -- `.rindex`
+    # -- is guaranteed to be the outer card's own, coming after every nested
+    # section the chain contains.
+    leading = [
         "</summary>",
         '<ul class="anchors">',
         '<div class="rationale">',
-        '<ul class="provenance">',
-        '<pre class="body">',
+        '<svg class="confluence"',
+        '<div class="chain">',
     ]
-    positions = [card.index(marker) for marker in order]
-    assert positions == sorted(positions), dict(zip(order, positions))
+    trailing = ['<ul class="provenance">', '<pre class="body">']
+    positions = [card.index(marker) for marker in leading]
+    positions += [card.rindex(marker) for marker in trailing]
+    assert positions == sorted(positions), dict(zip(leading + trailing, positions))
 
 
 def test_the_card_carries_its_evidence_and_verdict_as_data_attributes(
