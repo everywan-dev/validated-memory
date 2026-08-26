@@ -12,7 +12,7 @@ from .findings import ERROR, WARNING, Finding
 from .frontmatter import FrontmatterError, parse
 
 EVIDENCE_STATES = ("measured", "verifiable", "hypothesis")
-BASE_FIELDS = ("id", "evidence", "supersedes", "anchors", "provenance")
+BASE_FIELDS = ("id", "evidence", "supersedes", "anchors", "provenance", "rationale")
 ANCHOR_FIELDS = ("system", "kind", "captured_at", "payload")
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")

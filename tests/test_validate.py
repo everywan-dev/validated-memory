@@ -30,6 +30,34 @@ anchors:
     payload: {}
 """
 
+RATIONALE_UNIT = """\
+id: kb-0003
+evidence: verifiable
+rationale:
+  question: "How should knowledge views be delivered?"
+  options:
+    - label: "Generate a complete static artifact"
+      disposition: chosen
+      reason: "It stays readable without Python, JavaScript or network access."
+    - label: "Build an interactive application"
+      disposition: rejected
+      reason: "It makes the reader depend on a runtime."
+anchors:
+  - system: adopter-repo
+    kind: git_ref
+    captured_at: 2026-08-11T10:00:00Z
+    payload: {}
+"""
+
+
+def test_a_unit_carrying_a_rationale_passes_clean(adopter_dir, write_unit, run_cli):
+    write_unit("kb-0003.md", RATIONALE_UNIT)
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "rationale" not in result.stderr
+
 
 def test_valid_units_pass_clean(adopter_dir, write_unit, run_cli):
     write_unit("kb-0001.md", VALID_UNIT)
