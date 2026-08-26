@@ -71,6 +71,24 @@ def test_an_error_finding_stops_the_run_and_writes_nothing(
     assert not (adopter_dir / "knowledge.html").exists()
 
 
+# The complete set of elements either view is allowed to emit anywhere on the
+# page. This exists because the attribute whitelist below cannot stand on its
+# own: the scan walks a tag's attributes, so an element carrying NONE of them
+# -- `<script>` with inline content is precisely that shape -- has no pairs
+# to check and was admitted silently. A new element joins this set in the same
+# commit that first emits it.
+#
+# `title` covers two different elements the parser cannot tell apart: the
+# document's `<title>` in `<head>`, and the `<title>` inside an `<svg>` or an
+# `<svg>` band. Both are legitimate, and neither can carry a URL.
+SELF_CONTAINED_ELEMENTS = {
+    "html", "head", "meta", "title", "style", "body",
+    "h1", "p", "span", "code", "pre", "ul", "li", "div", "a",
+    "section", "details", "summary",
+    "svg", "rect", "text", "line",
+}
+
+
 # The complete set of (element, attribute) pairs either view is allowed to
 # emit anywhere on the page. This is a real whitelist, not a blacklist of
 # attributes known to carry a URL: a blacklist misses a *relative* `href` on
@@ -128,19 +146,57 @@ SELF_CONTAINED_ATTRIBUTES = {
 }
 
 
-def _assert_self_contained(page, page_elements):
+def _assert_self_contained(page, page_events):
     """The self-containment scan both pages' tests share.
 
     A real whitelist over the parsed document, not a blacklist of
-    substrings: every (element, attribute) pair anywhere on the page must be
-    in `SELF_CONTAINED_ATTRIBUTES`, `("a", "href")` is the only pair allowed
-    to carry an external URL, and no `<meta>` is an `http-equiv` refresh.
+    substrings: every element must be in `SELF_CONTAINED_ELEMENTS`, every
+    (element, attribute) pair in `SELF_CONTAINED_ATTRIBUTES`,
+    `("a", "href")` is the only pair allowed to carry an external URL, and no
+    `<meta>` is an `http-equiv`.
+
+    Three of those rules need more than a flat list of start tags, which is
+    why this walks an event stream:
+
+    - The element check is not redundant with the attribute check: an element
+      with no attributes has no pairs, so without it a bare `<script>` passes.
+    - Inside an `<svg>`, no `a` element and no `href` attribute on anything:
+      a diagram carries no href of any kind, and `("a", "href")` is exempt
+      from the URL check, so nothing else here would catch one. Depth is
+      counted rather than matched, so an `<svg>` that is never closed leaves
+      everything after it inside a diagram -- which is the conservative
+      reading, and the one that fails loudly.
+    - A `<style>` element's own text is content nothing else inspects, and
+      `@import` or a `url(...)` in it fetches from the network as surely as
+      a remote stylesheet link would.
+
     Kept as one helper so `knowledge.html` and `memory.html` cannot drift
-    apart on what "self-contained" means. Returns the parsed elements so a
-    caller can run further checks over the same parse.
+    apart on what "self-contained" means. Returns the start tags, so a caller
+    can run further checks over the same parse.
     """
-    elements = page_elements(page)
-    for tag, attrs in elements:
+    elements = []
+    styles = []
+    svg_depth = 0
+    style_depth = 0
+    for event in page_events(page):
+        if event[0] == "data":
+            if style_depth:
+                styles.append(event[1])
+            continue
+        if event[0] == "end":
+            if event[1] == "svg" and svg_depth:
+                svg_depth -= 1
+            if event[1] == "style" and style_depth:
+                style_depth -= 1
+            continue
+        _kind, tag, attrs = event
+        elements.append((tag, attrs))
+        assert tag in SELF_CONTAINED_ELEMENTS, (
+            f"<{tag}> is outside the self-containment whitelist"
+        )
+        if svg_depth:
+            assert tag != "a", f"an <a> inside an <svg>: {attrs}"
+            assert "href" not in attrs, f"<{tag} href> inside an <svg>: {attrs}"
         if tag == "meta":
             assert "http-equiv" not in attrs, f"<meta http-equiv> found: {attrs}"
         for name, value in attrs.items():
@@ -155,7 +211,76 @@ def _assert_self_contained(page, page_elements):
             assert "ping" not in attrs
             if attrs.get("target") == "_blank":
                 assert attrs.get("rel") == "noopener noreferrer"
+        if tag == "svg":
+            svg_depth += 1
+        if tag == "style":
+            style_depth += 1
+    for css in styles:
+        assert "@import" not in css, f"a <style> block imports: {css[:120]!r}"
+        assert "url(" not in css, f"a <style> block fetches a url: {css[:120]!r}"
     return elements
+
+
+def _wrapped(body):
+    """A minimal, otherwise-legal page carrying `body` in its `<body>`.
+
+    The shell is made only of whitelisted elements and pairs, so a failure
+    can only come from `body` -- which is what the control below establishes.
+    """
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        "<title>Curated knowledge</title>\n<style>body { color: red; }</style>\n"
+        f"</head>\n<body>\n<h1>Curated knowledge</h1>\n{body}\n</body>\n</html>\n"
+    )
+
+
+# One case per way a page could stop being self-contained. The first four
+# are caught today, by the attribute loop or the `http-equiv` rule, and are
+# here so that they stay caught once the element whitelist takes that job
+# over -- an `<iframe>` with no attributes at all would slip through the
+# attribute loop exactly as `<script>` does. The last five are the holes:
+# an element with no attributes, an `<a>` that is legal outside an `<svg>`
+# and forbidden inside one (in either case), an `<svg>` that is never closed,
+# and a `<style>` element whose own text fetches from the network.
+HOSTILE_BODIES = {
+    "iframe": '<iframe src="https://example.invalid/"></iframe>',
+    "meta_refresh": '<meta http-equiv="refresh" content="0">',
+    "svg_image": '<svg class="freshness"><image href="band.png"/></svg>',
+    "svg_use": '<svg class="freshness"><use href="#band"/></svg>',
+    "bare_script": "<script>alert(1)</script>",
+    "anchor_inside_svg": (
+        '<svg class="rationale"><a href="#unit-kb-0001">'
+        '<text x="0" y="0">kb-0001</text></a></svg>'
+    ),
+    "uppercase_anchor_inside_svg": (
+        '<svg class="rationale"><A HREF="#unit-kb-0001">'
+        '<text x="0" y="0">kb-0001</text></A></svg>'
+    ),
+    "unclosed_svg": (
+        '<svg class="rationale"><a href="#unit-kb-0001">'
+        '<text x="0" y="0">kb-0001</text></a>'
+    ),
+    "style_import": "<style>@import url(https://example.invalid/x.css);</style>",
+}
+
+
+@pytest.mark.parametrize("name", sorted(HOSTILE_BODIES))
+def test_the_self_containment_scan_rejects_hostile_markup(name, page_events):
+    with pytest.raises(AssertionError):
+        _assert_self_contained(_wrapped(HOSTILE_BODIES[name]), page_events)
+
+
+def test_the_self_containment_scan_accepts_a_page_built_from_the_whitelist(
+    page_events
+):
+    # The positive control: a page made only of whitelisted elements and
+    # pairs passes, so the cases above are proving the scan catches each
+    # hostile body rather than proving the scan rejects everything.
+    _assert_self_contained(
+        _wrapped('<p class="basis">Basis: 0 unit(s) under knowledge/</p>'),
+        page_events,
+    )
 
 
 def test_every_unit_has_a_section_with_its_headline_and_grades(
@@ -211,7 +336,7 @@ def test_hostile_content_never_becomes_live_markup(
 
 
 def test_only_an_anchor_href_ever_carries_an_external_url(
-    run_cli, adopter_dir, write_unit, page_elements
+    run_cli, adopter_dir, write_unit, page_elements, page_events
 ):
     run_cli("init", cwd=adopter_dir)
     write_unit(
@@ -222,7 +347,7 @@ def test_only_an_anchor_href_ever_carries_an_external_url(
 
     run_cli("render", cwd=adopter_dir)
     page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
-    elements = _assert_self_contained(page, page_elements)
+    elements = _assert_self_contained(page, page_events)
 
     assert any(
         tag == "a" and attrs.get("href") == "https://example.invalid/doc"
@@ -968,7 +1093,8 @@ def test_a_non_string_description_does_not_raise(
 
 
 def test_hostile_memory_content_never_becomes_live_markup(
-    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
+    run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements,
+    page_events
 ):
     # `memory_view` renders the same kind of adopter-authored freeform text
     # as `knowledge_view` (body, description, metadata), so it carries the
@@ -991,7 +1117,7 @@ def test_hostile_memory_content_never_becomes_live_markup(
     assert 'a "quoted" &lt;tag&gt;' in page
     assert "user" in page
 
-    elements = _assert_self_contained(page, page_elements)
+    elements = _assert_self_contained(page, page_events)
     assert not [tag for tag, _ in elements if tag == "script"]
 
 
@@ -1096,7 +1222,7 @@ SVG_FORBIDDEN_ELEMENTS = {"use", "image", "iframe", "object", "embed", "script"}
 
 
 def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
-    run_cli, adopter_dir, write_unit, page_elements
+    run_cli, adopter_dir, write_unit, page_elements, page_events
 ):
     # A page where BOTH diagrams are actually drawn: a confluence (three
     # units superseded at once) and a freshness strip (several probes of one
@@ -1150,7 +1276,7 @@ def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
         for name, value in attrs.items():
             assert not name.lower().startswith("on"), f"{tag}[{name}] is an event attribute"
 
-    _assert_self_contained(page, page_elements)
+    _assert_self_contained(page, page_events)
 
 
 def test_an_outgoing_href_matches_a_spaced_and_punctuated_name_anchor(
