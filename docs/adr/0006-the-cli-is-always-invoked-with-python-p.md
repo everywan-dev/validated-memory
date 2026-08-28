@@ -56,7 +56,7 @@ so `requires-python` is raised to `>=3.11`.
 - `pyproject.toml` declares `requires-python = ">=3.11"`; a `-P`-invoked
   `python3 -m validated_memory` on 3.9 or 3.10 is no longer a target this
   repo claims to support.
-- Every place that invokes the CLI carries `-P`: both `hooks/*.sh`,
+- Every place that invokes the CLI carries `-P`: all three `hooks/*.sh`,
   `action.yml`'s run line, every `SKILL.md` command line, and every doc
   example. `tests/test_skills_structure.py` and `tests/test_action.py`
   gate the invocation form itself -- a documented invocation without `-P`
