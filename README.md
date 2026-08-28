@@ -53,11 +53,12 @@ Two commands inside Claude Code:
 /plugin install validated-memory@validated-memory
 ```
 
-Two things to know before you run them. **Installing activates two
+Two things to know before you run them. **Installing activates three
 `SessionStart` hooks** — fail-open no-ops until a project adopts the method,
-after which one maintains the harness-memory symlink (on first adoption it
-may absorb the harness's existing memory directory, parking the original as
-a `.bak`) and the other refreshes any activated HTML views; what each writes
+after which the first maintains the harness-memory symlink (on first
+adoption it may absorb the harness's existing memory directory, parking the
+original as a `.bak`), the second refreshes any activated HTML views, and the
+third injects the project's current status into the session; what each writes
 is documented in [Startup hooks](docs/reference/hooks.md). And **updating is
 not automatic**: the plugin is pinned to its declared version, and picking up
 a fix means running `/plugin marketplace update validated-memory` (or
@@ -222,9 +223,9 @@ a rule the CLI already enforces:
 ## Requirements and compatibility
 
 - **The v1 surface is complete** — every subcommand in the [CLI
-  reference](docs/reference/cli.md), every skill listed above, both startup
-  hooks, and the static HTML views. The version this clone ships is declared
-  in `pyproject.toml` and the plugin manifest, not restated here.
+  reference](docs/reference/cli.md), every skill listed above, all three
+  startup hooks, and the static HTML views. The version this clone ships is
+  declared in `pyproject.toml` and the plugin manifest, not restated here.
 - **Python ≥ 3.11**, standard library only; pytest is the only development
   dependency.
 - **Claude Code** to run it as a plugin; the CLI stands alone everywhere

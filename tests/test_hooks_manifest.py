@@ -75,3 +75,41 @@ def test_every_registered_command_points_at_a_file_that_exists_under_hooks():
         assert match, f"no hooks/<file> path found in command: {command!r}"
         referenced = REPO_ROOT / match.group(0)
         assert referenced.is_file(), f"{referenced} does not exist"
+
+
+def _session_start_commands():
+    manifest = json.loads(
+        (REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )
+    return [
+        hook
+        for entry in manifest["hooks"]["SessionStart"]
+        for hook in entry["hooks"]
+        if hook.get("type") == "command"
+    ]
+
+
+def test_the_three_session_start_hooks_run_in_a_fixed_order():
+    # Order, not membership: the first hook may absorb the harness's memory
+    # and rewrite `memory/MEMORY.md`, and the third is what reports on the
+    # result. A reshuffle would make the third report a state one session
+    # out of date.
+    scripts = [
+        re.search(r"hooks/[\w.-]+", hook["command"]).group(0)
+        for hook in _session_start_commands()
+    ]
+    assert scripts == [
+        "hooks/restore-memory-symlink.sh",
+        "hooks/refresh-views.sh",
+        "hooks/session-context.sh",
+    ]
+
+
+def test_every_session_start_hook_declares_the_same_timeout():
+    assert [hook.get("timeout") for hook in _session_start_commands()] == [15, 15, 15]
+
+
+def test_the_session_context_hook_exists_and_is_a_shell_script():
+    script_path = REPO_ROOT / "hooks" / "session-context.sh"
+    assert script_path.is_file()
+    assert script_path.read_text(encoding="utf-8").startswith("#!/bin/bash")

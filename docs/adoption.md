@@ -11,7 +11,7 @@ end, see [the walkthrough](walkthrough.md).
 Install `validated-memory` as a Claude Code plugin (however your harness
 manages plugins -- a marketplace, a local plugin path, or a checkout
 referenced directly). Once installed, its seven skills are discovered from
-`skills/*/SKILL.md` by directory convention, and its two startup hooks from
+`skills/*/SKILL.md` by directory convention, and its three startup hooks from
 `hooks/hooks.json` -- neither needs any registration inside the adopter
 project.
 
@@ -241,8 +241,8 @@ Once activated, a view stays current on its own -- see
 
 ## The startup hooks
 
-Two `SessionStart` hooks run on every session start, wired in
-`hooks/hooks.json`.
+Three `SessionStart` hooks run on every session start, in that order, wired
+in `hooks/hooks.json`.
 
 `hooks/restore-memory-symlink.sh` keeps a `--harness-memory` symlink alive
 across renames, re-clones, and fresh sessions, without any manual step:
@@ -271,6 +271,28 @@ way as the other hook: an invalid corpus, an unreadable verdict log, or a
 missing memory directory or index is reported to stderr and the hook still
 exits clean, leaving whatever view was already on disk untouched.
 
-Nothing here needs to be invoked by hand in the common case: both hooks run
-on every session start for every adopter project that has asked for a
-harness-memory symlink, or activated a view, respectively.
+`hooks/session-context.sh` tells the session what is true right now. It
+prints, as plain text, one fixed sentence saying this project practises the
+method, the summary lines of `status --skip-index`, and — when this project
+has any — one line counting the `memory/source-*.md` record entries by
+status. It writes nothing, runs no probe, and discards `status`'s stderr, so
+no finding, and no adopter-written text quoted inside one, ever reaches the
+session through it.
+
+Its fail-open discipline has one wrinkle worth stating, because the other
+two hooks do not have it: printing nothing at all is reserved for a project
+that has not adopted the method, a missing `$CLAUDE_PROJECT_DIR`, and a
+missing `python3`. Any other problem — `status` failing to run, an
+unreadable `memory/` — still prints the fixed sentence and whatever else did
+work, and reports the failure as one fixed line on stderr, which the model
+never sees. It always exits 0.
+
+The order of the three is load-bearing: the first may absorb the harness's
+memory directory and rewrite `memory/MEMORY.md`, and the third is what
+reports on the result.
+
+Nothing here needs to be invoked by hand. All three run at every session
+start of every project; in one that has not adopted the method they do
+nothing at all, and in one that has, the first two act only on what the
+project asked for — a harness-memory symlink, an activated view — while the
+third only reports.

@@ -13,6 +13,7 @@ skills" while the release was 1.4.0 with seven of each:
 - a count of skills that no longer matches `skills/`.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -64,3 +65,65 @@ def test_the_readme_skill_count_matches_the_skills_directory():
     assert stated == on_disk, (
         f"README says {match.group(1)} skills; skills/ has {on_disk}"
     )
+
+
+HOOKS_MANIFEST = REPO_ROOT / "hooks" / "hooks.json"
+# Every prose file that tells a reader how many hooks the plugin installs.
+# `docs/installing.md` is on this list because it is the one that words the
+# count differently, and was missed the first time.
+HOOK_COUNT_FILES = (
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "docs" / "installing.md",
+    REPO_ROOT / "docs" / "adoption.md",
+    REPO_ROOT / "docs" / "reference" / "hooks.md",
+)
+# "two `SessionStart` hooks", "its three startup hooks", "all three startup
+# hooks". The optional middle group lets an adjective or two sit between the
+# number and the noun without letting the match run across a sentence.
+HOOK_COUNT_PATTERN = re.compile(
+    r"\b(one|two|three|four|five|six|seven|eight|nine|ten)\b"
+    r"(?:\s+\S+){0,2}?\s+(?:`SessionStart`|SessionStart|startup)\s+hooks\b",
+    re.IGNORECASE,
+)
+# "both hooks", "both startup hooks", "Both are fail-open" -- a count of two
+# written as a word that no number pattern catches.
+BOTH_HOOKS_PATTERN = re.compile(r"\bboth\b(?:\s+\S+){0,3}?\s+hooks?\b", re.IGNORECASE)
+
+
+def _registered_hook_count():
+    manifest = json.loads(HOOKS_MANIFEST.read_text(encoding="utf-8"))
+    return sum(
+        1
+        for entry in manifest["hooks"]["SessionStart"]
+        for hook in entry["hooks"]
+        if hook.get("type") == "command"
+    )
+
+
+def test_every_prose_statement_of_the_hook_count_matches_the_manifest():
+    # The count lives in `hooks/hooks.json` and is restated in four prose
+    # files. Nothing updates those at registration time, so they drift -- and
+    # a reader who is told "two" while three run has been told something
+    # false about what installing the plugin does to their machine.
+    count = _registered_hook_count()
+    expected = {value for value, number in NUMBER_WORDS.items() if number == count}
+    for path in HOOK_COUNT_FILES:
+        text = path.read_text(encoding="utf-8")
+        matches = HOOK_COUNT_PATTERN.findall(text)
+        assert matches, (
+            f"{path.relative_to(REPO_ROOT)} no longer states the hook count; "
+            "if that is deliberate, drop it from HOOK_COUNT_FILES"
+        )
+        for word in matches:
+            assert word.lower() in expected, (
+                f"{path.relative_to(REPO_ROOT)} says '{word}' "
+                f"{('startup' if 'startup' in text else 'SessionStart')} hooks; "
+                f"hooks.json registers {count}"
+            )
+        if count != 2:
+            leftover = BOTH_HOOKS_PATTERN.search(text)
+            assert leftover is None, (
+                f"{path.relative_to(REPO_ROOT)} still says "
+                f"{leftover.group(0)!r}, which means two; hooks.json "
+                f"registers {count}"
+            )

@@ -15,14 +15,15 @@ from the repository URL.
 
 ## What installing activates
 
-Installing the plugin registers two `SessionStart` hooks that run on every
-session start in every project. Both are fail-open no-ops in a project that
-has not adopted validated-memory; in an adopted project, one keeps the
-harness-memory symlink alive — and, on the first session after adoption, may
-absorb the harness's pre-existing memory directory into the project, parking
-the original as a `.bak` — and the other refreshes whichever HTML views the
-project has activated. What each one writes, and the recognition rule that
-gates the absorption, are documented in
+Installing the plugin registers three `SessionStart` hooks that run on every
+session start in every project. All three are fail-open no-ops in a project
+that has not adopted validated-memory. In an adopted project, the first keeps
+the harness-memory symlink alive — and, on the first session after adoption,
+may absorb the harness's pre-existing memory directory into the project,
+parking the original as a `.bak`; the second refreshes whichever HTML views
+the project has activated; and the third writes nothing at all, injecting a
+few lines of the project's current status into the session. What each one
+writes, and the recognition rule that gates the absorption, are documented in
 [Startup hooks](reference/hooks.md).
 
 ## Other Git hosts
