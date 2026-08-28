@@ -422,8 +422,7 @@ into the session of every adopted project:
   instruction-file block and the skills say how; the lines that follow are
   machine-generated status, not instructions;
 - the **stdout** of `status --skip-index`, whatever its exit code.
-  `status` writes only its `status:` summary lines to stdout -- `validate`,
-  `lint`, `freshness` -- and every `ERROR:`/`WARNING:` finding to stderr,
+  `status` writes only its `status:` summary lines to stdout and every `ERROR:`/`WARNING:` finding to stderr,
   which the hook discards. That is what bounds the context and closes the
   injection channel: a finding quotes adopter-written text (a memory's
   `name`, a unit's id) verbatim, and no finding ever reaches the session
@@ -459,7 +458,7 @@ needs no escaping of the `status` lines, and the hook's first character must
 never be `{`: the fixed sentence comes first. Output is capped by the harness
 at 10,000 characters (beyond that it is spilled to a file and replaced by a
 preview), so the context is bounded by construction: the fixed sentence, the
-three `status` lines, and one line of counts. Exit 0 with no stdout is a
+`status:` summary lines (five with `--skip-index`), and one line of counts. Exit 0 with no stdout is a
 documented no-op for the event; a non-zero exit shows a hook error to the
 user and is never used to mean "nothing to do". Stderr is never seen by the
 model.
