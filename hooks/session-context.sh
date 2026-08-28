@@ -144,11 +144,12 @@ done
 # grammar the skill states, so the two cannot part without a test noticing.
 # CRLF is tolerated throughout, and so is trailing whitespace on any line --
 # `line` is rstripped once, up front, the same way the CLI's own frontmatter
-# parser rstrips a line before comparing it to the `---` fence. A `description`
-# key is only recognized when the colon is followed by whitespace or the end
-# of the line, never by adjoining text: `description:knowledge source a:
-# imported`, with no space after the first colon, counts nowhere rather than
-# being misread as a value.
+# parser rstrips a line before comparing it to the `---` fence. The
+# `description` key match mirrors that same parser: a colon, then optional
+# whitespace, nothing more required -- `description:knowledge source a:
+# imported`, with no space after the first colon, is read as a `description`
+# key exactly the way `validated_memory/frontmatter.py` reads it, and counts
+# accordingly.
 counts_line=""
 if [ "$#" -gt 0 ]; then
   counts_line="$(awk '
@@ -168,7 +169,7 @@ if [ "$#" -gt 0 ]; then
       if (seen == 1) { classify(description) }
       next
     }
-    line ~ /^description:([ \t]|$)/ {
+    line ~ /^description:[ \t]*/ {
       seen++
       if (seen == 1) {
         description = line

@@ -620,12 +620,16 @@ def test_a_fence_with_trailing_spaces_still_counts(tmp_path):
     )
 
 
-def test_a_description_key_with_no_separating_space_counts_nowhere(tmp_path):
+def test_a_description_with_no_space_after_the_colon_counts_like_the_parser_reads_it(
+    tmp_path,
+):
     # `description:knowledge source a: imported`, with no space after the
-    # first colon, must not be read as the `description` key: the key rule
-    # requires whitespace or end of line right after the colon, so this is
-    # adjoining text, not a value -- unlike `description: ...` or a bare
-    # `description:` with nothing after it.
+    # first colon. `validated_memory/frontmatter.py`'s `_parse_mapping`
+    # splits on the first colon and requires no whitespace after it --
+    # confirmed directly against `frontmatter.parse`, which reads this exact
+    # line as `description == "knowledge source a: imported"`, identical to
+    # the spaced form -- so the hook must count it the same way lint would
+    # classify it, not treat it as unparseable adjoining text.
     project_dir = _init_adopter(tmp_path / "project")
     (project_dir / "memory" / "source-a.md").write_text(
         "---\nname: source-a\n"
@@ -636,7 +640,10 @@ def test_a_description_key_with_no_separating_space_counts_nowhere(tmp_path):
 
     result = _run_hook_checked(project_dir)
 
-    assert _counts_line(result) == ZERO_COUNTS
+    assert _counts_line(result) == (
+        "knowledge sources: 1 imported, 0 declared not scanned, "
+        "0 found not imported, 0 not located"
+    )
 
 
 def test_a_description_line_in_the_body_is_never_read(tmp_path):
