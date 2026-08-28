@@ -112,6 +112,75 @@ and is safe to re-run: it is idempotent and never overwrites a hand-edited
 file. See the reference's `init` section (docs/reference/cli.md) for the full contract, including
 `--harness-memory` below.
 
+## Import existing knowledge
+
+`init` has run, so `knowledge/` and `memory/` exist. A project adopting this
+method usually already practises one of its own: hypothesis registers,
+research reports that close with a verdict, per-incident findings,
+verification queries, agent memories, context files, decision records. This
+phase imports what is worth importing and leaves a record of everything it
+saw. Ask each question with the harness's question tool when there is one,
+in plain text otherwise, and wait for the answer.
+
+**Q1 -- Sources.** "Does this project already have a knowledge system or a
+source of truth we should import? Name paths (inside or outside this
+repository), context files, and databases."
+
+Collect the answer **as text and nothing more**: nothing is resolved, opened
+or looked up at this point. For each source named, propose an **alias** --
+the last path component, or the database's name, normalized to the alias
+grammar `[a-z0-9][a-z0-9-]{0,39}` -- and let the user approve or change it.
+The alias is how the source is recorded; a path is recorded only when it
+lies inside the repository.
+
+**Q2 -- Scan the declared sources.** Asked only when Q1 named at least one
+source. Before asking, show, per declared path: the realpath it resolves to
+(symlinks followed), its type (file or directory), the scope -- a directory
+is read recursively -- and the exclusions that apply. **Refuse** a path that
+resolves to the filesystem root, to the user's home directory, to the
+harness's configuration directory, or to an ancestor of the repository root:
+they are not sources, they are everything. A path that resolves inside the
+repository root -- which is what the harness-memory symlink resolves to after
+the first session, since it points into `memory/` -- keeps the exact scope
+declared; it is not widened to the repository.
+
+Then ask: "Scan these sources now? Nothing is written until you confirm the
+report." with this notice, unchanged: *the whole repository is scanned as
+well; what you declared is proposed for import, and anything else found is
+reported without being proposed.*
+
+- **Yes** -- run `bootstrap-from-repo` in mode `declared+repo`. This answer
+  is the consent that turns each shown path into a read root.
+- **No** -- the declared sources are not read. Propose one record entry per
+  source with status `declared, not scanned`, shown in full like any other
+  candidate, and write them only on confirmation. Say in one sentence that
+  the sources are referenced rather than scanned, and that later sessions
+  will be told.
+
+**Q3 -- Repository scan.** Asked only when Q1 named nothing, or Q2 was No;
+with Q2 = Yes the repository scan is already part of that run. "Scan this
+repository for validated knowledge or agent memory worth importing?" Yes
+runs `bootstrap-from-repo` in mode `repo`.
+
+Dispatch the scan to a **read-only subagent** where the harness offers one
+that can be denied execution, network and writes, and carry on with the next
+question while it runs; where it cannot, run the scan inline after the last
+question, under the same work packet. The order of the questions does not
+change either way. Whichever way it ran, present the report and ask its
+confirmation before anything is written.
+
+With Q2 = Yes there is no Q3 left to ask, so the questionnaire proceeds
+straight to the instruction-file step below while the scan runs. Whichever
+question was the last one, and whether the scan ran in a subagent or inline,
+there is a single rendezvous: the report is presented once the scan has
+returned **and** the instruction-file step is done. The instruction-file step
+never waits for the scan, and nothing from the report is written before that
+rendezvous.
+
+Close the phase by naming what was imported and what was left, in counts.
+Every source seen has its `memory/source-<alias>.md` record entry, written
+with its `memory/MEMORY.md` line like any other memory entry.
+
 ## Wire the harness's persistent memory (optional)
 
 ```
@@ -156,6 +225,13 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m vali
 `validate` may still report a WARNING for an empty `knowledge/` (no units to
 check) -- that does not gate. Any ERROR means the scaffold is broken; do not
 proceed until both commands are clean.
+
+Then list the active `memory/source-*.md` entries whose status is
+`declared, not scanned` or `not located`, and name them: those are sources
+this project knows about and has not imported. Re-running
+`bootstrap-from-repo` is what imports them -- and a source outside the
+repository has to be declared and consented to again, because its record
+holds only an alias, never a path.
 
 ## Next steps
 

@@ -147,3 +147,119 @@ def test_the_skill_asks_the_versioning_question_before_init():
         "per remote",
     ):
         assert needle in section, f"decision section does not mention {needle!r}"
+
+
+# --- the import phase (spec section 1) ----------------------------------------
+
+# Needles are matched against the skill with whitespace normalized to single
+# spaces, so a needle can quote a whole sentence without depending on where
+# the paragraph wraps.
+
+
+def _normalized_skill():
+    return " ".join(ADOPT_SKILL.read_text(encoding="utf-8").split())
+
+
+def test_the_skill_imports_after_init_and_before_verify():
+    # `init` has to have run (the layout must exist to import into), and the
+    # answers have to be recorded before Verify reports on them.
+    text = ADOPT_SKILL.read_text(encoding="utf-8")
+    bootstrap = text.index("## Bootstrap the layout")
+    first_init = text.index("python3 -P -m validated_memory init")
+    import_phase = text.index("## Import existing knowledge")
+    verify = text.index("## Verify the adoption")
+    assert bootstrap < first_init < import_phase < verify
+
+
+Q1_HEADING = "**Q1 -- Sources.**"
+Q2_HEADING = "**Q2 -- Scan the declared sources.**"
+Q1_DENIAL = (
+    "Collect the answer **as text and nothing more**: nothing is resolved, "
+    "opened or looked up at this point."
+)
+# Every sentence that describes resolving or opening a declared path. All of
+# them belong under Q2, after the user has been shown what a path resolves
+# to; none may appear under Q1.
+RESOLUTION_SENTENCES = (
+    "the realpath it resolves to (symlinks followed)",
+    "**Refuse** a path that resolves to the filesystem root, to the user's "
+    "home directory, to the harness's configuration directory, or to an "
+    "ancestor of the repository root",
+    "A path that resolves inside the repository root",
+)
+
+
+def test_q1_collects_text_only_and_every_resolution_happens_under_q2():
+    # Needles alone are not enough here. Adding "Resolve and open every named
+    # path immediately" to Q1 leaves every needle in this file green while
+    # inverting the one rule this phase exists to enforce, so the assertion
+    # is positional: Q1 carries the denial and nothing else about resolving
+    # or opening, and every resolution sentence sits after the Q2 heading.
+    text = _normalized_skill()
+    q1_at = text.index(Q1_HEADING)
+    q2_at = text.index(Q2_HEADING)
+    assert q1_at < q2_at, "Q2 is asked before Q1"
+    assert Q1_DENIAL in text, "Q1 no longer says the answer is collected as text only"
+    assert q1_at < text.index(Q1_DENIAL) < q2_at, "the denial left Q1"
+
+    for needle in RESOLUTION_SENTENCES:
+        assert needle in text, f"the import phase no longer says: {needle!r}"
+        assert text.index(needle) > q2_at, (
+            f"{needle!r} appears before the Q2 heading: nothing is resolved "
+            "or opened until the user has seen and consented at Q2"
+        )
+
+    # Q1's own text says nothing about resolving or opening, beyond the one
+    # sentence that forbids both.
+    q1_section = text[q1_at:q2_at].replace(Q1_DENIAL, "")
+    for word in ("resolve", "open"):
+        assert word not in q1_section.lower(), (
+            f"Q1 mentions {word!r} outside the sentence that forbids it"
+        )
+
+    # The question itself, and the fixed notice Q2 carries with it.
+    for needle in (
+        "Does this project already have a knowledge system or a source of "
+        "truth we should import?",
+        "Scan these sources now? Nothing is written until you confirm the "
+        "report.",
+        "the whole repository is scanned as well",
+    ):
+        assert needle in text, f"the import phase no longer says: {needle!r}"
+
+
+def test_the_skill_says_why_those_resolutions_are_refused():
+    text = _normalized_skill()
+    for needle in (
+        "they are not sources, they are everything",
+        "which is what the harness-memory symlink resolves to after the first "
+        "session, since it points into `memory/`",
+        "keeps the exact scope declared; it is not widened to the repository",
+    ):
+        assert needle in text, f"the import phase no longer says: {needle!r}"
+
+
+def test_the_skill_names_both_engine_modes_the_subagent_and_the_rendezvous():
+    text = _normalized_skill()
+    assert "`bootstrap-from-repo` in mode `declared+repo`" in text
+    assert "`bootstrap-from-repo` in mode `repo`" in text
+    assert "read-only subagent" in text
+    assert "run the scan inline after the last question" in text
+    # The "No" branch leaves a record rather than nothing at all.
+    assert "`declared, not scanned`" in text
+    # Q2 = Yes leaves no Q3, so the questionnaire must be told where to go
+    # next -- and where the two threads meet again.
+    assert "there is no Q3 left to ask" in text
+    assert "there is a single rendezvous" in text
+    assert "The instruction-file step never waits for the scan" in text
+
+
+def test_verify_lists_the_sources_that_are_still_pending():
+    text = ADOPT_SKILL.read_text(encoding="utf-8")
+    verify = text.index("## Verify the adoption")
+    next_steps = text.index("## Next steps")
+    section = " ".join(text[verify:next_steps].split())
+    assert "`memory/source-*.md`" in section
+    assert "`declared, not scanned`" in section
+    assert "`not located`" in section
+    assert "declared and consented to again" in section
