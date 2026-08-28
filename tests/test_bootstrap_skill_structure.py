@@ -91,8 +91,9 @@ def test_the_work_packet_forbids_writing_execution_network_and_delegation():
 # engine import what it was told to merely report.
 DECLARED_REPO_PARAGRAPH = (
     "- `declared+repo` -- the declared sources and the whole repository. "
-    "What was declared is proposed for import; anything else found is "
-    "reported without being proposed."
+    "What was declared is proposed for import in the batch; anything else "
+    "found fills the second report section, outside the batch, and is "
+    "imported only on that section's own separate confirmation."
 )
 REPO_PARAGRAPH = (
     "- `repo` -- the repository only: no declared source, and therefore no "

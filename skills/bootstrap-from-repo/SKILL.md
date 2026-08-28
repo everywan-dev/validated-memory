@@ -71,8 +71,9 @@ fixed sections:
 Two modes, and no third:
 
 - `declared+repo` -- the declared sources and the whole repository. What was
-  declared is proposed for import; anything else found is reported without
-  being proposed.
+  declared is proposed for import in the batch; anything else found fills the
+  second report section, outside the batch, and is imported only on that
+  section's own separate confirmation.
 - `repo` -- the repository only: no declared source, and therefore no root
   outside the repository root. Its candidates fill the second report section
   and are imported on that section's own confirmation.
