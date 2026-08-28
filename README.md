@@ -206,7 +206,9 @@ exact CLI invocation and the data discipline to follow — never reimplementing
 a rule the CLI already enforces:
 
 - **`adopt-validated-memory`** — decide what the repository versions,
-  bootstrap a project, wire the symlink, verify with `validate` and `lint`.
+  bootstrap a project, import whatever knowledge it already has, offer the
+  managed block for its instruction file, wire the symlink, verify with
+  `validate` and `lint`.
 - **`create-knowledge-unit`** — write a unit field by field, with the
   evidence-state discipline.
 - **`supersede-knowledge`** — correct knowledge with a successor, never by
@@ -216,9 +218,10 @@ a rule the CLI already enforces:
   with `lint`.
 - **`ask-validated-memory`** — answer usage questions from the plugin's own
   docs and `--help`, quoting exact invocations, never inventing a flag.
-- **`bootstrap-from-repo`** — walk an adopter repository and propose
-  starting facts for both layers, under an explicit security perimeter;
-  only confirmed proposals are written.
+- **`bootstrap-from-repo`** — scan the repository, and any source the
+  adopter declared and consented to, and propose starting facts for both
+  layers under an explicit security perimeter; only what a confirmed report
+  page showed is written, and every source seen is recorded.
 
 ## Requirements and compatibility
 
