@@ -124,3 +124,19 @@ Pointing at **this memory's own filename** counts as pointing at itself,
 whatever its `name` currently says -- the filename is the identity. A target
 that does resolve to another memory is a valid supersession even when it
 happens to equal this file's filename, so resolution is settled first.
+
+**The `source-*` convention.** Entries named `source-<alias>.md`, of type
+`reference`, are written by the `bootstrap-from-repo` and
+`adopt-validated-memory` skills to record one fact each about a source of
+existing knowledge seen at adoption: its alias, its type, where it is (a
+repository-relative path, or the literal `outside the repository`), its
+status, the date, and what was written from it. `lint` knows nothing about
+them: they are ordinary memory entries, validated by the rules above and by
+nothing else, and a status that changes is retired by the same supersession
+every other fact uses -- a successor under a new filename, and `superseded
+by [[...]]` written into the old one's `description`, which is the only
+change that entry ever receives. The convention lives in the skills, and the
+startup hook `hooks/session-context.sh` counts the active entries by status
+at every session start. A database's definition is *not* one of these: it is
+an ordinary `reference` entry named `<alias>-definition.md`, carrying no
+status and outside the `source-*` glob.
