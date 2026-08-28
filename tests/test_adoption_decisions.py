@@ -16,6 +16,7 @@ The list is read from the skill and the guide as data (the same seam as
 subprocess, never from the package.
 """
 
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -263,3 +264,111 @@ def test_verify_lists_the_sources_that_are_still_pending():
     assert "`declared, not scanned`" in section
     assert "`not located`" in section
     assert "declared and consented to again" in section
+
+
+# --- the managed block (spec section 4.1) -------------------------------------
+
+BEGIN_MARKER = "<!-- validated-memory:begin -->"
+END_MARKER = "<!-- validated-memory:end -->"
+SKILLS_DIR = REPO_ROOT / "skills"
+
+
+def _managed_block(path):
+    """The canonical managed block as `path` quotes it, verbatim.
+
+    Delimited by its own two marker lines, each of which must appear exactly
+    once in the file and alone on its line -- the same rule the skill's write
+    rule imposes on the adopter's instruction file. Everything between them,
+    markers included, is the block; the fence around it is not.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    starts = [i for i, line in enumerate(lines) if line.strip() == BEGIN_MARKER]
+    ends = [i for i, line in enumerate(lines) if line.strip() == END_MARKER]
+    assert len(starts) == 1, f"{path}: expected one begin marker, found {len(starts)}"
+    assert len(ends) == 1, f"{path}: expected one end marker, found {len(ends)}"
+    assert starts[0] < ends[0], f"{path}: the end marker precedes the begin marker"
+    return "\n".join(lines[starts[0] : ends[0] + 1])
+
+
+CANONICAL_MANAGED_BLOCK = """\
+<!-- validated-memory:begin -->
+## Validated memory
+
+This project practises the validated-memory method. Curated knowledge lives
+in `knowledge/` (one unit per claim, with `evidence` declared and freshness
+probed); agent memory lives in `memory/` (one fact per file, indexed in
+`memory/MEMORY.md`); `knowledge-index.md` is derived and never hand-edited.
+
+- Record a finding, decision or measured fact worth re-checking as a
+  knowledge unit (`create-knowledge-unit`); a preference or a durable
+  project fact as a memory entry (`maintain-agent-memory`).
+- When the world changes a fact, do not edit it: write a successor and
+  supersede the old record (`supersede-knowledge`). Only a defect `lint` can
+  name is repaired in place.
+- Before citing a curated fact that carries anchors, read its verdict in
+  `knowledge-index.md` (run `derive` first if this clone does not version
+  it); `drifted` or `unknown` means re-check first (`probe-freshness`).
+- `memory/source-*.md` entries record sources of existing knowledge seen at
+  adoption; one whose status is `declared, not scanned` is knowledge this
+  project has not imported yet (`bootstrap-from-repo` imports it).
+- Usage questions: `ask-validated-memory`.
+<!-- validated-memory:end -->"""
+
+# Every skill the block names: six of the seven, all but
+# `adopt-validated-memory` itself, which is the skill that writes the block.
+# Compared as an exact set, not a subset -- a block that quietly stopped
+# naming `supersede-knowledge` would still pass a subset check while leaving
+# a later session with no pointer to the one skill that retires a wrong fact.
+MANAGED_BLOCK_SKILLS = {
+    "create-knowledge-unit",
+    "maintain-agent-memory",
+    "supersede-knowledge",
+    "probe-freshness",
+    "bootstrap-from-repo",
+    "ask-validated-memory",
+}
+
+
+def test_both_copies_of_the_managed_block_equal_the_canonical_one():
+    # Comparing the two copies with each other is not enough: two identical
+    # copies of a block that drifted from what the design specified would
+    # pass that. The constant here is the third party both must match.
+    assert _managed_block(ADOPT_SKILL) == CANONICAL_MANAGED_BLOCK
+    assert _managed_block(ADOPTION_GUIDE) == CANONICAL_MANAGED_BLOCK
+
+
+def test_the_managed_block_names_exactly_those_skills_and_they_all_exist():
+    # A backticked token shaped like a skill name -- lower-case, hyphenated,
+    # no dot and no slash -- is a skill reference. That shape excludes every
+    # other backticked token in the block: paths (`memory/`,
+    # `memory/MEMORY.md`, `memory/source-*.md`), filenames
+    # (`knowledge-index.md`), single words (`lint`, `derive`, `evidence`,
+    # `drifted`, `unknown`) and the quoted status literal.
+    named = {
+        token
+        for token in re.findall(r"`([^`]+)`", CANONICAL_MANAGED_BLOCK)
+        if re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+", token)
+    }
+    assert named == MANAGED_BLOCK_SKILLS
+    on_disk = {path.name for path in SKILLS_DIR.iterdir() if path.is_dir()}
+    assert MANAGED_BLOCK_SKILLS <= on_disk, (
+        f"the managed block names skills that do not exist: "
+        f"{sorted(MANAGED_BLOCK_SKILLS - on_disk)}"
+    )
+
+
+def test_the_managed_block_write_rule_is_closed():
+    # The file belongs to the adopter, and the failure mode is losing
+    # content this plugin does not own: every case the write can meet has an
+    # answer, and two of them are "write nothing".
+    text = _normalized_skill()
+    for needle in (
+        "**no marker in the file** -- append the block, on confirmation",
+        "exactly one begin marker followed by exactly one end marker",
+        "write nothing, name the lines, and leave the repair to the user",
+        "**the file is a symlink**",
+        "its realpath is outside the repository root",
+        "Re-read the file immediately before writing",
+        "preserved byte for byte",
+    ):
+        assert needle in text, f"the write rule no longer says: {needle!r}"

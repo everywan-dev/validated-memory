@@ -181,6 +181,63 @@ Close the phase by naming what was imported and what was left, in counts.
 Every source seen has its `memory/source-<alias>.md` record entry, written
 with its `memory/MEMORY.md` line like any other memory entry.
 
+## Tell later sessions that this project practises the method
+
+Offer to write a fixed block into the adopter's agent-instruction file --
+`CLAUDE.md`, and `AGENTS.md` where one exists. Show the exact resulting diff
+and write it only on confirmation. `init` never touches these files, and
+neither does anything here without that confirmation: a file the adopter
+owns, mutated unattended, is a file nobody reviews.
+
+The block is delimited by two marker lines, written `<!-- validated-memory:begin -->`
+and `<!-- validated-memory:end -->`. The write rule is closed, because the
+file is the adopter's and the failure mode is losing content this plugin
+does not own:
+
+- **no marker in the file** -- append the block, on confirmation;
+- **exactly one begin marker followed by exactly one end marker**, each on
+  its own line, in that order -- replace what lies between them, on
+  confirmation, after showing the diff; when the block on disk already
+  equals the canonical one, do nothing and say so;
+- **anything else** -- a marker repeated, nested, reversed or unpaired, or a
+  marker inside a fenced code block -- write nothing, name the lines, and
+  leave the repair to the user;
+- **the file is a symlink**, or its realpath is outside the repository root
+  -- write nothing, say so.
+
+Re-read the file immediately before writing and compare it with what the
+diff was built from; a file that changed in between is shown again.
+Everything outside the markers is preserved byte for byte, including the
+line-ending style and the presence or absence of a final newline.
+
+The canonical block, which `docs/adoption.md` quotes and a test keeps equal
+to this copy:
+
+```markdown
+<!-- validated-memory:begin -->
+## Validated memory
+
+This project practises the validated-memory method. Curated knowledge lives
+in `knowledge/` (one unit per claim, with `evidence` declared and freshness
+probed); agent memory lives in `memory/` (one fact per file, indexed in
+`memory/MEMORY.md`); `knowledge-index.md` is derived and never hand-edited.
+
+- Record a finding, decision or measured fact worth re-checking as a
+  knowledge unit (`create-knowledge-unit`); a preference or a durable
+  project fact as a memory entry (`maintain-agent-memory`).
+- When the world changes a fact, do not edit it: write a successor and
+  supersede the old record (`supersede-knowledge`). Only a defect `lint` can
+  name is repaired in place.
+- Before citing a curated fact that carries anchors, read its verdict in
+  `knowledge-index.md` (run `derive` first if this clone does not version
+  it); `drifted` or `unknown` means re-check first (`probe-freshness`).
+- `memory/source-*.md` entries record sources of existing knowledge seen at
+  adoption; one whose status is `declared, not scanned` is knowledge this
+  project has not imported yet (`bootstrap-from-repo` imports it).
+- Usage questions: `ask-validated-memory`.
+<!-- validated-memory:end -->
+```
+
 ## Wire the harness's persistent memory (optional)
 
 ```

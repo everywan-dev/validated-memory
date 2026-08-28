@@ -115,6 +115,43 @@ python3 -P -m validated_memory validate
 python3 -P -m validated_memory lint
 ```
 
+Adoption does not stop at the scaffold. The `adopt-validated-memory` skill
+then asks what existing knowledge this project already has and hands the
+answer to `bootstrap-from-repo`, and it offers to write one managed block
+into this project's agent-instruction file -- `CLAUDE.md`, and `AGENTS.md`
+where one exists -- so that later sessions know the project practises the
+method. The block is written only on confirmation, after the diff has been
+shown; `init` never touches those files. This is the block, byte for byte:
+
+```markdown
+<!-- validated-memory:begin -->
+## Validated memory
+
+This project practises the validated-memory method. Curated knowledge lives
+in `knowledge/` (one unit per claim, with `evidence` declared and freshness
+probed); agent memory lives in `memory/` (one fact per file, indexed in
+`memory/MEMORY.md`); `knowledge-index.md` is derived and never hand-edited.
+
+- Record a finding, decision or measured fact worth re-checking as a
+  knowledge unit (`create-knowledge-unit`); a preference or a durable
+  project fact as a memory entry (`maintain-agent-memory`).
+- When the world changes a fact, do not edit it: write a successor and
+  supersede the old record (`supersede-knowledge`). Only a defect `lint` can
+  name is repaired in place.
+- Before citing a curated fact that carries anchors, read its verdict in
+  `knowledge-index.md` (run `derive` first if this clone does not version
+  it); `drifted` or `unknown` means re-check first (`probe-freshness`).
+- `memory/source-*.md` entries record sources of existing knowledge seen at
+  adoption; one whose status is `declared, not scanned` is knowledge this
+  project has not imported yet (`bootstrap-from-repo` imports it).
+- Usage questions: `ask-validated-memory`.
+<!-- validated-memory:end -->
+```
+
+Everything outside the two markers is preserved byte for byte; a file whose
+markers are repeated, nested, reversed or unpaired is left untouched and
+reported, not repaired.
+
 ## 4. Declare an extension (optional)
 
 The base contract (see [Base contract](reference/curated-knowledge.md#base-contract)) is
