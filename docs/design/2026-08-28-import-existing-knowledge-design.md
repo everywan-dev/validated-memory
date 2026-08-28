@@ -83,7 +83,8 @@ session, since it points into `memory/` -- keeps the exact scope declared;
 it is not widened to the repository. Then: "Scan these sources now? Nothing
 is written until you confirm the report." with the fixed notice: *the whole
 repository is scanned as well; what you declared is proposed for import, and
-anything else found is reported without being proposed.*
+anything else found is reported, and offered only under its own separate
+confirmation.*
 
 - **Yes**: the engine runs in mode `declared+repo` (§2.1); this answer is
   the consent that turns each shown path into a read root.

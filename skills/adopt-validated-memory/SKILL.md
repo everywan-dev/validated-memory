@@ -130,8 +130,10 @@ Collect the answer **as text and nothing more**: nothing is resolved, opened
 or looked up at this point. For each source named, propose an **alias** --
 the last path component, or the database's name, normalized to the alias
 grammar `[a-z0-9][a-z0-9-]{0,39}` -- and let the user approve or change it.
-The alias is how the source is recorded; a path is recorded only when it
-lies inside the repository.
+An alias must be unique among the sources declared and the active
+`source-*` entries already in `memory/`; a duplicate is refused before
+anything else happens. The alias is how the source is recorded; a path is
+recorded only when it lies inside the repository.
 
 **Q2 -- Scan the declared sources.** Asked only when Q1 named at least one
 source. Before asking, show, per declared path: the realpath it resolves to
@@ -147,7 +149,7 @@ declared; it is not widened to the repository.
 Then ask: "Scan these sources now? Nothing is written until you confirm the
 report." with this notice, unchanged: *the whole repository is scanned as
 well; what you declared is proposed for import, and anything else found is
-reported without being proposed.*
+reported, and offered only under its own separate confirmation.*
 
 - **Yes** -- run `bootstrap-from-repo` in mode `declared+repo`. This answer
   is the consent that turns each shown path into a read root.
@@ -160,14 +162,17 @@ reported without being proposed.*
 **Q3 -- Repository scan.** Asked only when Q1 named nothing, or Q2 was No;
 with Q2 = Yes the repository scan is already part of that run. "Scan this
 repository for validated knowledge or agent memory worth importing?" Yes
-runs `bootstrap-from-repo` in mode `repo`.
+runs `bootstrap-from-repo` in mode `repo`. **No** -- nothing is read: the
+phase ends with the record entries already proposed under Q2 (or with
+nothing to record when Q1 named nothing), and the questionnaire proceeds to
+the instruction-file step below.
 
-Dispatch the scan to a **read-only subagent** where the harness offers one
-that can be denied execution, network and writes, and carry on with the next
-question while it runs; where it cannot, run the scan inline after the last
-question, under the same work packet. The order of the questions does not
-change either way. Whichever way it ran, present the report and ask its
-confirmation before anything is written.
+When a scan was consented to, dispatch it to a **read-only subagent** where
+the harness offers one that can be denied execution, network and writes, and
+carry on with the next question while it runs; where it cannot, run the scan
+inline after the last question, under the same work packet. The order of
+the questions does not change either way. Whichever way it ran, present the
+report and ask its confirmation before anything is written.
 
 With Q2 = Yes there is no Q3 left to ask, so the questionnaire proceeds
 straight to the instruction-file step below while the scan runs. Whichever

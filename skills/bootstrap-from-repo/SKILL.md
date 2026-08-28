@@ -158,9 +158,10 @@ research or context shapes and are proposed as such.
 
 Not found, ask the user to provide the definition -- a path, or the facts
 themselves, recorded the same way, as a pointer to where they were written
-down -- or to have the repository scanned for it again by the same subagent.
-A database still without a located definition when the run ends is recorded
-`not located`.
+down -- or to have the repository scanned for it again by the same subagent
+-- a path named here is a declared source like any other: shown resolved,
+consented to, and read under the perimeter above. A database still without a
+located definition when the run ends is recorded `not located`.
 
 Reading the database itself is out of scope: no client or MCP tool is
 guaranteed to exist in the session, and nothing in a table is knowledge until
@@ -286,9 +287,11 @@ line, so a quoted value is a source recorded and then counted nowhere.
 `directory`, `database`; `location` -- a path relative to the repository
 root for a source inside it, the literal `outside the repository` for one
 outside it (never a realpath, a host, or an access name), the literal
-`definition: <relative path>` for a located database; `status`; `as of`, an
-ISO date; `written`, the counts. There is no notes field: what the user said
-is not recorded, so no scanned or typed text persists in a versioned file.
+`definition: <relative path>` for a located database whose definition lies
+inside the repository, or `definition: outside the repository` for one
+located outside it; `status`; `as of`, an ISO date; `written`, the counts.
+There is no notes field: what the user said is not recorded, so no scanned
+or typed text persists in a versioned file.
 
 The startup hook `hooks/session-context.sh` counts these entries by status
 and injects one line into every session; `adopt-validated-memory`'s Verify

@@ -108,6 +108,30 @@ def test_the_two_mode_paragraphs_are_intact_and_there_is_no_third():
     assert DECLARED_REPO_PARAGRAPH in text, "the `declared+repo` paragraph moved"
     assert REPO_PARAGRAPH in text, "the `repo` paragraph moved"
 
+    # The heading's own claim -- "no third" -- checked against the raw file
+    # rather than the whitespace-normalized text above: a third bullet
+    # inserted into the list would still satisfy both needles, since neither
+    # rules out extra content. Line breaks matter here, so this reads the
+    # file directly and walks the bullet list following the heading, up to
+    # the first blank line after it.
+    raw = SKILL.read_text(encoding="utf-8")
+    after_heading = raw[raw.index("Two modes, and no third:") + len("Two modes, and no third:") :]
+    lines = after_heading.splitlines()
+    start = 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    list_lines = []
+    for line in lines[start:]:
+        if not line.strip():
+            break
+        list_lines.append(line)
+    bullets = [line for line in list_lines if line.startswith("- `")]
+    assert len(bullets) == 2, f"expected exactly two mode bullets, found {len(bullets)}: {bullets!r}"
+    first_tokens = [re.match(r"- `([^`]+)`", bullet).group(1) for bullet in bullets]
+    assert first_tokens == ["declared+repo", "repo"], (
+        f"the mode bullets are no longer `declared+repo` then `repo`: {first_tokens!r}"
+    )
+
 
 def test_measured_is_earned_by_executing_never_by_citing():
     _assert_needles(
@@ -186,3 +210,26 @@ def test_the_record_entry_grammars_and_the_four_status_literals():
     assert "It is **not** a `source-*` record entry" in text
     assert "the `source-*` glob never matches it, and the startup hook never counts it" in text
     assert re.search(r"metadata:\s*type: reference", SKILL.read_text(encoding="utf-8"))
+
+
+def test_a_database_definition_provided_as_a_path_is_a_declared_source():
+    # A path the user gives for a database's definition is not read on the
+    # strength of being named -- it goes through the same perimeter as every
+    # other declared source: shown resolved, consented to, then read.
+    _assert_needles(
+        "a path named here is a declared source like any other: shown "
+        "resolved, consented to, and read under the perimeter above",
+    )
+
+
+def test_the_location_grammar_has_a_form_for_a_definition_outside_the_repository():
+    # `location` already had `definition: <relative path>` for a database
+    # whose definition lives inside the repository; a definition the user
+    # points at outside the repository needs the same "outside" literal the
+    # plain-source case already has, not a bare path that would leak a
+    # realpath into a versioned file.
+    _assert_needles(
+        "the literal `definition: <relative path>` for a located database "
+        "whose definition lies inside the repository, or `definition: "
+        "outside the repository` for one located outside it",
+    )

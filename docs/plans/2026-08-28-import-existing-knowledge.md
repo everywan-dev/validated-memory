@@ -253,7 +253,7 @@ def test_the_work_packet_forbids_writing_execution_network_and_delegation():
 DECLARED_REPO_PARAGRAPH = (
     "- `declared+repo` -- the declared sources and the whole repository. "
     "What was declared is proposed for import; anything else found is "
-    "reported without being proposed."
+    "reported, and offered only under its own separate confirmation."
 )
 REPO_PARAGRAPH = (
     "- `repo` -- the repository only: no declared source, and therefore no "
@@ -888,7 +888,7 @@ declared; it is not widened to the repository.
 Then ask: "Scan these sources now? Nothing is written until you confirm the
 report." with this notice, unchanged: *the whole repository is scanned as
 well; what you declared is proposed for import, and anything else found is
-reported without being proposed.*
+reported, and offered only under its own separate confirmation.*
 
 - **Yes** -- run `bootstrap-from-repo` in mode `declared+repo`. This answer
   is the consent that turns each shown path into a read root.

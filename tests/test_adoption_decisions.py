@@ -225,6 +225,8 @@ def test_q1_collects_text_only_and_every_resolution_happens_under_q2():
         "Scan these sources now? Nothing is written until you confirm the "
         "report.",
         "the whole repository is scanned as well",
+        "anything else found is reported, and offered only under its own "
+        "separate confirmation",
     ):
         assert needle in text, f"the import phase no longer says: {needle!r}"
 
@@ -264,6 +266,50 @@ def test_verify_lists_the_sources_that_are_still_pending():
     assert "`declared, not scanned`" in section
     assert "`not located`" in section
     assert "declared and consented to again" in section
+
+
+def test_the_alias_must_be_unique():
+    text = _normalized_skill()
+    assert (
+        "An alias must be unique among the sources declared and the active "
+        "`source-*` entries already in `memory/`; a duplicate is refused "
+        "before anything else happens." in text
+    )
+
+
+Q3_QUESTION_SENTENCE = (
+    '"Scan this repository for validated knowledge or agent memory worth '
+    'importing?" Yes runs `bootstrap-from-repo` in mode `repo`.'
+)
+Q3_NO_BRANCH = (
+    "**No** -- nothing is read: the phase ends with the record entries "
+    "already proposed under Q2 (or with nothing to record when Q1 named "
+    "nothing), and the questionnaire proceeds to the instruction-file step "
+    "below."
+)
+Q3_CONDITIONAL_DISPATCH = "When a scan was consented to, dispatch it to a **read-only subagent**"
+
+
+def test_q3_has_a_no_branch_and_the_scan_is_dispatched_only_on_consent():
+    # Q3's "Yes" was already documented; a "No" that is never spelled out
+    # reads as if declining left the phase in limbo. And the dispatch
+    # paragraph used to fire unconditionally right after Q3 -- which is
+    # wrong once Q2 = Yes already ran the scan and there is no Q3 left to
+    # ask: the dispatch must be conditioned on consent having happened,
+    # whichever question gave it.
+    text = _normalized_skill()
+    assert Q3_QUESTION_SENTENCE in text
+    assert Q3_NO_BRANCH in text, "Q3 no longer has an explicit No branch"
+    assert Q3_CONDITIONAL_DISPATCH in text, (
+        "the scan dispatch is no longer conditioned on consent"
+    )
+    question_at = text.index(Q3_QUESTION_SENTENCE)
+    no_at = text.index(Q3_NO_BRANCH)
+    dispatch_at = text.index(Q3_CONDITIONAL_DISPATCH)
+    assert question_at < no_at < dispatch_at, (
+        "the No branch must sit between the Q3 question and the conditional "
+        "dispatch paragraph"
+    )
 
 
 # --- the managed block (spec section 4.1) -------------------------------------
