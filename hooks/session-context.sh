@@ -100,6 +100,14 @@ if [ "$status_code" -gt 1 ] || [ -z "$status_lines" ]; then
   status_lines=""
 fi
 
+# Forward only `status:` summary lines. In normal operation the CLI's own
+# stdout/stderr split already guarantees this -- `status` writes nothing but
+# `status:` lines to stdout, pinned by tests/test_status.py -- so this filter
+# changes nothing on a real run. It is defence in depth for a `python3` on
+# PATH that is not the real CLI, or a site hook that prints something else to
+# stdout ahead of it: only a line shaped like a summary ever reaches stdout.
+status_lines="$(printf '%s\n' "$status_lines" | grep '^status: ' || true)"
+
 # The record entries, as positional parameters: `$#` is always defined under
 # `set -u`, which an empty array is not on every bash this hook may meet.
 shopt -s nullglob
@@ -108,12 +116,15 @@ shopt -u nullglob
 
 # Drop anything that is not a regular file, rotating the rest back into
 # place. A directory handed to awk aborts it before its END rule runs, which
-# would drop the counts line for every other entry as well.
+# would drop the counts line for every other entry as well. A symlink is
+# dropped too, even one that resolves to a regular file: a symlink named
+# like a record entry must not be able to pull a file from outside
+# `memory/` into the count.
 remaining=$#
 while [ "$remaining" -gt 0 ]; do
   entry="$1"
   shift
-  if [ -f "$entry" ]; then
+  if [ -f "$entry" ] && [ ! -L "$entry" ]; then
     set -- "$@" "$entry"
   fi
   remaining=$((remaining - 1))
@@ -131,7 +142,13 @@ done
 # starting with `superseded by `, which is a retired entry; and a description
 # matching none of the four literals. The alias bound `{0,39}` is the alias
 # grammar the skill states, so the two cannot part without a test noticing.
-# CRLF is tolerated throughout.
+# CRLF is tolerated throughout, and so is trailing whitespace on any line --
+# `line` is rstripped once, up front, the same way the CLI's own frontmatter
+# parser rstrips a line before comparing it to the `---` fence. A `description`
+# key is only recognized when the colon is followed by whitespace or the end
+# of the line, never by adjoining text: `description:knowledge source a:
+# imported`, with no space after the first colon, counts nowhere rather than
+# being misread as a value.
 counts_line=""
 if [ "$#" -gt 0 ]; then
   counts_line="$(awk '
@@ -142,7 +159,7 @@ if [ "$#" -gt 0 ]; then
       if (value ~ /^knowledge source [a-z0-9][a-z0-9-]{0,39}: found, not imported$/) { n_found++; return }
       if (value ~ /^knowledge source [a-z0-9][a-z0-9-]{0,39}: not located$/) { n_missing++; return }
     }
-    { line = $0; sub(/\r$/, "", line) }
+    { line = $0; sub(/[ \t]*\r?$/, "", line) }
     FNR == 1 { opened = (line == "---"); closed = 0; seen = 0; description = ""; next }
     !opened { next }
     closed { next }
@@ -151,7 +168,7 @@ if [ "$#" -gt 0 ]; then
       if (seen == 1) { classify(description) }
       next
     }
-    line ~ /^description:[ \t]*/ {
+    line ~ /^description:([ \t]|$)/ {
       seen++
       if (seen == 1) {
         description = line

@@ -113,3 +113,25 @@ def test_the_session_context_hook_exists_and_is_a_shell_script():
     script_path = REPO_ROOT / "hooks" / "session-context.sh"
     assert script_path.is_file()
     assert script_path.read_text(encoding="utf-8").startswith("#!/bin/bash")
+
+
+def test_the_session_context_hook_has_no_matcher():
+    # No `matcher` key on the entry that runs session-context.sh: this hook
+    # must fire on every SessionStart source (startup, resume, clear,
+    # compact), not only a filtered subset a matcher would narrow it to.
+    manifest = json.loads(
+        (REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )
+    entries = manifest["hooks"]["SessionStart"]
+    session_context_entries = [
+        entry
+        for entry in entries
+        if any(
+            "session-context.sh" in hook.get("command", "")
+            for hook in entry.get("hooks", [])
+        )
+    ]
+    assert len(session_context_entries) == 1, (
+        "expected exactly one SessionStart entry naming session-context.sh"
+    )
+    assert "matcher" not in session_context_entries[0]
