@@ -5,6 +5,8 @@ Markdown file per fact, each with frontmatter in the Claude Code harness
 shape, plus a one-line-per-entry index at `memory/MEMORY.md`.
 """
 
+import re
+
 HEALTHY_MEMORY = """\
 name: coffee-preference
 description: Prefers oat milk in coffee.
@@ -801,3 +803,112 @@ def test_a_memory_file_that_cannot_be_read_is_a_finding_not_a_traceback(
     assert "Traceback" not in result.stderr
     assert "ERROR" in result.stderr
     assert "memory/broken.md" in result.stderr
+
+
+# --- the `source-<alias>` record entries the skills write ----------------------
+
+# The record of what existing knowledge was seen at adoption is written by
+# `bootstrap-from-repo` as ordinary agent memory: type `reference`, one entry
+# per source and status, retired by the memory layer's own supersession.
+# These two characterize that claim rather than driving new behaviour -- they
+# pass as written, and they fail the day the convention stops being one.
+
+SOURCE_ENTRY = """\
+name: source-research-docs
+description: knowledge source research-docs: imported
+metadata:
+  type: reference
+"""
+
+SUPERSEDED_ENTRY = """\
+name: source-research-docs
+description: superseded by [[source-research-docs-2]]
+metadata:
+  type: reference
+"""
+
+SUCCESSOR_ENTRY = """\
+name: source-research-docs-2
+description: knowledge source research-docs: found, not imported
+metadata:
+  type: reference
+"""
+
+
+def _source_body(status):
+    """The record entry's fixed body keys, with one status filled in."""
+    return (
+        "- alias: research-docs\n"
+        "- type: directory\n"
+        "- location: docs/research/\n"
+        f"- status: {status}\n"
+        "- as of: 2026-08-28\n"
+        "- written: 12 knowledge units, 0 memory entries\n"
+    )
+
+
+def _body_status(body):
+    match = re.search(r"^- status: (.+)$", body, re.MULTILINE)
+    assert match, f"the entry body carries no '- status:' line:\n{body}"
+    return match.group(1).strip()
+
+
+def _description_status(frontmatter):
+    match = re.search(
+        r"^description: knowledge source [a-z0-9][a-z0-9-]{0,39}: (.+)$",
+        frontmatter,
+        re.MULTILINE,
+    )
+    assert match, f"the frontmatter carries no record `description`:\n{frontmatter}"
+    return match.group(1).strip()
+
+
+def test_a_source_record_entry_lints_clean(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    body = _source_body("imported")
+    # The entry states one fact once: the status in the description and the
+    # status in the body are the same status, or the entry contradicts itself.
+    assert _description_status(SOURCE_ENTRY) == _body_status(body)
+
+    write_memory("source-research-docs.md", SOURCE_ENTRY, body)
+    write_index(
+        "# Agent memory\n\n"
+        "- [Source research-docs](source-research-docs.md) — imported\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "ERROR" not in result.stderr
+    assert "WARNING" not in result.stderr
+    assert "1 memory file(s) checked" in result.stdout
+
+
+def test_a_superseded_source_record_entry_lints_clean(
+    adopter_dir, write_memory, write_index, run_cli
+):
+    # A source whose status changed: the successor is a new file, and the
+    # only thing that happened to the old entry is the supersession marker in
+    # its `description`. Its body still says what it said when it was
+    # written -- that is asserted here, because "the marker is the only
+    # mutation" is exactly the rule a well-meaning rewrite would break.
+    old_body = _source_body("imported")
+    successor_body = _source_body("found, not imported")
+    assert _description_status(SUCCESSOR_ENTRY) == _body_status(successor_body)
+    assert _body_status(old_body) == "imported"
+
+    write_memory("source-research-docs.md", SUPERSEDED_ENTRY, old_body)
+    write_memory("source-research-docs-2.md", SUCCESSOR_ENTRY, successor_body)
+    write_index(
+        "# Agent memory\n\n"
+        "- [Source research-docs](source-research-docs.md) — retired\n"
+        "- [Source research-docs 2](source-research-docs-2.md) — found, not imported\n"
+    )
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "ERROR" not in result.stderr
+    assert "WARNING" not in result.stderr
+    assert "2 memory file(s) checked" in result.stdout

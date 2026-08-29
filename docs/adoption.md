@@ -1,17 +1,18 @@
 # Adoption guide
 
 How to bring a project onto validated-memory: install the plugin, bootstrap
-the layout, declare an extension, register probes, gate CI on the derived
-index, and optionally activate the HTML views. For the full command
-reference, see [the reference](reference/cli.md). For a worked example end to
-end, see [the walkthrough](walkthrough.md).
+the layout, import whatever knowledge the project already has, declare an
+extension, register probes, gate CI on the derived index, and optionally
+activate the HTML views. For the full command reference, see [the
+reference](reference/cli.md). For a worked example end to end, see [the
+walkthrough](walkthrough.md).
 
 ## 1. Install the plugin
 
 Install `validated-memory` as a Claude Code plugin (however your harness
 manages plugins -- a marketplace, a local plugin path, or a checkout
 referenced directly). Once installed, its seven skills are discovered from
-`skills/*/SKILL.md` by directory convention, and its two startup hooks from
+`skills/*/SKILL.md` by directory convention, and its three startup hooks from
 `hooks/hooks.json` -- neither needs any registration inside the adopter
 project.
 
@@ -56,10 +57,10 @@ rule took.
 
 The last four lines are derived files; a repository that versions the layout
 still chooses, separately, whether to version them -- `knowledge-index.md`
-and `verdicts.jsonl` together or not at all (see [step 6](#6-gate-ci-on-the-derived-index);
+and `verdicts.jsonl` together or not at all (see [step 7](#7-gate-ci-on-the-derived-index);
 a repository that does not version them runs `status` with `--skip-index`,
 per [ADR 0002](adr/0002-status-gates-consistency-and-only-reports-freshness.md)),
-and the two HTML views (see [step 7](#7-activate-the-html-views-optional)).
+and the two HTML views (see [step 8](#8-activate-the-html-views-optional)).
 
 What git cannot express is a **per-remote** answer for the same commit: a
 path is either in a commit or not, and every remote that receives the commit
@@ -115,7 +116,75 @@ python3 -P -m validated_memory validate
 python3 -P -m validated_memory lint
 ```
 
-## 4. Declare an extension (optional)
+## 4. Import existing knowledge
+
+A project adopting this method usually already practises one of its own:
+hypothesis registers, research reports that close with a verdict,
+per-incident findings, verification queries, agent memories the harness
+kept, context files, decision records. The `adopt-validated-memory` skill
+asks, right after the scaffold, what of that should be imported, and hands
+the answer to `bootstrap-from-repo`, which does the scanning.
+
+Three things are worth knowing before answering:
+
+- **Nothing is read on the strength of being named.** Sources are collected
+  as text; then, per path, the skill shows the realpath it resolves to, the
+  type, the scope and the exclusions, and asks again. That second answer is
+  the consent that turns a path into a read root. A path resolving to the
+  filesystem root, to your home directory, to the harness's configuration
+  directory, or to an ancestor of this repository is refused outright.
+- **Nothing is written before you have seen it.** The scan produces a report
+  -- declared sources, what was found elsewhere, what was skipped and why,
+  databases, and the record entries -- carrying the full proposed content of
+  every candidate, paged at 20 candidates and 64 KB. One "yes" writes one
+  page, and that page only.
+- **Every source seen is recorded**, imported or not, as one agent-memory
+  entry `memory/source-<alias>.md` of type `reference`. A source the scan
+  never read is recorded `declared, not scanned`, which is how a later
+  session learns there is knowledge here nobody has imported yet. A database
+  is recorded by the location of its definition in this repository -- never
+  its host, never an access name, never its rows.
+
+The same phase offers to write one managed block into this project's
+agent-instruction file -- `CLAUDE.md`, and `AGENTS.md` where one exists -- so
+that later sessions know the project practises the method. The block is
+written only on confirmation, after the diff has been shown; `init` never
+touches those files. This is the block, byte for byte:
+
+```markdown
+<!-- validated-memory:begin -->
+## Validated memory
+
+This project practises the validated-memory method. Curated knowledge lives
+in `knowledge/` (one unit per claim, with `evidence` declared and freshness
+probed); agent memory lives in `memory/` (one fact per file, indexed in
+`memory/MEMORY.md`); `knowledge-index.md` is derived and never hand-edited.
+
+- Record a finding, decision or measured fact worth re-checking as a
+  knowledge unit (`create-knowledge-unit`); a preference or a durable
+  project fact as a memory entry (`maintain-agent-memory`).
+- When the world changes a fact, do not edit it: write a successor and
+  supersede the old record (`supersede-knowledge`). Only a defect `lint` can
+  name is repaired in place.
+- Before citing a curated fact that carries anchors, read its verdict in
+  `knowledge-index.md` (run `derive` first if this clone does not version
+  it); `drifted` or `unknown` means re-check first (`probe-freshness`).
+- `memory/source-*.md` entries record sources of existing knowledge seen at
+  adoption; one whose status is `declared, not scanned` is knowledge this
+  project has not imported yet (`bootstrap-from-repo` imports it).
+- Usage questions: `ask-validated-memory`.
+<!-- validated-memory:end -->
+```
+
+Everything outside the two markers is preserved byte for byte; a file whose
+markers are repeated, nested, reversed or unpaired is left untouched and
+reported, not repaired.
+
+Skipping this step entirely is a supported answer: a project with no
+existing knowledge to import, and no wish for a block in its instruction
+file, adopts exactly as before.
+
+## 5. Declare an extension (optional)
 
 The base contract (see [Base contract](reference/curated-knowledge.md#base-contract)) is
 deliberately small. If units in this project need adopter-specific fields on
@@ -127,7 +196,7 @@ the base contract is enough: `init` already scaffolds a valid, empty
 extension (`fields: []`), and leaving it empty is a normal, supported end
 state, not a stub that must be filled in.
 
-## 5. Register probes
+## 6. Register probes
 
 For every anchor `kind` curated-knowledge units in this project will use,
 register the command that probes it under `probes:` in
@@ -137,7 +206,7 @@ plugin's bundled probe (see
 [The bundled `git_ref` probe](reference/cli.md#the-bundled-git_ref-probe));
 register any other `kind` this project's anchors use the same way.
 
-## 6. Gate CI on the derived index
+## 7. Gate CI on the derived index
 
 If this project versions `knowledge-index.md`, add a CI step that fails when
 it has drifted from the units or from freshly recorded verdicts:
@@ -180,7 +249,7 @@ so the verdict column reflects current probing rather than going stale -- see
 re-derive and commit the log and the index in the same commit, per the
 policy above.
 
-## 7. Activate the HTML views (optional)
+## 8. Activate the HTML views (optional)
 
 `render` writes two self-contained, static HTML pages -- `knowledge.html`
 for the curated layer and `memory.html` for the agent-memory layer -- so
@@ -204,8 +273,8 @@ Once activated, a view stays current on its own -- see
 
 ## The startup hooks
 
-Two `SessionStart` hooks run on every session start, wired in
-`hooks/hooks.json`.
+Three `SessionStart` hooks run on every session start, in that order, wired
+in `hooks/hooks.json`.
 
 `hooks/restore-memory-symlink.sh` keeps a `--harness-memory` symlink alive
 across renames, re-clones, and fresh sessions, without any manual step:
@@ -225,7 +294,7 @@ The `.bak` it leaves behind is the only manual follow-up worth doing: once
 whenever the adopter wants -- the plugin never touches it again.
 
 `hooks/refresh-views.sh` keeps whichever HTML views this project has
-activated (see [step 7](#7-activate-the-html-views-optional) above)
+activated (see [step 8](#8-activate-the-html-views-optional) above)
 up to date, the same way: it re-runs `render --only-existing`, silencing
 its stdout, which regenerates only the artifacts already on disk and
 creates neither. A project that never ran `init --view` has no artifacts,
@@ -234,6 +303,28 @@ way as the other hook: an invalid corpus, an unreadable verdict log, or a
 missing memory directory or index is reported to stderr and the hook still
 exits clean, leaving whatever view was already on disk untouched.
 
-Nothing here needs to be invoked by hand in the common case: both hooks run
-on every session start for every adopter project that has asked for a
-harness-memory symlink, or activated a view, respectively.
+`hooks/session-context.sh` tells the session what is true right now. It
+prints, as plain text, one fixed sentence saying this project practises the
+method, the summary lines of `status --skip-index`, and — when this project
+has any — one line counting the `memory/source-*.md` record entries by
+status. It writes nothing, runs no probe, and discards `status`'s stderr, so
+no finding, and no adopter-written text quoted inside one, ever reaches the
+session through it.
+
+Its fail-open discipline has one wrinkle worth stating, because the other
+two hooks do not have it: printing nothing at all is reserved for a project
+that has not adopted the method, a missing `$CLAUDE_PROJECT_DIR`, and a
+missing `python3`. Any other problem — `status` failing to run, an
+unreadable `memory/` — still prints the fixed sentence and whatever else did
+work, and reports the failure as one fixed line on stderr, which the model
+never sees. It always exits 0.
+
+The order of the three is load-bearing: the first may absorb the harness's
+memory directory and rewrite `memory/MEMORY.md`, and the third is what
+reports on the result.
+
+Nothing here needs to be invoked by hand. All three run at every session
+start of every project; in one that has not adopted the method they do
+nothing at all, and in one that has, the first two act only on what the
+project asked for — a harness-memory symlink, an activated view — while the
+third only reports.

@@ -34,6 +34,13 @@ init: 5 created, 0 kept, 0 error(s), 0 warning(s)
 `validated-memory.md` (see [the reference's `init` section](reference/cli.md#init)),
 so the unit below can be probed without any extra configuration.
 
+A real adoption has one more phase this walkthrough skips, because it has
+nothing to import: the `adopt-validated-memory` skill asks whether the
+project already has a knowledge system, a hypothesis register, context files
+or a database whose definition should be imported, hands the answer to
+`bootstrap-from-repo`, and records every source it saw as a
+`memory/source-<alias>.md` entry. See [the adoption guide](adoption.md).
+
 ## 2. Create a curated-knowledge unit
 
 This walkthrough anchors its unit to a small git repository at `repo/`

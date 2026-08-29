@@ -16,6 +16,7 @@ The list is read from the skill and the guide as data (the same seam as
 subprocess, never from the package.
 """
 
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -147,3 +148,273 @@ def test_the_skill_asks_the_versioning_question_before_init():
         "per remote",
     ):
         assert needle in section, f"decision section does not mention {needle!r}"
+
+
+# --- the import phase (spec section 1) ----------------------------------------
+
+# Needles are matched against the skill with whitespace normalized to single
+# spaces, so a needle can quote a whole sentence without depending on where
+# the paragraph wraps.
+
+
+def _normalized_skill():
+    return " ".join(ADOPT_SKILL.read_text(encoding="utf-8").split())
+
+
+def test_the_skill_imports_after_init_and_before_verify():
+    # `init` has to have run (the layout must exist to import into), and the
+    # answers have to be recorded before Verify reports on them.
+    text = ADOPT_SKILL.read_text(encoding="utf-8")
+    bootstrap = text.index("## Bootstrap the layout")
+    first_init = text.index("python3 -P -m validated_memory init")
+    import_phase = text.index("## Import existing knowledge")
+    verify = text.index("## Verify the adoption")
+    assert bootstrap < first_init < import_phase < verify
+
+
+Q1_HEADING = "**Q1 -- Sources.**"
+Q2_HEADING = "**Q2 -- Scan the declared sources.**"
+Q1_DENIAL = (
+    "Collect the answer **as text and nothing more**: nothing is resolved, "
+    "opened or looked up at this point."
+)
+# Every sentence that describes resolving or opening a declared path. All of
+# them belong under Q2, after the user has been shown what a path resolves
+# to; none may appear under Q1.
+RESOLUTION_SENTENCES = (
+    "the realpath it resolves to (symlinks followed)",
+    "**Refuse** a path that resolves to the filesystem root, to the user's "
+    "home directory, to the harness's configuration directory, or to an "
+    "ancestor of the repository root",
+    "A path that resolves inside the repository root",
+)
+
+
+def test_q1_collects_text_only_and_every_resolution_happens_under_q2():
+    # Needles alone are not enough here. Adding "Resolve and open every named
+    # path immediately" to Q1 leaves every needle in this file green while
+    # inverting the one rule this phase exists to enforce, so the assertion
+    # is positional: Q1 carries the denial and nothing else about resolving
+    # or opening, and every resolution sentence sits after the Q2 heading.
+    text = _normalized_skill()
+    q1_at = text.index(Q1_HEADING)
+    q2_at = text.index(Q2_HEADING)
+    assert q1_at < q2_at, "Q2 is asked before Q1"
+    assert Q1_DENIAL in text, "Q1 no longer says the answer is collected as text only"
+    assert q1_at < text.index(Q1_DENIAL) < q2_at, "the denial left Q1"
+
+    for needle in RESOLUTION_SENTENCES:
+        assert needle in text, f"the import phase no longer says: {needle!r}"
+        assert text.index(needle) > q2_at, (
+            f"{needle!r} appears before the Q2 heading: nothing is resolved "
+            "or opened until the user has seen and consented at Q2"
+        )
+
+    # Q1's own text says nothing about resolving or opening, beyond the one
+    # sentence that forbids both.
+    q1_section = text[q1_at:q2_at].replace(Q1_DENIAL, "")
+    for word in ("resolve", "open"):
+        assert word not in q1_section.lower(), (
+            f"Q1 mentions {word!r} outside the sentence that forbids it"
+        )
+
+    # The question itself, and the fixed notice Q2 carries with it.
+    for needle in (
+        "Does this project already have a knowledge system or a source of "
+        "truth we should import?",
+        "Scan these sources now? Nothing is written until you confirm the "
+        "report.",
+        "the whole repository is scanned as well",
+        "anything else found is reported, and offered only under its own "
+        "separate confirmation",
+    ):
+        assert needle in text, f"the import phase no longer says: {needle!r}"
+
+
+def test_the_skill_says_why_those_resolutions_are_refused():
+    text = _normalized_skill()
+    for needle in (
+        "they are not sources, they are everything",
+        "which is what the harness-memory symlink resolves to after the first "
+        "session, since it points into `memory/`",
+        "keeps the exact scope declared; it is not widened to the repository",
+    ):
+        assert needle in text, f"the import phase no longer says: {needle!r}"
+
+
+def test_the_skill_names_both_engine_modes_the_subagent_and_the_rendezvous():
+    text = _normalized_skill()
+    assert "`bootstrap-from-repo` in mode `declared+repo`" in text
+    assert "`bootstrap-from-repo` in mode `repo`" in text
+    assert "read-only subagent" in text
+    assert "run the scan inline after the last question" in text
+    # The "No" branch leaves a record rather than nothing at all.
+    assert "`declared, not scanned`" in text
+    # Q2 = Yes leaves no Q3, so the questionnaire must be told where to go
+    # next -- and where the two threads meet again.
+    assert "there is no Q3 left to ask" in text
+    assert "there is a single rendezvous" in text
+    assert "The instruction-file step never waits for the scan" in text
+
+
+def test_verify_lists_the_sources_that_are_still_pending():
+    text = ADOPT_SKILL.read_text(encoding="utf-8")
+    verify = text.index("## Verify the adoption")
+    next_steps = text.index("## Next steps")
+    section = " ".join(text[verify:next_steps].split())
+    assert "`memory/source-*.md`" in section
+    assert "`declared, not scanned`" in section
+    assert "`not located`" in section
+    assert "declared and consented to again" in section
+
+
+def test_the_alias_must_be_unique():
+    text = _normalized_skill()
+    assert (
+        "An alias must be unique among the sources declared and the active "
+        "`source-*` entries already in `memory/`; a duplicate is refused "
+        "before anything else happens." in text
+    )
+
+
+Q3_QUESTION_SENTENCE = (
+    '"Scan this repository for validated knowledge or agent memory worth '
+    'importing?" Yes runs `bootstrap-from-repo` in mode `repo`.'
+)
+Q3_NO_BRANCH = (
+    "**No** -- nothing is read: the phase ends with the record entries "
+    "already proposed under Q2 (or with nothing to record when Q1 named "
+    "nothing), and the questionnaire proceeds to the instruction-file step "
+    "below."
+)
+Q3_CONDITIONAL_DISPATCH = "When a scan was consented to, dispatch it to a **read-only subagent**"
+
+
+def test_q3_has_a_no_branch_and_the_scan_is_dispatched_only_on_consent():
+    # Q3's "Yes" was already documented; a "No" that is never spelled out
+    # reads as if declining left the phase in limbo. And the dispatch
+    # paragraph used to fire unconditionally right after Q3 -- which is
+    # wrong once Q2 = Yes already ran the scan and there is no Q3 left to
+    # ask: the dispatch must be conditioned on consent having happened,
+    # whichever question gave it.
+    text = _normalized_skill()
+    assert Q3_QUESTION_SENTENCE in text
+    assert Q3_NO_BRANCH in text, "Q3 no longer has an explicit No branch"
+    assert Q3_CONDITIONAL_DISPATCH in text, (
+        "the scan dispatch is no longer conditioned on consent"
+    )
+    question_at = text.index(Q3_QUESTION_SENTENCE)
+    no_at = text.index(Q3_NO_BRANCH)
+    dispatch_at = text.index(Q3_CONDITIONAL_DISPATCH)
+    assert question_at < no_at < dispatch_at, (
+        "the No branch must sit between the Q3 question and the conditional "
+        "dispatch paragraph"
+    )
+
+
+# --- the managed block (spec section 4.1) -------------------------------------
+
+BEGIN_MARKER = "<!-- validated-memory:begin -->"
+END_MARKER = "<!-- validated-memory:end -->"
+SKILLS_DIR = REPO_ROOT / "skills"
+
+
+def _managed_block(path):
+    """The canonical managed block as `path` quotes it, verbatim.
+
+    Delimited by its own two marker lines, each of which must appear exactly
+    once in the file and alone on its line -- the same rule the skill's write
+    rule imposes on the adopter's instruction file. Everything between them,
+    markers included, is the block; the fence around it is not.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    starts = [i for i, line in enumerate(lines) if line.strip() == BEGIN_MARKER]
+    ends = [i for i, line in enumerate(lines) if line.strip() == END_MARKER]
+    assert len(starts) == 1, f"{path}: expected one begin marker, found {len(starts)}"
+    assert len(ends) == 1, f"{path}: expected one end marker, found {len(ends)}"
+    assert starts[0] < ends[0], f"{path}: the end marker precedes the begin marker"
+    return "\n".join(lines[starts[0] : ends[0] + 1])
+
+
+CANONICAL_MANAGED_BLOCK = """\
+<!-- validated-memory:begin -->
+## Validated memory
+
+This project practises the validated-memory method. Curated knowledge lives
+in `knowledge/` (one unit per claim, with `evidence` declared and freshness
+probed); agent memory lives in `memory/` (one fact per file, indexed in
+`memory/MEMORY.md`); `knowledge-index.md` is derived and never hand-edited.
+
+- Record a finding, decision or measured fact worth re-checking as a
+  knowledge unit (`create-knowledge-unit`); a preference or a durable
+  project fact as a memory entry (`maintain-agent-memory`).
+- When the world changes a fact, do not edit it: write a successor and
+  supersede the old record (`supersede-knowledge`). Only a defect `lint` can
+  name is repaired in place.
+- Before citing a curated fact that carries anchors, read its verdict in
+  `knowledge-index.md` (run `derive` first if this clone does not version
+  it); `drifted` or `unknown` means re-check first (`probe-freshness`).
+- `memory/source-*.md` entries record sources of existing knowledge seen at
+  adoption; one whose status is `declared, not scanned` is knowledge this
+  project has not imported yet (`bootstrap-from-repo` imports it).
+- Usage questions: `ask-validated-memory`.
+<!-- validated-memory:end -->"""
+
+# Every skill the block names: six of the seven, all but
+# `adopt-validated-memory` itself, which is the skill that writes the block.
+# Compared as an exact set, not a subset -- a block that quietly stopped
+# naming `supersede-knowledge` would still pass a subset check while leaving
+# a later session with no pointer to the one skill that retires a wrong fact.
+MANAGED_BLOCK_SKILLS = {
+    "create-knowledge-unit",
+    "maintain-agent-memory",
+    "supersede-knowledge",
+    "probe-freshness",
+    "bootstrap-from-repo",
+    "ask-validated-memory",
+}
+
+
+def test_both_copies_of_the_managed_block_equal_the_canonical_one():
+    # Comparing the two copies with each other is not enough: two identical
+    # copies of a block that drifted from what the design specified would
+    # pass that. The constant here is the third party both must match.
+    assert _managed_block(ADOPT_SKILL) == CANONICAL_MANAGED_BLOCK
+    assert _managed_block(ADOPTION_GUIDE) == CANONICAL_MANAGED_BLOCK
+
+
+def test_the_managed_block_names_exactly_those_skills_and_they_all_exist():
+    # A backticked token shaped like a skill name -- lower-case, hyphenated,
+    # no dot and no slash -- is a skill reference. That shape excludes every
+    # other backticked token in the block: paths (`memory/`,
+    # `memory/MEMORY.md`, `memory/source-*.md`), filenames
+    # (`knowledge-index.md`), single words (`lint`, `derive`, `evidence`,
+    # `drifted`, `unknown`) and the quoted status literal.
+    named = {
+        token
+        for token in re.findall(r"`([^`]+)`", CANONICAL_MANAGED_BLOCK)
+        if re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+", token)
+    }
+    assert named == MANAGED_BLOCK_SKILLS
+    on_disk = {path.name for path in SKILLS_DIR.iterdir() if path.is_dir()}
+    assert MANAGED_BLOCK_SKILLS <= on_disk, (
+        f"the managed block names skills that do not exist: "
+        f"{sorted(MANAGED_BLOCK_SKILLS - on_disk)}"
+    )
+
+
+def test_the_managed_block_write_rule_is_closed():
+    # The file belongs to the adopter, and the failure mode is losing
+    # content this plugin does not own: every case the write can meet has an
+    # answer, and two of them are "write nothing".
+    text = _normalized_skill()
+    for needle in (
+        "**no marker in the file** -- append the block, on confirmation",
+        "exactly one begin marker followed by exactly one end marker",
+        "write nothing, name the lines, and leave the repair to the user",
+        "**the file is a symlink**",
+        "its realpath is outside the repository root",
+        "Re-read the file immediately before writing",
+        "preserved byte for byte",
+    ):
+        assert needle in text, f"the write rule no longer says: {needle!r}"

@@ -1,11 +1,12 @@
 # Startup hooks
 
-Two `SessionStart` hooks run, in that order, from `hooks/hooks.json`: one
-restores the `--harness-memory` symlink, the other refreshes whichever HTML
-views this project has activated. They are two separate scripts rather than
-one because their contracts do not mix -- the first never loses data, the
-second overwrites files -- and reviewing both concerns in a single script
-would make it impossible to review either.
+Three `SessionStart` hooks run, in that order, from `hooks/hooks.json`: one
+restores the `--harness-memory` symlink, the second refreshes whichever HTML
+views this project has activated, and the third injects one screen of live
+status into the session. They are three separate scripts rather than one
+because their contracts do not mix -- the first never loses data, the second
+overwrites files, the third writes nothing at all -- and reviewing three
+concerns in a single script would make it impossible to review any of them.
 
 **Restoring the harness-memory symlink.** `hooks/restore-memory-symlink.sh`
 restores a project's `--harness-memory` symlink automatically on every
@@ -75,3 +76,63 @@ Neither `knowledge.html` nor `memory.html` is added to `.gitignore`: like
 project decides whether to version them. Versioning them means a fresh
 clone has the views immediately; not versioning them means running `init
 --view` once after cloning.
+
+**Injecting the project's current status.** `hooks/session-context.sh` is
+the only one of the three that produces output the model reads. It prints
+plain text on stdout, which `SessionStart` adds to the session's context
+as-is; the JSON envelope is needed only to combine context with other
+fields, and stdout is parsed as JSON only when its first non-blank character
+is `{`, so the fixed sentence comes first and the first character is never
+`{`. The harness caps hook output at 10,000 characters, and this context is
+bounded by construction: one sentence, the `status` summary lines, and at
+most one line of counts.
+
+What it prints, in order:
+
+1. One fixed sentence: this project practises validated-memory, the managed
+   block in its instruction file and the plugin's skills say how, and the
+   lines that follow are machine-generated status rather than instructions.
+2. The **stdout** of `status --skip-index`, whatever it is and whatever its
+   exit code.
+3. One line of counts over the active `memory/source-*.md` record entries,
+   omitted when the project has none:
+   `knowledge sources: <a> imported, <b> declared not scanned, <c> found not imported, <d> not located`.
+
+Two details carry the safety of this hook. First, `status` writes only its
+`status:` summary lines to stdout and every `ERROR:`/`WARNING:` finding to
+stderr, which this hook discards -- and a finding quotes adopter-written
+text verbatim, a memory's `name` or a unit's id. Discarding stderr is what
+closes that injection channel; nothing is escaped, because nothing quoted
+arrives. Second, the counts are computed by the hook itself, from each
+entry's first frontmatter block and its single `description` line, so the
+digits are the hook's own and no text from any entry reaches the session. An
+entry counts nowhere when its description is retired (`superseded by ...`),
+when it matches none of the four status literals, when the block carries two
+`description` lines, or when the frontmatter never closes.
+
+Fail-open here has one wrinkle the other two hooks do not have, because this
+one has something to say. **Printing nothing at all is reserved for three
+cases**: no `$CLAUDE_PROJECT_DIR`, a project that has not adopted the method
+(no `validated-memory.md`, or no `memory/` directory -- a dangling symlink
+counts as no directory), and no `python3` on `PATH`. Every other problem is
+a *degraded* run, not a silent one: the fixed sentence is printed, so is
+whatever else succeeded, and one fixed line goes to stderr --
+`session-context: could not compute part of the session context; continuing`.
+That line never repeats the failing command's own output, which is text from
+a program that has just misbehaved. The exit status is 0 in every case.
+
+`--skip-index` is unconditional here: this context orients, it does not
+gate, and the index gate stays where it belongs, in CI with the adopter's
+own flags ([ADR 0002](../adr/0002-status-gates-consistency-and-only-reports-freshness.md)).
+`status` is read-only and never probes, so the hook inherits both
+properties. It also sets `PYTHONDONTWRITEBYTECODE=1`, so that a read-only
+hook does not plant `__pycache__` inside the plugin it just ran: a snapshot
+of the adopter tree *and* of the plugin, taken before and after a run, is
+identical.
+
+The hook is registered without a `matcher`, so it fires on every
+`SessionStart` source -- startup, resume, clear, compact, fork. That is
+wanted: a compaction is exactly when this context is lost and worth
+re-injecting. And it is registered third on purpose: the first hook may
+absorb the harness's memory directory and rewrite `memory/MEMORY.md`, which
+is what this one then reports on.

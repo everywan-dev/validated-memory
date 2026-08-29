@@ -112,6 +112,137 @@ and is safe to re-run: it is idempotent and never overwrites a hand-edited
 file. See the reference's `init` section (docs/reference/cli.md) for the full contract, including
 `--harness-memory` below.
 
+## Import existing knowledge
+
+`init` has run, so `knowledge/` and `memory/` exist. A project adopting this
+method usually already practises one of its own: hypothesis registers,
+research reports that close with a verdict, per-incident findings,
+verification queries, agent memories, context files, decision records. This
+phase imports what is worth importing and leaves a record of everything it
+saw. Ask each question with the harness's question tool when there is one,
+in plain text otherwise, and wait for the answer.
+
+**Q1 -- Sources.** "Does this project already have a knowledge system or a
+source of truth we should import? Name paths (inside or outside this
+repository), context files, and databases."
+
+Collect the answer **as text and nothing more**: nothing is resolved, opened
+or looked up at this point. For each source named, propose an **alias** --
+the last path component, or the database's name, normalized to the alias
+grammar `[a-z0-9][a-z0-9-]{0,39}` -- and let the user approve or change it.
+An alias must be unique among the sources declared and the active
+`source-*` entries already in `memory/`; a duplicate is refused before
+anything else happens. The alias is how the source is recorded; a path is
+recorded only when it lies inside the repository.
+
+**Q2 -- Scan the declared sources.** Asked only when Q1 named at least one
+source. Before asking, show, per declared path: the realpath it resolves to
+(symlinks followed), its type (file or directory), the scope -- a directory
+is read recursively -- and the exclusions that apply. **Refuse** a path that
+resolves to the filesystem root, to the user's home directory, to the
+harness's configuration directory, or to an ancestor of the repository root:
+they are not sources, they are everything. A path that resolves inside the
+repository root -- which is what the harness-memory symlink resolves to after
+the first session, since it points into `memory/` -- keeps the exact scope
+declared; it is not widened to the repository.
+
+Then ask: "Scan these sources now? Nothing is written until you confirm the
+report." with this notice, unchanged: *the whole repository is scanned as
+well; what you declared is proposed for import, and anything else found is
+reported, and offered only under its own separate confirmation.*
+
+- **Yes** -- run `bootstrap-from-repo` in mode `declared+repo`. This answer
+  is the consent that turns each shown path into a read root.
+- **No** -- the declared sources are not read. Propose one record entry per
+  source with status `declared, not scanned`, shown in full like any other
+  candidate, and write them only on confirmation. Say in one sentence that
+  the sources are referenced rather than scanned, and that later sessions
+  will be told.
+
+**Q3 -- Repository scan.** Asked only when Q1 named nothing, or Q2 was No;
+with Q2 = Yes the repository scan is already part of that run. "Scan this
+repository for validated knowledge or agent memory worth importing?" Yes
+runs `bootstrap-from-repo` in mode `repo`. **No** -- nothing is read: the
+phase ends with the record entries already proposed under Q2 (or with
+nothing to record when Q1 named nothing), and the questionnaire proceeds to
+the instruction-file step below.
+
+When a scan was consented to, dispatch it to a **read-only subagent** where
+the harness offers one that can be denied execution, network and writes, and
+carry on with the next question while it runs; where it cannot, run the scan
+inline after the last question, under the same work packet. The order of
+the questions does not change either way. Whichever way it ran, present the
+report and ask its confirmation before anything is written.
+
+With Q2 = Yes there is no Q3 left to ask, so the questionnaire proceeds
+straight to the instruction-file step below while the scan runs. Whichever
+question was the last one, and whether the scan ran in a subagent or inline,
+there is a single rendezvous: the report is presented once the scan has
+returned **and** the instruction-file step is done. The instruction-file step
+never waits for the scan, and nothing from the report is written before that
+rendezvous.
+
+Close the phase by naming what was imported and what was left, in counts.
+Every source seen has its `memory/source-<alias>.md` record entry, written
+with its `memory/MEMORY.md` line like any other memory entry.
+
+## Tell later sessions that this project practises the method
+
+Offer to write a fixed block into the adopter's agent-instruction file --
+`CLAUDE.md`, and `AGENTS.md` where one exists. Show the exact resulting diff
+and write it only on confirmation. `init` never touches these files, and
+neither does anything here without that confirmation: a file the adopter
+owns, mutated unattended, is a file nobody reviews.
+
+The block is delimited by two marker lines, written `<!-- validated-memory:begin -->`
+and `<!-- validated-memory:end -->`. The write rule is closed, because the
+file is the adopter's and the failure mode is losing content this plugin
+does not own:
+
+- **no marker in the file** -- append the block, on confirmation;
+- **exactly one begin marker followed by exactly one end marker**, each on
+  its own line, in that order -- replace what lies between them, on
+  confirmation, after showing the diff; when the block on disk already
+  equals the canonical one, do nothing and say so;
+- **anything else** -- a marker repeated, nested, reversed or unpaired, or a
+  marker inside a fenced code block -- write nothing, name the lines, and
+  leave the repair to the user;
+- **the file is a symlink**, or its realpath is outside the repository root
+  -- write nothing, say so.
+
+Re-read the file immediately before writing and compare it with what the
+diff was built from; a file that changed in between is shown again.
+Everything outside the markers is preserved byte for byte, including the
+line-ending style and the presence or absence of a final newline.
+
+The canonical block, which `docs/adoption.md` quotes and a test keeps equal
+to this copy:
+
+```markdown
+<!-- validated-memory:begin -->
+## Validated memory
+
+This project practises the validated-memory method. Curated knowledge lives
+in `knowledge/` (one unit per claim, with `evidence` declared and freshness
+probed); agent memory lives in `memory/` (one fact per file, indexed in
+`memory/MEMORY.md`); `knowledge-index.md` is derived and never hand-edited.
+
+- Record a finding, decision or measured fact worth re-checking as a
+  knowledge unit (`create-knowledge-unit`); a preference or a durable
+  project fact as a memory entry (`maintain-agent-memory`).
+- When the world changes a fact, do not edit it: write a successor and
+  supersede the old record (`supersede-knowledge`). Only a defect `lint` can
+  name is repaired in place.
+- Before citing a curated fact that carries anchors, read its verdict in
+  `knowledge-index.md` (run `derive` first if this clone does not version
+  it); `drifted` or `unknown` means re-check first (`probe-freshness`).
+- `memory/source-*.md` entries record sources of existing knowledge seen at
+  adoption; one whose status is `declared, not scanned` is knowledge this
+  project has not imported yet (`bootstrap-from-repo` imports it).
+- Usage questions: `ask-validated-memory`.
+<!-- validated-memory:end -->
+```
+
 ## Wire the harness's persistent memory (optional)
 
 ```
@@ -156,6 +287,13 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m vali
 `validate` may still report a WARNING for an empty `knowledge/` (no units to
 check) -- that does not gate. Any ERROR means the scaffold is broken; do not
 proceed until both commands are clean.
+
+Then list the active `memory/source-*.md` entries whose status is
+`declared, not scanned` or `not located`, and name them: those are sources
+this project knows about and has not imported. Re-running
+`bootstrap-from-repo` is what imports them -- and a source outside the
+repository has to be declared and consented to again, because its record
+holds only an alias, never a path.
 
 ## Next steps
 

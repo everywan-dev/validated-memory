@@ -53,11 +53,12 @@ Two commands inside Claude Code:
 /plugin install validated-memory@validated-memory
 ```
 
-Two things to know before you run them. **Installing activates two
+Two things to know before you run them. **Installing activates three
 `SessionStart` hooks** — fail-open no-ops until a project adopts the method,
-after which one maintains the harness-memory symlink (on first adoption it
-may absorb the harness's existing memory directory, parking the original as
-a `.bak`) and the other refreshes any activated HTML views; what each writes
+after which the first maintains the harness-memory symlink (on first
+adoption it may absorb the harness's existing memory directory, parking the
+original as a `.bak`), the second refreshes any activated HTML views, and the
+third injects the project's current status into the session; what each writes
 is documented in [Startup hooks](docs/reference/hooks.md). And **updating is
 not automatic**: the plugin is pinned to its declared version, and picking up
 a fix means running `/plugin marketplace update validated-memory` (or
@@ -205,7 +206,9 @@ exact CLI invocation and the data discipline to follow — never reimplementing
 a rule the CLI already enforces:
 
 - **`adopt-validated-memory`** — decide what the repository versions,
-  bootstrap a project, wire the symlink, verify with `validate` and `lint`.
+  bootstrap a project, import whatever knowledge it already has, offer the
+  managed block for its instruction file, wire the symlink, verify with
+  `validate` and `lint`.
 - **`create-knowledge-unit`** — write a unit field by field, with the
   evidence-state discipline.
 - **`supersede-knowledge`** — correct knowledge with a successor, never by
@@ -215,16 +218,17 @@ a rule the CLI already enforces:
   with `lint`.
 - **`ask-validated-memory`** — answer usage questions from the plugin's own
   docs and `--help`, quoting exact invocations, never inventing a flag.
-- **`bootstrap-from-repo`** — walk an adopter repository and propose
-  starting facts for both layers, under an explicit security perimeter;
-  only confirmed proposals are written.
+- **`bootstrap-from-repo`** — scan the repository, and any source the
+  adopter declared and consented to, and propose starting facts for both
+  layers under an explicit security perimeter; only what a confirmed report
+  page showed is written, and every source seen is recorded.
 
 ## Requirements and compatibility
 
 - **The v1 surface is complete** — every subcommand in the [CLI
-  reference](docs/reference/cli.md), every skill listed above, both startup
-  hooks, and the static HTML views. The version this clone ships is declared
-  in `pyproject.toml` and the plugin manifest, not restated here.
+  reference](docs/reference/cli.md), every skill listed above, all three
+  startup hooks, and the static HTML views. The version this clone ships is
+  declared in `pyproject.toml` and the plugin manifest, not restated here.
 - **Python ≥ 3.11**, standard library only; pytest is the only development
   dependency.
 - **Claude Code** to run it as a plugin; the CLI stands alone everywhere
