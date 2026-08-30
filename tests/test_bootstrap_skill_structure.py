@@ -66,7 +66,7 @@ def test_the_work_packet_names_every_section():
         "**Give that subagent the harness's mid-tier model, at medium effort "
         "-- never its most capable model.**",
         "**Objective**",
-        "**Roots**",
+        "**Scan partitions**",
         "**Permitted operations**",
         "**Forbidden**",
         "**Exclusions**",
@@ -232,4 +232,169 @@ def test_the_location_grammar_has_a_form_for_a_definition_outside_the_repository
         "the literal `definition: <relative path>` for a located database "
         "whose definition lies inside the repository, or `definition: "
         "outside the repository` for one located outside it",
+    )
+
+
+def test_the_survey_bound_never_licenses_skipping_a_path():
+    """The perimeter bounds how much of a file is read, not which paths are seen.
+
+    The two sentences it replaced sat eleven lines apart and contradicted
+    each other in effect: "the repository root is always a root" against
+    "stop at what answers the question; a scan is a survey, not an
+    exhaustive read". A scan that read four declared directories and stopped
+    had a defensible reading of the second. It no longer does.
+    """
+    _assert_needles(
+        "**Bound how much of a file is read, never which paths are "
+        "inventoried.**",
+        "Every eligible path in every partition is still inventoried and "
+        "given a disposition",
+        '"surveyed, nothing to propose" is a disposition; not having looked '
+        "is not one",
+    )
+    text = _normalized()
+    assert "a scan is a survey, not an exhaustive read" not in text, (
+        "the sentence that licensed not looking is back"
+    )
+
+
+def test_the_packet_names_the_repository_remainder_as_its_own_partition():
+    """Roots can nest; partitions cannot.
+
+    "the repository root, and each declared path" let a declared path inside
+    the repository be read as discharging the repository root itself. The
+    remainder is therefore named separately, and said to be undischargeable
+    by the declared partitions.
+    """
+    _assert_needles(
+        "**The repository remainder**",
+        "the repository root minus every declared path that lies inside it",
+        "In mode `declared+repo` this partition is always present, and "
+        "scanning the declared partitions never discharges it",
+        "partitions, not roots: they do not overlap, and none is satisfied "
+        "by scanning another",
+    )
+
+
+def test_the_report_opens_with_a_balancing_coverage_ledger():
+    """What was inventoried, stated before what was found.
+
+    A candidate list cannot show what was never looked at, and a section 2
+    holding two hand-picked files satisfies the layout while the scan did
+    not run. The ledger is what a caller can contradict with its own cheap
+    inventory.
+    """
+    text = _normalized()
+    assert text.index("0. **Coverage**") < text.index("1. **Declared sources**"), (
+        "the coverage ledger no longer precedes the candidates; a reader who "
+        "stops at the first section would see what was found before what was "
+        "looked at, which is the order that hid the failure"
+    )
+    _assert_needles(
+        "0. **Coverage**",
+        "`discovered = classified + excluded + oversized + unreadable`",
+        "The repository-remainder partition also gives its `discovered` "
+        "count broken down by first-level directory, with root-level files "
+        "under `.`, including the directories that yielded nothing",
+        "A report that omits a partition the packet named, or whose counts "
+        "do not balance, is malformed",
+    )
+
+
+def test_every_discovered_path_lands_in_exactly_one_bucket():
+    """The identity is only arithmetic once the buckets cannot overlap.
+
+    A 2 MB credential file is excluded and oversized at once; an unreadable
+    generated artifact is excluded and unreadable at once. Without an order,
+    the same file can be counted twice, or neither, and the equality proves
+    nothing.
+    """
+    _assert_needles(
+        "every discovered path lands in exactly one of them",
+        "every regular file in the partition",
+        "a symlink is counted only at the path it is reached by, never "
+        "again through its target",
+        "in this order, first match wins",
+        "A file read and found to hold nothing worth proposing is "
+        "`classified`, not skipped",
+    )
+
+
+def test_oversized_and_unreadable_are_listed_never_only_counted():
+    """The bucket a fabricated scan would hide in.
+
+    Nothing stops a scan reading two files of a thousand and booking 998 as
+    unreadable: every count still balances and the caller's own inventory
+    agrees. Listing each one by path is what makes that absurd on its face.
+    """
+    _assert_needles(
+        "every `oversized` and every `unreadable` path listed individually",
+        "**every exclusion as a scope, never as a total**",
+        "The scopes must not overlap and their counts must sum to "
+        "`excluded`",
+        "a bare total there is where a scan that did not run would hide",
+        "`vendor/ -- vendored dependency -- 998` against a repository that "
+        "has no `vendor/` does not survive being read",
+    )
+
+
+def test_declared_paths_are_made_disjoint_before_partitions_exist():
+    """Partitions that overlap are not partitions.
+
+    Declaring `docs/` and `docs/research/` is a legal answer to Q1. Left
+    alone it produces two partitions covering the same files, and a
+    remainder computed against both.
+    """
+    _assert_needles(
+        "Declared paths arrive as the user gave them and are made disjoint "
+        "first, by realpath, before any partition exists",
+        "two that resolve to the same realpath collapse into one, keeping "
+        "the alias approved first",
+        "a path inside another declared directory is absorbed into it",
+        "so nothing the user declared loses its record entry",
+    )
+
+
+def test_source_is_defined_in_the_glossary_and_the_skill_matches_it():
+    """`source` named three different things and defined none of them.
+
+    A Q1 path, a candidate's provenance file, and the entity that gets a
+    record entry were all called "source", which is why "the records cover
+    every source seen" could not be checked: the sentence had no fixed
+    referent. The glossary now fixes one, and the skill's record rule has to
+    keep meaning that one.
+    """
+    context = (REPO_ROOT / "CONTEXT.md").read_text(encoding="utf-8")
+    context_flat = " ".join(context.split())
+    assert "**Source**:" in context, "the glossary no longer defines Source"
+    for needle in (
+        "A body of existing knowledge a scan can be pointed at",
+        "it is never a single candidate's provenance file, and never the "
+        "claim a candidate makes",
+    ):
+        assert needle in context_flat, f"the glossary no longer says: {needle!r}"
+    # The three things a source can be, in the glossary and in the skill.
+    _assert_needles(
+        "Every source seen -- declared, found, or named as a database -- is "
+        "recorded",
+    )
+
+
+def test_the_anchor_decision_is_shown_per_candidate():
+    """"Deliberate" is only deliberate if the report shows the decision.
+
+    The skill already said to propose an anchor only where the claim dies
+    when a ref moves -- and that policy left no trace: measured on the first
+    real adoption, all eight imported units carried `anchors: []` and all
+    eight sat at freshness `unknown`, with nothing in the report to
+    distinguish a considered "no anchor" from an unasked question.
+    """
+    _assert_needles(
+        "**the anchor decision**",
+        "Deliberate means the decision is **taken and shown**, once per "
+        "candidate.",
+        "the `kind` proposed, or `no anchor` with the reason in a few words",
+        "is indistinguishable, to the person confirming it, from one that "
+        "never considered the question",
+        "name the kind it would need",
     )

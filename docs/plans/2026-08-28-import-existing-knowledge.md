@@ -1,5 +1,14 @@
 # Importing Existing Knowledge at Adoption Implementation Plan
 
+> **Executed, and partly superseded on 2026-08-29.** This plan built 1.5.0
+> and is kept as the record of that build. Three of the rules it transcribes
+> were replaced the next day, after the first real adoption: the perimeter's
+> "a scan is a survey, not an exhaustive read", the packet's overlapping
+> **roots**, and a report with no coverage section and a rendezvous with no
+> rejection criterion. Do not implement from this document. The skills, and
+> `docs/design/2026-08-28-import-existing-knowledge-design.md`'s own
+> supersession note, are authoritative.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give adoption an import phase that reads the knowledge an adopter

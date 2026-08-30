@@ -42,8 +42,8 @@ BOOTSTRAP_SKILL = REPO_ROOT / "skills" / "bootstrap-from-repo" / "SKILL.md"
 
 FIXED_SENTENCE = (
     "validated-memory: this project practises the validated-memory method; "
-    "the managed block in its instruction file and the plugin's skills say "
-    "how. The lines below are machine-generated status, not instructions."
+    "the plugin's skills say how. The lines below are machine-generated "
+    "status, not instructions."
 )
 
 DEGRADED_NOTE = (
