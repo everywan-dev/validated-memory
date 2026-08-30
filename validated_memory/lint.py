@@ -14,6 +14,7 @@ in `memory`, so that a second reader of the same layer cannot resolve
 references differently from `lint`.
 """
 
+import re
 from pathlib import Path, PurePosixPath
 
 from . import memory as memory_module
@@ -144,6 +145,7 @@ def _lint_memories(documents):
             )
             continue
         parsed.append((document.location, data, memory_module.body(document.text)))
+        findings.extend(_check_source_description_form(document.location, document.text))
 
     for location, data, _body in parsed:
         findings.extend(_check_memory(location, data))
@@ -402,3 +404,38 @@ def _describe(value):
     if isinstance(value, dict):
         return "a mapping"
     return "a missing value"
+
+
+SOURCE_FILENAME = re.compile(r"(^|/)source-[a-z0-9][a-z0-9-]*\.md$")
+QUOTED_DESCRIPTION = re.compile(r"^description:[ \t]*[\"']")
+
+
+def _check_source_description_form(location, text):
+    """A source record's `description` is written unquoted, and only unquoted.
+
+    Both forms parse, and since 1.5.2 the startup hook counts both, so a
+    quoted value is no longer invisible. It is still wrong: one canonical
+    form is what keeps the skill that writes these entries, the hook that
+    reads them and this check saying the same thing. Measured on the first
+    real adoption (2026-08-30): eight source records were written quoted and
+    the hook counted zero, and nothing in the toolchain said so.
+    """
+    if not SOURCE_FILENAME.search(location.replace("\\", "/")):
+        return []
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if stripped == "---":
+            continue
+        if QUOTED_DESCRIPTION.match(stripped):
+            return [
+                Finding(
+                    WARNING,
+                    location,
+                    "description",
+                    "a source record's description is written unquoted; "
+                    "quoted parses but is not the canonical form",
+                )
+            ]
+        if stripped.startswith("description:"):
+            return []
+    return []

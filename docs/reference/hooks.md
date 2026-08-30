@@ -100,6 +100,12 @@ What it prints, in order:
 3. One line of counts over the active `memory/source-*.md` record entries,
    omitted when the project has none:
    `knowledge sources: <a> imported, <b> declared not scanned, <c> found not imported, <d> not located`.
+   The value is read the way the frontmatter parser reads it, quoted scalars
+   included, so a record written `description: "knowledge source x: imported"`
+   counts like the unquoted form the skill asks for; `lint` reports the
+   quoted form as a WARNING rather than the count vanishing. A value the
+   parser would reject -- an unterminated quote -- counts nowhere, because a
+   hook that guessed at it would report a source the CLI refuses.
 
 Two details carry the safety of this hook. First, `status` writes only its
 `status:` summary lines to stdout and every `ERROR:`/`WARNING:` finding to

@@ -153,6 +153,21 @@ done
 counts_line=""
 if [ "$#" -gt 0 ]; then
   counts_line="$(awk '
+    # Mirror the frontmatter parser on a quoted scalar: a value opening with
+    # a quote runs to its matching quote, nothing but a comment may follow,
+    # and there are no backslash escapes. A value the parser would reject is
+    # returned untouched, so it matches no literal and counts nowhere --
+    # `lint` is what names it.
+    function unquote(v,   q, end, trailing) {
+      if (v !~ /^["'"'"']/) { return v }
+      q = substr(v, 1, 1)
+      end = index(substr(v, 2), q)
+      if (end == 0) { return v }
+      trailing = substr(v, end + 2)
+      sub(/^[ \t]+/, "", trailing)
+      if (trailing != "" && trailing !~ /^#/) { return v }
+      return substr(v, 2, end - 1)
+    }
     function classify(value) {
       if (value ~ /^superseded by /) { return }
       if (value ~ /^knowledge source [a-z0-9][a-z0-9-]{0,39}: imported$/) { n_imported++; return }
@@ -166,7 +181,7 @@ if [ "$#" -gt 0 ]; then
     closed { next }
     line == "---" {
       closed = 1
-      if (seen == 1) { classify(description) }
+      if (seen == 1) { classify(unquote(description)) }
       next
     }
     line ~ /^description:[ \t]*/ {

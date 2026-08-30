@@ -912,3 +912,35 @@ def test_a_superseded_source_record_entry_lints_clean(
     assert "ERROR" not in result.stderr
     assert "WARNING" not in result.stderr
     assert "2 memory file(s) checked" in result.stdout
+
+
+def test_lint_warns_on_a_quoted_source_description(run_cli, tmp_path):
+    """The canonical form is unquoted, and something has to say so.
+
+    Both forms parse and, since 1.5.2, the hook counts both -- so this is the
+    only place left that keeps the skill, the hook and the record in
+    agreement. It is a WARNING, not an ERROR: the entry is valid and its
+    counts are no longer lost, it is simply not written the one way the
+    skill states.
+    """
+    project = tmp_path / "adopter"
+    (project / "memory").mkdir(parents=True)
+    (project / "validated-memory.md").write_text("", encoding="utf-8")
+    (project / "memory" / "source-alpha.md").write_text(
+        "---\n"
+        "name: source-alpha\n"
+        'description: "knowledge source alpha: imported"\n'
+        "metadata:\n"
+        "  type: reference\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    (project / "memory" / "MEMORY.md").write_text(
+        "# Memory\n- [alpha](source-alpha.md) - a source\n", encoding="utf-8"
+    )
+
+    result = run_cli("lint", cwd=project)
+
+    assert result.returncode == 0, result.stderr
+    assert "description is written unquoted" in result.stderr, result.stderr
+    assert "0 error(s), 1 warning(s)" in result.stdout, result.stdout

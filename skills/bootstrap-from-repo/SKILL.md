@@ -366,8 +366,12 @@ frontmatter.
 scanned`, `found, not imported`, `not located`. Nothing else: no free text,
 and no `#`, since the frontmatter subset ends a plain scalar at a space
 followed by `#`. The value is written **unquoted**, even though it carries a
-colon: `lint` accepts a quoted form too, but the startup hook reads the raw
-line, so a quoted value is a source recorded and then counted nowhere.
+colon. Both forms parse, and since 1.5.2 the startup hook counts both -- but
+one canonical form is what keeps this skill, that hook and `lint` saying the
+same thing, so `lint` reports a quoted value as a WARNING. It stopped being
+invisible the day it happened: on the first real adoption, 2026-08-30, eight
+source records were written quoted, the hook counted zero, and nothing in
+the toolchain said so.
 
 **Body.** Fixed keys, generated values: `alias`; `type`, one of `file`,
 `directory`, `database`; `location` -- a path relative to the repository
