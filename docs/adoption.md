@@ -134,10 +134,26 @@ Three things are worth knowing before answering:
   filesystem root, to your home directory, to the harness's configuration
   directory, or to an ancestor of this repository is refused outright.
 - **Nothing is written before you have seen it.** The scan produces a report
-  -- declared sources, what was found elsewhere, what was skipped and why,
-  databases, and the record entries -- carrying the full proposed content of
-  every candidate, paged at 20 candidates and 64 KB. One "yes" writes one
-  page, and that page only.
+  -- coverage first, then declared sources, what was found elsewhere, what
+  was skipped and why, databases, and the record entries -- carrying the
+  full proposed content of every candidate, paged at 20 candidates and
+  64 KB. One "yes" writes one page, and that page only.
+- **The report says what it looked at, not only what it found.** It opens
+  with a coverage ledger: one block per scan partition -- each declared
+  path, and the repository remainder, which is this repository minus the
+  paths you declared -- with counts that balance,
+  `discovered = classified + excluded + oversized + unreadable`, and the
+  remainder broken down by first-level directory. Every path booked as
+  oversized or unreadable is listed individually, never merely counted:
+  those are the two dispositions that say "this file exists and nobody read
+  it", and a bare number there is where a scan that did not run would hide.
+  Before the report reaches you, the skill lists the repository itself --
+  the same universe the scan works in, tracked files plus untracked files
+  that are not ignored -- and contradicts the ledger with what it counted.
+  A count that disagrees means the scan and the check do not agree about
+  what exists, and the report is rejected rather than shown. This exists
+  because a scan that supplies both the coverage claim and its only
+  evidence cannot be checked; the listing has to come from somewhere else.
 - **Every source seen is recorded**, imported or not, as one agent-memory
   entry `memory/source-<alias>.md` of type `reference`. A source the scan
   never read is recorded `declared, not scanned`, which is how a later

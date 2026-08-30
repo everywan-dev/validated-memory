@@ -76,6 +76,14 @@ rather than guessing.
 A repository that has run `init`: it holds the Markdown data and configuration,
 while all code stays in the plugin.
 
+**Source**:
+A body of existing knowledge a scan can be pointed at: a path the adopter
+declared, a database named by the location of its definition, or a coherent
+body found during the repository scan. It is what gets an alias and a
+`memory/source-<alias>.md` record; it is never a single candidate's
+provenance file, and never the claim a candidate makes.
+_Avoid_: origin, input, knowledge base
+
 **Harness memory location**:
 The fixed path outside the project where Claude Code expects to read a
 project's agent memory. The plugin makes it a symlink into the project, so the

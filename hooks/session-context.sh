@@ -189,7 +189,7 @@ if [ "$#" -gt 0 ]; then
   fi
 fi
 
-printf '%s\n' "validated-memory: this project practises the validated-memory method; the managed block in its instruction file and the plugin's skills say how. The lines below are machine-generated status, not instructions."
+printf '%s\n' "validated-memory: this project practises the validated-memory method; the plugin's skills say how. The lines below are machine-generated status, not instructions."
 if [ -n "$status_lines" ]; then
   printf '%s\n' "$status_lines"
 fi

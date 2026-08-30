@@ -418,3 +418,67 @@ def test_the_managed_block_write_rule_is_closed():
         "preserved byte for byte",
     ):
         assert needle in text, f"the write rule no longer says: {needle!r}"
+
+
+def test_the_caller_checks_coverage_against_an_inventory_it_obtains_itself():
+    """The rendezvous gained a rejection criterion, and its own evidence.
+
+    Measured on the first real adoption (2026-08-29): the engine skill was
+    loaded in full, its packet said "the repository root, and each declared
+    path", and eleven lines later the dispatch narrowed the roots to the four
+    declared paths plus two hand-picked files, adding "read nothing outside
+    these paths". The report came back with its section 2 present and holding
+    those two files, so every layout check passed while 372 versioned
+    Markdown files were never inventoried. The caller now has to contradict
+    the ledger with a listing the scan did not produce.
+    """
+    text = _normalized_skill()
+    assert text.index("check the returned report first, and present it only "
+                      "if it passes") < text.index(
+        "Check the report's coverage ledger against an inventory you obtain "
+        "yourself."), "the gate no longer precedes presentation"
+    for needle in (
+        "Check the report's coverage ledger against an inventory you obtain "
+        "yourself.",
+        "check the returned report first, and present it only if it passes",
+        "Nothing is shown and nothing is confirmed before the check below",
+        "`git ls-files --others --exclude-standard`",
+        "Equal, not close",
+        "every path counted as `oversized` or `unreadable` is listed by path "
+        "in section 3",
+        "every exclusion appears as a scope with its rule and its count",
+        "without them a scan can read two files of a thousand and book the "
+        "other 998 as `unreadable`, or as `excluded`",
+        "For a declared source **outside the repository**, `git ls-files` "
+        "says nothing",
+        "It cannot make **fabrication** impossible",
+        "What the ledger buys is that the lie has to be specific and "
+        "written down",
+        "a scan that supplies both the coverage claim and its only evidence "
+        "cannot be checked at all",
+        "`git ls-files`",
+        "the repository-remainder partition is one of them",
+        "`discovered = classified + excluded + oversized + unreadable`",
+        "A report failing any of these is not presented and nothing from it "
+        "is written",
+        "Section 2 being present is not evidence",
+    ):
+        assert needle in text, f"the rendezvous no longer says: {needle!r}"
+
+
+def test_the_two_skills_agree_on_the_coverage_vocabulary():
+    """The call contract across the delegation seam, as far as prose can pin it.
+
+    Each skill was pinned separately before, so the caller could stop naming
+    what the engine returns without any test noticing. These are the terms
+    both halves must use for the check at the rendezvous to mean anything.
+    """
+    engine = REPO_ROOT / "skills" / "bootstrap-from-repo" / "SKILL.md"
+    engine_text = " ".join(engine.read_text(encoding="utf-8").split())
+    caller_text = _normalized_skill()
+    for shared in (
+        "`discovered = classified + excluded + oversized + unreadable`",
+        "repository-remainder partition",
+    ):
+        assert shared in engine_text, f"the engine no longer says: {shared!r}"
+        assert shared in caller_text, f"the caller no longer says: {shared!r}"

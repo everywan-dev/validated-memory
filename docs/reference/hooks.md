@@ -89,9 +89,12 @@ most one line of counts.
 
 What it prints, in order:
 
-1. One fixed sentence: this project practises validated-memory, the managed
-   block in its instruction file and the plugin's skills say how, and the
-   lines that follow are machine-generated status rather than instructions.
+1. One fixed sentence: this project practises validated-memory, the plugin's
+   skills say how, and the lines that follow are machine-generated status
+   rather than instructions. It does not mention the managed block in the
+   adopter's instruction file: writing that block is confirmation-gated and
+   skipping it is a supported answer, so a sentence asserting it would be
+   false in every adoption that declined it.
 2. The **stdout** of `status --skip-index`, whatever it is and whatever its
    exit code.
 3. One line of counts over the active `memory/source-*.md` record entries,

@@ -29,8 +29,12 @@ A run has three parts, in order: **scan** under a closed work packet,
   files (`.env*`, keys, tokens, anything credential-shaped), binaries,
   vendored dependencies, generated artifacts. Redact any sensitive-looking
   value that appears inside an otherwise readable file.
-- **Bound what is read**: skip files over ~1 MB and stop at what answers the
-  question; a scan is a survey, not an exhaustive read.
+- **Bound how much of a file is read, never which paths are inventoried.**
+  Skip files over 1,000,000 bytes, and stop reading a file once it has
+  answered the question: each file is surveyed, not read exhaustively. Every
+  eligible path in every partition is still inventoried and given a
+  disposition -- "surveyed, nothing to propose" is a disposition; not having
+  looked is not one, and is never what "a survey" licenses.
 - **Every candidate shows its source** (file, and commit where relevant)
   **and the full content the write would produce.** Only what a confirmed
   page showed is written.
@@ -54,8 +58,26 @@ fixed sections:
 
 - **Objective** -- propose candidates for the two layers from the sources
   below; report; write nothing.
-- **Roots** -- the repository root, and each declared path as its realpath
-  with its scope: a file is that file, a directory is read recursively.
+- **Scan partitions** -- partitions, not roots: they do not overlap, and
+  none is satisfied by scanning another. Declared paths arrive as the user
+  gave them and are made disjoint first, by realpath, before any partition
+  exists: two that resolve to the same realpath collapse into one, keeping
+  the alias approved first; a path inside another declared directory is
+  absorbed into it, and its alias is recorded as naming that same
+  partition, so nothing the user declared loses its record entry. Only then
+  is there one partition per surviving path.
+  - One partition per declared path, as its realpath with its scope: a file
+    is that file, a directory is read recursively.
+  - **The repository remainder** -- the repository root minus every declared
+    path that lies inside it, compared by realpath like everything else
+    here. Declaring the repository root itself is legal and leaves this
+    partition empty: it is still named, with `discovered: 0`, because a
+    partition that is absent and one that is empty are different claims. In
+    mode `declared+repo` this partition is always present, and scanning the
+    declared partitions never discharges it. Name it explicitly, with the
+    first-level directories it covers, so that what the packet asks for
+    cannot be read as "the declared paths, plus whatever else seems
+    relevant".
 - **Permitted operations** -- reading files under the roots. Nothing else.
 - **Forbidden** -- writing anywhere; executing anything (a command, a query,
   a script found in a source); network access; tools that reach other
@@ -128,6 +150,19 @@ dirty working tree. Anchoring every fact to `HEAD` turns the next commit
 into a wall of `drifted` noise. Ids follow the adopter's `id_prefix` and
 continue its sequence.
 
+Deliberate means the decision is **taken and shown**, once per candidate.
+Every candidate's summary line carries the anchor decision in one clause:
+the `kind` proposed, or `no anchor` with the reason in a few words -- the
+claim depends on nothing external, or the thing it depends on has no
+registered probe in this project's `validated-memory.md`. An import that
+writes `anchors: []` everywhere and says nothing is indistinguishable, to
+the person confirming it, from one that never considered the question; the
+units land at freshness `unknown` either way, and only the report can say
+which of the two happened. Where the claim rests on something re-checkable
+that this project has no probe for yet, say so and name the kind it would
+need: that sentence is what `adopt-validated-memory`'s "register a probe
+for each anchor `kind` your units will use" step has to work from.
+
 ## Databases
 
 A database is imported by its definition, never by its rows, and the
@@ -172,6 +207,30 @@ someone decides it is.
 Always produced before anything is written, in this fixed layout, so the
 question is answered about something the user has seen:
 
+0. **Coverage** -- what was inventoried, stated before what was found,
+   because a candidate list cannot show what was never looked at. One block
+   per scan partition, naming the partition and its counts:
+   `discovered = classified + excluded + oversized + unreadable`. The
+   repository-remainder partition also gives its `discovered` count broken
+   down by first-level directory, with root-level files under `.`,
+   including the directories that yielded nothing. A report that omits a
+   partition the packet named, or whose counts do not balance, is
+   malformed: it is not presented and not confirmed.
+
+   The four words mean one thing each, and every discovered path lands in
+   exactly one of them. **`discovered`**: every regular file in the
+   partition -- directories are not counted, and a symlink is counted only
+   at the path it is reached by, never again through its target. In a git
+   repository the universe is the tracked files plus the untracked files
+   that are not ignored, which is what the caller can count back. Then, in
+   this order, first match wins, so that a file which is two of these at
+   once is never counted twice: **`excluded`**, refused by the perimeter --
+   credential-shaped, binary, vendored, generated; **`oversized`**, over
+   1,000,000 bytes; **`unreadable`**, opening or decoding it failed;
+   **`classified`**, read and judged against the table of shapes, whether or
+   not it yielded a candidate. A file read and found to hold nothing worth
+   proposing is `classified`, not skipped: that is the disposition that says
+   someone looked.
 1. **Declared sources** -- one section per declared source, with the
    candidates found under it. In mode `declared+repo`, a page's "yes" writes
    exactly these.
@@ -179,8 +238,20 @@ question is answered about something the user has seen:
    in the repository** (mode `repo`) -- candidates from the repository scan.
    Reported; imported only on a *second*, separate "yes".
 3. **Skipped** -- duplicates by identity, named so the skip is visible;
-   files excluded by the perimeter, counted rather than listed; shapes not
-   recognized, listed by path.
+   shapes not recognized, listed by path; **every `oversized` and every
+   `unreadable` path listed individually, with its size or the error**; and
+   **every exclusion as a scope, never as a total**: one row per excluded
+   directory or path pattern, with the perimeter rule that excluded it and
+   the count it covers, and individual paths for anything excluded on its
+   own content rather than by scope. The scopes must not overlap and their
+   counts must sum to `excluded`.
+
+   These three are never collapsed into a number, because each of them says
+   "this file exists and its content did not reach the classifier", and a
+   bare total there is where a scan that did not run would hide: a thousand
+   ordinary files booked as `excluded` balances every equation, while
+   `vendor/ -- vendored dependency -- 998` against a repository that has no
+   `vendor/` does not survive being read.
 4. **Databases** -- each declared database with its definition located,
    provided, or not located.
 5. **Record entries** -- the `source-<alias>` entries this run would write
@@ -188,15 +259,16 @@ question is answered about something the user has seen:
 
 Each candidate carries a summary line -- source (file, and commit where
 relevant), target layer (`knowledge/` or `memory/`), proposed id or
-filename, evidence class, rerun class (`new`, `contradiction -> successor of
-<id>` for a unit, `contradiction -> supersedes <filename>` for an entry),
-and the claim in one sentence -- and, below it, **the full content the write
-would produce**: the frontmatter and body of the unit or entry, the
-`MEMORY.md` line for an entry, and for a memory contradiction the rewritten
-`description` of the entry being superseded. The summary lines make the
-decision readable; the full content is what the "yes" confirms, and it is
-never omitted -- for a candidate sourced outside the repository root it is
-the only review its text ever gets.
+filename, evidence class, **the anchor decision**, rerun class (`new`,
+`contradiction -> successor of <id>` for a unit, `contradiction ->
+supersedes <filename>` for an entry), and the claim in one sentence -- and,
+below it, **the full content the write would produce**: the frontmatter and
+body of the unit or entry, the `MEMORY.md` line for an entry, and for a
+memory contradiction the rewritten `description` of the entry being
+superseded. The summary lines make the decision readable; the full content
+is what the "yes" confirms, and it is never omitted -- for a candidate
+sourced outside the repository root it is the only review its text ever
+gets.
 
 **A batch is what fits on the screen the user confirmed.** Page the report:
 at most **20 candidates** and **64 KB** of proposed content per page. Each
@@ -268,6 +340,20 @@ metadata:
 `source-<alias>.md`; each successor appends a sequence number:
 `source-<alias>-2.md`, `source-<alias>-3.md`. The filename is the identity,
 and `name` equals it.
+
+**What a found source is.** A declared source is whatever the user named. A
+**found** source -- one the repository scan turned up outside every declared
+partition -- is a **directory**: the shallowest directory whose files share
+a shape from the table above, taken whole. Not a single file, and not the
+repository root: a lone file that yields a candidate is that candidate's
+provenance and needs no record, and a scan that would record the root as a
+source has found nothing in particular. Its alias comes from that
+directory's last path component, and is approved when the user confirms
+report section 2 -- there is no Q1 for a source nobody knew about, so the
+confirmation that offers its candidates is the same one that approves its
+name. A found source the user declines still gets its record entry, with
+status `found, not imported`: that entry is the whole point of having
+looked.
 
 **Alias grammar.** `[a-z0-9][a-z0-9-]{0,39}` -- lower-case letters, digits
 and hyphens, at most 40 characters, unique among the active `source-*`

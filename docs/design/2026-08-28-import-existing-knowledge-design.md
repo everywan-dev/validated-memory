@@ -1,5 +1,20 @@
 # Importing existing knowledge at adoption — design (2026-08-28, revised after two adversarial reviews)
 
+> **Partly superseded on 2026-08-29, by the first real adoption.** This
+> document is kept as the record of what 1.5.0 decided, not as a description
+> of what the skills now say. Three of its rulings did not survive contact:
+> the packet's overlapping **roots** are now non-overlapping **scan
+> partitions** with an explicit repository remainder; the perimeter's "a
+> scan is a survey, not an exhaustive read" is gone, because it licensed
+> skipping paths rather than bounding how much of a file is read; and the
+> report now opens with a **coverage ledger** the caller checks against an
+> inventory it takes itself, because the rendezvous had no rejection
+> criterion and a report whose section 2 held two hand-picked files passed
+> every check while 372 files went uninventoried. The hook's fixed sentence
+> also no longer mentions the managed block, which is optional. The skills
+> and `docs/adoption.md` are authoritative; where this document disagrees
+> with them, it is history.
+
 A project that adopts validated-memory often already practises a validation
 method of its own: hypothesis registers with a state per hypothesis, research
 reports that close with a verdict, per-incident findings, verification

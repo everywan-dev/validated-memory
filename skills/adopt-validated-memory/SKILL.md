@@ -171,8 +171,57 @@ When a scan was consented to, dispatch it to a **read-only subagent** where
 the harness offers one that can be denied execution, network and writes, and
 carry on with the next question while it runs; where it cannot, run the scan
 inline after the last question, under the same work packet. The order of
-the questions does not change either way. Whichever way it ran, present the
-report and ask its confirmation before anything is written.
+the questions does not change either way. Whichever way it ran, **check the
+returned report first, and present it only if it passes.** Nothing is shown
+and nothing is confirmed before the check below; a report that fails it is
+never presented at all.
+
+**Check the report's coverage ledger against an inventory you obtain
+yourself.** Not from the scan: a scan that supplies both the coverage claim
+and its only evidence cannot be checked at all. Take the inventory from the
+same universe the scan works in -- tracked files plus untracked files that
+are not ignored, which is `git ls-files` together with
+`git ls-files --others --exclude-standard`; where the project is not a git
+repository, every regular file under the root, not following symlinks out
+of it. Count it per first-level directory, with root-level files under
+`.`. Then verify:
+
+- every partition the packet named has a block in the ledger, and in mode
+  `declared+repo` the repository-remainder partition is one of them;
+- `discovered = classified + excluded + oversized + unreadable` in every
+  partition;
+- each partition's `discovered` equals your own count for the same scope.
+  Equal, not close: both sides are counting the same universe, so a
+  difference is a disagreement about what exists and is resolved before
+  anything else;
+- **every path counted as `oversized` or `unreadable` is listed by path in
+  section 3**, and their listed counts equal their ledger counts;
+- **every exclusion appears as a scope with its rule and its count**, the
+  scopes do not overlap, they sum to `excluded`, and each names something
+  that exists in your inventory. These two are the checks with teeth:
+  without them a scan can read two files of a thousand and book the other
+  998 as `unreadable`, or as `excluded`, and every count above still
+  balances.
+
+For a declared source **outside the repository**, `git ls-files` says
+nothing: list that path yourself the way the non-git case is listed, every
+regular file under it without following symlinks out of it, and compare
+that count with its partition. A partition you cannot inventory is a
+partition you cannot check, and it is reported to the user as exactly that
+rather than passed as if checked.
+
+What this cannot do, said plainly so nobody relies on more: the ledger
+makes an **omission** visible, because omitting a path leaves a count that
+disagrees with a listing taken elsewhere. It cannot make **fabrication**
+impossible -- a scan that claims to have read and judged a file it never
+opened books it as `classified`, and no report can contradict that. What
+the ledger buys is that the lie has to be specific and written down.
+
+A report failing any of these is not presented and nothing from it is
+written. Say which check failed and run the scan again. Section 2 being
+present is not evidence: a section 2 listing two hand-picked files, in a
+repository whose remainder holds hundreds, satisfies the layout and not the
+scan.
 
 With Q2 = Yes there is no Q3 left to ask, so the questionnaire proceeds
 straight to the instruction-file step below while the scan runs. Whichever
