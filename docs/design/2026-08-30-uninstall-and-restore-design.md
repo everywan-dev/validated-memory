@@ -1,5 +1,19 @@
 # Uninstall and restore — design (2026-08-30)
 
+> **Superseded the same day by
+> `2026-08-30-the-journal-coverage-and-reversal-design.md`.** An adversarial
+> review found its load-bearing decision false: the inventory cannot be
+> computed at uninstall time, because the final state is computable and the
+> preimage is not — whether a path pre-existed, what bytes were overwritten,
+> where a symlink pointed, which `.bak` belongs to this adoption, and whether
+> a bare ignore line was written by the skill or by the user. Three further
+> defects: `--plan` made the subsequent uninstall refuse its own destination;
+> moving an ignored layout to `remove-valmem/` would expose it to git,
+> because the ignore rules are root-anchored; and the marker inverse is not
+> exact, since the separator whitespace the write introduced is not
+> observable later. Kept as the record of the rejected approach.
+
+
 Adopting validated-memory is a severe change to a project. It creates a
 layout at the root, writes a managed block into files the adopter owns, and
 installs three startup hooks that run in every project on the machine. A user
