@@ -36,11 +36,20 @@ start still hold.
      /memory/
      /validated-memory.md
      /knowledge-extension.md
+     /.validated-memory/
      /knowledge-index.md
      /verdicts.jsonl
      /knowledge.html
      /memory.html
      ```
+
+     `journal.jsonl` is **not** part of this choice and is never added to the
+     ignore list. It is the record of what adoption did, it is not
+     regenerable by anything, and a clone without it cannot reverse an
+     adoption or diff one scan's coverage against the next. `.validated-memory/`
+     is the other half of that split and is always ignored, whatever the
+     answer here: it holds preimages, which may carry bytes this very
+     question chose to keep local.
 
      Anchored at the root on purpose: a fixture or a package named `memory`
      deeper in the tree is not the layout.

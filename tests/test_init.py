@@ -173,7 +173,10 @@ def test_a_directory_that_cannot_be_created_gates_with_an_error(adopter_dir, run
 
         assert result.returncode == 1
         assert "ERROR" in result.stderr
-        assert "knowledge" in result.stderr
+        # A locked root can't create `.validated-memory/` for the lock or
+        # `journal.jsonl` for the bootstrap record either, so that fails
+        # before any scaffold item (e.g. "knowledge") is even attempted.
+        assert "journal" in result.stderr, result.stderr
     finally:
         os.chmod(locked, 0o700)
 

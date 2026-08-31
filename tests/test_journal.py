@@ -106,7 +106,14 @@ def test_a_created_file_records_its_postimage_and_both_stages(run_cli, tmp_path)
     # `init` keeps an existing file rather than replacing it, so the second
     # run must record `observe`, not `replace`, for the same paths.
     records = _records(tmp_path / "journal.jsonl")
-    creates = [e for e in records if e["op"] == "create" and e["stage"] == "committed"]
+    # `create` also covers a directory made via `append_op` (no preimage or
+    # postimage: a directory has no content to digest), so file creates are
+    # the ones that carry a `postimage`.
+    creates = [
+        e
+        for e in records
+        if e["op"] == "create" and e["stage"] == "committed" and "postimage" in e
+    ]
     assert creates, records
     for entry in creates:
         assert entry["postimage"].startswith("sha256:"), entry
@@ -116,3 +123,39 @@ def test_a_created_file_records_its_postimage_and_both_stages(run_cli, tmp_path)
     assert len(prepared) == len(creates), (prepared, creates)
     # Every prepared record is followed by its committed twin for the same path.
     assert {e["path"] for e in prepared} <= {e["path"] for e in committed}
+
+
+def test_init_records_create_for_what_it_made_and_observe_for_what_it_kept(
+    run_cli, tmp_path
+):
+    """The two outcomes `init` already prints are the two records it writes.
+
+    "It was already here" is a fact about the pre-adoption state and cannot
+    be re-derived afterwards, which is why it is written down rather than
+    inferred at reversal time -- the defect that retired the first uninstall
+    design.
+    """
+    (tmp_path / "knowledge").mkdir()
+
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    records = _records(tmp_path / "journal.jsonl")
+    committed = [e for e in records if e["stage"] == "committed"]
+    by_path = {e["path"]: e["op"] for e in committed}
+    assert by_path["knowledge"] == "observe", by_path
+    assert by_path["memory"] == "create", by_path
+    assert by_path["validated-memory.md"] == "create", by_path
+    assert by_path["memory/MEMORY.md"] == "create", by_path
+    assert by_path["knowledge-extension.md"] == "create", by_path
+
+
+def test_a_second_init_records_observe_for_everything_it_kept(run_cli, tmp_path):
+    """A re-run creates nothing, so it records no `create`."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    first = len(_records(tmp_path / "journal.jsonl"))
+
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    added = _records(tmp_path / "journal.jsonl")[first:]
+    assert added, "the second run recorded nothing"
+    assert {e["op"] for e in added} == {"observe"}, added

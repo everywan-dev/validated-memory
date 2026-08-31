@@ -38,7 +38,7 @@ simply creates nothing this run.
 import os
 from pathlib import Path
 
-from . import adopt, render
+from . import adopt, journal, render
 from .findings import ERROR, EXIT_ERROR, EXIT_OK, WARNING, Finding
 
 MEMORY_INDEX = """\
@@ -127,27 +127,70 @@ def run(harness_memory, view, stdout, stderr):
     created = 0
     kept = 0
 
-    # Each call below runs (and creates its item, if missing) immediately;
-    # this just names the completed results before reporting them in order.
-    steps = (
-        _ensure_dir(Path("knowledge")),
-        _ensure_dir(Path("memory")),
-        _ensure_file(Path("memory") / "MEMORY.md", MEMORY_INDEX),
-        _ensure_file(Path("validated-memory.md"), CONFIG),
-        _ensure_file(Path("knowledge-extension.md"), EXTENSION_STUB),
-    )
-    for item, outcome, finding in steps:
-        if finding is not None:
-            findings.append(finding)
-            continue
-        print(f"init: {outcome} {item}", file=stdout)
-        if outcome == "created":
-            created += 1
-        else:
-            kept += 1
+    # Everything that journals -- the scaffold and the harness symlink -- runs
+    # under one lock for the whole run: `init` is deliberately re-runnable at
+    # session start, and two concurrent runs on a brand-new adopter must not
+    # be able to mint two adoption ids.
+    try:
+        with journal.Lock():
+            session = journal.Run()
+            # Each call below runs (and creates its item, if missing)
+            # immediately; this just names the completed results before
+            # reporting them in order.
+            steps = (
+                _ensure_dir(Path("knowledge"), session),
+                _ensure_dir(Path("memory"), session),
+                _ensure_file(
+                    Path("memory") / "MEMORY.md", MEMORY_INDEX, session
+                ),
+                _ensure_file(Path("validated-memory.md"), CONFIG, session),
+                _ensure_file(
+                    Path("knowledge-extension.md"), EXTENSION_STUB, session
+                ),
+            )
 
-    if harness_memory is not None:
-        findings.extend(_sync_symlink(harness_memory, stdout))
+            for item, outcome, finding in steps:
+                if finding is not None:
+                    findings.append(finding)
+                    continue
+                print(f"init: {outcome} {item}", file=stdout)
+                if outcome == "created":
+                    created += 1
+                else:
+                    kept += 1
+
+            if harness_memory is not None:
+                findings.extend(_sync_symlink(harness_memory, stdout, session))
+    except journal.JournalError as error:
+        where = journal.JOURNAL_FILENAME
+        location = where if error.lineno is None else f"{where}:{error.lineno}"
+        print(
+            Finding(ERROR, location, "journal", error.message).render(),
+            file=stderr,
+        )
+        print(
+            "init: 0 created, 0 kept, 1 error(s), 0 warning(s)", file=stdout
+        )
+        return EXIT_ERROR
+    except OSError as error:
+        # The lock and the journal's own bootstrap both need to create
+        # `.validated-memory/` and `journal.jsonl` before any scaffold item
+        # is attempted; an adopter root that cannot be written to at all
+        # (e.g. read-only permissions) fails here first, ahead of any
+        # per-item ERROR `_ensure_dir`/`_ensure_file` would otherwise raise.
+        print(
+            Finding(
+                ERROR,
+                journal.JOURNAL_FILENAME,
+                "journal",
+                f"journal could not be opened: {error}",
+            ).render(),
+            file=stderr,
+        )
+        print(
+            "init: 0 created, 0 kept, 1 error(s), 0 warning(s)", file=stdout
+        )
+        return EXIT_ERROR
 
     if view:
         view_created, view_kept, view_findings = _ensure_views(stdout)
@@ -167,10 +210,16 @@ def run(harness_memory, view, stdout, stderr):
     return EXIT_ERROR if errors else EXIT_OK
 
 
-def _ensure_dir(path):
-    """Create `path` as a directory if missing. Returns `(item, outcome, finding)`."""
+def _ensure_dir(path, session):
+    """Create `path` as a directory if missing. Returns `(item, outcome, finding)`.
+
+    A directory that is already there is recorded as an observation: that it
+    pre-existed is a fact about the state before adoption, and nothing can
+    re-derive it later.
+    """
     location = path.as_posix()
     if path.exists():
+        session.observe(location, "directory already present")
         return location, "kept", None
     try:
         path.mkdir(parents=True)
@@ -178,17 +227,21 @@ def _ensure_dir(path):
         return location, None, Finding(
             ERROR, location, "create", f"directory could not be created: {error}"
         )
+    # `mkdir` is not a file write and has no preimage, so the created case
+    # carries no transaction -- but its inverse belongs in the op, not in
+    # prose.
+    session.append_op(journal.CREATE, "init", location, "directory created")
     return location, "created", None
 
 
-def _ensure_file(path, content):
+def _ensure_file(path, content, session):
     """Write `content` to `path` if missing. Returns `(item, outcome, finding)`."""
     location = path.as_posix()
     if path.exists():
+        session.observe(location, "file already present")
         return location, "kept", None
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        session.write(location, content, "init")
     except OSError as error:
         return location, None, Finding(
             ERROR, location, "create", f"file could not be created: {error}"
@@ -196,7 +249,7 @@ def _ensure_file(path, content):
     return location, "created", None
 
 
-def _sync_symlink(raw_path, stdout):
+def _sync_symlink(raw_path, stdout, session):
     """Make `raw_path` a symlink to this project's `memory/`, without deleting data.
 
     - Missing: create the symlink (making parent directories as needed).
@@ -209,10 +262,17 @@ def _sync_symlink(raw_path, stdout):
     Any OS-level failure along this path (permissions, a dangling parent,
     ...) is reported the same way: a WARNING that never gates, because a
     startup hook built on `init` must never break the session over a symlink.
+
+    `raw_path` is outside the repository root, so its record can only ever
+    live in the vault (`durability=journal.LOCAL`) -- a repository record may
+    never carry an absolute path (ADR 0008, design §7). The previous target
+    is read before the link is touched: once it is re-pointed, its former
+    target is gone, which is the preimage problem in miniature.
     """
     path = Path(raw_path)
     location = path.as_posix()
     target = Path("memory").resolve()
+    previous = os.readlink(path) if path.is_symlink() else None
     try:
         if path.is_symlink():
             if path.resolve() == target:
@@ -220,6 +280,13 @@ def _sync_symlink(raw_path, stdout):
                 return []
             path.unlink()
             path.symlink_to(target, target_is_directory=True)
+            session.append_op(
+                journal.LINK,
+                "init",
+                path.as_posix(),
+                f"previous target: {previous}" if previous else "no previous link",
+                durability=journal.LOCAL,
+            )
             print(f"init: re-pointed symlink {location} -> {target}", file=stdout)
             return []
         # A real path that is not a symlink: `adopt` decides whether it holds
@@ -231,6 +298,13 @@ def _sync_symlink(raw_path, stdout):
                 return findings
         path.parent.mkdir(parents=True, exist_ok=True)
         path.symlink_to(target, target_is_directory=True)
+        session.append_op(
+            journal.LINK,
+            "init",
+            path.as_posix(),
+            f"previous target: {previous}" if previous else "no previous link",
+            durability=journal.LOCAL,
+        )
         print(f"init: created symlink {location} -> {target}", file=stdout)
         return findings
     except OSError as error:

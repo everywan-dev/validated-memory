@@ -45,6 +45,7 @@ the layout:
 /memory/
 /validated-memory.md
 /knowledge-extension.md
+/.validated-memory/
 /knowledge-index.md
 /verdicts.jsonl
 /knowledge.html
@@ -55,8 +56,15 @@ Ignoring never untracks: a path already committed stays committed until
 `git rm --cached` removes it, and `git check-ignore -v` is the check that a
 rule took.
 
-The last four lines are derived files; a repository that versions the layout
-still chooses, separately, whether to version them -- `knowledge-index.md`
+`journal.jsonl`, `init`'s own repository-visible record of what it did, is
+**not** part of this choice and is never added to the ignore list: nothing
+regenerates it, and a clone without it cannot reverse an adoption or diff one
+scan's coverage against the next. `.validated-memory/` is the other half of
+that split and is always ignored, whatever the answer here: it holds
+preimages, which may carry bytes this very question chose to keep local.
+
+The remaining four lines are derived files; a repository that versions the
+layout still chooses, separately, whether to version them -- `knowledge-index.md`
 and `verdicts.jsonl` together or not at all (see [step 7](#7-gate-ci-on-the-derived-index);
 a repository that does not version them runs `status` with `--skip-index`,
 per [ADR 0002](adr/0002-status-gates-consistency-and-only-reports-freshness.md)),

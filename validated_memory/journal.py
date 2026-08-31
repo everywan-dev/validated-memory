@@ -270,7 +270,7 @@ class Lock:
         return True
 
 
-def bootstrap(root=Path()):
+def bootstrap(root=Path(), run=None):
     """Ensure the journal exists, and return this adoption's id.
 
     This is the one write that cannot journal itself: a record describing
@@ -280,6 +280,12 @@ def bootstrap(root=Path()):
     there is no window in which a mutation has happened and no journal
     exists to describe it. The temporary is plugin-owned and is not itself
     journalled.
+
+    `run` is the invocation's run id, so the opening record -- minted only
+    the first time a project ever bootstraps -- carries the same run id as
+    every other record that invocation writes, rather than a run of its own.
+    A caller that does not have one yet (there is none besides `Run`) gets
+    one minted here, so the record is always complete.
 
     The caller must already hold `Lock`. This does not take it: `init` holds
     it for the whole run, and re-entering would need a re-entrant lock. Two
@@ -299,7 +305,7 @@ def bootstrap(root=Path()):
         durability=REPO,
         stage=COMMITTED,
         adoption=adoption,
-        run=new_id(),
+        run=run if run is not None else new_id(),
         note="journal opened",
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -331,8 +337,8 @@ class Run:
 
     def __init__(self, root=Path()):
         self.root = Path(root)
-        self.adoption = bootstrap(self.root)
         self.run = new_id()
+        self.adoption = bootstrap(self.root, self.run)
 
     def _record(self, op, purpose, path, durability, stage, **extra):
         return record(

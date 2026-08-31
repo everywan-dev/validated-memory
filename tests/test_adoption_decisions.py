@@ -3,13 +3,18 @@
 `adopt-validated-memory` asks, before `init`, whether the layout is versioned
 in the adopter repository or kept local to the clone. The "local" answers
 write an ignore list, and that list is pinned here against the CLI's fixed
-root outputs -- every item `init` (with and without `--view`), `derive` and
-`probe` write at the adopter's root on a normal run, and nothing else -- so
-a new root artifact cannot appear without the skill and the adoption guide
-learning to ignore it, and a stale entry cannot linger after one is retired.
-Not covered, on purpose: the `--harness-memory` side effects, which live at
-PATH rather than in the project, and the temporary files `render` leaves
-only after a hard kill.
+root outputs that the ignore question actually covers -- every item `init`
+(with and without `--view`), `derive` and `probe` write at the adopter's root
+on a normal run, minus `journal.jsonl` -- so a new root artifact cannot
+appear without the skill and the adoption guide learning to ignore it, and a
+stale entry cannot linger after one is retired.
+Not covered, on purpose: `journal.jsonl`, which `init` also writes at the
+root but which ADR 0008 keeps outside this question entirely -- it is always
+versioned and the skill deliberately never offers to ignore it, unlike
+`.validated-memory/`, the vault half of that same split, which is always
+ignored and so is always in the list; the `--harness-memory` side effects,
+which live at PATH rather than in the project; and the temporary files
+`render` leaves only after a hard kill.
 
 The list is read from the skill and the guide as data (the same seam as
 `test_skills_structure.py`); the artifacts come from driving the CLI as a
@@ -111,6 +116,11 @@ def _root_artifacts(adopter_dir, tmp_path_factory, run_cli):
     return {
         f"/{entry.name}/" if entry.is_dir() else f"/{entry.name}"
         for entry in adopter_dir.iterdir()
+        # `journal.jsonl` is a root artifact too, but ADR 0008 keeps it
+        # outside the versioning question on purpose (it is always
+        # versioned, never offered as an ignore entry) -- see the module
+        # docstring's "Not covered, on purpose".
+        if entry.name != "journal.jsonl"
     }
 
 
