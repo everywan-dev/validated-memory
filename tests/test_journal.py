@@ -48,3 +48,48 @@ def test_init_writes_a_journal_whose_records_carry_the_common_fields(
             "remove",
             "move",
         ), entry
+
+
+def test_the_adoption_id_is_minted_once_and_survives_later_runs(run_cli, tmp_path):
+    """One adoption, one id, however many times `init` runs.
+
+    `init` is deliberately re-runnable at session start. An id minted per
+    run would make every run look like a separate adoption, and the reversal
+    a later plan builds could not tell which records belong together.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    first = {entry["adoption"] for entry in _records(tmp_path / "journal.jsonl")}
+    assert len(first) == 1, first
+
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    second = {entry["adoption"] for entry in _records(tmp_path / "journal.jsonl")}
+    assert second == first, (first, second)
+
+
+def test_each_invocation_groups_its_records_under_one_run_id(run_cli, tmp_path):
+    """One command, one run id -- and a second command, a second one."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    runs = [entry["run"] for entry in _records(tmp_path / "journal.jsonl")]
+    assert len(set(runs)) == 2, runs
+
+
+def test_a_journal_that_cannot_be_parsed_is_refused_with_its_line(run_cli, tmp_path):
+    """A partial answer from a journal is worse than no answer.
+
+    Nothing regenerates a journal, so a reader that skipped the line it did
+    not understand would silently narrow the record -- the failure mode this
+    whole component exists to remove.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    journal.write_text(
+        journal.read_text(encoding="utf-8") + "{not json\n", encoding="utf-8"
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "journal.jsonl" in result.stderr, result.stderr
+    assert "not valid JSON" in result.stderr, result.stderr

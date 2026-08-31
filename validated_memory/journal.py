@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import secrets
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -195,3 +196,107 @@ def read(root=Path(), durability=REPO):
             raise JournalError(lineno, f"record has unknown stage '{entry['stage']}'")
         records.append(entry)
     return records
+
+
+# A lock older than this whose owner is gone is broken rather than waited on:
+# a process killed between taking the lock and releasing it must not wedge
+# every later run of a startup hook.
+STALE_LOCK_SECONDS = 300
+
+
+class Lock:
+    """A per-adopter exclusive lock, taken for the duration of a mutation.
+
+    `init` is deliberately re-runnable at session start and concurrent
+    renderers are already expected, so two processes appending interleaved
+    `prepared` records to one journal is a real state, not a theoretical
+    one -- and it would produce a journal describing a state that never
+    existed.
+
+    The lock is a file created with `O_CREAT | O_EXCL`, which is atomic. Its
+    contents are the owning pid, so a stale lock can be attributed.
+    """
+
+    def __init__(self, root=Path()):
+        self.path = Path(root) / VAULT_DIRNAME / LOCK_FILENAME
+        self._fd = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                self._fd = os.open(
+                    self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
+                )
+                os.write(self._fd, f"{os.getpid()}\n".encode("ascii"))
+                return self
+            except FileExistsError:
+                if self._break_if_stale():
+                    continue
+                if time.monotonic() >= deadline:
+                    raise JournalError(
+                        None,
+                        f"another validated-memory process holds "
+                        f"{self.path.as_posix()}; retry when it finishes",
+                    )
+                time.sleep(0.05)
+
+    def __exit__(self, exc_type, exc, traceback):
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+        self.path.unlink(missing_ok=True)
+        return False
+
+    def _break_if_stale(self):
+        """Remove the lock when its owner is gone. Returns whether it broke one."""
+        try:
+            age = time.time() - self.path.stat().st_mtime
+        except FileNotFoundError:
+            return True  # It went away on its own; try again immediately.
+        if age < STALE_LOCK_SECONDS:
+            return False
+        self.path.unlink(missing_ok=True)
+        return True
+
+
+def bootstrap(root=Path()):
+    """Ensure the journal exists, and return this adoption's id.
+
+    This is the one write that cannot journal itself: a record describing
+    the journal's own creation would have nowhere to go until the journal
+    exists. So the opening record is written complete to a temporary file,
+    flushed, and atomically installed -- before any adopter mutation, so
+    there is no window in which a mutation has happened and no journal
+    exists to describe it. The temporary is plugin-owned and is not itself
+    journalled.
+    """
+    path = journal_path(root, REPO)
+    existing = read(root, REPO)
+    if existing:
+        return existing[0]["adoption"]
+
+    adoption = new_id()
+    opening = record(
+        OBSERVE,
+        "init",
+        JOURNAL_FILENAME,
+        durability=REPO,
+        stage=COMMITTED,
+        adoption=adoption,
+        run=new_id(),
+        note="journal opened",
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(opening, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+    return adoption
