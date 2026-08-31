@@ -974,15 +974,24 @@ def test_lint_does_not_read_a_quoted_description_out_of_the_body(run_cli, tmp_pa
     result = run_cli("lint", cwd=project)
 
     assert "description is written unquoted" not in result.stderr, result.stderr
+    # The entry really is missing its `description`, which is the ERROR that
+    # lets the body be reached at all -- so the exit code and the summary are
+    # pinned too, and a future change cannot silence the warning by making
+    # the whole check stop running.
+    assert result.returncode == 1, result.stdout
+    assert "required field is missing" in result.stderr, result.stderr
+    assert "1 error(s), 0 warning(s)" in result.stdout, result.stdout
 
 
-def test_lint_checks_exactly_the_record_entries_the_hook_counts(run_cli, tmp_path):
-    """The check's population is the hook's glob: `memory/source-*.md`.
+def test_lint_checks_the_record_entries_the_hook_globs_by_name(run_cli, tmp_path):
+    """The check's population is the hook's glob by name: `memory/source-*.md`.
 
     The hook globs direct children of `memory/` and nothing else. A file in a
     subdirectory is never counted, so warning about its form would name a
     rule that decides nothing; a name outside the alias grammar, such as
-    `source-A.md`, IS counted, so it has to be checked.
+    `source-A.md`, IS counted, so it has to be checked. The match is by name
+    only: the hook also drops a symlinked entry, which `lint` reads and
+    checks like every other memory file.
     """
     project = tmp_path / "adopter"
     (project / "memory" / "nested").mkdir(parents=True)
@@ -1010,6 +1019,7 @@ def test_lint_checks_exactly_the_record_entries_the_hook_counts(run_cli, tmp_pat
 
     result = run_cli("lint", cwd=project)
 
+    assert result.returncode == 0, result.stderr
     assert "source-A.md" in result.stderr, result.stderr
     assert "nested/source-deep.md" not in result.stderr, result.stderr
     assert "0 error(s), 1 warning(s)" in result.stdout, result.stdout

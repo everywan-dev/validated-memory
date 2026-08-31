@@ -411,10 +411,13 @@ def _describe(value):
 
 
 # The population is the startup hook's glob, `memory/source-*.md`, matched
-# against the path relative to the memory directory: direct children only,
-# and every name the glob admits, including one outside the alias grammar.
-# A check whose population were wider would warn about an entry the hook
-# never counts; one narrower would leave an entry it does count unchecked.
+# by name against the path relative to the memory directory: direct children
+# only, and every name the glob admits, including one outside the alias
+# grammar. A check whose population were wider by name would warn about an
+# entry the hook never counts; one narrower would leave an entry it does
+# count unchecked. The hook additionally drops a symlinked entry, which
+# `lint` still reads and checks like every other memory file -- the warning
+# stays true there, it just decides nothing about a count.
 SOURCE_FILENAME = re.compile(r"^source-[^/]*\.md$")
 QUOTED_DESCRIPTION = re.compile(r"^description[ ]*:[ \t]*[\"']")
 DESCRIPTION_KEY = re.compile(r"^description[ ]*:")
@@ -433,8 +436,10 @@ def _check_source_description_form(location, relpath, text):
     Only the first frontmatter block is read, and the scan stops at its
     closing fence: a `description:` line below it is adopter prose, not a
     value the entry declares. The document has already parsed by the time
-    this runs, so the opening fence, the closing fence and the absence of
-    tabs are all guaranteed.
+    this runs, so both fences are guaranteed, and so is the absence of a tab
+    in the payload between them -- which is all this scan reads. A tab on a
+    fence line or in the body is not rejected by the parser and is not this
+    scan's business.
     """
     if not SOURCE_FILENAME.match(relpath):
         return []

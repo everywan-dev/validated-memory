@@ -162,6 +162,15 @@ if [ "$#" -gt 0 ]; then
     # backslash a quoted scalar may not carry is not mirrored, and does not
     # need to be: no value carrying one can match a status literal, so such
     # an entry counts nowhere either way.
+    #
+    # Two divergences remain, both named rather than mirrored. A tab, which
+    # the parser rejects anywhere in frontmatter and `lint` reports as an
+    # ERROR, is tolerated here and can count. And the padding this strips is
+    # ASCII space and tab, where the parser strips every character Python
+    # calls whitespace: a value padded with a no-break space, a vertical tab
+    # or a form feed parses and counts nowhere. Recognising those classes is
+    # not portable across gawk, mawk and busybox awk, and a record carrying
+    # one is a paste accident, not a form the skill writes.
     function unquote(v,   q, end, trailing, marker) {
       if (v !~ /^["'"'"']/) {
         marker = index(v, " #")
