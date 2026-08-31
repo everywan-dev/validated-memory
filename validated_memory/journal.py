@@ -70,6 +70,33 @@ COMMON_FIELDS = (
     "stage",
 )
 
+# What each field must hold. A journal is repository content, which this
+# project's rule makes data and never instructions (design §7): checking that
+# a field is present says nothing about what is in it, and every later reader
+# -- the schema comparison here, the path the reconciler builds -- assumes a
+# type nothing had checked. `bool` is excluded from `int` deliberately:
+# `isinstance(True, int)` is true, and `"schema": true` is not a schema.
+FIELD_TYPES = {
+    "schema": int,
+    "at": str,
+    "version": str,
+    "adoption": str,
+    "run": str,
+    "durability": str,
+    "op": str,
+    "purpose": str,
+    "path": str,
+    "stage": str,
+}
+
+# Fields only some ops carry, checked when present for the same reason.
+OPTIONAL_FIELD_TYPES = {
+    "preimage": (str, type(None)),
+    "postimage": (str, type(None)),
+    "note": (str,),
+    "prior_bytes": (int,),
+}
+
 
 class JournalError(Exception):
     """Raised when a journal cannot be read as records.
@@ -162,20 +189,34 @@ def append(records, root=Path(), durability=REPO):
         os.fsync(handle.fileno())
 
 
+def artifact_name(durability):
+    """The journal of `durability`, named the way a finding names a file."""
+    return journal_path(Path(), durability).as_posix()
+
+
 def read(root=Path(), durability=REPO):
     """Every record in the journal of `durability`, in file order.
 
     A missing journal reads as no records. A journal that is there but
     cannot be parsed raises: see the module docstring for why a partial
     answer is not offered.
+
+    "Cannot be parsed" is the whole of design §7, not just JSON: a record
+    whose field holds the wrong type, whose `durability` disagrees with the
+    file it is in, or whose repository-durability path leaves the adopter
+    root, is refused here -- before any reader acts on it -- rather than
+    crashing one layer down or being read as an instruction.
     """
     path = journal_path(root, durability)
+    where = artifact_name(durability)
     if not path.exists():
         return []
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
-        raise JournalError(None, f"journal could not be read: {error}") from error
+        raise JournalError(
+            None, f"journal could not be read: {error}", where
+        ) from error
     records = []
     for offset, line in enumerate(text.splitlines()):
         lineno = offset + 1
@@ -184,24 +225,90 @@ def read(root=Path(), durability=REPO):
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as error:
-            raise JournalError(lineno, f"line is not valid JSON: {error.msg}")
+            raise JournalError(
+                lineno, f"line is not valid JSON: {error.msg}", where
+            )
         if not isinstance(entry, dict):
-            raise JournalError(lineno, "record is not a JSON object")
+            raise JournalError(lineno, "record is not a JSON object", where)
         missing = [field for field in COMMON_FIELDS if field not in entry]
         if missing:
-            raise JournalError(lineno, f"record is missing {', '.join(missing)}")
+            raise JournalError(
+                lineno, f"record is missing {', '.join(missing)}", where
+            )
+        _check_types(lineno, entry, where)
         if entry["schema"] > SCHEMA:
             raise JournalError(
                 lineno,
                 f"record uses schema {entry['schema']}, newer than this "
                 f"plugin understands ({SCHEMA}); upgrade the plugin",
+                where,
             )
         if entry["op"] not in OPS:
-            raise JournalError(lineno, f"record has unknown op '{entry['op']}'")
+            raise JournalError(
+                lineno, f"record has unknown op '{entry['op']}'", where
+            )
         if entry["stage"] not in STAGES:
-            raise JournalError(lineno, f"record has unknown stage '{entry['stage']}'")
+            raise JournalError(
+                lineno, f"record has unknown stage '{entry['stage']}'", where
+            )
+        if entry["durability"] != durability:
+            # `append()` derives the file from the same field `record()`
+            # stamps, so the two can only disagree by a hand edit -- and
+            # trusting the field would let a `local` record, which may
+            # legitimately carry a path outside the root, be smuggled into
+            # the versioned journal to lift the check below.
+            raise JournalError(
+                lineno,
+                f"record claims durability '{entry['durability']}' in the "
+                f"'{durability}' journal; a record's durability is the file "
+                "it lives in",
+                where,
+            )
+        if durability == REPO and not _is_inside_path(entry["path"]):
+            raise JournalError(
+                lineno,
+                f"record path '{entry['path']}' is not inside the adopter "
+                "root; a repository record may only carry a relative path "
+                "that stays below it",
+                where,
+            )
         records.append(entry)
     return records
+
+
+def _check_types(lineno, entry, where):
+    """Refuse a record whose field holds something of the wrong type."""
+    for field, expected in FIELD_TYPES.items():
+        value = entry[field]
+        if expected is int and isinstance(value, bool):
+            value = None
+        if not isinstance(value, expected):
+            raise JournalError(
+                lineno,
+                f"record field '{field}' holds {type(entry[field]).__name__}, "
+                f"not {expected.__name__}",
+                where,
+            )
+    for field, expected in OPTIONAL_FIELD_TYPES.items():
+        if field in entry and not isinstance(entry[field], expected):
+            raise JournalError(
+                lineno,
+                f"record field '{field}' holds "
+                f"{type(entry[field]).__name__}, which it may not",
+                where,
+            )
+
+
+def _is_inside_path(path):
+    """Whether `path` is relative and names nothing above the adopter root.
+
+    Lexical, because this runs on every record read: `Run.write` applies the
+    same rule to what it writes. The filesystem question -- whether the path
+    resolves below the root once symlinks are followed -- is asked by
+    `_state_of`, at the point something is about to be read.
+    """
+    candidate = Path(path)
+    return not candidate.is_absolute() and ".." not in candidate.parts
 
 
 # A lock older than this whose owner is gone is broken rather than waited on:
@@ -254,6 +361,7 @@ class Lock:
                         None,
                         f"another validated-memory process holds "
                         f"{self.path.as_posix()}; retry when it finishes",
+                        f"{VAULT_DIRNAME}/{LOCK_FILENAME}",
                     )
                 time.sleep(0.05)
 
@@ -524,6 +632,21 @@ def reconcile(root=Path()):
 
 def _state_of(root, entry):
     target = root / entry["path"]
+    if not _resolves_below(root, target):
+        # `read()` already refused a repository record naming a path outside
+        # the root, and `Run.write` refuses to write one. What is left is the
+        # filesystem's half of the same question: a lexically fine path that
+        # resolves out of the root through a symlink, and a vault record,
+        # whose path may legitimately leave the root -- design §7 is explicit
+        # that such a path "can never be authorised by the file itself" and
+        # that acting on it needs a fresh CLI argument naming it. Reading the
+        # bytes is acting on it.
+        raise JournalError(
+            None,
+            f"record path '{entry['path']}' resolves outside the adopter "
+            "root; reading it would let the record authorise itself",
+            artifact_name(entry["durability"]),
+        )
     try:
         actual = digest(target.read_bytes())
     except FileNotFoundError:
@@ -542,6 +665,14 @@ def _state_of(root, entry):
     return DIVERGED
 
 
+def _resolves_below(root, target):
+    """Whether `target` is still inside `root` once every symlink is followed."""
+    try:
+        return target.resolve().is_relative_to(Path(root).resolve())
+    except OSError:
+        return False
+
+
 def run(check, stdout, stderr):
     """The `journal` subcommand: report the record, and optionally reconcile.
 
@@ -555,8 +686,14 @@ def run(check, stdout, stderr):
     root = Path()
     try:
         records = read(root, REPO) + read(root, LOCAL)
+        # `reconcile` reads both journals again and refuses a record that
+        # would send it outside the root, so it belongs inside this handler:
+        # a concurrent writer between the two reads, or a record only
+        # `_state_of` can refuse, must be reported the same way as anything
+        # else the reader cannot accept.
+        unfinished = reconcile(root) if check else []
     except JournalError as error:
-        where = JOURNAL_FILENAME
+        where = error.artifact or JOURNAL_FILENAME
         location = where if error.lineno is None else f"{where}:{error.lineno}"
         print(Finding(ERROR, location, "journal", error.message).render(), file=stderr)
         print("journal: 0 record(s), 1 error(s)", file=stdout)
@@ -566,7 +703,6 @@ def run(check, stdout, stderr):
         print(f"journal: {len(records)} record(s)", file=stdout)
         return EXIT_OK
 
-    unfinished = reconcile(root)
     for entry, state in unfinished:
         print(
             Finding(

@@ -315,6 +315,160 @@ def test_journal_check_catches_a_second_write_to_one_path_in_one_run(
     assert "unfinished" in result.stderr, result.stderr
 
 
+# --- a journal is data, never instructions (design §7) -------------------------
+
+
+def _append_record(path, entry):
+    """Append one hand-built record to a journal file, as a hostile edit would."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    path.write_text(
+        existing + json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def _record(journal, **overrides):
+    """A complete record, copied from one the CLI wrote, with fields replaced."""
+    first = _records(journal)[0]
+    entry = {
+        "schema": 1,
+        "at": "2026-08-31T00:00:00Z",
+        "version": first["version"],
+        "adoption": first["adoption"],
+        "run": "0000000000000000",
+        "durability": "repo",
+        "op": "replace",
+        "purpose": "init",
+        "path": "validated-memory.md",
+        "stage": "prepared",
+        "preimage": "sha256:" + "0" * 64,
+        "postimage": "sha256:" + "1" * 64,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_a_field_of_the_wrong_type_is_a_finding_not_a_traceback(run_cli, tmp_path):
+    """`journal.jsonl` is versioned repository content, so it is untrusted data.
+
+    Checking that a field is present says nothing about what it holds. A
+    `"schema": "1"` written as a string is valid JSON and carries every
+    common field, and comparing it to an integer raised a `TypeError`
+    through the CLI -- a stack trace where every other refusal in this CLI
+    is a rendered finding, and, before this, a crash that happened before
+    `init` restored the harness symlink.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    _append_record(journal, _record(journal, schema="1"))
+
+    for arguments in (("journal",), ("journal", "--check"), ("init",)):
+        result = run_cli(*arguments, cwd=tmp_path)
+
+        assert result.returncode == 1, (arguments, result.stdout)
+        assert "Traceback" not in result.stderr, (arguments, result.stderr)
+        assert "ERROR" in result.stderr, (arguments, result.stderr)
+        assert "schema" in result.stderr, (arguments, result.stderr)
+
+
+def test_a_path_that_is_not_a_string_is_a_finding_not_a_traceback(run_cli, tmp_path):
+    """The reconciler builds a path out of the record, so its type is load-bearing."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    _append_record(journal, _record(journal, path=123))
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "path" in result.stderr, result.stderr
+
+
+def test_a_repository_record_may_not_send_the_reader_outside_the_root(
+    run_cli, tmp_path
+):
+    """`journal --check` acts on record paths, so the record cannot name any path.
+
+    A repository record carrying `/etc/passwd` made the reconciler read that
+    file and print its state -- a content oracle driven by a versioned,
+    adopter-editable file. Design §7: a repository record may only carry a
+    relative path that stays below the root, and one that does not is
+    refused rather than read.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    _append_record(journal, _record(journal, path="/etc/passwd"))
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "diverged" not in result.stderr, result.stderr
+    assert "unfinished" not in result.stderr, result.stderr
+    assert "/etc/passwd" in result.stderr, result.stderr
+    assert "adopter root" in result.stderr, result.stderr
+
+
+def test_a_repository_record_may_not_climb_out_with_dot_dot(run_cli, tmp_path):
+    """The same refusal for the relative way out of the root."""
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert run_cli("init", cwd=adopter).returncode == 0
+    journal = adopter / "journal.jsonl"
+    _append_record(journal, _record(journal, path="../outside.md"))
+
+    result = run_cli("journal", "--check", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    assert "adopter root" in result.stderr, result.stderr
+
+
+def test_a_record_in_the_wrong_artifact_is_refused(run_cli, tmp_path):
+    """`durability` says which file holds the record, so the two cannot disagree.
+
+    `append()` derives the file from the same field it stamps, so a
+    disagreement is never something the plugin wrote -- it is a hand edit,
+    and taking it at face value would let a `local` record smuggle an
+    out-of-root path into the versioned journal.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    _append_record(
+        journal, _record(journal, durability="local", path="/etc/passwd")
+    )
+
+    result = run_cli("journal", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "durability" in result.stderr, result.stderr
+
+
+def test_a_corrupt_vault_journal_is_reported_against_the_vault(run_cli, tmp_path):
+    """The error must name the artifact it came from, not the other one.
+
+    A reader told `journal.jsonl:2` about a fault in the vault opens a file
+    that is perfectly valid, at a line that is fine, and finds nothing.
+    """
+    harness_memory = tmp_path / "harness" / "memory"
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert (
+        run_cli(
+            "init", "--harness-memory", str(harness_memory), cwd=adopter
+        ).returncode
+        == 0
+    )
+    vault = adopter / ".validated-memory" / "local.jsonl"
+    vault.write_text(
+        vault.read_text(encoding="utf-8") + "{not json\n", encoding="utf-8"
+    )
+
+    result = run_cli("journal", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    assert ".validated-memory/local.jsonl:" in result.stderr, result.stderr
+
+
 def test_every_write_in_the_package_goes_through_the_journal():
     """A mutation with no record fails here, not in the field.
 
