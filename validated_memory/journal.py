@@ -535,6 +535,21 @@ class Run:
         }
 
     def _record(self, op, purpose, path, durability, stage, **extra):
+        if durability == REPO and not _is_inside_path(path):
+            # `read` refuses a repository record whose path leaves the root,
+            # so writing one would produce a journal that cannot be read
+            # back -- and the whole point of refusing on the read side is
+            # that such a record must never be in the file. `write` and
+            # `append_text` check the same rule earlier, on the path they
+            # are about to touch; this catches the note-only methods, which
+            # have no path to touch and so had no check at all. Nothing in
+            # the CLI can reach it today: every repository path `init`
+            # passes is a literal.
+            raise ValueError(
+                f"{path} is not a path inside the adopter root; a repository "
+                "record may only carry a relative path that stays below it. "
+                "Nothing has been recorded."
+            )
         return record(
             op,
             purpose,
