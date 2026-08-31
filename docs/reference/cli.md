@@ -6,7 +6,7 @@ python3 -P -m validated_memory <command>
 
 Commands: [`init`](#init), [`lint`](#lint), [`validate`](#validate),
 [`derive`](#derive), [`probe`](#probe), [`render`](#render),
-[`status`](#status).
+[`status`](#status), [`journal`](#journal).
 
 Exit codes: `0` = clean run or WARNING-only findings (does not gate);
 `1` = ERROR (gates); `2` = usage error.
@@ -565,3 +565,47 @@ Exit codes: `0` clean, or WARNING-only findings (including a reported but
 not gated `drifted`/`unknown`/aged verdict); `1` an ERROR from any gate that
 ran (validation, lint, index, or an opted-in freshness/age upgrade); `2` a
 usage error.
+
+### `journal`
+
+```
+python3 -P -m validated_memory journal [--check]
+```
+
+Reports the append-only record of every mutation the plugin has made --
+`journal.jsonl` at the adopter root plus `.validated-memory/local.jsonl`,
+read together (see [Journal](journal.md) for the record format and both
+files' durability). Read-only in both modes: it never runs `probe` and
+never writes to either file.
+
+Without `--check`, it reports the combined record count and never gates on
+what it finds -- a reader can inspect a project's history without gating a
+session on it:
+
+```
+journal: 7 record(s)
+```
+
+**`--check`** additionally reconciles every unfinished transaction -- a
+`prepared` record with no matching `committed` twin -- and reports each as
+an ERROR naming the path and which of four states its bytes are in
+(`applied`, `unapplied`, `diverged`, `unknown`; see
+[Journal](journal.md#stages-and-unfinished-transactions)). It reports, it
+never repairs:
+
+```
+ERROR: validated-memory.md: journal: unfinished transaction from run a1b2c3d4e5f6a7b8: the path is diverged
+journal: 8 record(s), 1 error(s)
+```
+
+A journal that is present but cannot be parsed is refused with its line
+number, in either mode:
+
+```
+ERROR: journal.jsonl:5: journal: line is not valid JSON: Expecting value
+journal: 0 record(s), 1 error(s)
+```
+
+Exit codes: `0` without `--check`, whatever the record count; with
+`--check`, `1` if any unfinished transaction was found, `0` otherwise; `1`
+either way if a journal could not be parsed at all; `2` a usage error.

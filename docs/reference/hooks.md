@@ -39,6 +39,11 @@ on the deployment path -- gated by the recognition rule, which is what keeps
 it from touching anything that is not agent memory. See [the adoption
 guide](../adoption.md) ("The startup hooks") for the adopter-facing summary.
 
+Every `init` run this hook makes -- what it created, what it found
+already there, the symlink it wrote or re-pointed -- is recorded the same
+way any other `init` run is: see [Journal](journal.md). The hook itself
+never calls `journal`; it only makes the `init` calls that fill it.
+
 **Activating and refreshing the HTML views.** Activation of `knowledge.html`
 and `memory.html` is the presence of the artifact, not a configuration key:
 

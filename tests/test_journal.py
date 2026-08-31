@@ -18,19 +18,34 @@ PATH_MUTATORS = {"write_text", "write_bytes", "mkdir", "symlink_to", "rmdir",
 # `os` functions that mutate, matched qualified: `str.replace` is not one of
 # them, and `status.parse_timestamp` calls it.
 OS_MUTATORS = {"replace", "rename", "remove", "symlink", "unlink"}
-# Calls that reach the journal.
-RECORDING = {"observe", "write", "append_op", "append", "_record_symlink"}
+
+# A call reaches the journal when it is made ON the journal -- `session.write`,
+# `journal.append` -- or is the one helper that wraps it. Matching the bare
+# method name would let `findings.append(...)` and `handle.write(...)` stand
+# in for a record, and `adopt._absorb` contains exactly such a call while
+# genuinely recording nothing.
+RECORDERS = {"session", "journal"}
+RECORDING_METHODS = {"observe", "write", "append_op", "append"}
+RECORDING_FUNCTIONS = {"_record_symlink"}
 
 # Exempt, each with the reason it is not an adopter mutation this plan
 # records. `journal.py` IS the write path. `render.py` and `derive.py` write
-# only derived artifacts, which their own commands regenerate. `adopt.py`
-# performs the harness absorption, which the reversal plan records with the
-# rest of it. `_ensure_views` writes the two HTML views, derived the same way.
-EXEMPT_MODULES = {"journal.py", "render.py", "derive.py", "adopt.py"}
-EXEMPT_FUNCTIONS = {("init.py", "_ensure_views")}
+# only derived artifacts, which their own commands regenerate. The four
+# `adopt.py` functions perform the harness absorption, deferred whole to the
+# reversal plan -- named one by one rather than by module, so a new write
+# added to that file is still caught.
+EXEMPT_MODULES = {"journal.py", "render.py", "derive.py"}
+EXEMPT_FUNCTIONS = {
+    ("init.py", "_ensure_views"),
+    ("adopt.py", "take_over"),
+    ("adopt.py", "_absorb"),
+    ("adopt.py", "_reconcile_index"),
+    ("adopt.py", "_park"),
+}
 
 
-def _called_name(call):
+def _mutating_call(call):
+    """The name of the filesystem mutation this call performs, or None."""
     function = call.func
     if isinstance(function, ast.Attribute):
         if function.attr in PATH_MUTATORS:
@@ -42,6 +57,18 @@ def _called_name(call):
         ):
             return f"os.{function.attr}"
     return None
+
+
+def _recording_call(call):
+    """Whether this call reaches the journal."""
+    function = call.func
+    if isinstance(function, ast.Attribute):
+        return (
+            function.attr in RECORDING_METHODS
+            and isinstance(function.value, ast.Name)
+            and function.value.id in RECORDERS
+        )
+    return isinstance(function, ast.Name) and function.id in RECORDING_FUNCTIONS
 
 
 def _records(path):
@@ -300,7 +327,10 @@ def test_every_write_in_the_package_goes_through_the_journal():
     both kinds of call, not whether one guards the other -- so a function
     that mutates and separately calls something journal-shaped would pass.
     A call-graph would be exact and would also be a second implementation of
-    the thing it checks.
+    the thing it checks. A recording call is recognised by its receiver
+    (`session.write`, `journal.append`), not by its bare method name, so a
+    plain `list.append(...)` or `handle.write(...)` elsewhere in the same
+    function cannot stand in for a record.
     """
     offenders = []
     for path in sorted((REPO_ROOT / "validated_memory").rglob("*.py")):
@@ -317,13 +347,10 @@ def test_every_write_in_the_package_goes_through_the_journal():
             for sub in ast.walk(node):
                 if not isinstance(sub, ast.Call):
                     continue
-                name = _called_name(sub)
+                name = _mutating_call(sub)
                 if name is not None:
                     mutations.append((name, sub.lineno))
-                called = getattr(sub.func, "attr", None) or getattr(
-                    sub.func, "id", None
-                )
-                if called in RECORDING:
+                if _recording_call(sub):
                     records = True
             if records:
                 continue

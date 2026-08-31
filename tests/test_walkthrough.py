@@ -145,3 +145,14 @@ def test_the_documented_walkthrough_reproduces_end_to_end(
     assert (
         adopter_dir / "knowledge" / "kb-0001.md"
     ).read_text(encoding="utf-8") == kb_0001_before
+
+    # --- 8. check the journal: unchanged since step 1, nothing unfinished -------
+    journal_result = run_cli("journal", cwd=adopter_dir)
+    assert journal_result.returncode == 0, journal_result.stderr
+    assert journal_result.stderr == ""
+    assert "journal: 9 record(s)" in journal_result.stdout
+
+    journal_check = run_cli("journal", "--check", cwd=adopter_dir)
+    assert journal_check.returncode == 0, journal_check.stderr
+    assert journal_check.stderr == ""
+    assert "journal: 9 record(s), 0 error(s)" in journal_check.stdout
