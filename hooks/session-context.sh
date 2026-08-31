@@ -153,6 +153,41 @@ done
 counts_line=""
 if [ "$#" -gt 0 ]; then
   counts_line="$(awk '
+    # Mirror `_cut_comment` in the frontmatter parser on the value of a
+    # `description` entry. A plain value runs to a ` #`, which starts a
+    # trailing comment; a value opening with a quote runs to its matching
+    # quote, after which nothing but a comment may follow. A value the parser
+    # would reject -- an unterminated quote -- is returned untouched, so it
+    # matches no literal and counts nowhere; `lint` is what names it. The
+    # backslash a quoted scalar may not carry is not mirrored, and does not
+    # need to be: no value carrying one can match a status literal, so such
+    # an entry counts nowhere either way.
+    #
+    # Two divergences remain, both named rather than mirrored. A tab, which
+    # the parser rejects anywhere in frontmatter and `lint` reports as an
+    # ERROR, is tolerated here and can count. And the padding this strips is
+    # ASCII space and tab, where the parser strips every character Python
+    # calls whitespace: a value padded with a no-break space, a vertical tab
+    # or a form feed parses and counts nowhere. Recognising those classes is
+    # not portable across gawk, mawk and busybox awk, and a record carrying
+    # one is a paste accident, not a form the skill writes.
+    function unquote(v,   q, end, trailing, marker) {
+      if (v !~ /^["'"'"']/) {
+        marker = index(v, " #")
+        if (marker > 0) {
+          v = substr(v, 1, marker - 1)
+          sub(/[ \t]+$/, "", v)
+        }
+        return v
+      }
+      q = substr(v, 1, 1)
+      end = index(substr(v, 2), q)
+      if (end == 0) { return v }
+      trailing = substr(v, end + 2)
+      sub(/^[ \t]+/, "", trailing)
+      if (trailing != "" && trailing !~ /^#/) { return v }
+      return substr(v, 2, end - 1)
+    }
     function classify(value) {
       if (value ~ /^superseded by /) { return }
       if (value ~ /^knowledge source [a-z0-9][a-z0-9-]{0,39}: imported$/) { n_imported++; return }
@@ -166,14 +201,14 @@ if [ "$#" -gt 0 ]; then
     closed { next }
     line == "---" {
       closed = 1
-      if (seen == 1) { classify(description) }
+      if (seen == 1) { classify(unquote(description)) }
       next
     }
-    line ~ /^description:[ \t]*/ {
+    line ~ /^description[ ]*:[ \t]*/ {
       seen++
       if (seen == 1) {
         description = line
-        sub(/^description:[ \t]*/, "", description)
+        sub(/^description[ ]*:[ \t]*/, "", description)
         sub(/[ \t]+$/, "", description)
       }
       next

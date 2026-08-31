@@ -558,15 +558,15 @@ def test_the_superseded_guard_is_defence_in_depth(tmp_path):
 
 
 def test_a_description_outside_the_grammar_counts_nowhere(tmp_path):
-    # Two ways out of the grammar: free text, and the quoted form -- which
-    # `lint` accepts but which the hook reads with its quotes still on. The
-    # skill writes the value unquoted for exactly this reason.
+    # Free text is out of the grammar and counts nowhere. The quoted form is
+    # NOT: until 1.5.2 this test also pinned a quoted value as uncounted,
+    # which is the behaviour that lost eight source records on the first real
+    # adoption (2026-08-30) -- the hook now mirrors the parser and counts it,
+    # and `lint` names it as non-canonical instead of the count silently
+    # disappearing.
     project_dir = _init_adopter(tmp_path / "project")
     _write_source_entry(
         project_dir, "source-weird.md", "a description somebody hand-wrote"
-    )
-    _write_source_entry(
-        project_dir, "source-quoted.md", "'knowledge source quoted: imported'"
     )
 
     result = _run_hook_checked(project_dir)
@@ -839,3 +839,101 @@ def test_the_hook_and_the_skill_carry_the_same_four_status_literals():
         "%d found not imported, %d not located"
         in SCRIPT_PATH.read_text(encoding="utf-8")
     )
+
+
+def _source_entry(name, description):
+    return (
+        "---\n"
+        f"name: {name}\n"
+        f"description: {description}\n"
+        "metadata:\n"
+        "  type: reference\n"
+        "---\n"
+    )
+
+
+def test_the_counts_line_reads_every_form_the_parser_accepts(tmp_path):
+    """A quoted description is a source recorded and, before 1.5.2, counted nowhere.
+
+    Measured on the first real adoption (2026-08-30): eight source records
+    were written with a quoted `description`, the hook's matcher compared the
+    raw value against an unquoted literal, and every count came back zero
+    while `lint` passed clean. The hook now mirrors the frontmatter parser on
+    a quoted scalar, so the canonical form is a `lint` WARNING rather than
+    silent data loss.
+    """
+    project = tmp_path / "adopter"
+    (project / "memory").mkdir(parents=True)
+    (project / "validated-memory.md").write_text("", encoding="utf-8")
+    entries = {
+        "source-plain": "knowledge source plain: imported",
+        "source-double": '"knowledge source double: declared, not scanned"',
+        "source-single": "'knowledge source single: found, not imported'",
+        "source-comment": '"knowledge source comment: not located"  # trailing',
+    }
+    for name, description in entries.items():
+        (project / "memory" / f"{name}.md").write_text(
+            _source_entry(name, description), encoding="utf-8"
+        )
+
+    stdout = _run_hook_checked(project).stdout
+    assert (
+        "knowledge sources: 1 imported, 1 declared not scanned, "
+        "1 found not imported, 1 not located" in stdout
+    ), stdout
+
+
+def test_a_description_the_parser_would_reject_counts_nowhere(tmp_path):
+    """An unterminated quote is a frontmatter ERROR, not a source.
+
+    The hook must not guess at it: `lint` is what names a malformed record,
+    and a hook that counted it would report a source the CLI refuses.
+    """
+    project = tmp_path / "adopter"
+    (project / "memory").mkdir(parents=True)
+    (project / "validated-memory.md").write_text("", encoding="utf-8")
+    (project / "memory" / "source-broken.md").write_text(
+        _source_entry("source-broken", '"knowledge source broken: imported'),
+        encoding="utf-8",
+    )
+
+    stdout = _run_hook_checked(project).stdout
+    assert (
+        "knowledge sources: 0 imported, 0 declared not scanned, "
+        "0 found not imported, 0 not located" in stdout
+    ), stdout
+
+
+def test_the_counts_line_reads_a_plain_value_the_parser_trims(tmp_path):
+    """Parity on the canonical form, which is the one the skill writes.
+
+    `_cut_comment` drops a trailing comment from a plain scalar as well as
+    from a quoted one, and `_parse_mapping` strips the key before the colon.
+    A hook that mirrored the parser only on the quoted form would count the
+    shape `lint` warns about and lose the shape `lint` asks for -- the 1.5.1
+    failure with its two sides swapped.
+    """
+    project = tmp_path / "adopter"
+    (project / "memory").mkdir(parents=True)
+    (project / "validated-memory.md").write_text("", encoding="utf-8")
+    (project / "memory" / "source-comment.md").write_text(
+        _source_entry(
+            "source-comment", "knowledge source comment: imported  # trailing"
+        ),
+        encoding="utf-8",
+    )
+    (project / "memory" / "source-spaced.md").write_text(
+        "---\n"
+        "name: source-spaced\n"
+        "description : knowledge source spaced: not located\n"
+        "metadata:\n"
+        "  type: reference\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+    stdout = _run_hook_checked(project).stdout
+    assert (
+        "knowledge sources: 1 imported, 0 declared not scanned, "
+        "0 found not imported, 1 not located" in stdout
+    ), stdout

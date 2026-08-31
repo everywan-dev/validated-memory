@@ -100,6 +100,24 @@ What it prints, in order:
 3. One line of counts over the active `memory/source-*.md` record entries,
    omitted when the project has none:
    `knowledge sources: <a> imported, <b> declared not scanned, <c> found not imported, <d> not located`.
+   The value is read the way the frontmatter parser reads it, for every
+   form written in ASCII. A quoted scalar is unquoted, so a record written
+   `description: "knowledge source x: imported"` counts like the unquoted
+   form the skill asks for; a trailing comment is cut from either form, the
+   way `_cut_comment` cuts one; and spaces between the key and its colon are
+   tolerated, the way the parser strips a key. `lint` reports the quoted
+   form as a WARNING rather than the count vanishing. A value the parser
+   would reject -- an unterminated quote -- counts nowhere, because a hook
+   that guessed at it would report a source the CLI refuses.
+
+   Two divergences are left, and the hook names them where they live. A tab
+   is tolerated here and rejected by the parser anywhere in frontmatter, so
+   an entry carrying one can count while `lint` reports it as an ERROR. And
+   the padding the hook strips is ASCII space and tab, where the parser
+   strips every character Python calls whitespace, so a value padded with a
+   no-break space, a vertical tab or a form feed parses and counts nowhere.
+   Neither is portable to recognise across gawk, mawk and busybox awk, and
+   neither is a form the skill writes.
 
 Two details carry the safety of this hook. First, `status` writes only its
 `status:` summary lines to stdout and every `ERROR:`/`WARNING:` finding to
