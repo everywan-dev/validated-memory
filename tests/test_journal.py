@@ -13,11 +13,28 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Path methods that mutate, whatever the receiver.
-PATH_MUTATORS = {"write_text", "write_bytes", "mkdir", "symlink_to", "rmdir",
-                 "unlink", "rename"}
+PATH_MUTATORS = {
+    "write_text", "write_bytes", "mkdir", "symlink_to", "hardlink_to",
+    "touch", "chmod", "lchmod", "rmdir", "unlink", "rename",
+}
 # `os` functions that mutate, matched qualified: `str.replace` is not one of
-# them, and `status.parse_timestamp` calls it.
-OS_MUTATORS = {"replace", "rename", "remove", "symlink", "unlink"}
+# them, and `status.parse_timestamp` calls it. `Path.replace` is the same
+# name and cannot be told apart from `str.replace` by name alone, so it is
+# matched on arity instead -- `str.replace` takes at least two arguments,
+# `Path.replace` exactly one.
+OS_MUTATORS = {
+    "replace", "rename", "renames", "remove", "removedirs", "symlink",
+    "link", "unlink", "makedirs", "mkdir", "rmdir", "truncate", "chmod",
+    "utime", "write",
+}
+# `shutil` functions that mutate.
+SHUTIL_MUTATORS = {
+    "copy", "copy2", "copyfile", "copytree", "copymode", "copystat", "move",
+    "rmtree", "make_archive", "unpack_archive",
+}
+# The journal's own atomic install (rename plus the durability barrier). It
+# is a mutation like any other when called from outside `journal.py`.
+JOURNAL_MUTATORS = {"install"}
 
 # A call reaches the journal when it is made ON the journal -- `session.write`,
 # `journal.append` -- or is the one helper that wraps it. Matching the bare
@@ -41,21 +58,61 @@ EXEMPT_FUNCTIONS = {
     ("adopt.py", "_absorb"),
     ("adopt.py", "_reconcile_index"),
     ("adopt.py", "_park"),
+    # `verdicts.jsonl` is the other append-only log. `probe` writes it and
+    # re-running `probe` rebuilds it, which is exactly what a journal is
+    # not -- and why journalling it is deferred with the rest of the write
+    # paths outside `init` (see `docs/reference/journal.md`, "What is
+    # recorded, and what is not yet").
+    ("verdicts.py", "append"),
 }
+
+
+def _writing_mode(call):
+    """Whether this `open` call opens its target for writing.
+
+    The mode is the second argument of `open(path, mode)` and the first of
+    `path.open(mode)`. No mode at all is a read. A mode this cannot read --
+    a variable, an expression -- counts as a write: guessing the other way
+    would let one indirection hide the single most ordinary way to write a
+    file in Python.
+    """
+    index = 1 if isinstance(call.func, ast.Name) else 0
+    mode = call.args[index] if len(call.args) > index else None
+    for keyword in call.keywords:
+        if keyword.arg == "mode":
+            mode = keyword.value
+    if mode is None:
+        return False
+    if isinstance(mode, ast.Constant) and isinstance(mode.value, str):
+        return any(character in mode.value for character in "wax+")
+    return True
 
 
 def _mutating_call(call):
     """The name of the filesystem mutation this call performs, or None."""
     function = call.func
-    if isinstance(function, ast.Attribute):
-        if function.attr in PATH_MUTATORS:
-            return function.attr
-        if (
-            function.attr in OS_MUTATORS
-            and isinstance(function.value, ast.Name)
-            and function.value.id == "os"
-        ):
-            return f"os.{function.attr}"
+    if isinstance(function, ast.Name):
+        if function.id == "open" and _writing_mode(call):
+            return "open(...) for writing"
+        return None
+    if not isinstance(function, ast.Attribute):
+        return None
+    if function.attr == "open":
+        return "open(...) for writing" if _writing_mode(call) else None
+    receiver = (
+        function.value.id if isinstance(function.value, ast.Name) else None
+    )
+    for module, vocabulary in (
+        ("os", OS_MUTATORS),
+        ("shutil", SHUTIL_MUTATORS),
+        ("journal", JOURNAL_MUTATORS),
+    ):
+        if receiver == module and function.attr in vocabulary:
+            return f"{module}.{function.attr}"
+    if function.attr in PATH_MUTATORS:
+        return function.attr
+    if function.attr == "replace" and len(call.args) == 1 and not call.keywords:
+        return "replace"
     return None
 
 
@@ -71,16 +128,48 @@ def _recording_call(call):
     return isinstance(function, ast.Name) and function.id in RECORDING_FUNCTIONS
 
 
-def _nested_functions(tree):
-    """Every function defined inside another function, as node objects."""
-    return {
-        child
+def _scopes(tree):
+    """Every scope in a module, as `(name, [call nodes])`.
+
+    One scope per function that is not defined inside another function,
+    carrying everything nested in it -- a closure is part of the function
+    that builds it, which is how `_sync_symlink` can hand its own mutation
+    to the function that journals it. Plus one `<module>` scope for
+    everything else, because a write at module level runs on import and is
+    no less a write for having no `def` above it.
+    """
+    functions = [
+        node
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        for child in ast.walk(node)
-        if child is not node
+    ]
+    nested = {
+        id(child)
+        for function in functions
+        for child in ast.walk(function)
+        if child is not function
         and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+    outer = [function for function in functions if id(function) not in nested]
+    inside = {id(node) for function in outer for node in ast.walk(function)}
+    scopes = [
+        (
+            function.name,
+            [node for node in ast.walk(function) if isinstance(node, ast.Call)],
+        )
+        for function in outer
+    ]
+    scopes.append(
+        (
+            "<module>",
+            [
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call) and id(node) not in inside
+            ],
+        )
+    )
+    return scopes
 
 
 def _records(path):
@@ -577,47 +666,44 @@ def test_every_write_in_the_package_goes_through_the_journal():
     visible the moment it is added: a function that mutates the filesystem
     must also reach the journal, or be named exempt above with its reason.
 
-    The check is deliberately coarse -- it asks whether a function contains
+    The check is deliberately coarse -- it asks whether a scope contains
     both kinds of call, not whether one guards the other -- so a function
     that mutates and separately calls something journal-shaped would pass.
     A call-graph would be exact and would also be a second implementation of
     the thing it checks. A recording call is recognised by its receiver
     (`session.write`, `journal.append`), not by its bare method name, so a
     plain `list.append(...)` or `handle.write(...)` elsewhere in the same
-    function cannot stand in for a record.
+    scope cannot stand in for a record.
+
+    What it does NOT see, stated because a pin trusted beyond its reach is
+    worse than no pin: it recognises a **fixed vocabulary** of write idioms
+    (above), so a write through an alias (`import os as _os`, `writer =
+    open`), or through a name nobody listed, is invisible to it. The
+    vocabulary was widened after a review wrote four unjournalled write
+    paths -- `open(p, "w")`, `shutil.copy2`, `os.makedirs`, and a write at
+    module level -- and this test stayed green against all four.
+    Mutation-testing it with an idiom already in the vocabulary can only
+    confirm the vocabulary; a new idiom in the package is a reason to add it
+    here.
     """
     offenders = []
     for path in sorted((REPO_ROOT / "validated_memory").rglob("*.py")):
         if path.name in EXEMPT_MODULES:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        nested = _nested_functions(tree)
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        for name, calls in _scopes(tree):
+            if (path.name, name) in EXEMPT_FUNCTIONS:
                 continue
-            if node in nested:
-                # A function defined inside another is part of it, not a
-                # scope of its own: `_sync_symlink` hands its closure to
-                # the function that journals it, which is the pairing this
-                # check is coarse enough to accept everywhere else.
+            mutations = [
+                (_mutating_call(call), call.lineno)
+                for call in calls
+                if _mutating_call(call) is not None
+            ]
+            if any(_recording_call(call) for call in calls):
                 continue
-            if (path.name, node.name) in EXEMPT_FUNCTIONS:
-                continue
-            mutations = []
-            records = False
-            for sub in ast.walk(node):
-                if not isinstance(sub, ast.Call):
-                    continue
-                name = _mutating_call(sub)
-                if name is not None:
-                    mutations.append((name, sub.lineno))
-                if _recording_call(sub):
-                    records = True
-            if records:
-                continue
-            for name, lineno in mutations:
+            for mutation, lineno in mutations:
                 offenders.append(
-                    f"{path.name}:{lineno}: {node.name}() calls {name}() "
+                    f"{path.name}:{lineno}: {name} calls {mutation} "
                     "and never reaches the journal"
                 )
     assert not offenders, (
