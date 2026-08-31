@@ -205,6 +205,41 @@ def test_the_ignore_entry_is_written_once_and_never_duplicated(tmp_path, run_cli
     assert ignore.count("/.validated-memory/") == 1, ignore
 
 
+def test_an_ignore_file_init_must_not_replace_gates_and_is_left_alone(
+    tmp_path, run_cli
+):
+    """A symlinked ignore file is not `init`'s to replace, and the vault is then bare.
+
+    Installing over a symlink replaces the link, and `init` never destroys
+    something already there. It cannot silently give up either: the entry
+    exists so that preimages and harness paths never reach a remote, so the
+    adopter has to be told, in the one place a failure is visible.
+    """
+    adopter = _fixture_repo(tmp_path / "repo")
+    (tmp_path / "elsewhere").write_text("build/\n", encoding="utf-8")
+    (adopter / ".gitignore").symlink_to(tmp_path / "elsewhere")
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    assert ".gitignore" in result.stderr, result.stderr
+    assert "symlink" in result.stderr, result.stderr
+    assert (adopter / ".gitignore").is_symlink()
+    assert (tmp_path / "elsewhere").read_text(encoding="utf-8") == "build/\n"
+
+
+def test_an_ignore_file_that_cannot_be_read_gates(tmp_path, run_cli):
+    """A directory where the ignore file goes: the entry cannot be written, and it says so."""
+    adopter = _fixture_repo(tmp_path / "repo")
+    (adopter / ".gitignore").mkdir()
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    assert ".gitignore" in result.stderr, result.stderr
+    assert (adopter / ".gitignore").is_dir()
+
+
 def test_an_ignore_entry_the_adopter_already_wrote_is_left_alone(tmp_path, run_cli):
     """The "Local, ignored" answer writes the same entry; `init` must not repeat it."""
     adopter = _fixture_repo(tmp_path / "repo")
