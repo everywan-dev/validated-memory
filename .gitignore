@@ -24,4 +24,5 @@ build/
 /MEMORY.md
 /TODO.md
 /SESSION.md
+/sessions/
 /tests/test_codex_agents.py
