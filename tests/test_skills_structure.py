@@ -27,7 +27,16 @@ SKILLS_DIR = REPO_ROOT / "skills"
 DOCS_DIR = REPO_ROOT / "docs"
 
 # The CLI's real subcommands (see validated_memory/cli.py's SUBCOMMANDS).
-REAL_SUBCOMMANDS = {"init", "lint", "validate", "derive", "probe", "render", "status"}
+REAL_SUBCOMMANDS = {
+    "init",
+    "lint",
+    "validate",
+    "derive",
+    "probe",
+    "render",
+    "status",
+    "journal",
+}
 
 FRONTMATTER_PATTERN = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 # Only a real, bare subcommand word right after the module invocation, on the

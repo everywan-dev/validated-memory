@@ -470,3 +470,94 @@ class Run:
             self.root,
             durability,
         )
+
+
+UNAPPLIED = "unapplied"
+APPLIED = "applied"
+DIVERGED = "diverged"
+
+
+def reconcile(root=Path()):
+    """Every unfinished transaction, paired with the state its path is in.
+
+    `unapplied` -- the bytes still match the preimage, so the mutation never
+    happened. `applied` -- they match the postimage, so it happened and only
+    the closing record was lost. `diverged` -- neither, so something else
+    wrote the path afterwards.
+
+    This reports. It does not repair: choosing for the user between three
+    states the record cannot distinguish is exactly the guessing this
+    component exists to remove.
+    """
+    root = Path(root)
+    unfinished = []
+    for durability in DURABILITIES:
+        records = read(root, durability)
+        closed = {
+            (entry["run"], entry["path"])
+            for entry in records
+            if entry["stage"] == COMMITTED
+        }
+        for entry in records:
+            if entry["stage"] != PREPARED:
+                continue
+            if (entry["run"], entry["path"]) in closed:
+                continue
+            unfinished.append((entry, _state_of(root, entry)))
+    return unfinished
+
+
+def _state_of(root, entry):
+    target = root / entry["path"]
+    try:
+        actual = digest(target.read_bytes())
+    except (OSError, ValueError):
+        actual = None
+    if actual == entry.get("postimage"):
+        return APPLIED
+    if actual == entry.get("preimage"):
+        return UNAPPLIED
+    return DIVERGED
+
+
+def run(check, stdout, stderr):
+    """The `journal` subcommand: report the record, and optionally reconcile.
+
+    Read-only in both modes. Without `--check` it summarises and exits 0
+    whatever it finds, so a reader can look at a project without gating on
+    it; with `--check` an unfinished transaction is an ERROR, because a
+    caller that asked to be told cannot be told by an exit code of 0.
+    """
+    from .findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
+
+    root = Path()
+    try:
+        records = read(root, REPO) + read(root, LOCAL)
+    except JournalError as error:
+        where = JOURNAL_FILENAME
+        location = where if error.lineno is None else f"{where}:{error.lineno}"
+        print(Finding(ERROR, location, "journal", error.message).render(), file=stderr)
+        print("journal: 0 record(s), 1 error(s)", file=stdout)
+        return EXIT_ERROR
+
+    if not check:
+        print(f"journal: {len(records)} record(s)", file=stdout)
+        return EXIT_OK
+
+    unfinished = reconcile(root)
+    for entry, state in unfinished:
+        print(
+            Finding(
+                ERROR,
+                entry["path"],
+                "journal",
+                f"unfinished transaction from run {entry['run']}: "
+                f"the path is {state}",
+            ).render(),
+            file=stderr,
+        )
+    print(
+        f"journal: {len(records)} record(s), {len(unfinished)} error(s)",
+        file=stdout,
+    )
+    return EXIT_ERROR if unfinished else EXIT_OK

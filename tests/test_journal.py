@@ -159,3 +159,52 @@ def test_a_second_init_records_observe_for_everything_it_kept(run_cli, tmp_path)
     added = _records(tmp_path / "journal.jsonl")[first:]
     assert added, "the second run recorded nothing"
     assert {e["op"] for e in added} == {"observe"}, added
+
+
+def test_journal_reports_the_log_and_exits_clean(run_cli, tmp_path):
+    """Reading the journal is read-only and never gates on its own."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    result = run_cli("journal", cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "journal:" in result.stdout, result.stdout
+    assert "record(s)" in result.stdout, result.stdout
+
+
+def test_journal_check_reconciles_an_unfinished_transaction(run_cli, tmp_path):
+    """A prepared record with no committed twin is reported, never guessed at.
+
+    Recovery says which of the three states the path is in and stops. A
+    recovery that decided for itself would be the silent narrowing again,
+    one layer down.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    orphan = {
+        "schema": 1,
+        "at": "2026-08-31T00:00:00Z",
+        "version": "1.6.0",
+        "adoption": json.loads(journal.read_text().splitlines()[0])["adoption"],
+        "run": "0000000000000000",
+        "durability": "repo",
+        "op": "replace",
+        "purpose": "init",
+        "path": "validated-memory.md",
+        "stage": "prepared",
+        "preimage": "sha256:" + "0" * 64,
+        "postimage": "sha256:" + "1" * 64,
+    }
+    journal.write_text(
+        journal.read_text(encoding="utf-8")
+        + json.dumps(orphan, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "validated-memory.md" in result.stderr, result.stderr
+    assert "unfinished" in result.stderr, result.stderr
+    assert "diverged" in result.stderr, result.stderr

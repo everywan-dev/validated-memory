@@ -9,7 +9,17 @@ Exit code convention:
 import argparse
 import sys
 
-from . import __version__, derive, init, lint, probe, render, status, validate
+from . import (
+    __version__,
+    derive,
+    init,
+    journal,
+    lint,
+    probe,
+    render,
+    status,
+    validate,
+)
 
 SUBCOMMANDS = {
     "init": "Scaffold the validated-memory layout in an adopter project",
@@ -19,6 +29,7 @@ SUBCOMMANDS = {
     "probe": "Run freshness probes and record ternary verdicts",
     "render": "Render static HTML views of the curated and agent-memory layers",
     "status": "Report project consistency and freshness; read-only, never probes",
+    "journal": "Report the append-only record of what the plugin has written",
 }
 
 
@@ -165,6 +176,15 @@ def build_parser():
             # argparse usage error (this subparser's own usage line) for a
             # combination no `type=`/`choices=` check can express on its own.
             subparser.set_defaults(_status_subparser=subparser)
+        if name == "journal":
+            subparser.add_argument(
+                "--check",
+                action="store_true",
+                help=(
+                    "report every unfinished transaction and gate on it "
+                    "(exit 1); without it, reporting never gates"
+                ),
+            )
     return parser
 
 
@@ -205,6 +225,8 @@ def main(argv=None):
             stdout=sys.stdout,
             stderr=sys.stderr,
         )
+    if args.command == "journal":
+        return journal.run(args.check, stdout=sys.stdout, stderr=sys.stderr)
     return init.run(
         args.harness_memory, args.view, stdout=sys.stdout, stderr=sys.stderr
     )
