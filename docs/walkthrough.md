@@ -182,9 +182,13 @@ at `unknown` again. Running `probe` once more would pick it up; see the
 
 Every write `init` made back in step 1 was recorded as it happened, in
 `journal.jsonl` -- see [Journal](reference/journal.md). Nothing after `init`
-in this walkthrough touched it: `validate`, `derive`, `probe` and writing
-the units by hand are not adopter mutations `init` performs, so the record
-count from step 1 still stands.
+in this walkthrough added to it. `validate` writes nothing at all; `derive`
+and `probe` write derived artifacts (`knowledge-index.md`,
+`verdicts.jsonl`) which are **not journalled yet** -- see [what is recorded
+and what is not
+yet](reference/journal.md#what-is-recorded-and-what-is-not-yet) -- and the
+units were written by hand, outside the CLI. So the record count from step
+1 still stands.
 
 ```
 python3 -P -m validated_memory journal

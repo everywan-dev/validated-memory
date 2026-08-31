@@ -589,11 +589,14 @@ usage error.
 python3 -P -m validated_memory journal [--check]
 ```
 
-Reports the append-only record of every mutation the plugin has made --
+Reports the append-only record of what adoption did to this project --
 `journal.jsonl` at the adopter root plus `.validated-memory/local.jsonl`,
 read together (see [Journal](journal.md) for the record format and both
-files' durability). Read-only in both modes: it never runs `probe` and
-never writes to either file.
+files' durability). Every mutation `init` performs is in it; the derived
+artifacts `derive`, `probe`, `render` and `init --view` write are not yet,
+and [Journal](journal.md#what-is-recorded-and-what-is-not-yet) names them
+and the plan that records them. Read-only in both modes: it never runs
+`probe` and never writes to either file.
 
 Without `--check`, it reports the combined record count and never gates on
 what it finds -- a reader can inspect a project's history without gating a

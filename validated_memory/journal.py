@@ -1,4 +1,10 @@
-"""The append-only record of every mutation the plugin performs.
+"""The append-only record of what `init` does to an adopter project.
+
+Every mutation `init` performs is recorded here as it happens. That is not
+yet every mutation the plugin performs: `derive`, `probe`, `render` and
+`init --view` write derived artifacts their own commands regenerate, and
+they are not recorded -- see "What is recorded, and what is not yet" in
+`docs/reference/journal.md` for the list and the plan that closes it.
 
 Two artifacts, because durability is not one question (ADR 0008). The
 repository journal `journal.jsonl` travels with the project: it carries the

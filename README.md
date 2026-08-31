@@ -142,7 +142,7 @@ project, CI gate included.
 | [`probe`](docs/reference/cli.md#probe) | Run freshness probes; append ternary verdicts to the log |
 | [`render`](docs/reference/cli.md#render) | Write self-contained, inert HTML views of both layers |
 | [`status`](docs/reference/cli.md#status) | Read-only report: structural gates plus a reported (opt-in gated) freshness summary |
-| [`journal`](docs/reference/cli.md#journal) | Report the append-only mutation record; `--check` gates on an unfinished transaction |
+| [`journal`](docs/reference/cli.md#journal) | Report the append-only record of what `init` did; `--check` gates on an unfinished transaction |
 
 Exit codes: `0` = clean or WARNING-only findings; `1` = ERROR (gates);
 `2` = usage error. Full contracts in the
@@ -250,7 +250,7 @@ a rule the CLI already enforces:
 | **[Curated knowledge](docs/reference/curated-knowledge.md)** | Base contract, adopter configuration, declared extension |
 | **[Agent memory](docs/reference/agent-memory.md)** | The memory layer's rules, identity, and supersession |
 | **[Startup hooks](docs/reference/hooks.md)** | What runs at session start, and what it writes |
-| **[Journal](docs/reference/journal.md)** | The append-only record of every mutation, and the `journal` subcommand |
+| **[Journal](docs/reference/journal.md)** | The append-only record of what adoption did, and the `journal` subcommand |
 | **[ADRs](docs/adr)** | Decisions of record |
 
 ## Development

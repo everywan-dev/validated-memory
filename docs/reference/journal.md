@@ -1,8 +1,10 @@
 # Journal
 
-The append-only record of every mutation the plugin performs, and the
+The append-only record of what adoption did to this project, and the
 `journal` subcommand that reports and reconciles it: [The two
-artifacts](#the-two-artifacts) · [Common fields](#common-fields) ·
+artifacts](#the-two-artifacts) · [What is recorded, and what is not
+yet](#what-is-recorded-and-what-is-not-yet) · [Common
+fields](#common-fields) ·
 [Operations and their inverses](#operations-and-their-inverses) ·
 [Stages and unfinished transactions](#stages-and-unfinished-transactions) ·
 [The `journal` subcommand](#the-journal-subcommand). Why the journal is split
@@ -15,9 +17,10 @@ Durability is not one question, so the journal is two files, each append-only
 -- one JSON object per line, never rewritten, never compacted, never sorted.
 
 - **`journal.jsonl`**, at the adopter root, **always versioned**. Carries
-  every repository-visible mutation: what `init` created, what it found
-  already there, the harness-symlink's own record when the target is inside
-  the repository. It is not subject to the versioning question the adoption
+  the repository-visible mutations that are recorded (see [the next
+  section](#what-is-recorded-and-what-is-not-yet)): what `init` created,
+  what it found already there, the line it added to the ignore file, the
+  harness-symlink's own record when the target is inside the repository. It is not subject to the versioning question the adoption
   questionnaire asks about the derived files (ADR 0002, ADR 0003) --
   unlike `knowledge-index.md` or the HTML views, nothing regenerates it, so
   the questionnaire never offers to leave it unversioned.
@@ -38,6 +41,37 @@ reader that skipped a line it did not understand would silently narrow the
 record, which is the exact failure mode this component exists to remove. A
 missing journal reads as no records, not as an error -- a brand-new project
 has not adopted yet.
+
+## What is recorded, and what is not yet
+
+**Recorded today: every mutation `init` performs.** The scaffold it creates
+and the paths it finds already there (`create`, `observe`), the vault's
+entry in the ignore file (`append`), and the harness symlink (`link`, in the
+vault, since its path leaves the repository).
+
+**Not recorded yet**, each because its artifact is derived -- the command
+that wrote it rewrites it, so nothing is lost that cannot be recomputed:
+
+| Write | By | Artifact |
+|---|---|---|
+| the knowledge index | `derive` | `knowledge-index.md` |
+| a verdict | `probe` | `verdicts.jsonl` |
+| the HTML views | `render`, `init --view` | `knowledge.html`, `memory.html` |
+
+That reasoning is sound for reversal and thin for coverage: a derived file
+is re-derivable, but "the plugin wrote here" is still a fact the record does
+not carry. The same gap covers the writes the CLI does not perform at all
+today -- curated-knowledge units, agent-memory entries, index lines and
+supersessions, all written by skills in prose. Both close together, in the
+transaction interface of [design
+§3](../design/2026-08-30-the-journal-coverage-and-reversal-design.md):
+every confirmed write goes through one CLI command that journals
+inseparably from doing, because a journal a prose skill has to remember to
+write is a journal that will be incomplete.
+
+The completeness pin (`tests/test_journal.py`) holds the line in the
+meantime: a write path in the package that does not reach the journal fails
+it unless it is named exempt, with its reason, in the same file.
 
 ## Common fields
 
