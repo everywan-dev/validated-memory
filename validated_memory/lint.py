@@ -14,11 +14,12 @@ in `memory`, so that a second reader of the same layer cannot resolve
 references differently from `lint`.
 """
 
+import re
 from pathlib import Path, PurePosixPath
 
 from . import memory as memory_module
 from .findings import ERROR, WARNING, Finding, report
-from .frontmatter import FrontmatterError, parse
+from .frontmatter import FENCE, FrontmatterError, parse
 
 DEFAULT_MEMORY_DIR = memory_module.DEFAULT_DIR
 INDEX_FILENAME = memory_module.INDEX_FILENAME
@@ -144,6 +145,11 @@ def _lint_memories(documents):
             )
             continue
         parsed.append((document.location, data, memory_module.body(document.text)))
+        findings.extend(
+            _check_source_description_form(
+                document.location, document.relpath, document.text
+            )
+        )
 
     for location, data, _body in parsed:
         findings.extend(_check_memory(location, data))
@@ -402,3 +408,58 @@ def _describe(value):
     if isinstance(value, dict):
         return "a mapping"
     return "a missing value"
+
+
+# The population is the startup hook's glob, `memory/source-*.md`, matched
+# by name against the path relative to the memory directory: direct children
+# only, and every name the glob admits, including one outside the alias
+# grammar. A check whose population were wider by name would warn about an
+# entry the hook never counts; one narrower would leave an entry it does
+# count unchecked. The hook additionally drops a symlinked entry, which
+# `lint` still reads and checks like every other memory file -- the warning
+# stays true there, it just decides nothing about a count.
+SOURCE_FILENAME = re.compile(r"^source-[^/]*\.md$")
+QUOTED_DESCRIPTION = re.compile(r"^description[ ]*:[ \t]*[\"']")
+DESCRIPTION_KEY = re.compile(r"^description[ ]*:")
+
+
+def _check_source_description_form(location, relpath, text):
+    """A source record's `description` is written unquoted, and only unquoted.
+
+    Both forms parse, and since 1.5.2 the startup hook counts both, so a
+    quoted value is no longer invisible. It is still wrong: one canonical
+    form is what keeps the skill that writes these entries, the hook that
+    reads them and this check saying the same thing. Measured on the first
+    real adoption (2026-08-30): eight source records were written quoted and
+    the hook counted zero, and nothing in the toolchain said so.
+
+    Only the first frontmatter block is read, and the scan stops at its
+    closing fence: a `description:` line below it is adopter prose, not a
+    value the entry declares. The document has already parsed by the time
+    this runs, so both fences are guaranteed, and so is the absence of a tab
+    in the payload between them -- which is all this scan reads. A tab on a
+    fence line or in the body is not rejected by the parser and is not this
+    scan's business.
+    """
+    if not SOURCE_FILENAME.match(relpath):
+        return []
+    lines = text.split("\n")
+    if not lines or lines[0].rstrip() != FENCE:
+        return []
+    for line in lines[1:]:
+        stripped = line.rstrip()
+        if stripped == FENCE:
+            return []
+        if QUOTED_DESCRIPTION.match(stripped):
+            return [
+                Finding(
+                    WARNING,
+                    location,
+                    "description",
+                    "a source record's description is written unquoted; "
+                    "quoted parses but is not the canonical form",
+                )
+            ]
+        if DESCRIPTION_KEY.match(stripped):
+            return []
+    return []
