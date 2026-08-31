@@ -493,7 +493,16 @@ class Lock:
                 self._fd = os.open(
                     self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
                 )
-                os.write(self._fd, f"{os.getpid()}\n".encode("ascii"))
+                try:
+                    os.write(self._fd, f"{os.getpid()}\n".encode("ascii"))
+                except OSError:
+                    # `__exit__` never runs when `__enter__` raises, so the
+                    # descriptor and the lock file have to be released here or
+                    # they outlive the failure by the whole stale window.
+                    os.close(self._fd)
+                    self._fd = None
+                    self.path.unlink(missing_ok=True)
+                    raise
                 return self
             except FileExistsError:
                 if self._break_if_stale():
@@ -535,6 +544,11 @@ def bootstrap(root=Path()):
     there is no window in which a mutation has happened and no journal
     exists to describe it. The temporary is plugin-owned and is not itself
     journalled.
+
+    The caller must already hold `Lock`. This does not take it: `init` holds
+    it for the whole run, and re-entering would need a re-entrant lock. Two
+    processes bootstrapping the same new adopter without it would mint two
+    adoption ids, and the second install would win in silence.
     """
     path = journal_path(root, REPO)
     existing = read(root, REPO)
