@@ -234,7 +234,11 @@ def run(harness_memory, view, stdout, stderr):
         # per-item ERROR `_ensure_dir`/`_ensure_file` would otherwise raise.
         journal_failure = Finding(
             ERROR,
-            journal.JOURNAL_FILENAME,
+            # The path the OS refused, when it named one: the lock, the
+            # vault directory and the journal itself all fail through here,
+            # and naming one of the others sends a reader to a file that is
+            # not the problem.
+            error.filename or journal.JOURNAL_FILENAME,
             "journal",
             f"journal could not be opened: {error}",
         )
