@@ -461,6 +461,114 @@ def test_journal_check_reconciles_an_unfinished_transaction(run_cli, tmp_path):
     assert "diverged" in result.stderr, result.stderr
 
 
+def test_journal_check_reports_each_of_the_four_states(run_cli, tmp_path):
+    """`applied`, `unapplied` and `unknown`, alongside the `diverged` above.
+
+    Plan 5 decides whether to invert a record on exactly this
+    classification, and three of the four states had no regression
+    protection at all -- one hand-run from a review, which leaves nothing
+    behind.
+
+    Each orphan carries its own run id, so none of them pairs with a
+    `committed` record `init` wrote.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    written = _records(journal)
+    config = next(
+        entry
+        for entry in written
+        if entry["path"] == "validated-memory.md"
+        and entry["stage"] == "committed"
+    )
+
+    # `applied`: the bytes on disk are the postimage, so the mutation
+    # happened and only the closing record was lost.
+    _append_record(
+        journal,
+        _record(
+            journal,
+            run="1111111111111111",
+            op="create",
+            path="validated-memory.md",
+            preimage=None,
+            postimage=config["postimage"],
+        ),
+    )
+    # `unapplied`: a `create` whose path is genuinely absent.
+    _append_record(
+        journal,
+        _record(
+            journal,
+            run="2222222222222222",
+            op="create",
+            path="never-written.md",
+            preimage=None,
+            postimage="sha256:" + "3" * 64,
+        ),
+    )
+    # `unknown`: the bytes cannot be read at all -- here a directory, which
+    # binds every user including root, unlike a permission bit.
+    _append_record(
+        journal,
+        _record(journal, run="4444444444444444", path="knowledge"),
+    )
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    reported = {
+        line.split(": journal: ")[0].removeprefix("ERROR: "): line
+        for line in result.stderr.splitlines()
+    }
+    assert "the path is applied" in reported["validated-memory.md"], reported
+    assert "the path is unapplied" in reported["never-written.md"], reported
+    assert "the path is unknown" in reported["knowledge"], reported
+
+
+def test_a_write_over_an_existing_file_parks_its_preimage(run_cli, tmp_path):
+    """The preimage store, driven through the CLI rather than hand-written.
+
+    Every `preimage` in this suite used to be a literal, so
+    `.validated-memory/preimages/` was never created by anything the tests
+    ran: the digest naming, the dedup and the fsync-before-rename had no
+    coverage at all, in the store the whole reversal plan is built on.
+    `init` appending the vault's ignore entry to an ignore file that
+    already exists is the CLI path that parks one.
+    """
+    import hashlib
+
+    before = "build/\n"
+    (tmp_path / ".gitignore").write_text(before, encoding="utf-8")
+
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    reference = hashlib.sha256(before.encode("utf-8")).hexdigest()
+    blob = tmp_path / ".validated-memory" / "preimages" / reference
+    assert blob.is_file(), sorted(
+        p.name for p in (tmp_path / ".validated-memory").iterdir()
+    )
+    # Named after its own digest, and holding exactly the bytes that were
+    # there before the append.
+    assert blob.read_text(encoding="utf-8") == before
+    record = next(
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry["op"] == "append" and entry["stage"] == "committed"
+    )
+    assert record["preimage"] == f"sha256:{reference}", record
+    assert record["prior_bytes"] == len(before.encode("utf-8")), record
+
+    # Parked only the first time: the same bytes park the same digest, and
+    # the blob that is already there is left alone rather than rewritten.
+    identity = blob.stat().st_ino
+    (tmp_path / ".gitignore").write_text(before, encoding="utf-8")
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    blobs = sorted((tmp_path / ".validated-memory" / "preimages").iterdir())
+    assert [entry.name for entry in blobs] == [reference], blobs
+    assert blob.stat().st_ino == identity, "the blob was rewritten"
+
+
 def test_journal_check_catches_a_second_write_to_one_path_in_one_run(
     run_cli, tmp_path
 ):
