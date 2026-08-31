@@ -475,35 +475,44 @@ class Run:
 UNAPPLIED = "unapplied"
 APPLIED = "applied"
 DIVERGED = "diverged"
+UNKNOWN = "unknown"
 
 
 def reconcile(root=Path()):
     """Every unfinished transaction, paired with the state its path is in.
 
+    Records are paired in file order, not by set membership: one run may
+    write the same path more than once, and a `committed` record closes the
+    ONE `prepared` record it follows, never every prepared record that
+    happens to share its (run, path).
+
     `unapplied` -- the bytes still match the preimage, so the mutation never
     happened. `applied` -- they match the postimage, so it happened and only
     the closing record was lost. `diverged` -- neither, so something else
-    wrote the path afterwards.
+    wrote the path afterwards. `unknown` -- the bytes could not be read at
+    all, so nothing can be said.
 
-    This reports. It does not repair: choosing for the user between three
+    This reports. It does not repair: choosing for the user between the
     states the record cannot distinguish is exactly the guessing this
     component exists to remove.
     """
     root = Path(root)
     unfinished = []
     for durability in DURABILITIES:
-        records = read(root, durability)
-        closed = {
-            (entry["run"], entry["path"])
-            for entry in records
-            if entry["stage"] == COMMITTED
-        }
-        for entry in records:
-            if entry["stage"] != PREPARED:
-                continue
-            if (entry["run"], entry["path"]) in closed:
-                continue
-            unfinished.append((entry, _state_of(root, entry)))
+        # Records are paired in file order, not by set membership: one run
+        # may write the same path more than once, and a `committed` record
+        # closes the ONE `prepared` record it follows, never every prepared
+        # record that happens to share its (run, path).
+        open_by_key = {}
+        for entry in read(root, durability):
+            key = (entry["run"], entry["path"])
+            if entry["stage"] == PREPARED:
+                open_by_key.setdefault(key, []).append(entry)
+            elif entry["stage"] == COMMITTED and open_by_key.get(key):
+                open_by_key[key].pop(0)
+        for entries in open_by_key.values():
+            for entry in entries:
+                unfinished.append((entry, _state_of(root, entry)))
     return unfinished
 
 
@@ -511,8 +520,15 @@ def _state_of(root, entry):
     target = root / entry["path"]
     try:
         actual = digest(target.read_bytes())
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        # Genuinely absent. Against a `create` record, whose preimage is
+        # null, that is an honest `unapplied`.
         actual = None
+    except OSError:
+        # A directory, a permission denial, an I/O error: the bytes could
+        # not be read, so nothing is known about this path. Saying
+        # `unapplied` here would assert the mutation never happened.
+        return UNKNOWN
     if actual == entry.get("postimage"):
         return APPLIED
     if actual == entry.get("preimage"):

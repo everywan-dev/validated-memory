@@ -208,3 +208,46 @@ def test_journal_check_reconciles_an_unfinished_transaction(run_cli, tmp_path):
     assert "validated-memory.md" in result.stderr, result.stderr
     assert "unfinished" in result.stderr, result.stderr
     assert "diverged" in result.stderr, result.stderr
+
+
+def test_journal_check_catches_a_second_write_to_one_path_in_one_run(
+    run_cli, tmp_path
+):
+    """A `committed` record closes the ONE `prepared` it follows, not every
+    `prepared` that happens to share its (run, path).
+
+    `init` writes `validated-memory.md` once, closing that write's own
+    `prepared`/`committed` pair. Here a second write of the same path under
+    the same run is appended by hand, with its `prepared` record but no
+    matching `committed` -- the second write was interrupted. Pairing by set
+    membership would let the first write's `committed` record close this
+    second `prepared` too, since both share the same (run, path); reporting
+    would then wrongly say the journal is clean.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    records = [json.loads(line) for line in journal.read_text().splitlines()]
+    first_write = next(
+        entry
+        for entry in records
+        if entry["path"] == "validated-memory.md" and entry["stage"] == "committed"
+    )
+
+    second_write = dict(first_write)
+    second_write["stage"] = "prepared"
+    second_write["op"] = "replace"
+    second_write["preimage"] = "sha256:" + "2" * 64
+    second_write["postimage"] = "sha256:" + "3" * 64
+
+    journal.write_text(
+        journal.read_text(encoding="utf-8")
+        + json.dumps(second_write, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "validated-memory.md" in result.stderr, result.stderr
+    assert "unfinished" in result.stderr, result.stderr
