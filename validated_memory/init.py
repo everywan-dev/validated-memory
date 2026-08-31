@@ -58,6 +58,17 @@ from pathlib import Path
 from . import adopt, journal, render
 from .findings import ERROR, EXIT_ERROR, EXIT_OK, WARNING, Finding
 
+# `Path.exists()` follows a symlink, so a broken one reads as absent and
+# every write path in this module has to name it before it writes: the
+# temporary-then-`os.replace` install does not follow the link either, it
+# replaces it, which would destroy a link `init` did not create and could
+# not put back.
+BROKEN_SYMLINK = (
+    "exists as a broken symlink; installing here would replace the link "
+    "itself, and `init` never overwrites or deletes something that is "
+    "already there, so it is left untouched"
+)
+
 IGNORE_FILENAME = ".gitignore"
 IGNORE_ENTRY = f"/{journal.VAULT_DIRNAME}/"
 IGNORE_BLOCK = f"""\
@@ -375,8 +386,17 @@ def _ensure_dir(path, session):
 
 
 def _ensure_file(path, content, session):
-    """Write `content` to `path` if missing. Returns `(item, outcome, finding)`."""
+    """Write `content` to `path` if missing. Returns `(item, outcome, finding)`.
+
+    A broken symlink is the one shape that reads as absent while something
+    is plainly there. It is an item `init` cannot create without destroying
+    what the adopter put in its place, so it gates, exactly as an item
+    blocked by anything else real does -- and nothing is recorded, because
+    nothing happened.
+    """
     location = path.as_posix()
+    if path.is_symlink() and not path.exists():
+        return location, None, Finding(ERROR, location, "create", BROKEN_SYMLINK)
     if path.exists():
         session.observe(location, "file already present")
         return location, "kept", None
@@ -559,10 +579,10 @@ def _ensure_views(stdout):
     can never leave a truncated page that the next run reports `kept`.
 
     A broken symlink is the one shape `Path.exists()` reads as absent while
-    something is plainly there: writing would follow it and create a file
-    wherever it points, outside `init`'s remit. It gets a WARNING and is
-    left untouched -- the posture `--harness-memory` takes with a path that
-    is anything else real.
+    something is plainly there, and installing over it would replace the
+    link (see `BROKEN_SYMLINK`). It gets a WARNING and is left untouched --
+    a WARNING rather than the ERROR the same shape earns in the scaffold,
+    because the views are optional and this whole path is fail-open.
     """
     created = 0
     kept = 0
@@ -581,14 +601,7 @@ def _ensure_views(stdout):
     for name in render.ARTIFACTS:
         path = Path(name)
         if path.is_symlink() and not path.exists():
-            findings.append(
-                Finding(
-                    WARNING, name, "create",
-                    "exists as a broken symlink; writing would follow it "
-                    "and create a file wherever it points, so init leaves "
-                    "it untouched",
-                )
-            )
+            findings.append(Finding(WARNING, name, "create", BROKEN_SYMLINK))
             continue
         if path.exists():
             print(f"init: kept {name}", file=stdout)

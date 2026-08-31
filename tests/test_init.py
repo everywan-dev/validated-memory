@@ -201,6 +201,40 @@ def test_a_directory_blocked_by_a_dangling_symlink_gates_with_an_error(
     assert "directory could not be created" in result.stderr, result.stderr
 
 
+def test_a_file_blocked_by_a_broken_symlink_gates_and_leaves_the_link(
+    adopter_dir, run_cli
+):
+    """`init` never destroys something the adopter put there, link included.
+
+    `Path.exists()` follows a symlink and reads a broken one as absent, so
+    the scaffold walked straight into it: routing the write through
+    `os.replace` (which does not follow) turned what used to be an ERROR
+    into a silent success that destroyed the link -- and recorded it as a
+    `create` with a null preimage, whose inverse is "remove", so a reversal
+    would delete the file and restore nothing. `_ensure_views` has guarded
+    this exact shape all along; the scaffold now guards it the same way.
+    """
+    import json
+
+    (adopter_dir / "validated-memory.md").symlink_to("/nonexistent/elsewhere.md")
+
+    result = run_cli("init", cwd=adopter_dir)
+
+    assert result.returncode == 1, result.stdout
+    assert "broken symlink" in result.stderr, result.stderr
+    assert (adopter_dir / "validated-memory.md").is_symlink()
+    assert not (adopter_dir / "validated-memory.md").exists()
+    records = [
+        json.loads(line)
+        for line in (adopter_dir / "journal.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert not [
+        entry for entry in records if entry["path"] == "validated-memory.md"
+    ], records
+
+
 def test_an_item_blocked_by_a_file_gates_with_an_error(adopter_dir, run_cli):
     # A regular file where the scaffold needs a directory: creating
     # memory/MEMORY.md fails for every user, root included -- unlike

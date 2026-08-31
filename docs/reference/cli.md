@@ -37,8 +37,10 @@ Each item is created only if missing. An existing item -- including one
 already hand-edited -- is never touched: `init` reports `init: created
 <path>` or `init: kept <path>` per item, so re-running it is idempotent and
 says so. `init` gates (exit 1) on an item it could not create at all (e.g.
-no write permission on the target directory), and on a journal it could not
-read or write -- see [Journal](journal.md).
+no write permission on the target directory, or a broken symlink standing
+where the item goes -- installing over it would replace the link, and `init`
+never destroys something already there), and on a journal it could not read
+or write -- see [Journal](journal.md).
 
 `init` also appends one line to the repository's ignore file (`.gitignore`,
 created if missing): `/.validated-memory/`, the vault. That entry is not one
