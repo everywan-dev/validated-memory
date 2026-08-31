@@ -96,6 +96,39 @@ def test_hook_creates_the_symlink_for_an_adopter_project(tmp_path):
     ).read_text(encoding="utf-8")
 
 
+def test_hook_restores_the_symlink_over_a_corrupt_journal(tmp_path):
+    """The hook's own contract, measured at the seam it is claimed at.
+
+    `journal.jsonl` is versioned and append-only, so a merge conflict or a
+    botched resolution leaves a file `init` refuses to read -- an ERROR that
+    exits 1. The hook must still come back with the link restored and its
+    own exit code 0: it is a `SessionStart` hook, and a session that loses
+    its agent memory because a record could not be parsed is exactly the
+    failure this hook exists to prevent.
+    """
+    project_dir = tmp_path / "project"
+    memory_dir = _write_adopter_project(project_dir)
+    config_dir = tmp_path / "config"
+    environment = {
+        "HOME": str(tmp_path / "home"),
+        "CLAUDE_CONFIG_DIR": str(config_dir),
+        "CLAUDE_PROJECT_DIR": str(project_dir),
+    }
+    assert _run_hook(environment).returncode == 0
+    harness_memory = config_dir / "projects" / _slug(project_dir) / "memory"
+    harness_memory.unlink()
+    journal = project_dir / "journal.jsonl"
+    journal.write_text(
+        journal.read_text(encoding="utf-8") + "{not json\n", encoding="utf-8"
+    )
+
+    result = _run_hook(environment)
+
+    assert result.returncode == 0, result.stderr
+    assert harness_memory.is_symlink()
+    assert harness_memory.resolve() == memory_dir.resolve()
+
+
 # --- non-adopter project: a clean no-op ---------------------------------------
 
 

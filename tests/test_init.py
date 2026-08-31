@@ -369,6 +369,72 @@ def test_harness_memory_existing_real_file_warns_and_is_left_untouched(
     assert harness_memory.read_text(encoding="utf-8") == "Do not touch.\n"
 
 
+def test_a_corrupt_journal_still_restores_the_harness_symlink(
+    adopter_dir, tmp_path, run_cli
+):
+    """A journal failure must never cost the user their memory symlink.
+
+    `journal.jsonl` is always versioned and append-only, so two branches
+    that both ran `init` conflict in it on every merge, and a botched
+    resolution leaves exactly this file. The corrupt journal still gates
+    (ADR 0008: required history that cannot be read is exit 1), but the
+    harness half of `init` is what the `SessionStart` hook exists for and it
+    runs regardless -- with the loss of its own record reported, not hidden.
+    """
+    harness_memory = tmp_path / "harness" / "memory"
+    assert (
+        run_cli(
+            "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+        ).returncode
+        == 0
+    )
+    harness_memory.unlink()
+    journal = adopter_dir / "journal.jsonl"
+    journal.write_text(
+        journal.read_text(encoding="utf-8") + "{not json\n", encoding="utf-8"
+    )
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+
+    assert result.returncode == 1, result.stdout
+    assert "not valid JSON" in result.stderr, result.stderr
+    assert harness_memory.is_symlink(), "the symlink was not restored"
+    assert harness_memory.resolve() == (adopter_dir / "memory").resolve()
+    assert "could not be recorded" in result.stderr, result.stderr
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
+def test_an_unwritable_root_still_restores_the_harness_symlink(
+    adopter_dir, tmp_path, run_cli
+):
+    """The journal cannot be opened at all, and the symlink is still restored.
+
+    An adopter root that cannot be written to fails before any scaffold item
+    -- the lock and the journal's own bootstrap both need to create files in
+    it. That is an ERROR and it gates; it is not a reason to leave the
+    harness pointing nowhere.
+    """
+    locked = adopter_dir / "locked"
+    locked.mkdir()
+    harness_memory = tmp_path / "harness" / "memory"
+    os.chmod(locked, 0o500)
+    try:
+        result = run_cli(
+            "init", "--harness-memory", str(harness_memory), cwd=locked
+        )
+
+        assert result.returncode == 1, result.stdout
+        assert "journal" in result.stderr, result.stderr
+        assert harness_memory.is_symlink(), "the symlink was not restored"
+        assert harness_memory.readlink() == locked / "memory"
+    finally:
+        os.chmod(locked, 0o700)
+
+
 def test_without_harness_memory_flag_nothing_outside_the_project_is_touched(
     adopter_dir, run_cli
 ):

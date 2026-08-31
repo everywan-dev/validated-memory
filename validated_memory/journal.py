@@ -76,12 +76,18 @@ class JournalError(Exception):
 
     `lineno` is None when the fault is the file's rather than a line's: it
     could not be opened or decoded at all.
+
+    `artifact` is the file the fault is in, relative to the adopter root.
+    There are two journals and a lock, and a diagnostic that names the wrong
+    one sends a reader to a file that is perfectly valid; None means the
+    raiser did not say, and the caller falls back to the repository journal.
     """
 
-    def __init__(self, lineno, message):
+    def __init__(self, lineno, message, artifact=None):
         super().__init__(message)
         self.lineno = lineno
         self.message = message
+        self.artifact = artifact
 
 
 def digest(data):

@@ -19,8 +19,16 @@ When PATH is a real path that is not a symlink, `adopt` decides: a directory
 recognizably holding the harness's own agent memory is absorbed into this
 project's `memory/` and parked aside as a `.bak` before the link is created
 (see `adopt.py`); anything else is left alone with a WARNING saying why. Both
-outcomes are fail-open, so a startup hook built on top of `init` can never
-break the session.
+outcomes are fail-open: the link is restored, or it is left alone and said
+so, and the session is unaffected either way.
+
+A journal that cannot be read or written does gate -- a required record that
+is missing or corrupt is exit 1 (ADR 0008), never a silent continuation --
+but it does not take the symlink with it: the harness half runs outside the
+journalled part of the run, and the record it could not write is reported as
+a WARNING naming what was lost. So `init` can exit 1 while the link is back,
+which is why the `SessionStart` hook reports success whatever the exit code
+(`hooks/restore-memory-symlink.sh`).
 
 With `--view`, `init` also creates `knowledge.html` and `memory.html` --
 once each. The views are optional, and activation is the presence of the
@@ -117,11 +125,19 @@ overwrites a file that already exists.
 def run(harness_memory, view, stdout, stderr):
     """Scaffold the adopter layout under the working directory.
 
-    Returns an exit code: 0 unless an item could not be created. Even a
-    harness-memory symlink `init` cannot restore is a WARNING, not an ERROR
-    -- fail-open, so the caller (eventually a startup hook) never breaks the
-    session over it. Same for `view`: a corpus the renderer refuses is a
-    WARNING, never a gate -- see `_ensure_views`.
+    Returns an exit code: 0 unless an item could not be created, or the
+    journal could not be read or written. Even a harness-memory symlink
+    `init` cannot restore is a WARNING, not an ERROR -- fail-open, so the
+    caller (eventually a startup hook) never breaks the session over it.
+    Same for `view`: a corpus the renderer refuses is a WARNING, never a
+    gate -- see `_ensure_views`.
+
+    A journal failure is the one ERROR that is not about a single item, and
+    it is not fail-open: required history that cannot be read is exit 1 (ADR
+    0008). What it gates is the journalled part of the run -- the scaffold,
+    which must not mutate the adopter tree while nothing can record what it
+    did. The harness symlink is not part of that: it runs afterwards, on its
+    own, and reports the record it could not write.
     """
     findings = []
     created = 0
@@ -131,6 +147,7 @@ def run(harness_memory, view, stdout, stderr):
     # under one lock for the whole run: `init` is deliberately re-runnable at
     # session start, and two concurrent runs on a brand-new adopter must not
     # be able to mint two adoption ids.
+    journal_failure = None
     try:
         with journal.Lock():
             session = journal.Run()
@@ -162,37 +179,35 @@ def run(harness_memory, view, stdout, stderr):
             if harness_memory is not None:
                 findings.extend(_sync_symlink(harness_memory, stdout, session))
     except journal.JournalError as error:
-        where = journal.JOURNAL_FILENAME
-        location = where if error.lineno is None else f"{where}:{error.lineno}"
-        print(
-            Finding(ERROR, location, "journal", error.message).render(),
-            file=stderr,
+        journal_failure = Finding(
+            ERROR, _journal_artifact(error), "journal", error.message
         )
-        print(
-            "init: 0 created, 0 kept, 1 error(s), 0 warning(s)", file=stdout
-        )
-        return EXIT_ERROR
     except OSError as error:
         # The lock and the journal's own bootstrap both need to create
         # `.validated-memory/` and `journal.jsonl` before any scaffold item
         # is attempted; an adopter root that cannot be written to at all
         # (e.g. read-only permissions) fails here first, ahead of any
         # per-item ERROR `_ensure_dir`/`_ensure_file` would otherwise raise.
-        print(
-            Finding(
-                ERROR,
-                journal.JOURNAL_FILENAME,
-                "journal",
-                f"journal could not be opened: {error}",
-            ).render(),
-            file=stderr,
+        journal_failure = Finding(
+            ERROR,
+            journal.JOURNAL_FILENAME,
+            "journal",
+            f"journal could not be opened: {error}",
         )
-        print(
-            "init: 0 created, 0 kept, 1 error(s), 0 warning(s)", file=stdout
-        )
-        return EXIT_ERROR
 
-    if view:
+    if journal_failure is not None:
+        findings.append(journal_failure)
+        # The journal is the record of what `init` did; it is not what a
+        # session needs to keep working. Restoring the harness symlink is
+        # the one promise that must survive a journal failure, so it runs
+        # here, outside the journalled run and outside the lock -- there is
+        # no journal to serialise access to, and re-pointing a symlink at
+        # the target it already has is idempotent, which is also what makes
+        # this safe when the failure arrived after the link was already
+        # restored above.
+        if harness_memory is not None:
+            findings.extend(_sync_symlink(harness_memory, stdout, None))
+    elif view:
         view_created, view_kept, view_findings = _ensure_views(stdout)
         created += view_created
         kept += view_kept
@@ -208,6 +223,18 @@ def run(harness_memory, view, stdout, stderr):
         file=stdout,
     )
     return EXIT_ERROR if errors else EXIT_OK
+
+
+def _journal_artifact(error):
+    """Where a `JournalError` came from, as the location a Finding names.
+
+    The error carries the artifact it was raised against -- there are two,
+    and naming the wrong one sends a reader to a file that is perfectly
+    valid -- plus the line, when the fault is a single line's rather than
+    the whole file's.
+    """
+    where = error.artifact or journal.JOURNAL_FILENAME
+    return where if error.lineno is None else f"{where}:{error.lineno}"
 
 
 def _ensure_dir(path, session):
@@ -268,6 +295,12 @@ def _sync_symlink(raw_path, stdout, session):
     never carry an absolute path (ADR 0008, design §7). The previous target
     is read before the link is touched: once it is re-pointed, its former
     target is gone, which is the preimage problem in miniature.
+
+    `session` is None when the journal itself failed earlier in the run. The
+    link is restored anyway -- that is the promise a startup hook rests on --
+    and `_record_symlink` turns the missing record into a WARNING that names
+    the previous target, so the one fact the mutation destroys is at least on
+    stderr rather than nowhere.
     """
     path = Path(raw_path)
     location = path.as_posix()
@@ -300,6 +333,11 @@ def _sync_symlink(raw_path, stdout, session):
         return [Finding(WARNING, location, "symlink", message)]
 
 
+def _previous_target(previous):
+    """How a symlink's former target is named, in a record and in a WARNING."""
+    return f"previous target: {previous}" if previous else "no previous link"
+
+
 def _record_symlink(session, path, previous):
     """Journal a symlink mutation that already happened. Returns findings.
 
@@ -308,13 +346,28 @@ def _record_symlink(session, path, previous):
     is saying what actually happened must not blame the wrong one. Kept a
     WARNING, same as every other failure along this path: `init` is
     fail-open about the harness symlink.
+
+    Either way the WARNING carries the previous target, because that is what
+    the mutation destroyed: the `link` op's inverse is "restore the previous
+    target", and a record that never reached the journal leaves stderr as
+    the only place it was ever said.
     """
+    if session is None:
+        return [
+            Finding(
+                WARNING,
+                path.as_posix(),
+                "journal",
+                "the symlink was restored but could not be recorded: the "
+                f"journal is unavailable ({_previous_target(previous)})",
+            )
+        ]
     try:
         session.append_op(
             journal.LINK,
             "init",
             path.as_posix(),
-            f"previous target: {previous}" if previous else "no previous link",
+            _previous_target(previous),
             durability=journal.LOCAL,
         )
     except OSError as error:
@@ -323,7 +376,8 @@ def _record_symlink(session, path, previous):
                 WARNING,
                 path.as_posix(),
                 "journal",
-                f"the symlink was created but could not be recorded: {error}",
+                f"the symlink was created but could not be recorded: {error} "
+                f"({_previous_target(previous)})",
             )
         ]
     return []
