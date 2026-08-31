@@ -359,15 +359,17 @@ def _ensure_dir(path, session):
     if path.exists():
         session.observe(location, "directory already present")
         return location, "kept", None
+    # A `mkdir` has no preimage to park, which is not the same as having no
+    # transaction: §4 rejects "mutate first, record after", and a directory
+    # created between the two records is one the journal would never
+    # mention. The `prepared` record is written first and closed after.
+    session.prepare_op(journal.CREATE, "init", location, "directory created")
     try:
         path.mkdir(parents=True)
     except OSError as error:
         return location, None, Finding(
             ERROR, location, "create", f"directory could not be created: {error}"
         )
-    # `mkdir` is not a file write and has no preimage, so the created case
-    # carries no transaction -- but its inverse belongs in the op, not in
-    # prose.
     session.append_op(journal.CREATE, "init", location, "directory created")
     return location, "created", None
 
@@ -416,28 +418,31 @@ def _sync_symlink(raw_path, stdout, session):
     path = Path(raw_path)
     location = path.as_posix()
     target = Path("memory").resolve()
-    previous = os.readlink(path) if path.is_symlink() else None
-    try:
+    was_symlink = path.is_symlink()
+    previous = os.readlink(path) if was_symlink else None
+
+    def relink():
+        """Point `path` at `target`, whatever it is now. Never deletes data."""
         if path.is_symlink():
-            if path.resolve() == target:
-                print(f"init: kept symlink {location}", file=stdout)
-                return []
             path.unlink()
-            path.symlink_to(target, target_is_directory=True)
-            findings = _record_symlink(session, path, previous)
-            print(f"init: re-pointed symlink {location} -> {target}", file=stdout)
-            return findings
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        path.symlink_to(target, target_is_directory=True)
+
+    try:
+        if was_symlink and path.resolve() == target:
+            print(f"init: kept symlink {location}", file=stdout)
+            return []
         # A real path that is not a symlink: `adopt` decides whether it holds
         # agent memory this project can absorb, or must be left alone.
         findings = []
-        if path.exists():
+        if not was_symlink and path.exists():
             freed, findings = adopt.take_over(path, target, stdout)
             if not freed:
                 return findings
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.symlink_to(target, target_is_directory=True)
-        findings.extend(_record_symlink(session, path, previous))
-        print(f"init: created symlink {location} -> {target}", file=stdout)
+        findings.extend(_record_symlink(session, path, previous, relink))
+        verb = "re-pointed" if was_symlink else "created"
+        print(f"init: {verb} symlink {location} -> {target}", file=stdout)
         return findings
     except OSError as error:
         message = f"could not be linked to '{target}': {error}; session unaffected"
@@ -449,49 +454,78 @@ def _previous_target(previous):
     return f"previous target: {previous}" if previous else "no previous link"
 
 
-def _record_symlink(session, path, previous):
-    """Journal a symlink mutation that already happened. Returns findings.
+def _record_symlink(session, path, previous, relink):
+    """Journal `relink()` around the mutation it performs. Returns findings.
 
-    The `symlink_to` above this call already succeeded -- a failure here is
-    the record failing, not the link, and a component whose whole argument
-    is saying what actually happened must not blame the wrong one. Kept a
-    WARNING, same as every other failure along this path: `init` is
-    fail-open about the harness symlink.
+    The `prepared` record is written first, as §4 requires of every
+    mutation: the `link` op's inverse is "restore the previous target", and
+    `relink()` is precisely what makes that target unreadable, so a record
+    written only afterwards has a window in which the one fact it carries
+    exists nowhere but in memory.
 
-    Either way the WARNING carries the previous target, because that is what
-    the mutation destroyed: the `link` op's inverse is "restore the previous
-    target", and a record that never reached the journal leaves stderr as
-    the only place it was ever said.
+    A record that cannot be written is never a reason not to restore the
+    link -- `init` is fail-open about the harness symlink, and a failure
+    here is the record failing, not the link. So the mutation runs either
+    way and the loss is a WARNING carrying the previous target, which then
+    stands on stderr as the only place it was said. `session` is None when
+    the journal failed earlier in the run; the split is the same.
     """
+    note = _previous_target(previous)
+    findings = []
+    recorded = False
     if session is None:
-        return [
+        findings.append(
             Finding(
                 WARNING,
                 path.as_posix(),
                 "journal",
-                "the symlink was restored but could not be recorded: the "
-                f"journal is unavailable ({_previous_target(previous)})",
+                "the symlink could not be recorded: the journal is "
+                f"unavailable ({note}); restoring it anyway",
             )
-        ]
-    try:
-        session.append_op(
-            journal.LINK,
-            "init",
-            path.as_posix(),
-            _previous_target(previous),
-            durability=journal.LOCAL,
         )
-    except OSError as error:
-        return [
-            Finding(
-                WARNING,
+    else:
+        try:
+            session.prepare_op(
+                journal.LINK,
+                "init",
                 path.as_posix(),
-                "journal",
-                f"the symlink was created but could not be recorded: {error} "
-                f"({_previous_target(previous)})",
+                note,
+                durability=journal.LOCAL,
             )
-        ]
-    return []
+            recorded = True
+        except OSError as error:
+            findings.append(
+                Finding(
+                    WARNING,
+                    path.as_posix(),
+                    "journal",
+                    f"the symlink could not be recorded: {error} ({note}); "
+                    "restoring it anyway",
+                )
+            )
+
+    relink()
+
+    if recorded:
+        try:
+            session.append_op(
+                journal.LINK,
+                "init",
+                path.as_posix(),
+                note,
+                durability=journal.LOCAL,
+            )
+        except OSError as error:
+            findings.append(
+                Finding(
+                    WARNING,
+                    path.as_posix(),
+                    "journal",
+                    f"the symlink was restored but its record could not be "
+                    f"closed: {error} ({note})",
+                )
+            )
+    return findings
 
 
 def _ensure_views(stdout):

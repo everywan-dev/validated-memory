@@ -155,9 +155,9 @@ def test_the_documented_walkthrough_reproduces_end_to_end(
     journal_result = run_cli("journal", cwd=adopter_dir)
     assert journal_result.returncode == 0, journal_result.stderr
     assert journal_result.stderr == ""
-    assert "journal: 11 record(s)" in journal_result.stdout
+    assert "journal: 13 record(s)" in journal_result.stdout
 
     journal_check = run_cli("journal", "--check", cwd=adopter_dir)
     assert journal_check.returncode == 0, journal_check.stderr
     assert journal_check.stderr == ""
-    assert "journal: 11 record(s), 0 error(s)" in journal_check.stdout
+    assert "journal: 13 record(s), 0 error(s)" in journal_check.stdout

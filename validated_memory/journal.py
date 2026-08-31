@@ -437,7 +437,7 @@ class Lock:
         return True
 
 
-def bootstrap(root=Path(), run=None):
+def bootstrap(root=Path(), run=None, records=None):
     """Ensure the journal exists, and return this adoption's id.
 
     This is the one write that cannot journal itself: a record describing
@@ -458,9 +458,15 @@ def bootstrap(root=Path(), run=None):
     it for the whole run, and re-entering would need a re-entrant lock. Two
     processes bootstrapping the same new adopter without it would mint two
     adoption ids, and the second install would win in silence.
+
+    `records` is the repository journal the caller has already read, so a
+    caller that needs the records for something else does not read the file
+    twice. It must be exactly what `read(root, REPO)` returned; anything
+    else would mint a second adoption id over a journal that already has
+    one.
     """
     path = journal_path(root, REPO)
-    existing = read(root, REPO)
+    existing = read(root, REPO) if records is None else records
     if existing:
         return existing[0]["adoption"]
 
@@ -505,7 +511,22 @@ class Run:
     def __init__(self, root=Path()):
         self.root = Path(root)
         self.run = new_id()
-        self.adoption = bootstrap(self.root, self.run)
+        records = read(self.root, REPO)
+        self.adoption = bootstrap(self.root, self.run, records)
+        # Every path either journal already carries a record for. `observe`
+        # is written on first sight (§2), and first sight is exactly this:
+        # a path the record has never mentioned. Keying it on every op
+        # rather than on `observe` alone is what stops a path the plugin
+        # itself created -- or was interrupted while creating -- from being
+        # observed later as a fact about the state adoption found.
+        #
+        # Both journals are read here, so a vault that cannot be parsed
+        # refuses the run rather than being written to blind; `init` keeps
+        # the harness symlink working over that failure (`init.run`).
+        self._seen = {
+            (entry["durability"], entry["path"])
+            for entry in records + read(self.root, LOCAL)
+        }
 
     def _record(self, op, purpose, path, durability, stage, **extra):
         return record(
@@ -520,12 +541,22 @@ class Run:
         )
 
     def observe(self, path, note, durability=REPO):
-        """Record a pre-adoption fact about `path`. Written once, never inverted."""
+        """Record a pre-adoption fact about `path`, on first sight only.
+
+        Never inverted, and never written twice: a path this journal already
+        mentions is not one adoption found there. A second `observe` would
+        be a claim about the state before adoption written after the plugin
+        had already changed it, and `observe` has no inverse, so nothing
+        would ever take it back.
+        """
+        if (durability, path) in self._seen:
+            return
         append(
             [self._record(OBSERVE, "init", path, durability, COMMITTED, note=note)],
             self.root,
             durability,
         )
+        self._seen.add((durability, path))
 
     def park_preimage(self, path):
         """Copy the current bytes of `path` into the vault; return the reference.
@@ -635,6 +666,7 @@ class Run:
             self.root,
             durability,
         )
+        self._seen.add((durability, location))
 
     def append_text(self, path, content, purpose, durability=REPO):
         """Append `content` to the text file at `path`, journalling both stages.
@@ -693,14 +725,33 @@ class Run:
             self.root,
             durability,
         )
+        self._seen.add((durability, location))
+
+    def prepare_op(self, op, purpose, path, note, durability=REPO):
+        """Record that a mutation with no file preimage is about to happen.
+
+        The `committed` half is `append_op`. §4 admits no "mutate first"
+        protocol, and a mutation with no bytes to digest is not an
+        exception: a `mkdir` that crashes before its record leaves a
+        directory nothing knows about, and a re-pointed symlink destroys the
+        one fact its own record carries -- the previous target, which is
+        what its inverse restores.
+        """
+        append(
+            [self._record(op, purpose, path, durability, PREPARED, note=note)],
+            self.root,
+            durability,
+        )
+        self._seen.add((durability, path))
 
     def append_op(self, op, purpose, path, note, durability=REPO):
-        """Record a completed mutation with no file preimage, such as a mkdir."""
+        """Close a mutation with no file preimage: the `committed` half."""
         append(
             [self._record(op, purpose, path, durability, COMMITTED, note=note)],
             self.root,
             durability,
         )
+        self._seen.add((durability, path))
 
 
 UNAPPLIED = "unapplied"
@@ -764,6 +815,12 @@ def _state_of(root, entry):
             "root; reading it would let the record authorise itself",
             artifact_name(entry["durability"]),
         )
+    if "postimage" not in entry:
+        # A mutation with no bytes to digest -- a directory, a symlink.
+        # Existence is the whole of its state, so that is what is compared;
+        # comparing digests here would read a missing path as `applied`,
+        # since both sides would be None.
+        return APPLIED if target.exists() or target.is_symlink() else UNAPPLIED
     try:
         actual = digest(target.read_bytes())
     except FileNotFoundError:

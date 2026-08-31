@@ -369,6 +369,42 @@ def test_harness_memory_existing_real_file_warns_and_is_left_untouched(
     assert harness_memory.read_text(encoding="utf-8") == "Do not touch.\n"
 
 
+def test_a_repointed_symlink_records_its_previous_target_before_losing_it(
+    adopter_dir, tmp_path, run_cli
+):
+    """The record comes first, because the mutation destroys what it records.
+
+    A `link` record's payload is the previous target, and its inverse is
+    "restore the previous target". Re-pointing the symlink is what makes
+    that target unreadable, so a record written afterwards has a window in
+    which the only copy of it is in memory -- and the same window leaves a
+    re-pointed link no record mentions at all.
+    """
+    import json
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory.parent.mkdir(parents=True)
+    harness_memory.symlink_to(elsewhere, target_is_directory=True)
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert harness_memory.resolve() == (adopter_dir / "memory").resolve()
+    vault = adopter_dir / ".validated-memory" / "local.jsonl"
+    links = [
+        json.loads(line)
+        for line in vault.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["op"] == "link"
+    ]
+    assert [entry["stage"] for entry in links] == ["prepared", "committed"], links
+    for entry in links:
+        assert entry["note"] == f"previous target: {elsewhere}", entry
+
+
 def test_a_corrupt_journal_still_restores_the_harness_symlink(
     adopter_dir, tmp_path, run_cli
 ):

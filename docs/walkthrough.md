@@ -191,7 +191,7 @@ python3 -P -m validated_memory journal
 ```
 
 ```
-journal: 11 record(s)
+journal: 13 record(s)
 ```
 
 **`--check`** additionally reconciles every unfinished transaction -- a
@@ -203,7 +203,7 @@ python3 -P -m validated_memory journal --check
 ```
 
 ```
-journal: 11 record(s), 0 error(s)
+journal: 13 record(s), 0 error(s)
 ```
 
 Nothing is unfinished here: every write in this walkthrough ran to

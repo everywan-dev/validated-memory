@@ -85,10 +85,18 @@ op names its own inverse, which is what a later reversal would apply:
 | `remove` | restore the preimage |
 | `move` | move back |
 
-`observe` is the odd one out: it is written once, the first time a path is
-seen, and records a fact about the state adoption found -- that a directory
-was already there, that a file already existed, that a symlink already
-pointed somewhere -- which nothing can re-derive after the fact. `patch`,
+`observe` is the odd one out: it is written once, on first sight, and
+records a fact about the state adoption found -- that a directory was
+already there, that a file already existed, that a symlink already pointed
+somewhere -- which nothing can re-derive after the fact. First sight is
+keyed on the record itself: a path either journal already carries any
+record for has been seen, so it is never observed again. That covers the
+re-run (`init` is re-runnable at every session start, and a second
+"already present" would say nothing the first did not) and, more
+importantly, a path the plugin itself created or was interrupted while
+creating -- observing that one would be a claim about the state before
+adoption, written after the plugin had changed it, in an op that has no
+inverse. `patch`,
 `rename`, `remove` and `move` are declared here as part of the domain
 (`journal.OPS`) but have no caller yet in this plugin; `create`, `replace`,
 `observe`, `link` and `append` are the five `init` writes today -- `append`
@@ -96,14 +104,22 @@ for the one line it adds to the repository's ignore file.
 
 ## Stages and unfinished transactions
 
-A write of file bytes (`Run.write`, `Run.append_text`) is journalled in two
-steps, both flushed and fsynced before the next one starts: a **`prepared`**
-record carrying the preimage and the expected postimage, then the atomic
-mutation itself (a temporary file, `fsync`, `os.replace`, then a fsync of
-the directory that now carries the name), then a **`committed`** record
-repeating the same fields. An `observe` -- a fact about a path rather than a
-change to one -- is recorded at `committed` alone, having nothing to
-prepare.
+Every mutation is journalled in two steps, both flushed and fsynced before
+the next one starts: a **`prepared`** record, the mutation itself, then a
+**`committed`** record repeating the same fields. For a write of file bytes
+(`Run.write`, `Run.append_text`) the records carry the preimage and the
+expected postimage, and the mutation is atomic: a temporary file, `fsync`,
+`os.replace`, then a fsync of the directory that now carries the name. For a
+mutation with no bytes to digest -- a directory created by `_ensure_dir`, a
+symlink re-pointed by `_sync_symlink` -- the two records carry the `note`
+instead, and the `prepared` one is still written first: a `mkdir` recorded
+only afterwards leaves, for the width of that window, a directory the
+journal never mentions, and a re-pointed symlink destroys the previous
+target its own record exists to carry.
+
+An `observe` is the exception, and the only one: it is a fact about a path
+rather than a change to one, so it is recorded at `committed` alone, having
+nothing to prepare.
 
 A `prepared` record with no matching `committed` is an **unfinished
 transaction**: the process died between the two appends, or between the
@@ -122,7 +138,12 @@ it never repairs:
 | `unapplied` | The bytes still match the preimage (or the path is genuinely absent and the preimage was `null`, i.e. a `create` that never happened) -- the mutation never happened. |
 | `applied` | The bytes match the postimage -- the mutation happened; only the closing `committed` record was lost. |
 | `diverged` | The bytes match neither -- something else wrote the path afterwards. |
-| `unknown` | The bytes could not be read at all (a directory, a permission denial, an I/O error) -- nothing can be said about the path. |
+| `unknown` | The bytes could not be read at all (a permission denial, an I/O error) -- nothing can be said about the path. |
+
+A record with no `postimage` -- a directory, a symlink: nothing to digest --
+is reconciled on existence instead: the path is there (`applied`) or it is
+not (`unapplied`). Comparing digests for those would read a missing path as
+`applied`, since both sides would be absent.
 
 Reporting these four states, and stopping there, is deliberate: choosing for
 the user between states the record cannot distinguish is exactly the

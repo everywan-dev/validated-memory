@@ -71,6 +71,18 @@ def _recording_call(call):
     return isinstance(function, ast.Name) and function.id in RECORDING_FUNCTIONS
 
 
+def _nested_functions(tree):
+    """Every function defined inside another function, as node objects."""
+    return {
+        child
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for child in ast.walk(node)
+        if child is not node
+        and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
 def _records(path):
     """Every JSON record in a `.jsonl` file, in file order."""
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -129,8 +141,14 @@ def test_the_adoption_id_is_minted_once_and_survives_later_runs(run_cli, tmp_pat
 
 
 def test_each_invocation_groups_its_records_under_one_run_id(run_cli, tmp_path):
-    """One command, one run id -- and a second command, a second one."""
+    """One command, one run id -- and a second command, a second one.
+
+    The second run has to have something to record: a re-run that creates
+    nothing writes nothing at all, so the item is removed between the two.
+    """
     assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / "knowledge-extension.md").unlink()
+
     assert run_cli("init", cwd=tmp_path).returncode == 0
 
     runs = [entry["run"] for entry in _records(tmp_path / "journal.jsonl")]
@@ -178,15 +196,19 @@ def test_a_created_file_records_its_postimage_and_both_stages(run_cli, tmp_path)
     for entry in creates:
         assert entry["postimage"].startswith("sha256:"), entry
 
-    # Every write of file bytes -- a `create` here, and the `append` of the
-    # vault's ignore entry -- is one `prepared` record and one `committed`
-    # twin for the same path.
-    prepared = [e for e in records if e["stage"] == "prepared"]
-    written = [
-        e for e in records if e["stage"] == "committed" and "postimage" in e
+    # Every mutation -- a file write, the `append` of the vault's ignore
+    # entry, a directory -- is one `prepared` record closed by one
+    # `committed` twin for the same op and path, in that order. Only
+    # `observe` stands alone: it is a fact about a path, not a change to one.
+    prepared = [
+        (e["op"], e["path"]) for e in records if e["stage"] == "prepared"
     ]
-    assert len(prepared) == len(written), (prepared, written)
-    assert {e["path"] for e in prepared} <= {e["path"] for e in written}
+    committed = [
+        (e["op"], e["path"])
+        for e in records
+        if e["stage"] == "committed" and e["op"] != "observe"
+    ]
+    assert prepared == committed, records
 
 
 def test_init_records_create_for_what_it_made_and_observe_for_what_it_kept(
@@ -213,16 +235,92 @@ def test_init_records_create_for_what_it_made_and_observe_for_what_it_kept(
     assert by_path["knowledge-extension.md"] == "create", by_path
 
 
-def test_a_second_init_records_observe_for_everything_it_kept(run_cli, tmp_path):
-    """A re-run creates nothing, so it records no `create`."""
+def test_a_re_run_that_creates_nothing_records_nothing(run_cli, tmp_path):
+    """`observe` is written once, on first sight -- not once per run.
+
+    The `SessionStart` hook runs `init --harness-memory` at every session
+    start of an adopted project, and `journal.jsonl` is always versioned:
+    re-observing the same five paths every time added 1317 bytes per
+    session to a repository file, with a diff on every commit, and
+    `bootstrap` re-read all of it each run. Worse than the growth, the
+    meaning was wrong -- after the first run "file already present" is a
+    fact about a file the plugin itself created, not about the state
+    adoption found.
+    """
     assert run_cli("init", cwd=tmp_path).returncode == 0
-    first = len(_records(tmp_path / "journal.jsonl"))
+    first = (tmp_path / "journal.jsonl").read_text(encoding="utf-8")
+
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    assert (tmp_path / "journal.jsonl").read_text(encoding="utf-8") == first
+
+
+def test_a_pre_existing_path_is_observed_once_and_only_once(run_cli, tmp_path):
+    """The fact that adoption found `knowledge/` there is recorded exactly once."""
+    (tmp_path / "knowledge").mkdir()
+
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    records = _records(tmp_path / "journal.jsonl")
+    observed = [
+        e for e in records if e["op"] == "observe" and e["path"] == "knowledge"
+    ]
+    assert len(observed) == 1, records
+
+
+def test_a_directory_is_recorded_before_it_is_created(run_cli, tmp_path):
+    """A `mkdir` is a mutation, so it is two records like every other one.
+
+    Design §4 rejects both one-record protocols, and "mutate first, record
+    after" is one of them: a crash in between leaves a directory nothing
+    knows about. The `prepared` record is what makes that window visible.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    records = _records(tmp_path / "journal.jsonl")
+    stages = [
+        e["stage"] for e in records if e["path"] == "memory" and e["op"] == "create"
+    ]
+    assert stages == ["prepared", "committed"], records
+
+
+def test_a_path_the_journal_already_knows_is_never_observed_as_pre_existing(
+    run_cli, tmp_path
+):
+    """The residue of an interrupted mutation must not become a false `observe`.
+
+    Reconstructed here the way a crash leaves it: the `committed` record of
+    the `knowledge/` mkdir is removed, so the journal carries the `prepared`
+    record and the directory is on disk. The next run finds the directory
+    present -- and must not write "directory already present", which would
+    be a permanent, uninvertible record claiming adoption found a directory
+    the plugin created itself.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    kept = [
+        line
+        for line in journal.read_text(encoding="utf-8").splitlines()
+        if not (
+            json.loads(line)["path"] == "knowledge"
+            and json.loads(line)["stage"] == "committed"
+        )
+    ]
+    journal.write_text("\n".join(kept) + "\n", encoding="utf-8")
 
     assert run_cli("init", cwd=tmp_path).returncode == 0
 
-    added = _records(tmp_path / "journal.jsonl")[first:]
-    assert added, "the second run recorded nothing"
-    assert {e["op"] for e in added} == {"observe"}, added
+    records = _records(journal)
+    assert not [
+        e for e in records if e["op"] == "observe" and e["path"] == "knowledge"
+    ], records
+    # The interrupted transaction is still open, and still reported.
+    result = run_cli("journal", "--check", cwd=tmp_path)
+    assert result.returncode == 1, result.stdout
+    assert "knowledge" in result.stderr, result.stderr
+    assert "applied" in result.stderr, result.stderr
 
 
 def test_journal_reports_the_log_and_exits_clean(run_cli, tmp_path):
@@ -493,8 +591,15 @@ def test_every_write_in_the_package_goes_through_the_journal():
         if path.name in EXEMPT_MODULES:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        nested = _nested_functions(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node in nested:
+                # A function defined inside another is part of it, not a
+                # scope of its own: `_sync_symlink` hands its closure to
+                # the function that journals it, which is the pairing this
+                # check is coarse enough to accept everywhere else.
                 continue
             if (path.name, node.name) in EXEMPT_FUNCTIONS:
                 continue
