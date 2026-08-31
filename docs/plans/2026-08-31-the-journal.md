@@ -34,7 +34,15 @@ and §6 are plans 2, 3 and 4.
   **never import the package's internals**. Use the `run_cli` fixture in
   `tests/conftest.py`.
 - The CLI is always invoked as `python3 -P -m validated_memory` (ADR 0006).
-  From this checkout: `PYTHONPATH=. python3 -P -m validated_memory ...`.
+  From this checkout, with the repository as the working directory:
+  `PYTHONPATH=. python3 -P -m validated_memory ...`.
+- **Run pytest with NO `PYTHONPATH` set: `python3 -m pytest -q`.** The
+  `run_cli` fixture does `env.setdefault("PYTHONPATH", REPO_ROOT)` and its
+  subprocess runs with `cwd` inside a temporary directory, so a relative
+  `PYTHONPATH=.` inherited from your shell resolves against that temporary
+  directory and every CLI-driving test fails to import the package. Measured
+  2026-08-31: `PYTHONPATH=. python3 -m pytest` reports 360 spurious failures
+  where the same suite is green.
 - Commit messages: Conventional Commits, in English. **Do not add a
   `Claude-Session:` trailer** — this repository is public and self-contained.
   `Co-Authored-By:` is fine.
@@ -141,7 +149,7 @@ def test_init_writes_a_journal_whose_records_carry_the_common_fields(
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `PYTHONPATH=. python3 -m pytest tests/test_journal.py -q`
+Run: `python3 -m pytest tests/test_journal.py -q`
 Expected: FAIL — `journal.jsonl` does not exist (`assert journal.is_file()`).
 
 - [ ] **Step 3: Write `validated_memory/journal.py`**
@@ -356,7 +364,7 @@ import secrets
 
 - [ ] **Step 4: Run the test to verify it still fails, for the right reason**
 
-Run: `PYTHONPATH=. python3 -m pytest tests/test_journal.py -q`
+Run: `python3 -m pytest tests/test_journal.py -q`
 Expected: still FAIL on `assert journal.is_file()` — nothing calls the module
 yet. This confirms the test is pinning behaviour, not the module's existence.
 
@@ -446,7 +454,7 @@ def test_a_journal_that_cannot_be_parsed_is_refused_with_its_line(run_cli, tmp_p
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `PYTHONPATH=. python3 -m pytest tests/test_journal.py -q`
+Run: `python3 -m pytest tests/test_journal.py -q`
 Expected: FAIL — no `journal.jsonl` is produced at all yet.
 
 - [ ] **Step 3: Add bootstrap and the lock to `validated_memory/journal.py`**
@@ -577,7 +585,7 @@ module constant — do not add a ten-second test to the suite.
 
 - [ ] **Step 4: Run the tests to verify they still fail for the right reason**
 
-Run: `PYTHONPATH=. python3 -m pytest tests/test_journal.py -q`
+Run: `python3 -m pytest tests/test_journal.py -q`
 Expected: still FAIL on the missing `journal.jsonl` — Task 4 wires `init`.
 Confirm the module itself is sound:
 
@@ -655,7 +663,7 @@ def test_a_replaced_file_records_its_preimage_and_both_stages(run_cli, tmp_path)
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `PYTHONPATH=. python3 -m pytest tests/test_journal.py -q`
+Run: `python3 -m pytest tests/test_journal.py -q`
 Expected: FAIL — no journal is written by `init` yet.
 
 - [ ] **Step 3: Add the transaction to `validated_memory/journal.py`**
@@ -880,7 +888,7 @@ def test_a_second_init_records_observe_for_everything_it_kept(run_cli, tmp_path)
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `PYTHONPATH=. python3 -m pytest tests/test_journal.py -q`
+Run: `python3 -m pytest tests/test_journal.py -q`
 Expected: FAIL — `journal.jsonl` is still not written.
 
 - [ ] **Step 3: Wire `init` to the journal**
@@ -1022,7 +1030,7 @@ root, which is why it may only ever live in the vault -- ADR 0008 and §7 of
 the design forbid a repository record from carrying one.
 - [ ] **Step 4: Run the journal and init suites**
 
-Run: `PYTHONPATH=. python3 -m pytest tests/test_journal.py tests/test_init.py -q`
+Run: `python3 -m pytest tests/test_journal.py tests/test_init.py -q`
 Expected: PASS. If `tests/test_init.py` fails on a count of files created in
 the adopter root, it is because `journal.jsonl` and `.validated-memory/` are
 now there: update that assertion to name them, and add a comment saying the
@@ -1030,7 +1038,7 @@ journal is a root output like the rest.
 
 - [ ] **Step 5: Run the whole suite**
 
-Run: `PYTHONPATH=. python3 -m pytest -q`
+Run: `python3 -m pytest -q`
 Expected: PASS. `tests/test_hooks_manifest.py` and
 `tests/test_walkthrough.py` are the likely fallers, for the same reason.
 
@@ -1127,7 +1135,7 @@ def test_journal_check_reconciles_an_unfinished_transaction(run_cli, tmp_path):
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `PYTHONPATH=. python3 -m pytest tests/test_journal.py -q -k journal_report or journal_check`
+Run: `python3 -m pytest tests/test_journal.py -q -k journal_report or journal_check`
 Expected: FAIL with exit code 2 — `journal` is not a subcommand yet.
 
 - [ ] **Step 3: Add reconciliation and the entry point to `journal.py`**
@@ -1293,7 +1301,7 @@ REAL_SUBCOMMANDS = {
 
 - [ ] **Step 5: Run the whole suite**
 
-Run: `PYTHONPATH=. python3 -m pytest -q`
+Run: `python3 -m pytest -q`
 Expected: PASS. `tests/test_cli.py` may pin the subcommand list or the
 `--help` output; update it to include `journal` with a comment saying the
 set moved deliberately.
@@ -1393,7 +1401,7 @@ def test_the_vault_is_ignored_and_the_journal_is_not():
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `PYTHONPATH=. python3 -m pytest tests/test_journal.py -q -k "every_write or vault_is_ignored"`
+Run: `python3 -m pytest tests/test_journal.py -q -k "every_write or vault_is_ignored"`
 Expected: FAIL — `init.py` still has bare `mkdir` calls, and the skill has no
 `/.validated-memory/` line.
 
@@ -1525,7 +1533,7 @@ Expected: three lines, one per file (ADR 0005).
 
 - [ ] **Step 7: Run the whole suite**
 
-Run: `PYTHONPATH=. python3 -m pytest -q`
+Run: `python3 -m pytest -q`
 Expected: PASS, with the suite grown by the tests this plan added.
 
 - [ ] **Step 8: Commit**
