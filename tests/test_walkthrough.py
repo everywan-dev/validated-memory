@@ -57,6 +57,11 @@ def test_the_documented_walkthrough_reproduces_end_to_end(
     init_result = run_cli("init", cwd=adopter_dir)
     assert init_result.returncode == 0, init_result.stderr
     assert "init: 5 created, 0 kept, 0 error(s), 0 warning(s)" in init_result.stdout
+    # The one ignore entry `init` writes itself, reported on its own line:
+    # it is not an item of the layout, so it is not one of the five.
+    assert (
+        "init: ignored /.validated-memory/ in .gitignore" in init_result.stdout
+    ), init_result.stdout
     # `init` already registers the bundled `git_ref` probe: no extra
     # configuration step is needed before the unit below can be probed.
     config = (adopter_dir / "validated-memory.md").read_text(encoding="utf-8")
@@ -150,9 +155,9 @@ def test_the_documented_walkthrough_reproduces_end_to_end(
     journal_result = run_cli("journal", cwd=adopter_dir)
     assert journal_result.returncode == 0, journal_result.stderr
     assert journal_result.stderr == ""
-    assert "journal: 9 record(s)" in journal_result.stdout
+    assert "journal: 11 record(s)" in journal_result.stdout
 
     journal_check = run_cli("journal", "--check", cwd=adopter_dir)
     assert journal_check.returncode == 0, journal_check.stderr
     assert journal_check.stderr == ""
-    assert "journal: 9 record(s), 0 error(s)" in journal_check.stdout
+    assert "journal: 11 record(s), 0 error(s)" in journal_check.stdout

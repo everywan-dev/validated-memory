@@ -23,6 +23,7 @@ python3 -P -m validated_memory init
 ```
 
 ```
+init: ignored /.validated-memory/ in .gitignore
 init: created knowledge
 init: created memory
 init: created memory/MEMORY.md
@@ -190,7 +191,7 @@ python3 -P -m validated_memory journal
 ```
 
 ```
-journal: 9 record(s)
+journal: 11 record(s)
 ```
 
 **`--check`** additionally reconciles every unfinished transaction -- a
@@ -202,7 +203,7 @@ python3 -P -m validated_memory journal --check
 ```
 
 ```
-journal: 9 record(s), 0 error(s)
+journal: 11 record(s), 0 error(s)
 ```
 
 Nothing is unfinished here: every write in this walkthrough ran to

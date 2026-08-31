@@ -11,8 +11,21 @@ versions the layout that memory is in the next commit.
 
 The decision: the questions, and the writing of the ignore list for the
 "local" answers, belong to the `adopt-validated-memory` skill. `init`
-stays non-interactive and never touches git: it scaffolds the layout and
-nothing else, the same whether a person, a hook, CI or a script calls it.
+stays non-interactive: it scaffolds the layout, the same whether a person,
+a hook, CI or a script calls it, and asks nothing.
+
+One entry is outside this, and [ADR
+0008](0008-the-journal-is-versioned-and-the-vault-is-local.md) puts it
+there: `/.validated-memory/`, which `init` appends to the repository's
+`.gitignore` itself. It is not a decision the adopter takes -- the vault
+holds preimages that may carry bytes the adopter deliberately kept local,
+so both answers to the versioning question want it ignored -- and an entry
+that depends on someone answering a question one way is an entry that is
+missing on the default adoption. That is what happened: measured on a real
+repository, a default adoption left `?? .validated-memory/` untracked and
+publishable. `init` writing it is what makes the vault local by
+construction. Everything else in the ignore list stays the skill's.
+
 The ignore list is fixed prose in the skill and in the adoption guide, and
 a test pins both against what `init`, `derive` and `probe` really create at
 the adopter's root -- so a new root artifact cannot appear without both
@@ -51,9 +64,14 @@ texts learning to ignore it, and a retired one cannot linger.
   a second history, which the plugin does not orchestrate.
 - The ignore list exists three times on purpose -- skill, guide, and this
   repository's own `.gitignore` -- and the test keeps the first two equal
-  to the CLI's behaviour. It covers the CLI's fixed root outputs, not the
-  `--harness-memory` side effects (the symlink and the `.bak` live at
-  PATH, outside the project in the hook's normal use) nor the
-  `<view>.<pid>.tmp` files `render` leaves only after a hard kill.
+  to the CLI's behaviour. `/.validated-memory/` stays in that list even
+  though `init` writes it: the list is what a "local" answer appends, and a
+  list missing an entry the adopter's file needs would be wrong on its own
+  terms. `init` adds nothing when the entry is already there. The pin
+  covers the CLI's fixed root outputs, not the `--harness-memory` side
+  effects (the symlink and the `.bak` live at PATH, outside the project in
+  the hook's normal use), nor the `<view>.<pid>.tmp` files `render` leaves
+  only after a hard kill, nor `.gitignore` itself -- the file the list is
+  written into cannot be an entry in it.
 - Every sentence that promised the memory "stays versioned" is now
   conditioned on the answer.

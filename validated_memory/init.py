@@ -30,6 +30,15 @@ a WARNING naming what was lost. So `init` can exit 1 while the link is back,
 which is why the `SessionStart` hook reports success whatever the exit code
 (`hooks/restore-memory-symlink.sh`).
 
+`init` also writes one line into the repository's ignore file
+(`.gitignore`): `/.validated-memory/`, the vault holding preimages and the
+records of mutations whose path leaves the repository. That entry is not
+part of the adoption questionnaire and never was -- ADR 0008 makes the
+vault local by construction rather than by the adopter answering a question
+one way -- so it is written on every run, whatever the project versions.
+The entry is written once: an ignore file that already carries it is left
+exactly as it is, and one that does not exist is created.
+
 With `--view`, `init` also creates `knowledge.html` and `memory.html` --
 once each. The views are optional, and activation is the presence of the
 artifact, not a configuration key (an unknown field in `validated-memory.md`
@@ -48,6 +57,27 @@ from pathlib import Path
 
 from . import adopt, journal, render
 from .findings import ERROR, EXIT_ERROR, EXIT_OK, WARNING, Finding
+
+IGNORE_FILENAME = ".gitignore"
+IGNORE_ENTRY = f"/{journal.VAULT_DIRNAME}/"
+IGNORE_BLOCK = f"""\
+# The validated-memory vault: preimages, and the records of mutations whose
+# path leaves the repository. Always local to this clone (ADR 0008), which is
+# why `init` writes this entry itself rather than the adoption questionnaire
+# asking for it.
+{IGNORE_ENTRY}
+"""
+
+# Forms of the same rule a hand-written ignore file may already carry --
+# including the one the questionnaire's "local" answers write. `init` adds
+# nothing when any of them is already there: it writes the entry once, it
+# does not keep the file in a shape of its own choosing.
+IGNORE_EQUIVALENTS = {
+    IGNORE_ENTRY,
+    IGNORE_ENTRY.rstrip("/"),
+    IGNORE_ENTRY.lstrip("/"),
+    IGNORE_ENTRY.strip("/"),
+}
 
 MEMORY_INDEX = """\
 # Agent memory
@@ -151,6 +181,9 @@ def run(harness_memory, view, stdout, stderr):
     try:
         with journal.Lock():
             session = journal.Run()
+            # First, because it is what keeps the vault out of the
+            # repository, and the vault is written to from here on.
+            findings.extend(_ensure_ignored(session, stdout))
             # Each call below runs (and creates its item, if missing)
             # immediately; this just names the completed results before
             # reporting them in order.
@@ -235,6 +268,84 @@ def _journal_artifact(error):
     """
     where = error.artifact or journal.JOURNAL_FILENAME
     return where if error.lineno is None else f"{where}:{error.lineno}"
+
+
+def _ensure_ignored(session, stdout):
+    """Add the vault's ignore entry to the repository's ignore file.
+
+    Returns findings. The entry is `/.validated-memory/`, anchored at the
+    root the same way the questionnaire's list is, and it is not one of the
+    questionnaire's answers: ADR 0008 fixes the vault as always local
+    because it holds preimages, which may carry bytes the adopter
+    deliberately kept out of the repository, and the harness paths that
+    never were repository content. A vault the adopter has to remember to
+    ignore is a vault that gets committed.
+
+    It is not counted as an item `init` created or kept. Those counters are
+    about the layout `init` owns; this is one line appended to a file the
+    adopter owns, and the run reports it on its own line.
+
+    Three shapes are left alone rather than written to: an ignore file that
+    already carries the rule in any of its usual spellings, one that cannot
+    be read, and one that is a symlink -- installing over a symlink replaces
+    the link itself, and destroying a link to record an ignore rule is not a
+    trade `init` may make. The last two are ERRORs: the vault is then
+    unignored, which is the one thing this entry exists to prevent.
+    """
+    path = Path(IGNORE_FILENAME)
+    if path.is_symlink():
+        return [
+            Finding(
+                ERROR,
+                IGNORE_FILENAME,
+                "ignore-rule",
+                f"the vault's ignore entry ({IGNORE_ENTRY}) is missing and "
+                "cannot be added: the ignore file is a symlink, and writing "
+                "it would replace the link. Add the entry by hand.",
+            )
+        ]
+    try:
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    except (OSError, UnicodeDecodeError) as error:
+        return [
+            Finding(
+                ERROR,
+                IGNORE_FILENAME,
+                "ignore-rule",
+                f"the ignore file could not be read, so the vault's entry "
+                f"({IGNORE_ENTRY}) could not be added: {error}",
+            )
+        ]
+    if any(
+        line.strip() in IGNORE_EQUIVALENTS for line in existing.splitlines()
+    ):
+        return []
+    try:
+        session.append_text(
+            IGNORE_FILENAME, _ignore_addition(existing), "ignore-rule"
+        )
+    except OSError as error:
+        return [
+            Finding(
+                ERROR,
+                IGNORE_FILENAME,
+                "ignore-rule",
+                f"the vault's ignore entry ({IGNORE_ENTRY}) could not be "
+                f"written: {error}",
+            )
+        ]
+    print(f"init: ignored {IGNORE_ENTRY} in {IGNORE_FILENAME}", file=stdout)
+    return []
+
+
+def _ignore_addition(existing):
+    """The block to append, separated from whatever the file already holds."""
+    prefix = ""
+    if existing and not existing.endswith("\n"):
+        prefix = "\n"
+    if existing.strip():
+        prefix += "\n"
+    return prefix + IGNORE_BLOCK
 
 
 def _ensure_dir(path, session):

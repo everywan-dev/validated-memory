@@ -165,12 +165,10 @@ def test_a_created_file_records_its_postimage_and_both_stages(run_cli, tmp_path)
     first copy is the pre-adoption state.
     """
     assert run_cli("init", cwd=tmp_path).returncode == 0
-    # `init` keeps an existing file rather than replacing it, so the second
-    # run must record `observe`, not `replace`, for the same paths.
     records = _records(tmp_path / "journal.jsonl")
-    # `create` also covers a directory made via `append_op` (no preimage or
-    # postimage: a directory has no content to digest), so file creates are
-    # the ones that carry a `postimage`.
+    # `create` also covers a directory (no preimage or postimage: a
+    # directory has no content to digest), so file creates are the ones that
+    # carry a `postimage`.
     creates = [
         e
         for e in records
@@ -180,11 +178,15 @@ def test_a_created_file_records_its_postimage_and_both_stages(run_cli, tmp_path)
     for entry in creates:
         assert entry["postimage"].startswith("sha256:"), entry
 
+    # Every write of file bytes -- a `create` here, and the `append` of the
+    # vault's ignore entry -- is one `prepared` record and one `committed`
+    # twin for the same path.
     prepared = [e for e in records if e["stage"] == "prepared"]
-    committed = [e for e in records if e["stage"] == "committed"]
-    assert len(prepared) == len(creates), (prepared, creates)
-    # Every prepared record is followed by its committed twin for the same path.
-    assert {e["path"] for e in prepared} <= {e["path"] for e in committed}
+    written = [
+        e for e in records if e["stage"] == "committed" and "postimage" in e
+    ]
+    assert len(prepared) == len(written), (prepared, written)
+    assert {e["path"] for e in prepared} <= {e["path"] for e in written}
 
 
 def test_init_records_create_for_what_it_made_and_observe_for_what_it_kept(

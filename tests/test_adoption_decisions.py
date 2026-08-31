@@ -21,8 +21,10 @@ The list is read from the skill and the guide as data (the same seam as
 subprocess, never from the package.
 """
 
+import os
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -116,12 +118,107 @@ def _root_artifacts(adopter_dir, tmp_path_factory, run_cli):
     return {
         f"/{entry.name}/" if entry.is_dir() else f"/{entry.name}"
         for entry in adopter_dir.iterdir()
-        # `journal.jsonl` is a root artifact too, but ADR 0008 keeps it
-        # outside the versioning question on purpose (it is always
-        # versioned, never offered as an ignore entry) -- see the module
-        # docstring's "Not covered, on purpose".
-        if entry.name != "journal.jsonl"
+        # `journal.jsonl` and `.gitignore` are root artifacts too, and both
+        # are outside this question on purpose: the journal because ADR 0008
+        # keeps it always versioned and never offers to ignore it, and the
+        # ignore file because it is where the answer is written -- a list
+        # that ignored the file carrying it would ignore itself. See the
+        # module docstring's "Not covered, on purpose".
+        if entry.name not in ("journal.jsonl", ".gitignore")
     }
+
+
+# --- the one entry that is not a question (ADR 0008) --------------------------
+
+_GIT_IDENTITY_ENV = {
+    "GIT_AUTHOR_NAME": "adoption",
+    "GIT_AUTHOR_EMAIL": "adoption@test",
+    "GIT_COMMITTER_NAME": "adoption",
+    "GIT_COMMITTER_EMAIL": "adoption@test",
+}
+
+
+def _git(repo_dir, *args, check=True):
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo_dir,
+        env={**os.environ, **_GIT_IDENTITY_ENV},
+        check=check,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _fixture_repo(repo_dir):
+    """A one-commit git repository, the shape a real adopter runs `init` in."""
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    _git(repo_dir, "init", "-q", "-b", "main")
+    (repo_dir / "file.txt").write_text("hello\n", encoding="utf-8")
+    _git(repo_dir, "add", "file.txt")
+    _git(repo_dir, "commit", "-q", "-m", "first commit")
+    return repo_dir
+
+
+def test_the_vault_is_ignored_and_the_journal_is_not(tmp_path, run_cli):
+    """The default answer is "versioned", and the vault is ignored anyway.
+
+    ADR 0008 splits durability precisely so the preimages and the
+    out-of-root records never travel, and says the entry is `init`'s to
+    write rather than the questionnaire's, "because it is not a choice".
+    Measured before this test existed: on a default adoption in a real
+    repository, `git status` showed `?? .validated-memory/` and
+    `git check-ignore` exited 1, with the user's harness path inside the
+    untracked file.
+
+    The vault only fills on the first `init --harness-memory`, which is what
+    the `SessionStart` hook runs -- so this drives that invocation rather
+    than a bare `init`, which is why the gap reached production without a
+    fixture ever showing it.
+    """
+    adopter = _fixture_repo(tmp_path / "repo")
+    harness_memory = tmp_path / "harness" / "memory"
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter
+    )
+
+    assert result.returncode == 0, result.stderr
+    vault_record = ".validated-memory/local.jsonl"
+    assert (adopter / vault_record).is_file()
+    assert _git(adopter, "check-ignore", "-q", vault_record, check=False).returncode == 0
+    assert _git(adopter, "check-ignore", "-q", "journal.jsonl", check=False).returncode == 1
+    status = _git(adopter, "status", "--porcelain", "-uall").stdout
+    assert ".validated-memory" not in status, status
+    assert "journal.jsonl" in status, status
+
+
+def test_the_ignore_entry_is_written_once_and_never_duplicated(tmp_path, run_cli):
+    """`init` is re-runnable at every session start, so it must not grow the file."""
+    adopter = _fixture_repo(tmp_path / "repo")
+    (adopter / ".gitignore").write_text("build/\n", encoding="utf-8")
+
+    for _ in range(3):
+        assert run_cli("init", cwd=adopter).returncode == 0
+
+    ignore = (adopter / ".gitignore").read_text(encoding="utf-8")
+    assert ignore.startswith("build/\n"), ignore
+    assert ignore.count("/.validated-memory/") == 1, ignore
+
+
+def test_an_ignore_entry_the_adopter_already_wrote_is_left_alone(tmp_path, run_cli):
+    """The "Local, ignored" answer writes the same entry; `init` must not repeat it."""
+    adopter = _fixture_repo(tmp_path / "repo")
+    (adopter / ".gitignore").write_text(
+        "# validated-memory layout, local to this clone\n"
+        "/knowledge/\n"
+        "/.validated-memory/\n",
+        encoding="utf-8",
+    )
+    before = (adopter / ".gitignore").read_text(encoding="utf-8")
+
+    assert run_cli("init", cwd=adopter).returncode == 0
+
+    assert (adopter / ".gitignore").read_text(encoding="utf-8") == before
 
 
 def test_the_skill_ignore_list_is_exactly_what_the_cli_creates_at_the_root(

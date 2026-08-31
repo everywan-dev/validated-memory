@@ -62,6 +62,10 @@ regenerates it, and a clone without it cannot reverse an adoption or diff one
 scan's coverage against the next. `.validated-memory/` is the other half of
 that split and is always ignored, whatever the answer here: it holds
 preimages, which may carry bytes this very question chose to keep local.
+`init` writes that one entry into `.gitignore` itself, on every run, so it
+does not depend on this answer at all -- it is listed above only so the
+"local" list is complete, and `init` adds nothing when it is already
+there.
 
 The remaining four lines are derived files; a repository that versions the
 layout still chooses, separately, whether to version them -- `knowledge-index.md`

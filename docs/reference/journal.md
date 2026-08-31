@@ -52,17 +52,21 @@ Every record, whichever file it lands in, carries:
 | `run` | This invocation's id, so every record one command wrote groups under it. |
 | `durability` | `repo` or `local` -- which of the two artifacts holds this record. |
 | `op` | What happened to `path`; see [the table below](#operations-and-their-inverses). |
-| `purpose` | Which part of the method performed the mutation. Only `init` is emitted today; a future writer (`bootstrap-from-repo`, `render`, ...) names its own. |
-| `path` | The path the record describes, relative to the adopter root. `Run.write` refuses an absolute path or one containing `..`, whatever `durability` -- it may only carry a path that stays below the root; `append_op` carries no such check, which is how today's harness-symlink record (outside the root by design) reaches the local journal. |
+| `purpose` | Which part of the method performed the mutation. Two are emitted today: `init` for the scaffold, `ignore-rule` for the vault's entry in `.gitignore`. A future writer (`bootstrap-from-repo`, `render`, ...) names its own. |
+| `path` | The path the record describes, relative to the adopter root. `Run.write` and `Run.append_text` refuse an absolute path or one containing `..`, whatever `durability`; `append_op` carries no such check, which is how today's harness-symlink record (outside the root by design) reaches the local journal. On the read side the rule is the file, not the method: a record in `journal.jsonl` whose path is absolute or climbs out with `..` is refused outright, and any record whose path *resolves* outside the root -- through a symlink, or because it is a vault record naming a path outside by design -- is refused before its bytes are read. Design §7: a path outside the root can never be authorised by the file itself. |
 | `stage` | `prepared` or `committed`; see [below](#stages-and-unfinished-transactions). |
 
 Two more fields appear only on a record whose `op` touches file bytes
-(`create` or `replace`, written by `Run.write`): **`preimage`** -- the
-content digest before the write, or `null` for a `create`, whose target did
-not exist -- and **`postimage`** -- the content digest after. Both are
-`sha256:<hex>`. A record with no file content to digest (`observe`, and
-today's `append_op` uses such as a directory's creation or a symlink
-re-point) instead carries a free-text **`note`**.
+(`create` or `replace`, written by `Run.write`; `append`, written by
+`Run.append_text`): **`preimage`** -- the content digest before the write,
+or `null` when the target did not exist -- and **`postimage`** -- the
+content digest after. Both are `sha256:<hex>`. An `append` carries a third,
+**`prior_bytes`**: the length the file had before, which is what its inverse
+truncates back to. A `null` preimage on an `append` says the file did not
+exist at all, so the inverse is removing it rather than truncating it to
+nothing. A record with no file content to digest (`observe`, and today's
+`append_op` uses such as a directory's creation or a symlink re-point)
+instead carries a free-text **`note`**.
 
 ## Operations and their inverses
 
@@ -85,20 +89,21 @@ op names its own inverse, which is what a later reversal would apply:
 seen, and records a fact about the state adoption found -- that a directory
 was already there, that a file already existed, that a symlink already
 pointed somewhere -- which nothing can re-derive after the fact. `patch`,
-`append`, `rename`, `remove` and `move` are declared here as part of the
-domain (`journal.OPS`) but have no caller yet in this plugin; `create`,
-`replace`, `observe` and `link` are the four `init` writes today.
+`rename`, `remove` and `move` are declared here as part of the domain
+(`journal.OPS`) but have no caller yet in this plugin; `create`, `replace`,
+`observe`, `link` and `append` are the five `init` writes today -- `append`
+for the one line it adds to the repository's ignore file.
 
 ## Stages and unfinished transactions
 
-A file write (`Run.write`) is journalled in two steps, both flushed and
-fsynced before the next one starts: a **`prepared`** record carrying the
-preimage and the expected postimage, then the atomic mutation itself (a
-temporary file, then `os.replace`), then a **`committed`** record repeating
-the same preimage and postimage. A mutation with no file bytes to prepare
-for -- a directory made by `_ensure_dir`, a symlink written by
-`_sync_symlink`, an `observe` -- is recorded directly at `committed`: there
-is no intermediate state to crash inside.
+A write of file bytes (`Run.write`, `Run.append_text`) is journalled in two
+steps, both flushed and fsynced before the next one starts: a **`prepared`**
+record carrying the preimage and the expected postimage, then the atomic
+mutation itself (a temporary file, `fsync`, `os.replace`, then a fsync of
+the directory that now carries the name), then a **`committed`** record
+repeating the same fields. An `observe` -- a fact about a path rather than a
+change to one -- is recorded at `committed` alone, having nothing to
+prepare.
 
 A `prepared` record with no matching `committed` is an **unfinished
 transaction**: the process died between the two appends, or between the

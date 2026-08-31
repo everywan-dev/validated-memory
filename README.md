@@ -75,6 +75,7 @@ see [Installing](docs/installing.md#running-the-cli-outside-the-plugin)):
 
 ```console
 $ python3 -P -m validated_memory init
+init: ignored /.validated-memory/ in .gitignore
 init: created knowledge
 init: created memory
 init: created memory/MEMORY.md

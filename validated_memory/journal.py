@@ -561,15 +561,16 @@ class Run:
             install(temporary, blob)
         return reference
 
-    def write(self, path, content, purpose, durability=REPO):
-        """Create or replace the text file at `path`, journalling both stages.
+    def _location(self, path):
+        """`path` as a record will carry it: relative to the adopter root.
 
-        `path` is relative to the adopter root and is written to the journal
-        exactly as given, so a record never carries an absolute path -- which
-        §7 of the design refuses to act on later.
+        Written to the journal exactly as given, so a record never carries
+        an absolute path -- which §7 of the design refuses to act on later.
+        Refusing to write such a record is what keeps it out of the history;
+        `read` applies the same rule to what it finds there.
         """
         location = Path(path).as_posix()
-        if Path(location).is_absolute() or ".." in Path(location).parts:
+        if not _is_inside_path(location):
             raise ValueError(
                 f"{location} is not a path inside the adopter root; a "
                 "repository record may only carry a relative path that stays "
@@ -580,6 +581,11 @@ class Run:
                 f"{location} is a directory; refusing to journal a file write "
                 "against it. Nothing has been recorded."
             )
+        return location
+
+    def write(self, path, content, purpose, durability=REPO):
+        """Create or replace the text file at `path`, journalling both stages."""
+        location = self._location(path)
         data = content.encode("utf-8")
         preimage = self.park_preimage(location)
         op = CREATE if preimage is None else REPLACE
@@ -624,6 +630,64 @@ class Run:
                     COMMITTED,
                     preimage=preimage,
                     postimage=postimage,
+                )
+            ],
+            self.root,
+            durability,
+        )
+
+    def append_text(self, path, content, purpose, durability=REPO):
+        """Append `content` to the text file at `path`, journalling both stages.
+
+        The inverse of an `append` is "truncate to the recorded prior
+        length" (§2), so the record carries `prior_bytes` alongside the
+        preimage and postimage digests. `preimage` is null when the file did
+        not exist at all, exactly as it is for a `create`: the inverse is
+        then removing the file, not truncating it to nothing, and only the
+        record can say which of the two this was.
+
+        The append is a read-modify-write into a temporary file and an
+        atomic install, not an `open(..., "a")`: a torn append would leave
+        bytes no postimage describes, which is the state the two-record
+        protocol exists to rule out.
+        """
+        location = self._location(path)
+        target = self.root / location
+        preimage = self.park_preimage(location)
+        existing = target.read_bytes() if preimage is not None else b""
+        data = existing + content.encode("utf-8")
+        fields = {
+            "preimage": preimage,
+            "postimage": digest(data),
+            "prior_bytes": len(existing),
+        }
+
+        append(
+            [
+                self._record(
+                    APPEND, purpose, location, durability, PREPARED, **fields
+                )
+            ],
+            self.root,
+            durability,
+        )
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+        try:
+            with temporary.open("wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            install(temporary, target)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise
+
+        append(
+            [
+                self._record(
+                    APPEND, purpose, location, durability, COMMITTED, **fields
                 )
             ],
             self.root,

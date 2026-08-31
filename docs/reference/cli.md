@@ -36,8 +36,23 @@ gate.)
 Each item is created only if missing. An existing item -- including one
 already hand-edited -- is never touched: `init` reports `init: created
 <path>` or `init: kept <path>` per item, so re-running it is idempotent and
-says so. The only way `init` gates (exit 1) is an item it could not create at
-all, e.g. no write permission on the target directory.
+says so. `init` gates (exit 1) on an item it could not create at all (e.g.
+no write permission on the target directory), and on a journal it could not
+read or write -- see [Journal](journal.md).
+
+`init` also appends one line to the repository's ignore file (`.gitignore`,
+created if missing): `/.validated-memory/`, the vault. That entry is not one
+of the adoption questionnaire's answers and is written on every adoption,
+whatever the project versions -- the vault holds preimages, which may carry
+bytes the adopter deliberately kept local (ADR 0008). It is written once:
+an ignore file that already carries the rule is left exactly as it is, and
+the edit is journalled as an `append` with purpose `ignore-rule`. It is
+reported on its own line (`init: ignored /.validated-memory/ in .gitignore`)
+and is not counted among the items created or kept, because it is a line
+appended to a file the adopter owns rather than an item `init` manages. An
+ignore file that is a symlink, or that cannot be read, is left untouched and
+reported as an ERROR: the vault is then unignored, which is the one thing
+the entry exists to prevent.
 
 `validated-memory.md` declares the full adopter surface `extension.py`
 validates: the declared extension (`schema`, `version`), the `id_prefix`,
