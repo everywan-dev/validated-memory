@@ -620,6 +620,27 @@ class Run:
             )
         return location
 
+    def _write_bytes(self, location, data):
+        """Put `data` at `location`, atomically: temporary, fsync, install.
+
+        The temporary is plugin-owned and pid-named, so it is not itself an
+        adopter mutation and is not journalled (§4). A failure removes it
+        and raises, leaving the target exactly as it was -- which is what
+        makes the open `prepared` record the only trace, and an honest one.
+        """
+        target = self.root / location
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+        try:
+            with temporary.open("wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            install(temporary, target)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise
+
     def write(self, path, content, purpose, durability=REPO):
         """Create or replace the text file at `path`, journalling both stages."""
         location = self._location(path)
@@ -644,18 +665,7 @@ class Run:
             durability,
         )
 
-        target = self.root / location
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
-        try:
-            with temporary.open("wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            install(temporary, target)
-        except OSError:
-            temporary.unlink(missing_ok=True)
-            raise
+        self._write_bytes(location, data)
 
         append(
             [
@@ -710,17 +720,7 @@ class Run:
             durability,
         )
 
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
-        try:
-            with temporary.open("wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            install(temporary, target)
-        except OSError:
-            temporary.unlink(missing_ok=True)
-            raise
+        self._write_bytes(location, data)
 
         append(
             [
