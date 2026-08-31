@@ -197,8 +197,9 @@ def test_the_record_entry_grammars_and_the_four_status_literals():
     # The filename is the identity, and a successor never edits in place.
     assert "`source-<alias>.md`" in text
     assert "`source-<alias>-2.md`" in text
-    # Exactly four literals, stated as such, and written unquoted -- a
-    # quoted value lints clean but the startup hook counts it nowhere.
+    # Exactly four literals, stated as such, and written unquoted -- since
+    # 1.5.2 the hook counts a quoted value too, and `lint` warns about it, so
+    # the skill has to keep asking for the one canonical form.
     assert "one of exactly four literals" in text
     assert "The value is written **unquoted**" in text
     # A database's definition entry is an ordinary `reference` memory entry,

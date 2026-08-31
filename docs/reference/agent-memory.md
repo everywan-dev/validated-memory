@@ -130,13 +130,16 @@ happens to equal this file's filename, so resolution is settled first.
 `adopt-validated-memory` skills to record one fact each about a source of
 existing knowledge seen at adoption: its alias, its type, where it is (a
 repository-relative path, or the literal `outside the repository`), its
-status, the date, and what was written from it. `lint` knows nothing about
-them: they are ordinary memory entries, validated by the rules above and by
-nothing else, and a status that changes is retired by the same supersession
-every other fact uses -- a successor under a new filename, and `superseded
+status, the date, and what was written from it. They are ordinary memory
+entries, validated by the rules above, and a status that changes is retired
+by the same supersession every other fact uses -- a successor under a new filename, and `superseded
 by [[...]]` written into the old one's `description`, which is the only
-change that entry ever receives. The convention lives in the skills, and the
-startup hook `hooks/session-context.sh` counts the active entries by status
-at every session start. A database's definition is *not* one of these: it is
+change that entry ever receives. The one rule `lint` adds for them is a
+WARNING when the `description` is written quoted: both forms parse and the
+startup hook counts both, but a single canonical form is what keeps the
+skills that write these entries, the hook that reads them and `lint` saying
+the same thing. The convention lives in the skills, and the startup hook
+`hooks/session-context.sh` counts the active entries by status at every
+session start. A database's definition is *not* one of these: it is
 an ordinary `reference` entry named `<alias>-definition.md`, carrying no
 status and outside the `source-*` glob.

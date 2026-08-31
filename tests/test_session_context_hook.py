@@ -902,3 +902,38 @@ def test_a_description_the_parser_would_reject_counts_nowhere(tmp_path):
         "knowledge sources: 0 imported, 0 declared not scanned, "
         "0 found not imported, 0 not located" in stdout
     ), stdout
+
+
+def test_the_counts_line_reads_a_plain_value_the_parser_trims(tmp_path):
+    """Parity on the canonical form, which is the one the skill writes.
+
+    `_cut_comment` drops a trailing comment from a plain scalar as well as
+    from a quoted one, and `_parse_mapping` strips the key before the colon.
+    A hook that mirrored the parser only on the quoted form would count the
+    shape `lint` warns about and lose the shape `lint` asks for -- the 1.5.1
+    failure with its two sides swapped.
+    """
+    project = tmp_path / "adopter"
+    (project / "memory").mkdir(parents=True)
+    (project / "validated-memory.md").write_text("", encoding="utf-8")
+    (project / "memory" / "source-comment.md").write_text(
+        _source_entry(
+            "source-comment", "knowledge source comment: imported  # trailing"
+        ),
+        encoding="utf-8",
+    )
+    (project / "memory" / "source-spaced.md").write_text(
+        "---\n"
+        "name: source-spaced\n"
+        "description : knowledge source spaced: not located\n"
+        "metadata:\n"
+        "  type: reference\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+    stdout = _run_hook_checked(project).stdout
+    assert (
+        "knowledge sources: 1 imported, 0 declared not scanned, "
+        "0 found not imported, 1 not located" in stdout
+    ), stdout

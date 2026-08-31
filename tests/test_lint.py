@@ -944,3 +944,72 @@ def test_lint_warns_on_a_quoted_source_description(run_cli, tmp_path):
     assert result.returncode == 0, result.stderr
     assert "description is written unquoted" in result.stderr, result.stderr
     assert "0 error(s), 1 warning(s)" in result.stdout, result.stdout
+
+
+def test_lint_does_not_read_a_quoted_description_out_of_the_body(run_cli, tmp_path):
+    """The check reads the first frontmatter block, and stops at its fence.
+
+    A record entry's body is adopter prose. A line in it that happens to open
+    `description: "` is not a frontmatter value, and warning about it would
+    put the check's name on text the entry never declared.
+    """
+    project = tmp_path / "adopter"
+    (project / "memory").mkdir(parents=True)
+    (project / "validated-memory.md").write_text("", encoding="utf-8")
+    (project / "memory" / "source-alpha.md").write_text(
+        "---\n"
+        "name: source-alpha\n"
+        "summary: no description in this block\n"
+        "metadata:\n"
+        "  type: reference\n"
+        "---\n"
+        "\n"
+        'description: "quoted body prose"\n',
+        encoding="utf-8",
+    )
+    (project / "memory" / "MEMORY.md").write_text(
+        "# Memory\n- [alpha](source-alpha.md) - a source\n", encoding="utf-8"
+    )
+
+    result = run_cli("lint", cwd=project)
+
+    assert "description is written unquoted" not in result.stderr, result.stderr
+
+
+def test_lint_checks_exactly_the_record_entries_the_hook_counts(run_cli, tmp_path):
+    """The check's population is the hook's glob: `memory/source-*.md`.
+
+    The hook globs direct children of `memory/` and nothing else. A file in a
+    subdirectory is never counted, so warning about its form would name a
+    rule that decides nothing; a name outside the alias grammar, such as
+    `source-A.md`, IS counted, so it has to be checked.
+    """
+    project = tmp_path / "adopter"
+    (project / "memory" / "nested").mkdir(parents=True)
+    (project / "validated-memory.md").write_text("", encoding="utf-8")
+    quoted = (
+        "---\n"
+        "name: {name}\n"
+        'description: "knowledge source {alias}: imported"\n'
+        "metadata:\n"
+        "  type: reference\n"
+        "---\n"
+    )
+    (project / "memory" / "nested" / "source-deep.md").write_text(
+        quoted.format(name="source-deep", alias="deep"), encoding="utf-8"
+    )
+    (project / "memory" / "source-A.md").write_text(
+        quoted.format(name="source-A", alias="a"), encoding="utf-8"
+    )
+    (project / "memory" / "MEMORY.md").write_text(
+        "# Memory\n"
+        "- [deep](nested/source-deep.md) - a nested source\n"
+        "- [A](source-A.md) - a source named outside the grammar\n",
+        encoding="utf-8",
+    )
+
+    result = run_cli("lint", cwd=project)
+
+    assert "source-A.md" in result.stderr, result.stderr
+    assert "nested/source-deep.md" not in result.stderr, result.stderr
+    assert "0 error(s), 1 warning(s)" in result.stdout, result.stdout

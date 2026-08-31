@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 
 from . import memory as memory_module
 from .findings import ERROR, WARNING, Finding, report
-from .frontmatter import FrontmatterError, parse
+from .frontmatter import FENCE, FrontmatterError, parse
 
 DEFAULT_MEMORY_DIR = memory_module.DEFAULT_DIR
 INDEX_FILENAME = memory_module.INDEX_FILENAME
@@ -145,7 +145,11 @@ def _lint_memories(documents):
             )
             continue
         parsed.append((document.location, data, memory_module.body(document.text)))
-        findings.extend(_check_source_description_form(document.location, document.text))
+        findings.extend(
+            _check_source_description_form(
+                document.location, document.relpath, document.text
+            )
+        )
 
     for location, data, _body in parsed:
         findings.extend(_check_memory(location, data))
@@ -406,11 +410,17 @@ def _describe(value):
     return "a missing value"
 
 
-SOURCE_FILENAME = re.compile(r"(^|/)source-[a-z0-9][a-z0-9-]*\.md$")
-QUOTED_DESCRIPTION = re.compile(r"^description:[ \t]*[\"']")
+# The population is the startup hook's glob, `memory/source-*.md`, matched
+# against the path relative to the memory directory: direct children only,
+# and every name the glob admits, including one outside the alias grammar.
+# A check whose population were wider would warn about an entry the hook
+# never counts; one narrower would leave an entry it does count unchecked.
+SOURCE_FILENAME = re.compile(r"^source-[^/]*\.md$")
+QUOTED_DESCRIPTION = re.compile(r"^description[ ]*:[ \t]*[\"']")
+DESCRIPTION_KEY = re.compile(r"^description[ ]*:")
 
 
-def _check_source_description_form(location, text):
+def _check_source_description_form(location, relpath, text):
     """A source record's `description` is written unquoted, and only unquoted.
 
     Both forms parse, and since 1.5.2 the startup hook counts both, so a
@@ -419,13 +429,22 @@ def _check_source_description_form(location, text):
     reads them and this check saying the same thing. Measured on the first
     real adoption (2026-08-30): eight source records were written quoted and
     the hook counted zero, and nothing in the toolchain said so.
+
+    Only the first frontmatter block is read, and the scan stops at its
+    closing fence: a `description:` line below it is adopter prose, not a
+    value the entry declares. The document has already parsed by the time
+    this runs, so the opening fence, the closing fence and the absence of
+    tabs are all guaranteed.
     """
-    if not SOURCE_FILENAME.search(location.replace("\\", "/")):
+    if not SOURCE_FILENAME.match(relpath):
         return []
-    for line in text.splitlines():
+    lines = text.split("\n")
+    if not lines or lines[0].rstrip() != FENCE:
+        return []
+    for line in lines[1:]:
         stripped = line.rstrip()
-        if stripped == "---":
-            continue
+        if stripped == FENCE:
+            return []
         if QUOTED_DESCRIPTION.match(stripped):
             return [
                 Finding(
@@ -436,6 +455,6 @@ def _check_source_description_form(location, text):
                     "quoted parses but is not the canonical form",
                 )
             ]
-        if stripped.startswith("description:"):
+        if DESCRIPTION_KEY.match(stripped):
             return []
     return []

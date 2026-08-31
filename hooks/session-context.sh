@@ -153,13 +153,24 @@ done
 counts_line=""
 if [ "$#" -gt 0 ]; then
   counts_line="$(awk '
-    # Mirror the frontmatter parser on a quoted scalar: a value opening with
-    # a quote runs to its matching quote, nothing but a comment may follow,
-    # and there are no backslash escapes. A value the parser would reject is
-    # returned untouched, so it matches no literal and counts nowhere --
-    # `lint` is what names it.
-    function unquote(v,   q, end, trailing) {
-      if (v !~ /^["'"'"']/) { return v }
+    # Mirror `_cut_comment` in the frontmatter parser on the value of a
+    # `description` entry. A plain value runs to a ` #`, which starts a
+    # trailing comment; a value opening with a quote runs to its matching
+    # quote, after which nothing but a comment may follow. A value the parser
+    # would reject -- an unterminated quote -- is returned untouched, so it
+    # matches no literal and counts nowhere; `lint` is what names it. The
+    # backslash a quoted scalar may not carry is not mirrored, and does not
+    # need to be: no value carrying one can match a status literal, so such
+    # an entry counts nowhere either way.
+    function unquote(v,   q, end, trailing, marker) {
+      if (v !~ /^["'"'"']/) {
+        marker = index(v, " #")
+        if (marker > 0) {
+          v = substr(v, 1, marker - 1)
+          sub(/[ \t]+$/, "", v)
+        }
+        return v
+      }
       q = substr(v, 1, 1)
       end = index(substr(v, 2), q)
       if (end == 0) { return v }
@@ -184,11 +195,11 @@ if [ "$#" -gt 0 ]; then
       if (seen == 1) { classify(unquote(description)) }
       next
     }
-    line ~ /^description:[ \t]*/ {
+    line ~ /^description[ ]*:[ \t]*/ {
       seen++
       if (seen == 1) {
         description = line
-        sub(/^description:[ \t]*/, "", description)
+        sub(/^description[ ]*:[ \t]*/, "", description)
         sub(/[ \t]+$/, "", description)
       }
       next
