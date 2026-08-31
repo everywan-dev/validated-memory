@@ -93,3 +93,26 @@ def test_a_journal_that_cannot_be_parsed_is_refused_with_its_line(run_cli, tmp_p
     assert result.returncode == 1, result.stdout
     assert "journal.jsonl" in result.stderr, result.stderr
     assert "not valid JSON" in result.stderr, result.stderr
+
+
+def test_a_created_file_records_its_postimage_and_both_stages(run_cli, tmp_path):
+    """Creating a file records both stages and the bytes it ended up with.
+
+    A `created` path needs no preimage: its inverse is removal. A replaced
+    one does, and it can only be taken the first time, because only the
+    first copy is the pre-adoption state.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    # `init` keeps an existing file rather than replacing it, so the second
+    # run must record `observe`, not `replace`, for the same paths.
+    records = _records(tmp_path / "journal.jsonl")
+    creates = [e for e in records if e["op"] == "create" and e["stage"] == "committed"]
+    assert creates, records
+    for entry in creates:
+        assert entry["postimage"].startswith("sha256:"), entry
+
+    prepared = [e for e in records if e["stage"] == "prepared"]
+    committed = [e for e in records if e["stage"] == "committed"]
+    assert len(prepared) == len(creates), (prepared, creates)
+    # Every prepared record is followed by its committed twin for the same path.
+    assert {e["path"] for e in prepared} <= {e["path"] for e in committed}

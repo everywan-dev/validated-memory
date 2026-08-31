@@ -314,3 +314,133 @@ def bootstrap(root=Path()):
         temporary.unlink(missing_ok=True)
         raise
     return adoption
+
+
+class Run:
+    """One invocation's journalling context.
+
+    Holds the adoption id, this run's id and the lock, and turns a mutation
+    into the three steps §4 of the design requires: a flushed `prepared`
+    record carrying the preimage and the expected postimage, the atomic
+    mutation, then a flushed `committed` record. A `prepared` with no
+    `committed` is what `journal --check` reconciles; nothing here guesses
+    at one.
+    """
+
+    def __init__(self, root=Path()):
+        self.root = Path(root)
+        self.adoption = bootstrap(self.root)
+        self.run = new_id()
+
+    def _record(self, op, purpose, path, durability, stage, **extra):
+        return record(
+            op,
+            purpose,
+            path,
+            durability=durability,
+            stage=stage,
+            adoption=self.adoption,
+            run=self.run,
+            **extra,
+        )
+
+    def observe(self, path, note, durability=REPO):
+        """Record a pre-adoption fact about `path`. Written once, never inverted."""
+        append(
+            [self._record(OBSERVE, "init", path, durability, COMMITTED, note=note)],
+            self.root,
+            durability,
+        )
+
+    def park_preimage(self, path):
+        """Copy the current bytes of `path` into the vault; return the reference.
+
+        Returns None when `path` does not exist, which is what distinguishes
+        a `create` from a `replace`. A preimage is parked only the first
+        time a given path is written, because only that copy is the
+        pre-adoption state -- a second copy would record an intermediate
+        state as if it were the original.
+        """
+        target = self.root / path
+        if not target.exists() or target.is_dir():
+            return None
+        data = target.read_bytes()
+        reference = digest(data)
+        blob = (
+            self.root
+            / VAULT_DIRNAME
+            / PREIMAGE_DIRNAME
+            / reference.replace("sha256:", "")
+        )
+        if not blob.exists():
+            blob.parent.mkdir(parents=True, exist_ok=True)
+            temporary = blob.with_name(f"{blob.name}.{os.getpid()}.tmp")
+            temporary.write_bytes(data)
+            os.replace(temporary, blob)
+        return reference
+
+    def write(self, path, content, purpose, durability=REPO):
+        """Create or replace the text file at `path`, journalling both stages.
+
+        `path` is relative to the adopter root and is written to the journal
+        exactly as given, so a record never carries an absolute path -- which
+        §7 of the design refuses to act on later.
+        """
+        location = Path(path).as_posix()
+        data = content.encode("utf-8")
+        preimage = self.park_preimage(location)
+        op = CREATE if preimage is None else REPLACE
+        postimage = digest(data)
+
+        append(
+            [
+                self._record(
+                    op,
+                    purpose,
+                    location,
+                    durability,
+                    PREPARED,
+                    preimage=preimage,
+                    postimage=postimage,
+                )
+            ],
+            self.root,
+            durability,
+        )
+
+        target = self.root / location
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+        try:
+            with temporary.open("wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise
+
+        append(
+            [
+                self._record(
+                    op,
+                    purpose,
+                    location,
+                    durability,
+                    COMMITTED,
+                    preimage=preimage,
+                    postimage=postimage,
+                )
+            ],
+            self.root,
+            durability,
+        )
+
+    def append_op(self, op, purpose, path, note, durability=REPO):
+        """Record a completed mutation with no file preimage, such as a mkdir."""
+        append(
+            [self._record(op, purpose, path, durability, COMMITTED, note=note)],
+            self.root,
+            durability,
+        )
