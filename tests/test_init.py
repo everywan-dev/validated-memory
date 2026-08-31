@@ -181,6 +181,26 @@ def test_a_directory_that_cannot_be_created_gates_with_an_error(adopter_dir, run
         os.chmod(locked, 0o700)
 
 
+def test_a_directory_blocked_by_a_dangling_symlink_gates_with_an_error(
+    adopter_dir, run_cli
+):
+    """`_ensure_dir` reports a directory it could not create, and gates.
+
+    The root stays writable, so the journal and its lock are created
+    normally and the failure happens where this test aims it. A dangling
+    symlink is the way in: `exists()` follows the link and answers False, so
+    `_ensure_dir` tries to create the directory, and `mkdir` then refuses
+    because the link itself is in the way.
+    """
+    (adopter_dir / "knowledge").symlink_to("nowhere-at-all")
+
+    result = run_cli("init", cwd=adopter_dir)
+
+    assert result.returncode == 1, result.stdout
+    assert "knowledge" in result.stderr, result.stderr
+    assert "directory could not be created" in result.stderr, result.stderr
+
+
 def test_an_item_blocked_by_a_file_gates_with_an_error(adopter_dir, run_cli):
     # A regular file where the scaffold needs a directory: creating
     # memory/MEMORY.md fails for every user, root included -- unlike

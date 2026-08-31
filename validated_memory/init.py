@@ -280,15 +280,9 @@ def _sync_symlink(raw_path, stdout, session):
                 return []
             path.unlink()
             path.symlink_to(target, target_is_directory=True)
-            session.append_op(
-                journal.LINK,
-                "init",
-                path.as_posix(),
-                f"previous target: {previous}" if previous else "no previous link",
-                durability=journal.LOCAL,
-            )
+            findings = _record_symlink(session, path, previous)
             print(f"init: re-pointed symlink {location} -> {target}", file=stdout)
-            return []
+            return findings
         # A real path that is not a symlink: `adopt` decides whether it holds
         # agent memory this project can absorb, or must be left alone.
         findings = []
@@ -298,6 +292,24 @@ def _sync_symlink(raw_path, stdout, session):
                 return findings
         path.parent.mkdir(parents=True, exist_ok=True)
         path.symlink_to(target, target_is_directory=True)
+        findings.extend(_record_symlink(session, path, previous))
+        print(f"init: created symlink {location} -> {target}", file=stdout)
+        return findings
+    except OSError as error:
+        message = f"could not be linked to '{target}': {error}; session unaffected"
+        return [Finding(WARNING, location, "symlink", message)]
+
+
+def _record_symlink(session, path, previous):
+    """Journal a symlink mutation that already happened. Returns findings.
+
+    The `symlink_to` above this call already succeeded -- a failure here is
+    the record failing, not the link, and a component whose whole argument
+    is saying what actually happened must not blame the wrong one. Kept a
+    WARNING, same as every other failure along this path: `init` is
+    fail-open about the harness symlink.
+    """
+    try:
         session.append_op(
             journal.LINK,
             "init",
@@ -305,11 +317,16 @@ def _sync_symlink(raw_path, stdout, session):
             f"previous target: {previous}" if previous else "no previous link",
             durability=journal.LOCAL,
         )
-        print(f"init: created symlink {location} -> {target}", file=stdout)
-        return findings
     except OSError as error:
-        message = f"could not be linked to '{target}': {error}; session unaffected"
-        return [Finding(WARNING, location, "symlink", message)]
+        return [
+            Finding(
+                WARNING,
+                path.as_posix(),
+                "journal",
+                f"the symlink was created but could not be recorded: {error}",
+            )
+        ]
+    return []
 
 
 def _ensure_views(stdout):
