@@ -319,12 +319,14 @@ def bootstrap(root=Path()):
 class Run:
     """One invocation's journalling context.
 
-    Holds the adoption id, this run's id and the lock, and turns a mutation
-    into the three steps §4 of the design requires: a flushed `prepared`
-    record carrying the preimage and the expected postimage, the atomic
-    mutation, then a flushed `committed` record. A `prepared` with no
-    `committed` is what `journal --check` reconciles; nothing here guesses
-    at one.
+    Holds the adoption id and this run's id, and turns a mutation into the
+    three steps §4 of the design requires: a flushed `prepared` record
+    carrying the preimage and the expected postimage, the atomic mutation,
+    then a flushed `committed` record. A `prepared` with no `committed` is
+    what `journal --check` reconciles; nothing here guesses at one.
+
+    It does NOT hold the lock. `bootstrap`, which `__init__` calls, requires
+    the caller to hold `Lock` already, and so does every mutation below it.
     """
 
     def __init__(self, root=Path()):
@@ -375,7 +377,14 @@ class Run:
         if not blob.exists():
             blob.parent.mkdir(parents=True, exist_ok=True)
             temporary = blob.with_name(f"{blob.name}.{os.getpid()}.tmp")
-            temporary.write_bytes(data)
+            # The blob is named after its own digest, so a torn write would
+            # leave bytes that silently disagree with the name every later
+            # reader trusts. Every other atomic write in this module fsyncs
+            # before the rename; this one has to as well.
+            with temporary.open("wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(temporary, blob)
         return reference
 
@@ -387,6 +396,17 @@ class Run:
         §7 of the design refuses to act on later.
         """
         location = Path(path).as_posix()
+        if Path(location).is_absolute() or ".." in Path(location).parts:
+            raise ValueError(
+                f"{location} is not a path inside the adopter root; a "
+                "repository record may only carry a relative path that stays "
+                "below it. Nothing has been recorded."
+            )
+        if (self.root / location).is_dir():
+            raise IsADirectoryError(
+                f"{location} is a directory; refusing to journal a file write "
+                "against it. Nothing has been recorded."
+            )
         data = content.encode("utf-8")
         preimage = self.park_preimage(location)
         op = CREATE if preimage is None else REPLACE
