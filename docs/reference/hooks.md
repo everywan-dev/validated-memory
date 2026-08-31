@@ -122,7 +122,9 @@ What it prints, in order:
    strips every character Python calls whitespace, so a value padded with a
    no-break space, a vertical tab or a form feed parses and counts nowhere.
    Neither is portable to recognise across gawk, mawk and busybox awk, and
-   neither is a form the skill writes.
+   neither is a form the skill writes. Both are pinned by a test
+   (`tests/test_session_context_hook.py`), so the divergence is a checked
+   statement rather than prose either side can drift away from.
 
 Two details carry the safety of this hook. First, `status` writes only its
 `status:` summary lines to stdout and every `ERROR:`/`WARNING:` finding to
