@@ -189,6 +189,41 @@ def append(records, root=Path(), durability=REPO):
         os.fsync(handle.fileno())
 
 
+def install(temporary, target):
+    """Atomically move `temporary` onto `target`, durably.
+
+    `os.replace` publishes the new bytes under the old name, but the
+    directory entry carrying that name is itself buffered. Without the
+    directory fsync, a `committed` record that was flushed to disk can
+    outlive the rename it describes -- "a record describes a state that
+    never existed", one power cut down -- so design §4's claim that a
+    `committed` record means the bytes are on disk would hold for a process
+    crash and not for a power loss.
+    """
+    os.replace(temporary, target)
+    fsync_directory(Path(target).parent)
+
+
+def fsync_directory(path):
+    """Flush a directory's own entries to disk.
+
+    A platform where a directory cannot be opened for reading skips the
+    barrier rather than failing the write it was protecting: the bytes are
+    already fsynced and renamed at this point, and refusing here would turn
+    a durability improvement into a lost mutation.
+    """
+    try:
+        handle = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        os.close(handle)
+
+
 def artifact_name(durability):
     """The journal of `durability`, named the way a finding names a file."""
     return journal_path(Path(), durability).as_posix()
@@ -311,9 +346,15 @@ def _is_inside_path(path):
     return not candidate.is_absolute() and ".." not in candidate.parts
 
 
-# A lock older than this whose owner is gone is broken rather than waited on:
-# a process killed between taking the lock and releasing it must not wedge
-# every later run of a startup hook.
+# A lock older than this is broken rather than waited on -- by age alone.
+# Nothing checks whether the process that took it is still running, so this
+# is a bet that no legitimate holder is slower than five minutes, not a
+# liveness test. It holds today because every caller holds the lock for
+# milliseconds; a caller that held it across a tree walk would have its lock
+# broken under it, and would need the liveness check (`os.kill(pid, 0)` on
+# the pid in the file) that is not written yet. Without it, a process killed
+# between taking the lock and releasing it would wedge every later run of a
+# startup hook.
 STALE_LOCK_SECONDS = 300
 
 
@@ -327,7 +368,15 @@ class Lock:
     existed.
 
     The lock is a file created with `O_CREAT | O_EXCL`, which is atomic. Its
-    contents are the owning pid, so a stale lock can be attributed.
+    contents are the owning pid, for a person looking at a lock file that
+    should not be there; no code reads them, and the contention message names
+    the path rather than the holder.
+
+    Releasing is unconditional: `__exit__` unlinks the path whether or not
+    the file there is still the one this object created. A lock broken as
+    stale (see `STALE_LOCK_SECONDS`) and then taken by a third process would
+    therefore be released twice, once by each. Nothing can reach that state
+    today, because no caller holds the lock long enough to be broken.
     """
 
     def __init__(self, root=Path()):
@@ -373,7 +422,11 @@ class Lock:
         return False
 
     def _break_if_stale(self):
-        """Remove the lock when its owner is gone. Returns whether it broke one."""
+        """Remove the lock when it is older than the stale window.
+
+        Returns whether it broke one. The owner is not consulted: see
+        `STALE_LOCK_SECONDS` for what that costs and what would fix it.
+        """
         try:
             age = time.time() - self.path.stat().st_mtime
         except FileNotFoundError:
@@ -429,7 +482,7 @@ def bootstrap(root=Path(), run=None):
             handle.write(json.dumps(opening, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        install(temporary, path)
     except OSError:
         temporary.unlink(missing_ok=True)
         raise
@@ -505,7 +558,7 @@ class Run:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, blob)
+            install(temporary, blob)
         return reference
 
     def write(self, path, content, purpose, durability=REPO):
@@ -556,7 +609,7 @@ class Run:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, target)
+            install(temporary, target)
         except OSError:
             temporary.unlink(missing_ok=True)
             raise
