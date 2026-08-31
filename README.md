@@ -248,6 +248,7 @@ a rule the CLI already enforces:
 | **[Curated knowledge](docs/reference/curated-knowledge.md)** | Base contract, adopter configuration, declared extension |
 | **[Agent memory](docs/reference/agent-memory.md)** | The memory layer's rules, identity, and supersession |
 | **[Startup hooks](docs/reference/hooks.md)** | What runs at session start, and what it writes |
+| **[Journal](docs/reference/journal.md)** | The append-only record of every mutation, and the `journal` subcommand |
 | **[ADRs](docs/adr)** | Decisions of record |
 
 ## Development

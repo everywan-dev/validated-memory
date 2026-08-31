@@ -6,7 +6,42 @@ record means is `docs/reference/journal.md`; what it is for is
 `docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md`.
 """
 
+import ast
 import json
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Path methods that mutate, whatever the receiver.
+PATH_MUTATORS = {"write_text", "write_bytes", "mkdir", "symlink_to", "rmdir",
+                 "unlink", "rename"}
+# `os` functions that mutate, matched qualified: `str.replace` is not one of
+# them, and `status.parse_timestamp` calls it.
+OS_MUTATORS = {"replace", "rename", "remove", "symlink", "unlink"}
+# Calls that reach the journal.
+RECORDING = {"observe", "write", "append_op", "append", "_record_symlink"}
+
+# Exempt, each with the reason it is not an adopter mutation this plan
+# records. `journal.py` IS the write path. `render.py` and `derive.py` write
+# only derived artifacts, which their own commands regenerate. `adopt.py`
+# performs the harness absorption, which the reversal plan records with the
+# rest of it. `_ensure_views` writes the two HTML views, derived the same way.
+EXEMPT_MODULES = {"journal.py", "render.py", "derive.py", "adopt.py"}
+EXEMPT_FUNCTIONS = {("init.py", "_ensure_views")}
+
+
+def _called_name(call):
+    function = call.func
+    if isinstance(function, ast.Attribute):
+        if function.attr in PATH_MUTATORS:
+            return function.attr
+        if (
+            function.attr in OS_MUTATORS
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "os"
+        ):
+            return f"os.{function.attr}"
+    return None
 
 
 def _records(path):
@@ -251,3 +286,54 @@ def test_journal_check_catches_a_second_write_to_one_path_in_one_run(
     assert result.returncode == 1, result.stdout
     assert "validated-memory.md" in result.stderr, result.stderr
     assert "unfinished" in result.stderr, result.stderr
+
+
+def test_every_write_in_the_package_goes_through_the_journal():
+    """A mutation with no record fails here, not in the field.
+
+    The 1.5.0 and 1.5.1 failures were both silent narrowings that no test
+    could see. This is the pin that makes a new unjournalled write path
+    visible the moment it is added: a function that mutates the filesystem
+    must also reach the journal, or be named exempt above with its reason.
+
+    The check is deliberately coarse -- it asks whether a function contains
+    both kinds of call, not whether one guards the other -- so a function
+    that mutates and separately calls something journal-shaped would pass.
+    A call-graph would be exact and would also be a second implementation of
+    the thing it checks.
+    """
+    offenders = []
+    for path in sorted((REPO_ROOT / "validated_memory").rglob("*.py")):
+        if path.name in EXEMPT_MODULES:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if (path.name, node.name) in EXEMPT_FUNCTIONS:
+                continue
+            mutations = []
+            records = False
+            for sub in ast.walk(node):
+                if not isinstance(sub, ast.Call):
+                    continue
+                name = _called_name(sub)
+                if name is not None:
+                    mutations.append((name, sub.lineno))
+                called = getattr(sub.func, "attr", None) or getattr(
+                    sub.func, "id", None
+                )
+                if called in RECORDING:
+                    records = True
+            if records:
+                continue
+            for name, lineno in mutations:
+                offenders.append(
+                    f"{path.name}:{lineno}: {node.name}() calls {name}() "
+                    "and never reaches the journal"
+                )
+    assert not offenders, (
+        "these mutate without reaching the journal; route them through a "
+        "`Run` method or add them to EXEMPT_MODULES/EXEMPT_FUNCTIONS with "
+        "the reason:\n" + "\n".join(offenders)
+    )
