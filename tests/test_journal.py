@@ -8,11 +8,12 @@ record means is `docs/reference/journal.md`; what it is for is
 
 import ast
 import json
+import os
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 import pytest
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Path methods that mutate, whatever the receiver.
 PATH_MUTATORS = {
@@ -1027,11 +1028,16 @@ def test_two_artifacts_holding_different_adoption_ids_are_refused(
     assert "adoption" in result.stderr, result.stderr
     assert foreign in result.stderr, result.stderr
     assert mine in result.stderr, result.stderr
+    assert "restore" in result.stderr, result.stderr
+    assert "adopt afresh" in result.stderr, result.stderr
 
 
 # --- a journal that is there is never treated as one that is not --------------
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
 def test_a_journal_that_cannot_be_read_is_a_finding_not_a_traceback(
     run_cli, tmp_path
 ):
