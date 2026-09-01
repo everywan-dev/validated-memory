@@ -1,0 +1,18 @@
+# `journal.jsonl` is always versioned (docs/adr/0008-the-journal-is-versioned-
+# and-the-vault-is-local.md) and strictly append-only, so two clones append at
+# the same end of the same file and any merge of them conflicts. A conflicted
+# journal is an unparseable journal, and an unparseable journal is refused
+# outright: `init` and `journal` both gate on it until someone repairs the
+# file by hand. (`status` does not gate on it -- it never reads either
+# journal, so a conflicted one leaves it reporting a clean project.) Git's
+# built-in union driver keeps both sides' appended lines instead of writing
+# conflict markers, and needs no per-clone configuration.
+#
+# Deliberately not anchored to the repository root: an adopter root is not
+# always a repository root, and matching one journal too many costs nothing
+# beside missing the one that matters.
+#
+# This covers this repository's own journal only. Attributes do not travel
+# between repositories: an adopter needs the same line in its own
+# `.gitattributes`, and `init` does not write it there today.
+journal.jsonl merge=union

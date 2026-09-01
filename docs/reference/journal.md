@@ -44,14 +44,31 @@ record, which is the exact failure mode this component exists to remove. A
 missing journal reads as no records, not as an error -- a brand-new project
 has not adopted yet.
 
+Versioned and strictly append-only is also a standing merge conflict: two
+clones append at the same end of the same file, and an ordinary merge leaves
+conflict markers there, which is exactly the unparseable case above -- every
+later `init` gates until someone repairs the file by hand. Git's built-in
+union merge keeps both sides' lines instead, and a repository that shares a
+journal wants `journal.jsonl merge=union` in its `.gitattributes`; `init`
+does not write that entry into an adopter's repository today. Union
+concatenates: it neither orders nor de-duplicates, so a merged journal can
+carry records whose `at` runs backwards at the seam, and the same line twice
+when it reached the two branches by routes the merge cannot align. Nothing
+reads the file in timestamp order -- `reconcile()` pairs records in file
+order, and a merge preserves each side's own order within its own lines --
+but a reader of a merged journal should not assume the file is one clone's
+history.
+
 ## What is recorded, and what is not yet
 
-**Recorded today: every mutation `init` performs.** The scaffold it creates
-and the paths it finds already there (`create`, `observe`), the vault's
-entry in the ignore file (`append`), and the harness symlink (`link`, in the
-vault, since its path leaves the repository).
+**Recorded today: the scaffold `init` writes.** The directories and files
+it creates and the paths it finds already there (`create`, `observe`), the
+vault's entry in the ignore file (`append`), and the harness symlink
+(`link`, always in the vault). That is not every mutation `init` performs:
+the harness take-over below is `init`'s work too, and none of it is
+recorded.
 
-**Not recorded yet**, each because its artifact is derived -- the command
+**Not recorded yet**, first the derived artifacts, each because the command
 that wrote it rewrites it, so nothing is lost that cannot be recomputed:
 
 | Write | By | Artifact |
