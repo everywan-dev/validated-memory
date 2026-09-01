@@ -819,3 +819,41 @@ def test_every_write_in_the_package_goes_through_the_journal():
         "`Run` method or add them to EXEMPT_MODULES/EXEMPT_FUNCTIONS with "
         "the reason:\n" + "\n".join(offenders)
     )
+
+
+# --- the root a record names, and the root the filesystem agrees with ---------
+
+
+def test_a_write_that_escapes_the_root_through_a_symlink_is_refused(
+    run_cli, tmp_path
+):
+    """A record saying `memory/MEMORY.md` must not mean bytes outside the root.
+
+    `memory/` is a symlink out of the project, so the path is lexically
+    fine and the write lands somewhere the journal cannot describe: the
+    record claims a repository-relative path for bytes that are not in the
+    repository, and reversal would restore a file it never touched. Design
+    §7 requires a repository-relative record to resolve below the resolved
+    root without following a symlink out of it, so the write is refused
+    before anything is written and before anything is recorded.
+    """
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    outside = tmp_path / "outside" / "other"
+    outside.mkdir(parents=True)
+    (adopter / "memory").symlink_to(
+        Path("..") / "outside" / "other", target_is_directory=True
+    )
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "memory/MEMORY.md" in result.stderr, result.stderr
+    assert "adopter root" in result.stderr, result.stderr
+    # Nothing outside the root was created, and nothing claims it was.
+    assert not (outside / "MEMORY.md").exists(), sorted(
+        p.name for p in outside.iterdir()
+    )
+    records = _records(adopter / "journal.jsonl")
+    assert not [e for e in records if e["path"] == "memory/MEMORY.md"], records

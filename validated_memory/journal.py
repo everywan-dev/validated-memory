@@ -345,8 +345,9 @@ def _is_inside_path(path):
 
     Lexical, because this runs on every record read: `Run.write` applies the
     same rule to what it writes. The filesystem question -- whether the path
-    resolves below the root once symlinks are followed -- is asked by
-    `_state_of`, at the point something is about to be read.
+    resolves below the root once symlinks are followed -- is asked where
+    something is about to be touched: `Run._location` before a write,
+    `_state_of` before a read.
     """
     candidate = Path(path)
     return not candidate.is_absolute() and ".." not in candidate.parts
@@ -620,6 +621,23 @@ class Run:
         an absolute path -- which §7 of the design refuses to act on later.
         Refusing to write such a record is what keeps it out of the history;
         `read` applies the same rule to what it finds there.
+
+        The lexical rule is only half of it. §7 requires a
+        repository-relative record to resolve below the resolved root
+        WITHOUT following a symlink out of it, and a lexically perfect
+        `memory/MEMORY.md` lands outside the project the moment `memory/`
+        is a symlink pointing there -- bytes written outside the repository
+        under a record that says they are in it. Nothing later notices:
+        `read` is lexical by design, and `_state_of`'s filesystem check
+        only ever runs on an UNFINISHED transaction, so a completed escape
+        is invisible for the life of the journal. Asked here, before the
+        preimage is parked and before the `prepared` record is appended,
+        so a refusal leaves nothing written and nothing recorded.
+
+        The refusal is an `OSError` because that is what the caller already
+        catches per item (`init._ensure_file`, `init._ensure_ignored`): one
+        item gets an ERROR finding and the rest of the run continues, which
+        is what a whole-run abort or a traceback would take away.
         """
         location = Path(path).as_posix()
         if not _is_inside_path(location):
@@ -627,6 +645,12 @@ class Run:
                 f"{location} is not a path inside the adopter root; a "
                 "repository record may only carry a relative path that stays "
                 "below it. Nothing has been recorded."
+            )
+        if not _resolves_below(self.root, self.root / location):
+            raise OSError(
+                f"{location} resolves outside the adopter root; a repository "
+                "record may only name bytes that stay below it. Nothing has "
+                "been written and nothing has been recorded."
             )
         if (self.root / location).is_dir():
             raise IsADirectoryError(
