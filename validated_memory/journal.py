@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import secrets
+import stat
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -247,11 +248,35 @@ def read(root=Path(), durability=REPO):
     file it is in, or whose repository-durability path leaves the adopter
     root, is refused here -- before any reader acts on it -- rather than
     crashing one layer down or being read as an instruction.
+
+    "Missing" is exactly one thing: nothing at that name. `Path.exists()`
+    answers a wider question and answers it wrongly for this one -- it
+    raises on a permission denial (a stack trace out of the check for a
+    missing file), and it reads a broken symlink as absent, after which
+    `bootstrap` mints a second adoption id and `install`'s `os.replace`
+    destroys the adopter's link rather than following it. So the path is
+    stat'ed without following it: absent is absent, unreadable is a
+    refusal, and anything there that is not a regular file is a refusal
+    too, never an absence.
     """
     path = journal_path(root, durability)
     where = artifact_name(durability)
-    if not path.exists():
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
         return []
+    except OSError as error:
+        raise JournalError(
+            None, f"journal could not be read: {error}", where
+        ) from error
+    if not stat.S_ISREG(status.st_mode):
+        raise JournalError(
+            None,
+            "journal is not a regular file; nothing is read from it and "
+            "nothing replaces it -- installing a journal over what the "
+            "adopter put there would destroy it",
+            where,
+        )
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:

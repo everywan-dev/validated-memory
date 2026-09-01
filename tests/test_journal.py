@@ -1023,3 +1023,56 @@ def test_two_artifacts_holding_different_adoption_ids_are_refused(
     assert "adoption" in result.stderr, result.stderr
     assert foreign in result.stderr, result.stderr
     assert mine in result.stderr, result.stderr
+
+
+# --- a journal that is there is never treated as one that is not --------------
+
+
+def test_a_journal_that_cannot_be_read_is_a_finding_not_a_traceback(
+    run_cli, tmp_path
+):
+    """Present but unreadable is a refusal, not an absence and not a crash.
+
+    `Path.exists()` raises on a permission denial rather than answering,
+    so the check for a missing journal was itself the thing that crashed --
+    a stack trace where every other refusal in this CLI is a rendered
+    finding.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    vault = tmp_path / ".validated-memory"
+    vault.chmod(0o000)
+    try:
+        result = run_cli("journal", cwd=tmp_path)
+    finally:
+        vault.chmod(0o755)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "ERROR" in result.stderr, result.stderr
+    assert ".validated-memory/local.jsonl" in result.stderr, result.stderr
+    assert "record(s), 1 error(s)" in result.stdout, result.stdout
+
+
+def test_a_journal_that_is_not_a_regular_file_is_never_replaced(
+    run_cli, tmp_path
+):
+    """A symlink at `journal.jsonl` is the adopter's, and `init` does not destroy it.
+
+    A broken symlink reads as absent (`Path.exists()` ignores ENOENT), so
+    the journal looked missing: `init` minted a second adoption id and
+    installed over the link, which `os.replace` destroys rather than
+    follows. That is exactly the trade `init.BROKEN_SYMLINK` refuses
+    everywhere else -- never destroy what the adopter put there.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    journal.unlink()
+    journal.symlink_to(tmp_path / "nowhere" / "journal.jsonl")
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "journal.jsonl" in result.stderr, result.stderr
+    assert journal.is_symlink(), "the adopter's symlink was replaced"
+    assert not journal.exists(), "the symlink was followed and written through"
