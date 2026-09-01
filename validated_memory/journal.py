@@ -817,7 +817,11 @@ def reconcile(root=Path()):
     happened. `applied` -- they match the postimage, so it happened and only
     the closing record was lost. `diverged` -- neither, so something else
     wrote the path afterwards. `unknown` -- the bytes could not be read at
-    all, so nothing can be said.
+    all, or must not be, so nothing can be said.
+
+    Every unfinished transaction is reported, including the ones this
+    reader refuses to follow: a record it may not read is a fact about that
+    record, not the end of the pass.
 
     This reports. It does not repair: choosing for the user between the
     states the record cannot distinguish is exactly the guessing this
@@ -854,12 +858,13 @@ def _state_of(root, entry):
         # that such a path "can never be authorised by the file itself" and
         # that acting on it needs a fresh CLI argument naming it. Reading the
         # bytes is acting on it.
-        raise JournalError(
-            None,
-            f"record path '{entry['path']}' resolves outside the adopter "
-            "root; reading it would let the record authorise itself",
-            artifact_name(entry["durability"]),
-        )
+        #
+        # So it is not read -- and that is precisely what `unknown` says.
+        # Raising here ended the whole pass instead, hiding every other
+        # unfinished transaction in the project behind one line, and the
+        # `local` record of the harness symlink, whose path is absolute BY
+        # DESIGN, reached it on any ordinary crash between its two records.
+        return UNKNOWN
     if "postimage" not in entry:
         # A mutation with no bytes to digest -- a directory, a symlink.
         # Existence is the whole of its state, so that is what is compared;
@@ -903,19 +908,24 @@ def run(check, stdout, stderr):
     from .findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
 
     root = Path()
+    # Accumulated one artifact at a time so the summary below can say how
+    # many records were actually read when a later one is refused. Printing
+    # a hardcoded 0 there described a project with no history at all, which
+    # is a different and much worse fault than the one that happened.
+    records = []
     try:
-        records = read(root, REPO) + read(root, LOCAL)
-        # `reconcile` reads both journals again and refuses a record that
-        # would send it outside the root, so it belongs inside this handler:
-        # a concurrent writer between the two reads, or a record only
-        # `_state_of` can refuse, must be reported the same way as anything
-        # else the reader cannot accept.
+        for durability in DURABILITIES:
+            records.extend(read(root, durability))
+        # `reconcile` reads both journals again, so it belongs inside this
+        # handler: a journal a concurrent writer left unreadable between the
+        # two reads must be reported the same way as anything else the
+        # reader cannot accept.
         unfinished = reconcile(root) if check else []
     except JournalError as error:
         where = error.artifact or JOURNAL_FILENAME
         location = where if error.lineno is None else f"{where}:{error.lineno}"
         print(Finding(ERROR, location, "journal", error.message).render(), file=stderr)
-        print("journal: 0 record(s), 1 error(s)", file=stdout)
+        print(f"journal: {len(records)} record(s), 1 error(s)", file=stdout)
         return EXIT_ERROR
 
     if not check:

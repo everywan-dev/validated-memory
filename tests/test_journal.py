@@ -857,3 +857,90 @@ def test_a_write_that_escapes_the_root_through_a_symlink_is_refused(
     )
     records = _records(adopter / "journal.jsonl")
     assert not [e for e in records if e["path"] == "memory/MEMORY.md"], records
+
+
+def test_one_record_the_reader_may_not_follow_does_not_hide_the_others(
+    run_cli, tmp_path
+):
+    """`--check` reports every unfinished transaction, not the first refusal.
+
+    A path that resolves out of the root is a fact about that one record:
+    the reader may not read its bytes, so its state is `unknown`. Raising
+    instead ended the pass, and every other unfinished transaction in the
+    project disappeared behind one line -- while `journal` without `--check`
+    read the same file and reported a dozen records, so the two shipped
+    modes disagreed about how many records the file holds.
+    """
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    (adopter / "knowledge").symlink_to(tmp_path / "nonexistent" / "elsewhere")
+
+    # `init` refuses the link and records nothing, so both open records are
+    # written here. The first names a path that resolves out of the root --
+    # the shape this test is about -- and the second is an ordinary
+    # unfinished transaction that must survive the first one's refusal.
+    assert run_cli("init", cwd=adopter).returncode == 1
+    journal = adopter / "journal.jsonl"
+    for run, path in (("1111111111111111", "knowledge"),
+                      ("2222222222222222", "never-written.md")):
+        _append_record(
+            journal,
+            _record(
+                journal,
+                run=run,
+                op="create",
+                path=path,
+                preimage=None,
+                postimage="sha256:" + "3" * 64,
+            ),
+        )
+
+    result = run_cli("journal", "--check", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    reported = {
+        line.split(": journal: ")[0].removeprefix("ERROR: "): line
+        for line in result.stderr.splitlines()
+    }
+    assert "the path is unknown" in reported["knowledge"], reported
+    assert "the path is unapplied" in reported["never-written.md"], reported
+    # The two modes agree about how many records the file holds.
+    plain = run_cli("journal", cwd=adopter)
+    assert plain.stdout.split()[1] == str(len(_records(journal))), plain.stdout
+    assert f"{len(_records(journal))} record(s)" in result.stdout, result.stdout
+
+
+def test_a_refused_journal_still_reports_the_records_it_did_read(
+    run_cli, tmp_path
+):
+    """The count on the error path is what was read, never a hardcoded zero.
+
+    The repository journal here is perfectly readable and its records were
+    read; the vault is the one that could not be parsed. Printing `0
+    record(s)` alongside the ERROR describes a project with no history at
+    all, which is a different -- and much worse -- fault than the one that
+    happened.
+    """
+    harness_memory = tmp_path / "harness" / "memory"
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert (
+        run_cli(
+            "init", "--harness-memory", str(harness_memory), cwd=adopter
+        ).returncode
+        == 0
+    )
+    vault = adopter / ".validated-memory" / "local.jsonl"
+    vault.write_text(
+        vault.read_text(encoding="utf-8") + "{not json\n", encoding="utf-8"
+    )
+
+    result = run_cli("journal", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    read_back = len(_records(adopter / "journal.jsonl"))
+    assert f"journal: {read_back} record(s), 1 error(s)" in result.stdout, (
+        result.stdout,
+        read_back,
+    )
