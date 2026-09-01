@@ -498,15 +498,21 @@ def test_a_corrupt_journal_still_restores_the_harness_symlink(
 @pytest.mark.skipif(
     os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
 )
-def test_an_unwritable_root_still_restores_the_harness_symlink(
+def test_an_unwritable_root_gates_and_leaves_no_link_pointing_nowhere(
     adopter_dir, tmp_path, run_cli
 ):
-    """The journal cannot be opened at all, and the symlink is still restored.
+    """A link to a `memory/` that does not exist is not a restored link.
 
     An adopter root that cannot be written to fails before any scaffold item
     -- the lock and the journal's own bootstrap both need to create files in
-    it. That is an ERROR and it gates; it is not a reason to leave the
-    harness pointing nowhere.
+    it -- so this project has no `memory/` and cannot get one. Measured
+    before this test said so: `init` printed `created symlink` and left the
+    harness's memory path dangling at a directory that does not exist, which
+    is the one outcome worse than not linking at all -- the harness then has
+    no memory, where an untouched path leaves it its own, and a later run
+    absorbs that into the project (`adopt.take_over`).
+
+    The gate itself is unchanged: exit 1, and the journal ERROR says why.
     """
     locked = adopter_dir / "locked"
     locked.mkdir()
@@ -519,8 +525,9 @@ def test_an_unwritable_root_still_restores_the_harness_symlink(
 
         assert result.returncode == 1, result.stdout
         assert "journal" in result.stderr, result.stderr
-        assert harness_memory.is_symlink(), "the symlink was not restored"
-        assert harness_memory.readlink() == locked / "memory"
+        assert "no 'memory/' to link to" in result.stderr, result.stderr
+        assert not harness_memory.is_symlink(), "the harness path was linked"
+        assert not harness_memory.exists()
     finally:
         os.chmod(locked, 0o700)
 

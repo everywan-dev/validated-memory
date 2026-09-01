@@ -19,6 +19,11 @@ which live at PATH rather than in the project; and the temporary files
 The list is read from the skill and the guide as data (the same seam as
 `test_skills_structure.py`); the artifacts come from driving the CLI as a
 subprocess, never from the package.
+
+The vault's own entry is not one of the answers, so what `init` does when it
+cannot write that entry is pinned here too -- including through the real
+`SessionStart` hook (`bash hooks/restore-memory-symlink.sh`), because the
+gate's whole cost is measured on the one job that hook exists for.
 """
 
 import os
@@ -28,9 +33,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADOPT_SKILL = REPO_ROOT / "skills" / "adopt-validated-memory" / "SKILL.md"
 ADOPTION_GUIDE = REPO_ROOT / "docs" / "adoption.md"
+RESTORE_HOOK = REPO_ROOT / "hooks" / "restore-memory-symlink.sh"
+
+
+def _git_version():
+    """The local git's version, as a tuple, for the one fact that depends on it."""
+    text = subprocess.run(
+        ["git", "--version"], capture_output=True, text=True, check=True
+    ).stdout
+    numbers = re.search(r"(\d+)\.(\d+)", text)
+    return tuple(int(part) for part in numbers.groups()) if numbers else (0, 0)
 
 # The ignore list is the one fenced block whose first line is this comment;
 # the entries are its remaining non-blank, non-comment lines.
@@ -339,6 +356,254 @@ def test_an_ignore_entry_the_adopter_already_wrote_is_left_alone(tmp_path, run_c
     assert run_cli("init", cwd=adopter).returncode == 0
 
     assert (adopter / ".gitignore").read_text(encoding="utf-8") == before
+
+
+# --- the gate fires only where the vault is really exposed --------------------
+
+
+def test_a_clone_that_already_ignores_the_vault_does_not_gate(tmp_path, run_cli):
+    """A gate protecting against nothing is not a gate; it is a stopped session.
+
+    `.git/info/exclude` is per-clone, never versioned, and git reads it --
+    a clone that carries the rule there has the vault ignored in fact, so
+    there is nothing left for this entry to add and nothing to stop. It is
+    consulted only here, where `init` cannot write to `.gitignore` at all:
+    that is also where git cannot read `.gitignore` either, which makes the
+    exclude file the highest-precedence source git still reads.
+    """
+    adopter = _fixture_repo(tmp_path / "repo")
+    exclude = adopter / ".git" / "info" / "exclude"
+    exclude.write_text(
+        exclude.read_text(encoding="utf-8") + "/.validated-memory/\n",
+        encoding="utf-8",
+    )
+    # A directory where the ignore file goes: `init` cannot write the entry.
+    (adopter / ".gitignore").mkdir()
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 0, result.stderr
+    assert "ERROR" not in result.stderr, result.stderr
+    # The run went on, because the vault it protects is ignored anyway.
+    for item in ("knowledge", "memory", "validated-memory.md"):
+        assert (adopter / item).exists(), item
+    vault_record = ".validated-memory/local.jsonl"
+    assert _git(
+        adopter, "check-ignore", "-q", vault_record, check=False
+    ).returncode == 0
+    status = _git(adopter, "status", "--porcelain", "-uall").stdout
+    assert ".validated-memory" not in status, status
+    # And the ignore file the adopter owns is exactly as it was.
+    assert (adopter / ".gitignore").is_dir()
+
+
+@pytest.mark.skipif(
+    _git_version() < (2, 43),
+    reason="git only stopped following a symlinked ignore file in 2.43",
+)
+def test_a_symlinked_ignore_file_gates_even_when_its_target_carries_the_entry(
+    tmp_path, run_cli
+):
+    """Reading through the link would call the vault ignored when it is not.
+
+    Measured on git 2.43.0: an ignore file that is a symlink is not read at
+    all -- git reports "unable to access '.gitignore': Too many levels of
+    symbolic links" and the paths it would cover come back untracked. So the
+    rule inside the link's target is not a rule, and `init` may not treat it
+    as one: it would leave the vault exposed and say nothing. This is the
+    one shape where "already ignored" has to be read somewhere other than
+    the ignore file itself.
+    """
+    adopter = _fixture_repo(tmp_path / "repo")
+    (tmp_path / "elsewhere").write_text(
+        "build/\n/.validated-memory/\n", encoding="utf-8"
+    )
+    (adopter / ".gitignore").symlink_to(tmp_path / "elsewhere")
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    assert ".gitignore" in result.stderr, result.stderr
+    # The premise the gate rests on, measured against the adopter's own git.
+    vault_record = ".validated-memory/local.jsonl"
+    assert _git(
+        adopter, "check-ignore", "-q", vault_record, check=False
+    ).returncode == 1, "this git reads a symlinked ignore file; the premise moved"
+
+
+# --- the gate and the SessionStart hook ---------------------------------------
+
+
+def _run_hook(project_dir, config_dir, home):
+    """Drive the real `SessionStart` hook over a minimal environment.
+
+    The same seam as `tests/test_restore_memory_symlink_hook.py`, repeated
+    here rather than shared: these two cases are about what the ignore gate
+    does to the hook's one job, and they belong beside the gate they pin.
+    """
+    return subprocess.run(
+        ["bash", str(RESTORE_HOOK)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(home),
+            "CLAUDE_CONFIG_DIR": str(config_dir),
+            "CLAUDE_PROJECT_DIR": str(project_dir),
+        },
+    )
+
+
+def _harness_memory(config_dir, project_dir):
+    """Where the harness keeps a project's memory, in the hook's own layout."""
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(project_dir))
+    return config_dir / "projects" / slug / "memory"
+
+
+def test_the_hook_restores_the_link_on_an_adopted_project_whose_ignore_file_gates(
+    tmp_path, run_cli
+):
+    """The gate must not take the hook's one job with it.
+
+    Measured through the real hook on an adopted project that was then
+    renamed -- the exact case the hook exists for -- with a symlinked
+    `.gitignore`: before the gate reached this far the link came back; after
+    it, the harness's per-project directory was never created at all, and
+    the hook still reported success. A `SessionStart` hook that restores
+    nothing, silently, every session, is the failure this path exists to
+    prevent.
+
+    Restoring the link moves no data. That is what separates it from the
+    scaffold and from the take-over, which this same gate still refuses --
+    and its record, which could only live in the exposed vault, is not
+    written: the vault is byte-for-byte what it was.
+    """
+    old = _fixture_repo(tmp_path / "before-the-rename")
+    config = tmp_path / "config"
+    assert run_cli(
+        "init", "--harness-memory", str(_harness_memory(config, old)), cwd=old
+    ).returncode == 0
+    new = tmp_path / "after-the-rename"
+    old.rename(new)
+    vault = new / ".validated-memory" / "local.jsonl"
+    recorded = vault.read_bytes()
+    (tmp_path / "elsewhere").write_text("build/\n", encoding="utf-8")
+    (new / ".gitignore").unlink()
+    (new / ".gitignore").symlink_to(tmp_path / "elsewhere")
+
+    result = _run_hook(new, config, tmp_path / "home")
+
+    assert result.returncode == 0, result.stderr
+    assert ".gitignore" in result.stderr, result.stderr
+    harness_memory = _harness_memory(config, new)
+    assert harness_memory.is_symlink(), result.stderr
+    assert harness_memory.resolve() == (new / "memory").resolve()
+    assert (harness_memory / "MEMORY.md").is_file()
+    assert vault.read_bytes() == recorded
+
+
+def test_a_gated_run_on_an_adopted_project_restores_the_link_and_records_nothing(
+    tmp_path, run_cli
+):
+    """Exit 1, the ERROR names the ignore file, and the link is back anyway.
+
+    The three parts are one statement: the run refuses to write into a vault
+    the next commit could carry, says so, and still does the one thing that
+    writes nothing -- re-pointing the harness at this project's `memory/`.
+    The vault is byte-for-byte what it was, so the record the link would
+    normally leave is genuinely absent, and the WARNING on stderr is where
+    the previous target is said instead.
+    """
+    adopter = _fixture_repo(tmp_path / "repo")
+    harness_memory = tmp_path / "harness" / "memory"
+    assert run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter
+    ).returncode == 0
+    vault = adopter / ".validated-memory" / "local.jsonl"
+    recorded = vault.read_bytes()
+    harness_memory.unlink()
+    (tmp_path / "elsewhere").write_text("build/\n", encoding="utf-8")
+    (adopter / ".gitignore").unlink()
+    (adopter / ".gitignore").symlink_to(tmp_path / "elsewhere")
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter
+    )
+
+    assert result.returncode == 1, result.stdout
+    assert ".gitignore" in result.stderr, result.stderr
+    assert "could not be recorded" in result.stderr, result.stderr
+    assert harness_memory.is_symlink(), result.stderr
+    assert harness_memory.resolve() == (adopter / "memory").resolve()
+    assert vault.read_bytes() == recorded
+
+
+def test_a_gated_run_never_absorbs_the_harness_memory_directory(tmp_path, run_cli):
+    """The link comes back; the directory holding the user's data does not move.
+
+    These are two different acts on the same path. Re-pointing a link
+    destroys nothing and is the hook's whole job; `adopt.take_over` copies
+    the harness's agent memory into the project and renames the original to
+    a `.bak`, which is the adopter's own data moving after a check that
+    gated. So a real directory at the harness path is left exactly as it is,
+    with a WARNING, and gets no link this run.
+    """
+    adopter = _fixture_repo(tmp_path / "repo")
+    harness_memory = tmp_path / "harness" / "memory"
+    assert run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter
+    ).returncode == 0
+    harness_memory.unlink()
+    harness_memory.mkdir(parents=True)
+    (harness_memory / "coffee.md").write_text(HARNESS_MEMORY, encoding="utf-8")
+    (tmp_path / "elsewhere").write_text("build/\n", encoding="utf-8")
+    (adopter / ".gitignore").unlink()
+    (adopter / ".gitignore").symlink_to(tmp_path / "elsewhere")
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter
+    )
+
+    assert result.returncode == 1, result.stdout
+    assert ".gitignore" in result.stderr, result.stderr
+    assert "left untouched" in result.stderr, result.stderr
+    assert harness_memory.is_dir() and not harness_memory.is_symlink()
+    assert (harness_memory / "coffee.md").read_text(
+        encoding="utf-8"
+    ) == HARNESS_MEMORY
+    assert not (tmp_path / "harness" / "memory.bak").exists()
+    assert not (adopter / "memory" / "coffee.md").exists()
+
+
+def test_the_hook_leaves_no_link_for_a_project_that_was_never_adopted(
+    tmp_path, run_cli
+):
+    """A link to a `memory/` that does not exist is worse than no link at all.
+
+    The harness then has no memory rather than its own, and nothing later
+    absorbs what it wrote in the meantime. The hook's own adopter check is
+    the first line of defence here -- it runs `init` only where
+    `validated-memory.md` and `memory/` are both present -- and
+    `_sync_symlink` is the second, for the same call made by hand.
+    """
+    project = _fixture_repo(tmp_path / "repo")
+    config = tmp_path / "config"
+    (tmp_path / "elsewhere").write_text("build/\n", encoding="utf-8")
+    (project / ".gitignore").symlink_to(tmp_path / "elsewhere")
+
+    hook = _run_hook(project, config, tmp_path / "home")
+    harness_memory = _harness_memory(config, project)
+    by_hand = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=project
+    )
+
+    assert hook.returncode == 0, hook.stderr
+    assert by_hand.returncode == 1, by_hand.stdout
+    assert ".gitignore" in by_hand.stderr, by_hand.stderr
+    assert "no 'memory/' to link to" in by_hand.stderr, by_hand.stderr
+    assert not harness_memory.is_symlink()
+    assert not harness_memory.exists()
 
 
 def test_the_skill_ignore_list_is_exactly_what_the_cli_creates_at_the_root(

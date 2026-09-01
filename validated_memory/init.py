@@ -22,6 +22,12 @@ project's `memory/` and parked aside as a `.bak` before the link is created
 outcomes are fail-open: the link is restored, or it is left alone and said
 so, and the session is unaffected either way.
 
+A project with no `memory/` is the one case where PATH is not touched at
+all. The link's target is this project's agent memory, so a link made
+before that directory exists points nowhere: the harness is left with no
+memory, where an untouched PATH leaves it its own -- which a later run
+absorbs into the project rather than losing.
+
 A journal that cannot be read or written does gate -- a required record that
 is missing or corrupt is exit 1 (ADR 0008), never a silent continuation --
 but it does not take the symlink with it: the harness half runs outside the
@@ -39,17 +45,32 @@ one way -- so it is written on every run, whatever the project versions.
 The entry is written once: an ignore file that already carries it is left
 exactly as it is, and one that does not exist is created.
 
-An entry that cannot be written is the one ERROR that stops the run where
-it stands, harness half included -- the exception to the paragraph above.
-Everything after it writes into a vault that is then exposed to the next
-commit, and the harness symlink is the mutation whose record can ONLY live
-there, so restoring the link would either put an absolute harness path in
-a file `git add -A` stages or leave a mutation deliberately unrecorded
-while the journal is perfectly healthy. Absorbing a harness directory --
-which moves the adopter's own data -- after a check that gated is further
-still from anything `init` may do on its own. So nothing runs: the ERROR
-names the one line to add by hand, and the next run picks up from a tree
-`init` has not touched.
+An entry that cannot be written is an ERROR that stops the journalled run
+where it stands. Everything after it writes into a vault that is then
+exposed to the next commit, and absorbing a harness directory -- which
+moves the adopter's own data -- after a check that gated is further still
+from anything `init` may do on its own. So the scaffold, the take-over and
+the views do not run: the ERROR names the one line to add by hand, and the
+next run picks up from a tree `init` has not touched.
+
+The harness symlink is the one act that outlives that gate, because
+restoring it moves no data and it is the whole job of the `SessionStart`
+hook. Its record is the one that could only live in the vault, which is
+precisely what is exposed, so it is not written and the loss is a WARNING
+-- exactly the treatment a journal that cannot be written already gets. A
+gated run ends with the link back, an ERROR naming the ignore file, and
+exit 1.
+
+The gate fires only where the vault is really exposed. Before it stops
+anything, `init` reads `.git/info/exclude`: a clone that already ignores
+the vault there has nothing this entry could add. That file is also the
+highest-precedence ignore source git still reads when it cannot read
+`.gitignore` -- the same situation `init` cannot write it in. What a
+symlinked `.gitignore` points at is deliberately not read as if it were
+the rule: git does not follow one (measured on git 2.43, which reports
+"unable to access '.gitignore': Too many levels of symbolic links" and
+leaves the paths untracked), so believing the target would call an exposed
+vault ignored.
 
 With `--view`, `init` also creates `knowledge.html` and `memory.html` --
 once each. The views are optional, and activation is the presence of the
@@ -82,6 +103,12 @@ BROKEN_SYMLINK = (
 )
 
 IGNORE_FILENAME = ".gitignore"
+# The clone's own ignore file: git reads it, no commit can carry it, and it
+# is read here only to answer "is the vault ignored anyway?" -- never written
+# to. A `.git` that is a file rather than a directory (a worktree, a
+# submodule) puts it somewhere this does not look, so it reads as empty and
+# the run gates: unsure is the side to be wrong on.
+EXCLUDE_PATH = Path(".git") / "info" / "exclude"
 IGNORE_ENTRY = f"/{journal.VAULT_DIRNAME}/"
 IGNORE_BLOCK = f"""\
 # The validated-memory vault: preimages, and the records of mutations whose
@@ -101,6 +128,25 @@ IGNORE_EQUIVALENTS = {
     IGNORE_ENTRY.lstrip("/"),
     IGNORE_ENTRY.strip("/"),
 }
+
+# Why a mutation went unrecorded, as `_record_symlink` says it. The link is
+# restored on both, because the failure is the record's and not the link's.
+UNRECORDED_JOURNAL = "the journal is unavailable"
+UNRECORDED_VAULT = (
+    "the vault is not ignored, and this record can only live there"
+)
+
+# The harness path is left exactly as it is on both of these.
+NO_PROJECT_MEMORY = (
+    "this project has no 'memory/' to link to, so the harness path was left "
+    "alone: a link made now would point at a directory that does not exist, "
+    "leaving the harness no memory at all, where an untouched path leaves it "
+    "its own"
+)
+UNABSORBED = (
+    "already exists and is not a symlink; absorbing it moves the adopter's "
+    "own data, which a run that gated may not do, so it was left untouched"
+)
 
 MEMORY_INDEX = """\
 # Agent memory
@@ -192,12 +238,12 @@ def run(harness_memory, view, stdout, stderr):
     did. The harness symlink is not part of that: it runs afterwards, on its
     own, and reports the record it could not write.
 
-    The vault's ignore entry is the other whole-run ERROR, and it gates
-    everything, symlink included (`_ensure_ignored`, and the module
-    docstring for why the fail-open promise stops here). Nothing after it
-    mutates the adopter tree or the harness path, so a gated run leaves
-    only what the journal's own bootstrap wrote plus an empty vault
-    directory -- which no commit can carry.
+    The vault's ignore entry is the other ERROR that is not about a single
+    item (`_ensure_ignored`), and it gates the same journalled part plus the
+    views: nothing that writes into the vault, into the adopter tree, or
+    into a directory the adopter owns runs after it. The harness symlink
+    still does, without its record, because restoring a link moves no data
+    and the `SessionStart` hook has no other job.
     """
     findings = []
     created = 0
@@ -272,23 +318,34 @@ def run(harness_memory, view, stdout, stderr):
 
     if journal_failure is not None:
         findings.append(journal_failure)
-        # The journal is the record of what `init` did; it is not what a
-        # session needs to keep working. Restoring the harness symlink is
-        # the one promise that must survive a journal failure, so it runs
-        # here, outside the journalled run and outside the lock -- there is
-        # no journal to serialise access to, and re-pointing a symlink at
-        # the target it already has is idempotent, which is also what makes
-        # this safe when the failure arrived after the link was already
-        # restored above. Not when the ignore entry gated first: that
-        # failure is about the vault, which is where this link's record has
-        # to go.
-        if harness_memory is not None and not unignored:
-            findings.extend(_sync_symlink(harness_memory, stdout, None))
     elif view and not unignored:
         view_created, view_kept, view_findings = _ensure_views(stdout)
         created += view_created
         kept += view_kept
         findings.extend(view_findings)
+
+    # Neither of the two whole-run ERRORs reached the symlink inside the
+    # block, and both leave it to be restored here: the journal is the
+    # record of what `init` did, not what a session needs to keep working,
+    # and an unignored vault is a reason not to write a record, not a reason
+    # to leave the harness pointing at a project it no longer names. Outside
+    # the lock is safe on both -- there is no journal to serialise access
+    # to, and re-pointing a symlink at the target it already has is
+    # idempotent, which is what makes this harmless when the journal failed
+    # after the link had already been restored above.
+    if harness_memory is not None and (journal_failure is not None or unignored):
+        findings.extend(
+            _sync_symlink(
+                harness_memory,
+                stdout,
+                None,
+                # The take-over moves the adopter's own data, so it belongs
+                # to the run that gated, not to the promise that survives
+                # it: a real directory at the harness path is left alone.
+                absorb=not unignored,
+                unrecorded=UNRECORDED_VAULT if unignored else UNRECORDED_JOURNAL,
+            )
+        )
 
     errors = [finding for finding in findings if finding.severity == ERROR]
     warnings = [finding for finding in findings if finding.severity == WARNING]
@@ -333,54 +390,83 @@ def _ensure_ignored(session, stdout):
     already carries the rule in any of its usual spellings, one that cannot
     be read, and one that is a symlink -- installing over a symlink replaces
     the link itself, and destroying a link to record an ignore rule is not a
-    trade `init` may make. The last two are ERRORs, and `run` stops on them:
-    the vault is then unignored, which is the one thing this entry exists to
-    prevent, and everything the run would do next writes into it.
+    trade `init` may make.
+
+    The last two only gate when the vault is really exposed, which is not
+    the same question. `.git/info/exclude` ignores the same paths, is never
+    versioned, and -- because git will not read an ignore file it cannot
+    open either -- is the highest-precedence source git still consults in
+    exactly these two shapes, so a rule there settles it and the run goes
+    on. The symlink's own target is not read: git does not follow a
+    symlinked ignore file at all, so what it points at ignores nothing.
     """
     path = Path(IGNORE_FILENAME)
+    missing = _write_entry(session, path, stdout)
+    if missing is None:
+        return []
+    if _carries_entry(_read_text(EXCLUDE_PATH)):
+        print(
+            f"init: {IGNORE_ENTRY} already ignored by "
+            f"{EXCLUDE_PATH.as_posix()}",
+            file=stdout,
+        )
+        return []
+    return [Finding(ERROR, IGNORE_FILENAME, "ignore-rule", missing)]
+
+
+def _write_entry(session, path, stdout):
+    """Put the vault's entry in `path`. Returns why it is not there, or None.
+
+    None means the rule is in the file -- appended just now, or already
+    there when `init` looked. Everything else is a reason, which is the
+    ERROR's message when the caller finds nothing else ignoring the vault.
+    """
     if path.is_symlink():
-        return [
-            Finding(
-                ERROR,
-                IGNORE_FILENAME,
-                "ignore-rule",
-                f"the vault's ignore entry ({IGNORE_ENTRY}) is missing and "
-                "cannot be added: the ignore file is a symlink, and writing "
-                "it would replace the link. Add the entry by hand.",
-            )
-        ]
+        return (
+            f"the vault's ignore entry ({IGNORE_ENTRY}) is missing and "
+            "cannot be added: the ignore file is a symlink, and writing it "
+            "would replace the link. Add the entry by hand."
+        )
     try:
         existing = path.read_text(encoding="utf-8") if path.exists() else ""
     except (OSError, UnicodeDecodeError) as error:
-        return [
-            Finding(
-                ERROR,
-                IGNORE_FILENAME,
-                "ignore-rule",
-                f"the ignore file could not be read, so the vault's entry "
-                f"({IGNORE_ENTRY}) could not be added: {error}",
-            )
-        ]
-    if any(
-        line.strip() in IGNORE_EQUIVALENTS for line in existing.splitlines()
-    ):
-        return []
+        return (
+            f"the ignore file could not be read, so the vault's entry "
+            f"({IGNORE_ENTRY}) could not be added: {error}"
+        )
+    if _carries_entry(existing):
+        return None
     try:
         session.append_text(
             IGNORE_FILENAME, _ignore_addition(existing), "ignore-rule"
         )
     except OSError as error:
-        return [
-            Finding(
-                ERROR,
-                IGNORE_FILENAME,
-                "ignore-rule",
-                f"the vault's ignore entry ({IGNORE_ENTRY}) could not be "
-                f"written: {error}",
-            )
-        ]
+        return (
+            f"the vault's ignore entry ({IGNORE_ENTRY}) could not be "
+            f"written: {error}"
+        )
     print(f"init: ignored {IGNORE_ENTRY} in {IGNORE_FILENAME}", file=stdout)
-    return []
+    return None
+
+
+def _carries_entry(text):
+    """Say whether `text` already carries the rule, in any of its spellings.
+
+    Read line by line rather than matched the way git matches: this only
+    ever decides whether `init` has anything to add, and the reader git
+    would need is a gitignore engine.
+    """
+    return any(
+        line.strip() in IGNORE_EQUIVALENTS for line in text.splitlines()
+    )
+
+
+def _read_text(path):
+    """`path`'s text, or empty when it cannot be read: a file saying nothing."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
 
 
 def _ignore_addition(existing):
@@ -454,15 +540,24 @@ def _ensure_file(path, content, session):
     return location, "created", None
 
 
-def _sync_symlink(raw_path, stdout, session):
+def _sync_symlink(
+    raw_path, stdout, session, absorb=True, unrecorded=UNRECORDED_JOURNAL
+):
     """Make `raw_path` a symlink to this project's `memory/`, without deleting data.
 
+    - No `memory/` in this project: nothing is touched. There is no target
+      to point at, and a link to a directory that does not exist is worse
+      than none -- the harness reads and writes through this path, so a
+      dangling link costs it its memory, where an untouched path leaves it
+      its own for a later run to absorb.
     - Missing: create the symlink (making parent directories as needed).
     - Already a symlink (even broken, even pointing elsewhere): re-point it --
       re-pointing a symlink never destroys data, unlike replacing a real path.
     - A real path: handed to `adopt.take_over`, which either frees it (by
       absorbing the agent memory it holds and parking the original aside) or
-      refuses and says why. Only a freed path gets a symlink.
+      refuses and says why. Only a freed path gets a symlink. `absorb` is
+      False when the run has already gated: absorbing moves the adopter's
+      own data, which restoring a link does not, so only the link survives.
 
     Any OS-level failure along this path (permissions, a dangling parent,
     ...) is reported the same way: a WARNING that never gates, because a
@@ -474,15 +569,20 @@ def _sync_symlink(raw_path, stdout, session):
     is read before the link is touched: once it is re-pointed, its former
     target is gone, which is the preimage problem in miniature.
 
-    `session` is None when the journal itself failed earlier in the run. The
-    link is restored anyway -- that is the promise a startup hook rests on --
-    and `_record_symlink` turns the missing record into a WARNING that names
-    the previous target, so the one fact the mutation destroys is at least on
-    stderr rather than nowhere.
+    `session` is None when nothing may be written to the journal -- it
+    failed earlier in the run, or the vault holding this record is not
+    ignored -- and `unrecorded` says which. The link is restored anyway,
+    that being the promise a startup hook rests on, and `_record_symlink`
+    turns the missing record into a WARNING that names the previous target,
+    so the one fact the mutation destroys is at least on stderr rather than
+    nowhere.
     """
     path = Path(raw_path)
     location = path.as_posix()
-    target = Path("memory").resolve()
+    project_memory = Path("memory")
+    if not project_memory.is_dir():
+        return [Finding(WARNING, location, "symlink", NO_PROJECT_MEMORY)]
+    target = project_memory.resolve()
     was_symlink = path.is_symlink()
     previous = os.readlink(path) if was_symlink else None
 
@@ -502,10 +602,14 @@ def _sync_symlink(raw_path, stdout, session):
         # agent memory this project can absorb, or must be left alone.
         findings = []
         if not was_symlink and path.exists():
+            if not absorb:
+                return [Finding(WARNING, location, "symlink", UNABSORBED)]
             freed, findings = adopt.take_over(path, target, stdout)
             if not freed:
                 return findings
-        findings.extend(_record_symlink(session, path, previous, relink))
+        findings.extend(
+            _record_symlink(session, path, previous, relink, unrecorded)
+        )
         verb = "re-pointed" if was_symlink else "created"
         print(f"init: {verb} symlink {location} -> {target}", file=stdout)
         return findings
@@ -519,7 +623,7 @@ def _previous_target(previous):
     return f"previous target: {previous}" if previous else "no previous link"
 
 
-def _record_symlink(session, path, previous, relink):
+def _record_symlink(session, path, previous, relink, unrecorded):
     """Journal `relink()` around the mutation it performs. Returns findings.
 
     The `prepared` record is written first, as §4 requires of every
@@ -533,7 +637,8 @@ def _record_symlink(session, path, previous, relink):
     here is the record failing, not the link. So the mutation runs either
     way and the loss is a WARNING carrying the previous target, which then
     stands on stderr as the only place it was said. `session` is None when
-    the journal failed earlier in the run; the split is the same.
+    nothing may be written to the journal at all and `unrecorded` says why;
+    the split is the same.
     """
     note = _previous_target(previous)
     findings = []
@@ -544,8 +649,8 @@ def _record_symlink(session, path, previous, relink):
                 WARNING,
                 path.as_posix(),
                 "journal",
-                "the symlink could not be recorded: the journal is "
-                f"unavailable ({note}); restoring it anyway",
+                f"the symlink could not be recorded: {unrecorded} ({note}); "
+                "restoring it anyway",
             )
         )
     else:
