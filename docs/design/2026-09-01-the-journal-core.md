@@ -1,22 +1,28 @@
-# The journal core: what one write must own — design (2026-09-01)
+# The journal core: three records, one executor — design (2026-09-01)
 
 Plan 1 shipped the record: two artifacts, a two-stage protocol, and a
 `journal` subcommand that reports and reconciles. Three adversarial reviews
 over two fix waves then closed sixteen defects in it, and left a residue that
-will not close the same way. This document says why, specifies the core that
-§3 of `2026-08-30-the-journal-coverage-and-reversal-design.md` needs before
-its interface can be built, and narrows two promises that document makes and
-cannot keep as written.
+will not close the same way. This document says why, and specifies the core
+that §3 of `2026-08-30-the-journal-coverage-and-reversal-design.md` needs
+before its interface can be built.
 
-It amends that design rather than superseding it: §1, §2, §5, §6 and §7 stand.
-What changes is §3's mechanism and §4's account of crash consistency.
+It amends that design rather than superseding it: §1, §2, §5, §6 and §7
+stand. What changes is §3's mechanism and §4's account of crash consistency.
+
+**This document was rewritten the day it was written.** Its first draft
+proposed one operation, `apply(change set)`, owning everything. A design
+challenge rejected that draft for three reasons that hold: `apply` was the
+name of a transactional language rather than an interface; three unrelated
+problems — local recovery, permanent history, and write authorisation — were
+being solved by one mechanism; and three real callers do not fit the shape.
+§11 records what the challenge changed.
 
 ## 1. What the waves measured
 
 Every item below was reproduced by execution before it was believed. The
 first wave closed six defects an ordinary `init` reaches; the second closed
-two regressions the first introduced. What follows is what remains, and it is
-the evidence this design answers.
+two regressions the first introduced. What follows is what remains.
 
 **A `prepared` record can never be closed, and `--check` then calls it
 `applied`.** `_ensure_dir` writes `prepared`, `mkdir` fails — a read-only
@@ -25,9 +31,9 @@ record stays open. When a later run creates the directory for real,
 `_state_of` sees the node exist and reports the old record `applied`, which
 `docs/reference/journal.md` defines as "the mutation happened; only the
 closing `committed` record was lost". It did not happen. `Run.write` and
-`Run.append_text` leave the same residue when a known exception aborts them
-before the install. One junk record is appended to the always-versioned
-journal on every session start.
+`Run.append_text` leave the same residue when the install between their two
+records raises. One junk record is appended to the always-versioned journal
+on every session start.
 
 **An absence check is not a precondition.** `_ensure_file` tests
 `path.exists()` and then calls `Run.write`, which parks a preimage and turns
@@ -53,9 +59,7 @@ not control.
 
 **Nothing verifies a preimage blob.** `park_preimage` accepts any file
 already named for the digest and never re-reads it; no reader checks that a
-blob referenced by a record is present or still matches its name. An ordinary
-`git clone` produces exactly that state, since the journal travels and the
-vault does not.
+blob a record references is present or still matches its name.
 
 **`reconcile` pairs by `(run, path)` alone**, so a duplicated pair, or a
 `committed` twin whose digests disagree with its `prepared`, passes.
@@ -85,218 +89,349 @@ survive a journal that cannot be written. `run` decides which of those
 survive each gate, inside or outside the lock.
 
 Every correction therefore crosses several dimensions at once: the node type
-found at the path (absent, file, directory, broken symlink, symlink leaving
-the tree), the durability, whether the failure lands before `prepared` or
-after it, whether the operation carries a digest, whether the outcome is an
-ERROR or a WARNING, and whether the caller is inside the lock. Fixing one
-cell of that space uncovers the next, which is exactly the history of the two
-waves. More review does not exhaust it; the space does not shrink.
+found at the path, the durability, whether the failure lands before
+`prepared` or after it, whether the operation carries a digest, whether the
+outcome is an ERROR or a WARNING, and whether the caller is inside the lock.
+Fixing one cell of that space uncovers the next, which is exactly the history
+of the two waves. More review does not exhaust it; the space does not shrink.
 
-## 3. One operation
+## 3. Three records, not one
 
-The core becomes a deep module with one external operation:
+The first draft's mistake was to answer that with a single mechanism. The
+record already serves three purposes with incompatible lifetimes, and giving
+them one file is what made `aborted` look like a stage.
 
-    apply(change set) -> result
+**The write-ahead log — local, short-lived, in `.validated-memory/`.** What a
+mutation intends, its parked preimages, and how it ended when it did not
+succeed. It exists so a crash is recoverable, it is read by recovery and by
+nothing else, and a resolved transaction leaves it. It is not history and
+must never grow without bound.
 
-The change set is a list of intentions, each carrying the state it expects to
-find. The result says what happened to each, as data the caller renders.
+**The permanent history — `journal.jsonl` and the vault's own record, as
+today.** Consummated facts only: an observation of the pre-adoption state,
+and a mutation that happened. It is append-only, never compacted, and
+versioned, so anything written into it is written for the life of the
+project. A refusal is not a fact about the project; it is a fact about one
+run, and it belongs in the log or in the rejection record of §6, which is
+already specified to deduplicate by stable identity.
 
-**What the core owns**, and no caller may do for itself: the lock; the
-bootstrap and the adoption id; path authorisation, lexical and resolved,
-for every path in the set; the expected-state check; parking and verifying
-preimages; staging, publication and the durability barriers; metadata
-preservation; the terminal states; and the group.
+This matters concretely: `init` runs on every session start, so a project
+that is broken in some way `init` refuses would otherwise append one refusal
+per session, for ever, to a versioned file. That would be a property of the
+model, not an implementation detail.
 
-**What the caller supplies** is intention and expectation — "create this
-directory if the path is still absent", "append this rule if the file still
-hashes to this digest", "point this symlink at that target, whose previous
-target was this" — plus how to present the result. `init` keeps its findings,
-its outcomes and its exit code; it stops keeping a copy of the protocol.
+**The derived publisher — no record at all.** `render` and `init --view`
+write regenerable artifacts, exempt by name from the completeness pin and
+documented as exempt. They need atomic publication and metadata
+preservation, which is the same machinery, and they must not put a line in
+the history.
 
-`prepare_op` and `append_op` leave the public surface. `observe` stops being a
-call: an observation is what the core records when an expected state is
-already satisfied, which is the only thing it ever meant.
+## 4. One executor, and its declared exceptions
 
-This is the module §3 of the earlier design assumed it had. Wrapping today's
-`Run` in a new layer while leaving its methods reachable would not deliver
-it: the four reimplementations in `init.py` would remain legal.
+The mutating surface becomes one deep operation over **one path**:
 
-## 4. Terminal states
+    execute(intention) -> outcome
 
-A record needs a third stage, `aborted`, written when a mutation the core
-prepared is known not to have happened.
+An intention names the path, the operation, the purpose, the durability and
+the **expected state**. The executor owns the lock, the bootstrap and the
+adoption id, path authorisation, the expected-state check, the preimage, the
+staging and publication, the metadata, and the log records at both ends.
+`prepare_op` and `append_op` leave the public surface, so no caller can
+reimplement the protocol the way `init.py` did.
 
-Today the protocol has two stages and one silence. `prepared` with no
-`committed` means "either the mutation happened and the closing record was
-lost, or it never happened" — and the reconciler resolves that ambiguity by
-looking at the filesystem, which is why it answers `applied` for a directory
-some later run created. A failure the core observed is not ambiguous, and
-recording it removes the guess:
+`observe` keeps exactly the meaning the contract publishes: written once, on
+first sight, recording a fact about the state adoption found. It is not "the
+expectation was already satisfied" — an idempotent no-op on a path this
+plugin created earlier is not an observation, and treating it as one would
+reintroduce the defect commit `4ce59a9` fixed.
 
-| Stage | What it asserts |
+Multi-path grouping is **not** part of this core. §8 says what it would take
+and why it waits.
+
+Two callers do not fit the executor, and both are exceptions declared here
+rather than bent into it:
+
+**The fail-open harness link.** The contract requires the link to be restored
+when the journal cannot be read or written at all — that is the SessionStart
+hook's only job, and wave 2 exists because a ruling of mine took it away. An
+executor that requires a working journal cannot serve it; an executor that
+accepts `unrecorded=True` exposes the very policy it was meant to hide; an
+executor that silently proceeds unrecorded on any journal failure is a
+general bypass. So link repair is its own narrow module: it can publish that
+one symlink atomically and nothing else, it records through the executor when
+the journal is healthy, and it warns and proceeds when it is not.
+
+**The harness absorption.** `adopt.take_over` recognises a tree, copies
+conditionally, reconciles an index and renames the source, and its published
+contract tolerates a per-file conflict and continues — the project's copy is
+kept and a WARNING says so. That is not "one mismatch refuses the set". It
+needs its own planner that freezes the tree, resolves conflicts and produces
+a manifest the executor can then apply, and until that exists the absorption
+stays where it is, unrecorded and documented as unrecorded.
+
+## 5. Terminal states, in the log
+
+A refusal or a failure is recorded in the **write-ahead log**, never in the
+permanent history:
+
+| Where | What it holds |
 |---|---|
-| `prepared` | the core is about to act, and holds the preimage |
-| `committed` | the mutation was published |
-| `aborted` | the mutation was refused or failed, and did not happen |
+| log | `prepared` with the manifest and preimages; `aborted` with the reason |
+| history | `observe`, and `committed` for a mutation that happened |
 
-`journal --check` then reports an open transaction only when the process
-died between records — a genuine unknown — and says `aborted` transactions
-are closed. An `aborted` record is never inverted by a reversal, and it is
-still evidence: it names a path the plugin wanted and could not have.
+`journal --check` reads both. An entry in the log with no resolution is an
+open transaction — a genuine unknown, because the process died. An `aborted`
+entry is closed, is never inverted by a reversal, and disappears with the log
+once resolved. A precondition that fails before anything is prepared writes
+nothing anywhere: it is a result the caller renders, not a transaction.
 
-`STAGES` is validated on read, so a reader that does not know `aborted`
-refuses the file. That is what `schema` is for: this bumps the record format
-to **2**. A plugin at schema 1 meeting a schema 2 journal already refuses
-with the message that says to upgrade.
+This is what removes the false `applied`. Today's ambiguity exists because
+`prepared` in a permanent file means "either it happened, or it did not", and
+the reconciler resolves it by looking at a filesystem some later run changed.
 
-## 5. Preconditions, not observations
+**Schema.** The reader accepts a record whose `schema` is lower and refuses
+one that is higher, so raising it is not by itself a migration. A version 2
+history requires: a parse per version rather than one field table; the v1
+prefix treated as legacy, promising no parents, no modes and no transaction
+ids retroactively, because they were never recorded; an explicit rule for a
+v1 record appended after the first v2 one; and every open v1 `prepared`
+resolved before a v2 mutation is allowed.
 
-Every operation in a change set carries the state it expects at its path:
-absent, or a content digest, or a node type. The core re-reads immediately
-before publishing, under its own lock, and a mismatch is a refusal of the
-whole set — nothing written, nothing recorded but the `aborted` records that
-say why.
+## 6. Preconditions: what they can and cannot promise
 
-This replaces three separate patches. The `create`-that-became-`replace` has
-no window, because "absent" is checked by the party that writes. The parked
-preimage cannot go stale between the park and the install. And a skill that
-paged content to a user and took a confirmation gets the guarantee §3 already
-promised: a file that changed under it is a refusal, not an overwrite.
+Every intention carries the state it expects, and the vocabulary has to be
+richer than the first draft's "absent, a digest, or a node type": a symlink's
+previous target, a file's mode, and — for a directory — that a directory is
+there, not merely that the name resolves. Checking existence alone is exactly
+what produces today's false `applied`.
 
-## 6. Metadata
+The check happens **under the lock, immediately before publication**, and
+nowhere else; the first draft also placed it at the start of a group
+protocol, which widened the window it was meant to close. What that buys,
+stated exactly, because overstating it would be the same class of defect this
+core exists to remove:
 
-The install copies the target's mode onto the temporary before the rename, so
-a replacement preserves what the adopter set, and the record carries the mode
-so a reversal can restore it.
+- **Full serialisation against other validated-memory processes**, once the
+  lock is fixed (§7).
+- **A strong no-replace guarantee for a creation**, because the primitive
+  exists: create with `O_CREAT|O_EXCL` and fail if the name is taken.
+- **Optimistic rejection for a replacement**: the digest is re-read
+  immediately before `os.replace`. There is no portable POSIX
+  compare-and-swap on a pathname, so a third party writing in that window is
+  detected only if it also changes the digest before the read. This is a
+  narrower window, not an atomic guarantee, and the contract must say so.
+- **Ancestors stabilised by descriptor.** Authorising a resolved path and
+  then acting on the name lets a third party swap an ancestor for a symlink
+  in between. Where the platform allows it the executor opens the parent once
+  and operates relative to that descriptor rather than resolving twice.
+
+## 7. Metadata and the lock
+
+**Metadata means the mode**, and the design says only that. The install
+copies the target's mode onto the temporary before the rename, and the record
+carries it so a reversal can restore it. Ownership, timestamps, ACLs, extended
+attributes and hardlink identity are **not** preserved — `os.replace` breaks
+hardlink identity by construction — and the reference says so rather than
+letting a reader assume a general promise.
 
 A target whose mode denies writing to the current user is a **refusal**, not
 a mutation performed through the directory's permissions. The read-only bit
-is how an adopter says do not write here, and `os.replace` is not entitled to
-route around it because POSIX lets it. This changes behaviour: `init` gains an
-ERROR where it silently succeeded. That is the correct direction, and the
-message names the file and its mode.
+is how an adopter says do not write here. This changes behaviour: `init`
+gains an ERROR where it silently succeeded, and the message names the file
+and its mode.
 
-## 7. The lock
+**The lock** already carries the owning pid, and the executor uses it: a lock
+whose owner is alive (`os.kill(pid, 0)`) is never broken, whatever its age;
+release identifies the lock by the device and inode of the descriptor it
+holds, not by the pathname; and the age horizon survives only as a last
+resort for a dead owner. The caller-must-hold-the-lock rule disappears with
+the executor, which takes it.
 
-The lock file already carries the owning pid. The core uses it:
+One hazard the lock does not cover and the contract currently permits: a
+`journal.jsonl` that is a symlink into a shared store. Two adopter trees
+pointing at one file take two different local locks and serialise nothing.
+Either the contract forbids that, or the lock is taken on the resolved
+artifact. This design takes the second, and the reference says which.
 
-- before breaking a lock, check whether that pid is alive (`os.kill(pid, 0)`);
-  a live owner is never broken, whatever the age;
-- `__exit__` releases only a lock it still owns, identified by the
-  device and inode of the descriptor it opened, not by the pathname;
-- the age horizon remains as a last resort for a dead owner whose lock file
-  outlived it, and it stops being the only test.
+## 8. Groups: what it would take, and why it waits
 
-The caller-must-hold-the-lock rule disappears with `apply`, which takes it.
+§3 of the earlier design says the interface "applies the whole set or
+nothing". Over several arbitrary paths that cannot be delivered: POSIX has no
+multi-file atomic rename, and a crash between two `os.replace` calls leaves
+one published and one not. The honest promise is **recoverable atomicity** —
+no partial success is ever reported, and a crash leaves a state the next run
+detects and resolves before doing anything else.
 
-## 8. Group atomicity: the promise, narrowed
+It is not required to make plan 1 truthful. The published contract promises
+atomicity per mutation, not across an `init`, and reports each item
+separately. So the group protocol is specified here and built with the public
+write interface that needs it, not before:
 
-§3 says the interface "applies the whole set or nothing". Over several
-arbitrary paths that cannot be delivered: POSIX has no multi-file atomic
-rename, and a crash between two `os.replace` calls leaves one published and
-one not. The honest promise is **recoverable atomicity**: no partial success
-is ever reported, and a crash leaves a state the next run detects and
-resolves before doing anything else.
-
-The protocol, all of it under one lock:
-
-1. authorise every path, and check every expected state;
+1. authorise every path and check every expected state, under the lock;
 2. park and verify every preimage, and fsync them;
-3. write and fsync `group_prepared`, carrying the transaction id, the ordered
+3. write and fsync a log entry carrying the transaction id, the ordered
    manifest, the operation count and a digest of the manifest;
 4. build and fsync every temporary, publishing none;
-5. publish each path atomically, fsync its directory, and record each as
-   `committed`;
-6. only when all are published, write one `group_committed`. That record, not
-   the per-path ones, is what makes the set's success visible;
-7. a known failure before step 5 gives `group_aborted`; a failure during it
-   restores the paths already published and gives `group_rolled_back`;
-8. after a crash, no mutating command proceeds while a group is open.
-   Recovery compares each path in the manifest against its preimage and
-   postimage: restore what is still at the postimage, leave what is already
-   at the preimage, refuse on anything else.
+5. publish each path atomically and fsync its directory;
+6. write the history's `committed` records only once all are published;
+7. a known failure before step 5 closes the log entry `aborted`; a failure
+   during it restores what was published and closes it `rolled back`;
+8. after a crash, no mutating command proceeds while a log entry is open.
 
-Partial state can exist on disk until recovery runs. Promising otherwise
-would be false. This is a write-ahead log with undo images and one active
-group — not a version control system: no branches, no checkouts, no general
-conflict resolution.
+**Recovery needs its own interface, or the project deadlocks.** Permissions
+and a full disk are retryable. A path the user changed is not: "refuse" is
+not a terminal state. Recovery must let the operator retry the rollback,
+complete forward, accept the current state, restore a preimage under a fresh
+authorisation, or abandon the group recording the divergence — and must be
+idempotent if it is itself interrupted. Link repair stays available
+throughout, because a project that cannot find its memory cannot be repaired
+by someone who cannot start a session.
 
-`run` is not a group. One invocation may apply several change sets, and the
-transaction id, not the run id, is what groups a set.
+**Mixed-durability groups are forbidden in the first delivery.** A group
+touching both artifacts has nowhere authoritative to put its manifest:
+`journal.jsonl` may not carry the vault's absolute paths, the vault does not
+travel with the versioned half, and writing to both is not atomic. The
+coherent answer is a local coordinator holding the manifest with correlated
+projections into each artifact, removed only after both are fsynced. Until
+that is designed, an intention set may not span durabilities.
 
-## 9. A merged journal is not a linear history
+## 9. A merged journal is a fork, not a history
 
-`merge=union` settles the syntax of a conflict on `journal.jsonl`. It does not
-settle its semantics, and the merge-story commit claims more than it delivers.
+`merge=union` settles the syntax of a conflict on `journal.jsonl`. It does
+not settle its semantics, and the merge-story commit claims more than union
+delivers.
 
-Each transaction gains a **parent**: the digest of the closing record of the
-transaction that preceded it in the same artifact. Two transactions naming the
-same parent are a fork, and a fork is detectable without heuristics.
+Each transaction carries a **frontier**, not a single parent: the head it
+observed in *each* artifact, `{repo, local}`. A parent per artifact would
+create two independent chains and order nothing between a `repo` mutation and
+a `local` one — and the two artifacts legitimately diverge, since a checkout
+of a pre-adoption commit removes the versioned half while the ignored vault
+stays. That state is already handled and is not corruption; the frontier is
+what tells it apart from a fork.
 
-- `journal --check` reports a forked history as a finding, naming both
-  branches. It does not guess an order.
-- `uninstall` refuses a forked history outright. Inverting a fork means
-  choosing which of two incompatible preimages was true, and nothing in the
-  file says.
-- The way out is an explicit reconciliation record, written by a command, that
-  names the chosen post-state and becomes the single parent of what follows.
+- `journal --check` reports a fork — two transactions naming the same
+  frontier — as a finding, naming both branches. It does not guess an order.
+- `uninstall` refuses a forked history. Inverting a fork means choosing which
+  of two incompatible preimages was true, and nothing in the file says.
+- The way out is a reconciliation record that names **both** heads and
+  declares which line reversal follows. A record naming one parent cannot
+  join two branches.
+- The digest is defined over the canonical serialisation of the closing
+  record — the same key order and separators the writer uses — so whitespace
+  or key order cannot change the topology.
 
-Reversal reads a chain, not a file.
+The chain detects an accidental merge. It does **not** authenticate the file:
+the journal is repository content, so whoever can rewrite it can recompute
+every frontier. It must not be presented as tamper evidence.
 
 ## 10. What this does not fix
 
-Named so it is not assumed. Four defects measured on shipped 1.5.2 are
-outside this core and are `init`'s own: `--harness-memory` given a path inside
-the project, which parks the project's memory and leaves a self-referential
-symlink at exit 0; a plain file where a directory goes, reported `kept`; a
-directory where a file goes, after which `lint` and `status` raise instead of
-returning a finding; and `_sync_symlink`'s `unlink`-then-`symlink_to`, whose
-crash window leaves the harness with no link while the WARNING says the
-session is unaffected.
+Named so it is not assumed.
 
-A negation line in an adopter's `.gitignore` (`!/.validated-memory/` after the
-rule) leaves the vault unignored while `init` sees the literal entry and
+Four defects measured on shipped 1.5.2 are `init`'s own and outside this
+core: `--harness-memory` given a path inside the project, which parks the
+project's memory and leaves a self-referential symlink at exit 0; a plain
+file where a directory goes, reported `kept`; a directory where a file goes,
+after which `lint` and `status` raise instead of returning a finding; and
+`_sync_symlink`'s `unlink`-then-`symlink_to`, whose crash window leaves the
+harness with no link while the WARNING says the session is unaffected.
+
+A negation line in an adopter's `.gitignore` (`!/.validated-memory/` after
+the rule) leaves the vault unignored while `init` sees the literal entry and
 writes nothing. Measured: `local.jsonl`, carrying an absolute harness path,
-becomes stageable. Deciding how much of git's ignore semantics `init` may
-implement, or whether it may ask git, is its own decision and does not belong
-to the core.
+becomes stageable. How much of git's ignore semantics `init` may implement,
+or whether it may ask git, is its own decision.
 
-Coverage (§5), rejection records (§6) and `uninstall` (§7) are unchanged by
-this document.
+**An append is durable, not atomic.** `flush` and `fsync` guarantee that what
+was written survives; they do not make a JSON line indivisible. A full disk
+can leave a partial last line, which the strict reader then refuses — and if
+the permanent history were also the recovery mechanism, that refusal would
+block the very recovery that could fix it. Keeping the log separate is what
+makes this survivable, and the log's reader must tolerate a torn tail.
 
-## 11. Testing
+**A missing preimage blob in a clone is normal**, not corruption: the journal
+travels and the vault does not. A reader must distinguish "this history is
+damaged" from "this clone cannot reverse that mutation", and today nothing
+says either.
+
+Coverage (§5), rejection records (§6) and `uninstall` (§7) of the earlier
+design are unchanged by this document.
+
+## 11. What the challenge changed
+
+The first draft of this document, in the order the challenge raised them:
+
+1. **One operation for everything → one executor plus declared exceptions.**
+   The fail-open link repair and the conflict-tolerant absorption do not fit
+   a set-or-nothing interface, and derived views should not enter the history
+   at all. A change-set language broad enough to hold all of them would put
+   the complexity back in the interface.
+2. **`aborted` as a stage → a separate local write-ahead log.** A permanent,
+   versioned, never-compacted file that gains one refusal per session start
+   is a growth property of the model. Refusals before anything is prepared
+   are results, not records.
+3. **`observe` redefined → `observe` left alone.** The draft made it "the
+   expectation was already satisfied", which contradicts the published
+   meaning and would undo an earlier fix.
+4. **Schema 2 as a bump → schema 2 as a migration**, with the five rules in
+   §5, since the reader accepts lower versions and nothing retroactively
+   recovers a parent or a mode that was never written.
+5. **"The precondition is a guarantee" → what it actually guarantees.** The
+   draft placed the check in two different places and implied a
+   compare-and-swap POSIX does not offer on a pathname.
+6. **A parent per artifact → a frontier over both**, and a reconciliation
+   that names both heads rather than one.
+7. **"Nothing is released until step 1 lands" → a smaller step 1.** The
+   contract promises per-mutation atomicity, so the group protocol is not
+   what makes plan 1 truthful.
+
+Added from the same challenge: the mode-only wording, the resolved-artifact
+lock, the torn-tail append, the recovery interface, and the distinction
+between a damaged history and a clone that cannot reverse.
+
+## 12. Testing
 
 The seam does not move: the CLI as a subprocess over fixture adopter trees,
 asserting exit codes, output and produced files.
 
-- **The failure-then-repair round trip**, end to end, for every known failure
-  the core can hit: provoke it, repair the environment, run again, and assert
-  `journal --check` is clean and no record from the failed run is open.
-- **Crash injection at every protocol point**: between the group record and
-  the first publication, between two publications, and between the last
-  publication and `group_committed`. Each must leave a state recovery
-  resolves, and recovery must be idempotent.
+- **Failure then repair, end to end**, for every failure the executor can
+  hit: provoke it, repair the environment, run again, and assert the
+  permanent history gained nothing from the failed run and `journal --check`
+  is clean.
+- **Crash injection at every protocol point**, with recovery asserted
+  idempotent when it is itself interrupted.
 - **The completeness pin extends**: today it asserts every write in the
   package reaches the journal. It must also assert that nothing outside the
-  core reaches the stage-writing surface, so a future caller cannot
-  reimplement the protocol the way `init.py` did.
-- **Mode, preimage and parent are pinned by their own tests**, since each
-  replaces a silent behaviour with a refusal.
+  core reaches the stage-writing surface, and that the two declared
+  exceptions are the only exceptions.
+- **Mode, expected state, frontier and the torn tail each get their own
+  test**, since each replaces a silent behaviour with a refusal.
 
-## 12. Sequence
+## 13. Sequence
 
-1. The core: `apply`, terminal states, preconditions, metadata, the lock,
-   the group protocol and recovery, with `init` migrated onto it and the
-   stage-writing surface made private. Schema 2.
-2. Parents and fork detection, with `journal --check` reporting a fork.
-3. Coverage (§5), which the two design challenges agree comes before the
-   public write interface, and whose digest-bound dispositions give the
-   preconditions their stable identity.
-4. The public write interface (§3), delivered behind one subcommand taking a
-   versioned request, migrating `bootstrap-from-repo` page by page. The
-   pinned subcommand set moves once.
-5. Rejection records (§6), then `uninstall` (§7), which may assume a chain.
+**Step 1a — the executor, and the truth of plan 1.** One deep single-path
+operation owning the lock, authorisation, the expected state, the preimage,
+the mode and publication; the local write-ahead log with its terminal states;
+transaction ids with strict pairing and field agreement; `init`'s journalled
+mutations migrated onto it; the stage-writing surface made private; the two
+exceptions declared; schema 1 read compatibly and open v1 transactions
+resolved explicitly. This is what makes the record stop lying, and it is the
+gate on merging this branch.
 
-Nothing here is released until step 1 lands: the record's whole purpose is to
-be trustworthy, and a record that can say `applied` for a mutation that never
-happened is not.
+**Step 1b — frontiers and fork detection**, with `journal --check` reporting
+a fork. Required before `uninstall`, not before 1a.
+
+**Step 2 — coverage** (§5 of the earlier design), which both design
+challenges independently put before the public write interface, and whose
+digest-bound dispositions give the preconditions their stable identity.
+
+**Step 3 — the public write interface** (§3), behind one subcommand taking a
+versioned request, with the group protocol and the recovery interface,
+migrating `bootstrap-from-repo` page by page. The pinned subcommand set moves
+once. The harness absorption's planner belongs here.
+
+**Step 4 — rejection records** (§6), then **step 5 — `uninstall`** (§7),
+which may assume a chain.
+
+Step 1a is the release gate. A record that reports `applied` for a mutation
+that never happened is not one this method may ship.
