@@ -53,11 +53,21 @@ reported on its own line (`init: ignored /.validated-memory/ in .gitignore`)
 and is not counted among the items created or kept, because it is a line
 appended to a file the adopter owns rather than an item `init` manages. An
 ignore file that is a symlink, or that cannot be read, is left untouched and
-reported as an ERROR, and that ERROR stops the run: no scaffold item is
-created, no harness memory is absorbed or parked, and the harness symlink is
-not restored. An unignored vault is the one thing the entry exists to
-prevent, so nothing is allowed to write into it, and the fail-open promise
-the symlink otherwise carries does not survive this one gate.
+reported as an ERROR, unless `.git/info/exclude` already carries the rule --
+that is the one other source git still consults when it cannot read
+`.gitignore` itself, and a vault git already ignores needs no gate. A
+symlinked `.gitignore` is never read through: git opens that file with
+`O_NOFOLLOW` and ignores nothing it says, so reading the target would call
+an exposed vault ignored.
+
+That ERROR stops the run: no scaffold item is created, and no harness
+memory is absorbed or parked. An unignored vault is the one thing the entry
+exists to prevent, so nothing may write into it -- the vault is left
+byte-for-byte as it was. The harness symlink is the exception, because
+restoring it moves no data: it is restored without its record, with the
+WARNING saying why, so a renamed project still finds its memory. Nothing is
+linked when this project has no `memory/` of its own, there being nothing
+to point at.
 
 `validated-memory.md` declares the full adopter surface `extension.py`
 validates: the declared extension (`schema`, `version`), the `id_prefix`,

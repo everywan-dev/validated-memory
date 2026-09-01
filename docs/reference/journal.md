@@ -44,6 +44,17 @@ record, which is the exact failure mode this component exists to remove. A
 missing journal reads as no records, not as an error -- a brand-new project
 has not adopted yet.
 
+Each journal is opened once and every question is asked of that descriptor,
+never of the name again, so nothing can be swapped underneath between the
+check and the read. What is refused there is what cannot hold records at
+all: a directory, a device, a pipe. A symlink is not on that list -- an
+adopter who keeps `journal.jsonl` in a shared store and links it back is
+read through and appended through, which works because the journal is the
+one file this plugin appends to in place rather than replacing. What is
+refused instead, and at the point it matters, is bootstrapping a journal
+over a symlink that holds no records: `os.replace` would put a regular file
+where the adopter's link was, and nothing can put that link back.
+
 Versioned and strictly append-only is also a standing merge conflict: two
 clones append at the same end of the same file, and an ordinary merge leaves
 conflict markers there, which is exactly the unparseable case above -- every
@@ -127,13 +138,23 @@ Every record, whichever file it lands in, carries:
 | `schema` | The record format version (currently `1`). A reader that meets a higher number refuses rather than guessing at fields it does not know. |
 | `at` | UTC timestamp, ISO-8601 with a trailing `Z` -- the same shape `verdicts.jsonl` already uses. |
 | `version` | The plugin version (`validated_memory.__version__`) that wrote the record. |
-| `adoption` | This project's adoption id, minted once when the journal is first bootstrapped and stable across every later run -- so records from different sessions still belong together. |
+| `adoption` | This project's adoption id, minted once when the journal is first bootstrapped and stable across every later run -- so records from different sessions still belong together. Both artifacts carry it, and either can supply it: `journal.jsonl` is versioned, so an ordinary checkout of a pre-adoption commit takes it away while the ignored vault stays, and the id is then read back from the vault rather than minted afresh. |
 | `run` | This invocation's id, so every record one command wrote groups under it. |
 | `durability` | `repo` or `local` -- which of the two artifacts holds this record. |
 | `op` | What happened to `path`; see [the table below](#operations-and-their-inverses). |
 | `purpose` | Which part of the method performed the mutation. Two are emitted today: `init` for the scaffold, `ignore-rule` for the vault's entry in `.gitignore`. A future writer (`bootstrap-from-repo`, `render`, ...) names its own. |
-| `path` | The path the record describes, relative to the adopter root. No `repo`-durability record can carry an absolute path or one containing `..`: every write path refuses it, and `Run.write` and `Run.append_text` refuse it whatever the `durability`, since they are about to touch it. A `local` record may name a path outside the root, which is how today's harness-symlink record reaches the vault. On the read side the rule is the file, not the method: a record in `journal.jsonl` whose path is absolute or climbs out with `..` is refused outright, and any record whose path *resolves* outside the root -- through a symlink, or because it is a vault record naming a path outside by design -- is refused before its bytes are read. Design §7: a path outside the root can never be authorised by the file itself. |
+| `path` | The path the record describes, relative to the adopter root. No `repo`-durability record can carry an absolute path or one containing `..`: every write path refuses it, and `Run.write` and `Run.append_text` refuse it whatever the `durability`, since they are about to touch it. A `local` record may name a path outside the root, which is how today's harness-symlink record reaches the vault. On the read side the rule is the file, not the method: a record in `journal.jsonl` whose path is absolute or climbs out with `..` is refused outright. A record whose path *resolves* outside the root -- through a symlink, or because it is a vault record naming a path outside by design -- has its bytes left unread, so its state is [`unknown`](#stages-and-unfinished-transactions) rather than a refusal that would end the whole pass. Design §7: a path outside the root can never be authorised by the file itself. |
 | `stage` | `prepared` or `committed`; see [below](#stages-and-unfinished-transactions). |
+
+Two artifacts filed under **different** adoption ids is a state a user can
+reach -- a vault copied into another tree, a `journal.jsonl` restored from
+a different clone -- and `init` refuses it rather than choosing. Nothing in
+either file says which adoption is this project's, and the vault's
+preimages belong to exactly one of them, so attaching the run to either
+would file it against somebody else's pre-adoption state. The two ways out
+are in the message: restore the `journal.jsonl` the vault's id names, or
+move `.validated-memory/` aside and adopt afresh -- which costs the
+preimages it holds, since they belong to the adoption it names.
 
 Two more fields appear only on a record whose `op` touches file bytes
 (`create` or `replace`, written by `Run.write`; `append`, written by
