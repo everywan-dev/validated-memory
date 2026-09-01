@@ -944,3 +944,82 @@ def test_a_refused_journal_still_reports_the_records_it_did_read(
         result.stdout,
         read_back,
     )
+
+
+# --- one adoption, one id, whatever a checkout leaves behind ------------------
+
+
+def test_the_adoption_id_survives_a_journal_a_checkout_took_away(
+    run_cli, tmp_path
+):
+    """`journal.jsonl` is versioned; the vault is not. A checkout parts them.
+
+    Checking out a commit from before the adoption removes the tracked
+    journal and leaves the ignored vault exactly where it was. Minting a
+    second id there would split one adoption in two, with the vault's
+    preimages filed under the id nothing else mentions -- and `--check`
+    reports clean throughout, because no record is missing or malformed.
+    """
+    harness_memory = tmp_path / "harness" / "memory"
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert (
+        run_cli(
+            "init", "--harness-memory", str(harness_memory), cwd=adopter
+        ).returncode
+        == 0
+    )
+    journal = adopter / "journal.jsonl"
+    minted = _records(journal)[0]["adoption"]
+    journal.unlink()
+
+    assert (
+        run_cli(
+            "init", "--harness-memory", str(harness_memory), cwd=adopter
+        ).returncode
+        == 0
+    )
+
+    adopted = {entry["adoption"] for entry in _records(journal)}
+    assert adopted == {minted}, (adopted, minted)
+
+
+def test_two_artifacts_holding_different_adoption_ids_are_refused(
+    run_cli, tmp_path
+):
+    """Two ids over one project is a state nothing here can resolve.
+
+    A vault filed under one adoption and a journal under another cannot
+    both describe this project: the preimages belong to one of the two, and
+    nothing in either file says which. Guessing would attach this run's
+    records to an adoption whose preimages are somebody else's, so the run
+    refuses and names both ids instead.
+    """
+    harness_memory = tmp_path / "harness" / "memory"
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert (
+        run_cli(
+            "init", "--harness-memory", str(harness_memory), cwd=adopter
+        ).returncode
+        == 0
+    )
+    vault = adopter / ".validated-memory" / "local.jsonl"
+    foreign = "f" * 16
+    vault.write_text(
+        "".join(
+            json.dumps({**json.loads(line), "adoption": foreign}, sort_keys=True)
+            + "\n"
+            for line in vault.read_text(encoding="utf-8").splitlines()
+        ),
+        encoding="utf-8",
+    )
+    mine = _records(adopter / "journal.jsonl")[0]["adoption"]
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "adoption" in result.stderr, result.stderr
+    assert foreign in result.stderr, result.stderr
+    assert mine in result.stderr, result.stderr

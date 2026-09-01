@@ -444,7 +444,7 @@ class Lock:
         return True
 
 
-def bootstrap(root=Path(), run=None, records=None):
+def bootstrap(root=Path(), run=None, records=None, local=None):
     """Ensure the journal exists, and return this adoption's id.
 
     This is the one write that cannot journal itself: a record describing
@@ -466,18 +466,27 @@ def bootstrap(root=Path(), run=None, records=None):
     processes bootstrapping the same new adopter without it would mint two
     adoption ids, and the second install would win in silence.
 
-    `records` is the repository journal the caller has already read, so a
-    caller that needs the records for something else does not read the file
-    twice. It must be exactly what `read(root, REPO)` returned; anything
-    else would mint a second adoption id over a journal that already has
-    one.
+    `records` and `local` are the two journals the caller has already read,
+    so a caller that needs the records for something else does not read the
+    files twice. Each must be exactly what `read(root, ...)` returned for
+    its durability; anything else would mint a second adoption id over a
+    journal that already has one.
+
+    Both artifacts are consulted, because only one of them is versioned.
+    `journal.jsonl` is tracked and the vault is ignored, so an ordinary
+    `git checkout` of a commit from before the adoption takes the journal
+    away and leaves the vault: minting again there would file this run's
+    records under an id the vault's preimages know nothing about, split one
+    adoption in two, and report clean throughout, since no record is
+    missing or malformed.
     """
     path = journal_path(root, REPO)
     existing = read(root, REPO) if records is None else records
+    kept = read(root, LOCAL) if local is None else local
+    adoption = _adoption_id(existing, kept)
     if existing:
-        return existing[0]["adoption"]
+        return adoption
 
-    adoption = new_id()
     opening = record(
         OBSERVE,
         "init",
@@ -502,6 +511,34 @@ def bootstrap(root=Path(), run=None, records=None):
     return adoption
 
 
+def _adoption_id(repository, vault):
+    """This project's adoption id, from whichever journal still carries one.
+
+    A fresh one only when neither does. Two artifacts carrying DIFFERENT
+    ids is a state a user can reach -- a vault copied into another tree, a
+    `journal.jsonl` restored from a different clone -- and it is the one
+    case nothing here can resolve: the preimages in the vault belong to one
+    of the two adoptions and no record says which, so attaching this run to
+    either would file it against somebody else's pre-adoption state. It
+    refuses and names both, which is the only answer that leaves the user
+    able to decide.
+    """
+    minted = repository[0]["adoption"] if repository else None
+    kept = vault[0]["adoption"] if vault else None
+    if minted is not None and kept is not None and minted != kept:
+        raise JournalError(
+            None,
+            f"the vault is filed under adoption '{kept}' while "
+            f"{JOURNAL_FILENAME} is filed under '{minted}'; one project has "
+            "one adoption id, and nothing here can say which of the two is "
+            "this project's",
+            artifact_name(LOCAL),
+        )
+    if minted is not None:
+        return minted
+    return kept if kept is not None else new_id()
+
+
 class Run:
     """One invocation's journalling context.
 
@@ -519,7 +556,8 @@ class Run:
         self.root = Path(root)
         self.run = new_id()
         records = read(self.root, REPO)
-        self.adoption = bootstrap(self.root, self.run, records)
+        local = read(self.root, LOCAL)
+        self.adoption = bootstrap(self.root, self.run, records, local)
         # Every path either journal already carries a record for. `observe`
         # is written on first sight (§2), and first sight is exactly this:
         # a path the record has never mentioned. Keying it on every op
@@ -532,7 +570,7 @@ class Run:
         # the harness symlink working over that failure (`init.run`).
         self._seen = {
             (entry["durability"], entry["path"])
-            for entry in records + read(self.root, LOCAL)
+            for entry in records + local
         }
 
     def _record(self, op, purpose, path, durability, stage, **extra):
