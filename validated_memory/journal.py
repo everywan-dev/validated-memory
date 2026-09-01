@@ -580,7 +580,9 @@ def _adoption_id(repository, vault):
     of the two adoptions and no record says which, so attaching this run to
     either would file it against somebody else's pre-adoption state. It
     refuses and names both, which is the only answer that leaves the user
-    able to decide.
+    able to decide -- and names the two ways out, because `init` is what the
+    session hook runs and this refusal stops it, so a user told only that
+    the state is wrong has no command left to run.
     """
     minted = repository[0]["adoption"] if repository else None
     kept = vault[0]["adoption"] if vault else None
@@ -590,7 +592,9 @@ def _adoption_id(repository, vault):
             f"the vault is filed under adoption '{kept}' while "
             f"{JOURNAL_FILENAME} is filed under '{minted}'; one project has "
             "one adoption id, and nothing here can say which of the two is "
-            "this project's",
+            f"this project's -- restore the {JOURNAL_FILENAME} filed under "
+            f"'{kept}', or move {VAULT_DIRNAME}/ aside to adopt afresh, "
+            "since its preimages belong to the adoption it names",
             artifact_name(LOCAL),
         )
     if minted is not None:

@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+import pytest
+
 
 # Path methods that mutate, whatever the receiver.
 PATH_MUTATORS = {
@@ -993,7 +995,9 @@ def test_two_artifacts_holding_different_adoption_ids_are_refused(
     both describe this project: the preimages belong to one of the two, and
     nothing in either file says which. Guessing would attach this run's
     records to an adoption whose preimages are somebody else's, so the run
-    refuses and names both ids instead.
+    refuses and names both ids instead -- and says what to do about it,
+    because `init` is what the session hook runs and a refusal with no way
+    out leaves the project with no runnable command at all.
     """
     harness_memory = tmp_path / "harness" / "memory"
     adopter = tmp_path / "adopter"
