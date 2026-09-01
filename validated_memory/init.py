@@ -39,6 +39,18 @@ one way -- so it is written on every run, whatever the project versions.
 The entry is written once: an ignore file that already carries it is left
 exactly as it is, and one that does not exist is created.
 
+An entry that cannot be written is the one ERROR that stops the run where
+it stands, harness half included -- the exception to the paragraph above.
+Everything after it writes into a vault that is then exposed to the next
+commit, and the harness symlink is the mutation whose record can ONLY live
+there, so restoring the link would either put an absolute harness path in
+a file `git add -A` stages or leave a mutation deliberately unrecorded
+while the journal is perfectly healthy. Absorbing a harness directory --
+which moves the adopter's own data -- after a check that gated is further
+still from anything `init` may do on its own. So nothing runs: the ERROR
+names the one line to add by hand, and the next run picks up from a tree
+`init` has not touched.
+
 With `--view`, `init` also creates `knowledge.html` and `memory.html` --
 once each. The views are optional, and activation is the presence of the
 artifact, not a configuration key (an unknown field in `validated-memory.md`
@@ -179,10 +191,18 @@ def run(harness_memory, view, stdout, stderr):
     which must not mutate the adopter tree while nothing can record what it
     did. The harness symlink is not part of that: it runs afterwards, on its
     own, and reports the record it could not write.
+
+    The vault's ignore entry is the other whole-run ERROR, and it gates
+    everything, symlink included (`_ensure_ignored`, and the module
+    docstring for why the fail-open promise stops here). Nothing after it
+    mutates the adopter tree or the harness path, so a gated run leaves
+    only what the journal's own bootstrap wrote plus an empty vault
+    directory -- which no commit can carry.
     """
     findings = []
     created = 0
     kept = 0
+    unignored = False
 
     # Everything that journals -- the scaffold and the harness symlink -- runs
     # under one lock for the whole run: `init` is deliberately re-runnable at
@@ -194,34 +214,41 @@ def run(harness_memory, view, stdout, stderr):
             session = journal.Run()
             # First, because it is what keeps the vault out of the
             # repository, and the vault is written to from here on.
-            findings.extend(_ensure_ignored(session, stdout))
-            # Each call below runs (and creates its item, if missing)
-            # immediately; this just names the completed results before
-            # reporting them in order.
-            steps = (
-                _ensure_dir(Path("knowledge"), session),
-                _ensure_dir(Path("memory"), session),
-                _ensure_file(
-                    Path("memory") / "MEMORY.md", MEMORY_INDEX, session
-                ),
-                _ensure_file(Path("validated-memory.md"), CONFIG, session),
-                _ensure_file(
-                    Path("knowledge-extension.md"), EXTENSION_STUB, session
-                ),
+            ignore_findings = _ensure_ignored(session, stdout)
+            findings.extend(ignore_findings)
+            unignored = any(
+                finding.severity == ERROR for finding in ignore_findings
             )
+            if not unignored:
+                # Each call below runs (and creates its item, if missing)
+                # immediately; this just names the completed results before
+                # reporting them in order.
+                steps = (
+                    _ensure_dir(Path("knowledge"), session),
+                    _ensure_dir(Path("memory"), session),
+                    _ensure_file(
+                        Path("memory") / "MEMORY.md", MEMORY_INDEX, session
+                    ),
+                    _ensure_file(Path("validated-memory.md"), CONFIG, session),
+                    _ensure_file(
+                        Path("knowledge-extension.md"), EXTENSION_STUB, session
+                    ),
+                )
 
-            for item, outcome, finding in steps:
-                if finding is not None:
-                    findings.append(finding)
-                    continue
-                print(f"init: {outcome} {item}", file=stdout)
-                if outcome == "created":
-                    created += 1
-                else:
-                    kept += 1
+                for item, outcome, finding in steps:
+                    if finding is not None:
+                        findings.append(finding)
+                        continue
+                    print(f"init: {outcome} {item}", file=stdout)
+                    if outcome == "created":
+                        created += 1
+                    else:
+                        kept += 1
 
-            if harness_memory is not None:
-                findings.extend(_sync_symlink(harness_memory, stdout, session))
+                if harness_memory is not None:
+                    findings.extend(
+                        _sync_symlink(harness_memory, stdout, session)
+                    )
     except journal.JournalError as error:
         journal_failure = Finding(
             ERROR, _journal_artifact(error), "journal", error.message
@@ -252,10 +279,12 @@ def run(harness_memory, view, stdout, stderr):
         # no journal to serialise access to, and re-pointing a symlink at
         # the target it already has is idempotent, which is also what makes
         # this safe when the failure arrived after the link was already
-        # restored above.
-        if harness_memory is not None:
+        # restored above. Not when the ignore entry gated first: that
+        # failure is about the vault, which is where this link's record has
+        # to go.
+        if harness_memory is not None and not unignored:
             findings.extend(_sync_symlink(harness_memory, stdout, None))
-    elif view:
+    elif view and not unignored:
         view_created, view_kept, view_findings = _ensure_views(stdout)
         created += view_created
         kept += view_kept
@@ -304,8 +333,9 @@ def _ensure_ignored(session, stdout):
     already carries the rule in any of its usual spellings, one that cannot
     be read, and one that is a symlink -- installing over a symlink replaces
     the link itself, and destroying a link to record an ignore rule is not a
-    trade `init` may make. The last two are ERRORs: the vault is then
-    unignored, which is the one thing this entry exists to prevent.
+    trade `init` may make. The last two are ERRORs, and `run` stops on them:
+    the vault is then unignored, which is the one thing this entry exists to
+    prevent, and everything the run would do next writes into it.
     """
     path = Path(IGNORE_FILENAME)
     if path.is_symlink():

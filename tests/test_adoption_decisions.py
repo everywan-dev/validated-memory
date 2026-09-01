@@ -42,6 +42,19 @@ sys.stdin.read()
 print(json.dumps({"verdict": "current"}))
 """
 
+# What `adopt.take_over` recognizes as the harness's own agent memory: the
+# one shape whose absorption MOVES a directory the user owns.
+HARNESS_MEMORY = """\
+---
+name: coffee-preference
+description: Prefers oat milk.
+metadata:
+  type: user
+---
+
+Body.
+"""
+
 ANCHORED_UNIT = """\
 ---
 id: kb-0001
@@ -238,6 +251,78 @@ def test_an_ignore_file_that_cannot_be_read_gates(tmp_path, run_cli):
     assert result.returncode == 1, result.stdout
     assert ".gitignore" in result.stderr, result.stderr
     assert (adopter / ".gitignore").is_dir()
+
+
+def test_an_unwritable_ignore_entry_stops_the_run_before_the_harness_is_moved(
+    tmp_path, run_cli
+):
+    """A gate that does not stop the run is not a gate.
+
+    Measured before this test existed: the ERROR was reported and every
+    later step ran anyway. The scaffold was created and the vault was
+    written to while it was NOT ignored -- `local.jsonl` legitimately holds
+    absolute paths, and `git add -A` picks it up -- and `_sync_symlink`
+    reached `adopt.take_over`, which MOVED the harness's memory directory
+    aside as a `.bak`. Moving a user's data after a check that gated is the
+    one outcome nothing here may produce.
+    """
+    adopter = _fixture_repo(tmp_path / "repo")
+    (tmp_path / "elsewhere").write_text("build/\n", encoding="utf-8")
+    (adopter / ".gitignore").symlink_to(tmp_path / "elsewhere")
+    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory.mkdir(parents=True)
+    (harness_memory / "coffee.md").write_text(HARNESS_MEMORY, encoding="utf-8")
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter
+    )
+
+    assert result.returncode == 1, result.stdout
+    assert ".gitignore" in result.stderr, result.stderr
+    # Nothing of the scaffold, because the vault is written to from here on.
+    for item in (
+        "knowledge",
+        "memory",
+        "validated-memory.md",
+        "knowledge-extension.md",
+    ):
+        assert not (adopter / item).exists(), item
+    assert "init: created" not in result.stdout, result.stdout
+    # The harness's memory is where the user left it: not absorbed, not
+    # parked, not replaced by a link.
+    assert harness_memory.is_dir() and not harness_memory.is_symlink()
+    assert (harness_memory / "coffee.md").read_text(
+        encoding="utf-8"
+    ) == HARNESS_MEMORY
+    assert not (tmp_path / "harness" / "memory.bak").exists()
+    # The record of that link is the vault's, and the vault stays bare: an
+    # empty directory is not something a commit can carry, which is what
+    # makes stopping here enough on its own -- `journal.Lock` creates
+    # `.validated-memory/` before the entry is even attempted.
+    assert not (adopter / ".validated-memory" / "local.jsonl").exists()
+    status = _git(adopter, "status", "--porcelain", "-uall").stdout
+    assert ".validated-memory" not in status, status
+
+
+def test_an_unreadable_ignore_file_stops_the_run_including_the_views(
+    tmp_path, run_cli
+):
+    """The other way in gates the same run: the entry could not be written either.
+
+    `--view` is here because it is the last thing `init` does and the only
+    one outside the journalled block: the gate has to reach it too, or the
+    run still writes at the adopter's root after refusing to.
+    """
+    adopter = _fixture_repo(tmp_path / "repo")
+    (adopter / ".gitignore").mkdir()
+
+    result = run_cli("init", "--view", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    assert ".gitignore" in result.stderr, result.stderr
+    for item in ("knowledge", "memory", "knowledge.html", "memory.html"):
+        assert not (adopter / item).exists(), item
+    assert "init: created" not in result.stdout, result.stdout
 
 
 def test_an_ignore_entry_the_adopter_already_wrote_is_left_alone(tmp_path, run_cli):
