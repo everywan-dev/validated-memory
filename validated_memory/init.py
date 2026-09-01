@@ -369,8 +369,19 @@ def _ensure_dir(path, session):
     A directory that is already there is recorded as an observation: that it
     pre-existed is a fact about the state before adoption, and nothing can
     re-derive it later.
+
+    A broken symlink is the same shape `_ensure_file` refuses, and it earns
+    the same answer here: `mkdir` cannot create through it, so the `prepared`
+    record below would be opened for a mutation that never happens and could
+    never be closed -- and the reconciler reads the link itself as evidence
+    the directory was created, so it reports `applied` for a `create` whose
+    inverse is removing the adopter's own link. The repository journal is
+    versioned, so leaving that record to be written would append one junk
+    line to shared history on every session start.
     """
     location = path.as_posix()
+    if path.is_symlink() and not path.exists():
+        return location, None, Finding(ERROR, location, "create", BROKEN_SYMLINK)
     if path.exists():
         session.observe(location, "directory already present")
         return location, "kept", None

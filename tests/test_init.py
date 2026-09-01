@@ -181,24 +181,44 @@ def test_a_directory_that_cannot_be_created_gates_with_an_error(adopter_dir, run
         os.chmod(locked, 0o700)
 
 
-def test_a_directory_blocked_by_a_dangling_symlink_gates_with_an_error(
+def test_a_directory_blocked_by_a_broken_symlink_gates_and_records_nothing(
     adopter_dir, run_cli
 ):
-    """`_ensure_dir` reports a directory it could not create, and gates.
+    """`init` never destroys what the adopter put there, and never files junk.
 
-    The root stays writable, so the journal and its lock are created
-    normally and the failure happens where this test aims it. A dangling
-    symlink is the way in: `exists()` follows the link and answers False, so
-    `_ensure_dir` tries to create the directory, and `mkdir` then refuses
-    because the link itself is in the way.
+    `Path.exists()` follows a symlink and reads a broken one as absent, so
+    `_ensure_dir` wrote the `create` `prepared` record and only then found
+    the link in the way of `mkdir`. The ERROR was right; the record was
+    not. Nothing closed it and nothing ever could, and the reconciler reads
+    the link itself as evidence the mutation happened -- `applied`, for a
+    `create` whose inverse is "remove the adopter's own symlink".
+    `journal.jsonl` is versioned, so each session start appended another
+    one to shared history. `_ensure_file` has guarded this exact shape all
+    along: nothing is recorded, because nothing happened.
     """
+    import json
+
     (adopter_dir / "knowledge").symlink_to("nowhere-at-all")
 
-    result = run_cli("init", cwd=adopter_dir)
+    for _ in range(3):
+        result = run_cli("init", cwd=adopter_dir)
+        assert result.returncode == 1, result.stdout
 
-    assert result.returncode == 1, result.stdout
     assert "knowledge" in result.stderr, result.stderr
-    assert "directory could not be created" in result.stderr, result.stderr
+    assert "broken symlink" in result.stderr, result.stderr
+    assert (adopter_dir / "knowledge").is_symlink()
+    assert not (adopter_dir / "knowledge").exists()
+    records = [
+        json.loads(line)
+        for line in (adopter_dir / "journal.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert not [
+        entry for entry in records if entry["path"] == "knowledge"
+    ], records
+    check = run_cli("journal", "--check", cwd=adopter_dir)
+    assert check.returncode == 0, check.stdout
 
 
 def test_a_file_blocked_by_a_broken_symlink_gates_and_leaves_the_link(
