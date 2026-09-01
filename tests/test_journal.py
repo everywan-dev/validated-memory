@@ -1053,16 +1053,59 @@ def test_a_journal_that_cannot_be_read_is_a_finding_not_a_traceback(
     assert "record(s), 1 error(s)" in result.stdout, result.stdout
 
 
-def test_a_journal_that_is_not_a_regular_file_is_never_replaced(
+def test_a_journal_symlinked_to_a_regular_file_is_read_and_appended_to(
     run_cli, tmp_path
 ):
-    """A symlink at `journal.jsonl` is the adopter's, and `init` does not destroy it.
+    """A link that resolves is an ordinary journal, read and written through.
 
-    A broken symlink reads as absent (`Path.exists()` ignores ENOENT), so
-    the journal looked missing: `init` minted a second adoption id and
-    installed over the link, which `os.replace` destroys rather than
+    Keeping `journal.jsonl` in a store outside the project and linking it
+    back is a setup nothing here has a reason to refuse: `append` opens the
+    name and writes through the link, and `bootstrap` never reaches its
+    install, because the file the link resolves to already has records.
+    Refusing because the NAME is not a regular file takes a working
+    adoption away over a question about the link rather than about the
+    bytes that are actually read.
+    """
+    store = tmp_path / "store"
+    store.mkdir()
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert run_cli("init", cwd=adopter).returncode == 0
+    link = adopter / "journal.jsonl"
+    kept = store / "journal.jsonl"
+    link.rename(kept)
+    link.symlink_to(kept)
+    before = _records(kept)
+    # A re-run over an untouched tree keeps every item and records nothing,
+    # so one scaffold file is removed: its `create` is what proves the
+    # append reached the store through the link.
+    (adopter / "validated-memory.md").unlink()
+
+    reported = run_cli("journal", cwd=adopter)
+    again = run_cli("init", cwd=adopter)
+
+    assert reported.returncode == 0, reported.stderr
+    counted = f"journal: {len(before)} record(s)"
+    assert counted in reported.stdout, reported.stdout
+    assert again.returncode == 0, again.stderr
+    after = _records(kept)
+    assert link.is_symlink(), "the adopter's link was replaced"
+    assert len(after) > len(before), "nothing was appended through the link"
+    assert {entry["adoption"] for entry in after} == {before[0]["adoption"]}
+
+
+def test_a_journal_that_is_a_broken_symlink_is_never_replaced(
+    run_cli, tmp_path
+):
+    """A broken symlink at `journal.jsonl` is the adopter's; `init` keeps it.
+
+    A broken symlink reads as absent (there is nothing to read through it),
+    so the journal looks missing: `init` would mint a second adoption id
+    and install over the link, which `os.replace` destroys rather than
     follows. That is exactly the trade `init.BROKEN_SYMLINK` refuses
-    everywhere else -- never destroy what the adopter put there.
+    everywhere else -- never destroy what the adopter put there -- so the
+    refusal lives where the replacement would happen, not where the reading
+    does.
     """
     assert run_cli("init", cwd=tmp_path).returncode == 0
     journal = tmp_path / "journal.jsonl"

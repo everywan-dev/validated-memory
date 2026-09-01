@@ -249,40 +249,57 @@ def read(root=Path(), durability=REPO):
     root, is refused here -- before any reader acts on it -- rather than
     crashing one layer down or being read as an instruction.
 
-    "Missing" is exactly one thing: nothing at that name. `Path.exists()`
-    answers a wider question and answers it wrongly for this one -- it
-    raises on a permission denial (a stack trace out of the check for a
-    missing file), and it reads a broken symlink as absent, after which
-    `bootstrap` mints a second adoption id and `install`'s `os.replace`
-    destroys the adopter's link rather than following it. So the path is
-    stat'ed without following it: absent is absent, unreadable is a
-    refusal, and anything there that is not a regular file is a refusal
-    too, never an absence.
+    "Missing" is exactly one thing: nothing that can be opened at that
+    name. `Path.exists()` answers a wider question and answers it wrongly
+    for this one -- it raises on a permission denial, which is a stack
+    trace out of the check for a missing file. So the journal is OPENED
+    first and every question is then asked of the DESCRIPTOR: whether it is
+    a regular file, and what bytes it holds. `lstat` then `read_text` are
+    two operations on a name, and a name can be repointed between them --
+    the bytes read, and afterwards appended to, would then be whatever the
+    name meant by the second call, past a check the first one passed.
+
+    A symlink that resolves to a regular file is read like any other
+    journal: nothing about reading it is unsafe, `append` writes through it
+    by name, and an adopter who keeps the file in a store outside the
+    project has a working adoption. A BROKEN symlink reads as absent, which
+    is honest -- there is nothing to read through it -- and it is
+    `bootstrap` that must not then install over the link, where the
+    replacement it would destroy actually happens.
     """
     path = journal_path(root, durability)
     where = artifact_name(durability)
     try:
-        status = path.lstat()
+        # `O_NONBLOCK` so the open cannot hang on the very shape the check
+        # below refuses: opening a FIFO for reading waits for a writer, and
+        # a reader that never returns is worse than one that refuses. Asked
+        # for by name because the flag is POSIX-only, and a platform without
+        # it has no FIFOs to hang on either.
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
         return []
     except OSError as error:
         raise JournalError(
             None, f"journal could not be read: {error}", where
         ) from error
-    if not stat.S_ISREG(status.st_mode):
-        raise JournalError(
-            None,
-            "journal is not a regular file; nothing is read from it and "
-            "nothing replaces it -- installing a journal over what the "
-            "adopter put there would destroy it",
-            where,
-        )
     try:
-        text = path.read_text(encoding="utf-8")
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise JournalError(
+                None,
+                "journal is not a regular file; a directory, a device or a "
+                "pipe holds no records and nothing here can read one from it",
+                where,
+            )
+        # `closefd=False`: the descriptor has one owner, the `finally` below,
+        # so a failure between the two closes it exactly once.
+        with open(descriptor, "rb", closefd=False) as handle:
+            text = handle.read().decode("utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise JournalError(
             None, f"journal could not be read: {error}", where
         ) from error
+    finally:
+        os.close(descriptor)
     records = []
     for offset, line in enumerate(text.splitlines()):
         lineno = offset + 1
@@ -511,6 +528,23 @@ def bootstrap(root=Path(), run=None, records=None, local=None):
     adoption = _adoption_id(existing, kept)
     if existing:
         return adoption
+
+    # Nothing was read, so the install below is about to publish the opening
+    # record under this NAME -- and `os.replace` replaces a symlink rather
+    # than following it. A link here is the adopter's: a broken one reads as
+    # absent and a resolvable one carries no records yet, and replacing
+    # either destroys something `init` did not create and cannot put back,
+    # which is exactly the trade `init.BROKEN_SYMLINK` refuses everywhere
+    # else. A link to a journal that HAS records never reaches this line.
+    if path.is_symlink():
+        raise JournalError(
+            None,
+            f"{JOURNAL_FILENAME} is a symlink and holds no records; "
+            "installing the journal here would replace the link itself, "
+            "which is the adopter's and cannot be put back -- point it at a "
+            "journal or remove it",
+            artifact_name(REPO),
+        )
 
     opening = record(
         OBSERVE,
