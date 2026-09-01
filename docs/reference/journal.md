@@ -19,11 +19,13 @@ Durability is not one question, so the journal is two files, each append-only
 - **`journal.jsonl`**, at the adopter root, **always versioned**. Carries
   the repository-visible mutations that are recorded (see [the next
   section](#what-is-recorded-and-what-is-not-yet)): what `init` created,
-  what it found already there, the line it added to the ignore file, the
-  harness-symlink's own record when the target is inside the repository. It is not subject to the versioning question the adoption
-  questionnaire asks about the derived files (ADR 0002, ADR 0003) --
-  unlike `knowledge-index.md` or the HTML views, nothing regenerates it, so
-  the questionnaire never offers to leave it unversioned.
+  what it found already there, and the line it added to the ignore file.
+  Not the harness symlink: `init` writes that record to the vault whatever
+  path `--harness-memory` names, including one inside the repository. It is
+  not subject to the versioning question the adoption questionnaire asks
+  about the derived files (ADR 0002, ADR 0003) -- unlike
+  `knowledge-index.md` or the HTML views, nothing regenerates it, so the
+  questionnaire never offers to leave it unversioned.
 - **`.validated-memory/local.jsonl`**, under `.validated-memory/` at the
   adopter root, **always local to the clone**. Carries preimages
   (`.validated-memory/preimages/<digest>`) and the record of any mutation
@@ -68,6 +70,32 @@ transaction interface of [design
 every confirmed write goes through one CLI command that journals
 inseparably from doing, because a journal a prose skill has to remember to
 write is a journal that will be incomplete.
+
+**Also not recorded: the harness take-over** -- what
+`init --harness-memory PATH` does when PATH is a real directory holding the
+harness's own agent memory (`adopt.py`). Four mutations, none of them
+derived:
+
+| Write | By |
+|---|---|
+| `rmdir` of PATH, when it is empty | `take_over` |
+| a copy of each memory file into `memory/` | `_absorb` |
+| a rewrite of `memory/MEMORY.md`, giving the copied files their index entries | `_reconcile_index` |
+| the rename of PATH aside to `PATH.bak` | `_park` |
+
+These are deferred whole to the reversal plan ([design
+§7](../design/2026-08-30-the-journal-coverage-and-reversal-design.md#the-harness-stays-out)),
+which records them and deliberately does not invert them. Until it lands,
+what a reader must not conclude: **a reversal driven by today's record
+cannot restore a harness memory directory.** The copied bytes are in no
+preimage and the parked `.bak` is named in no record; the only trace of the
+take-over is the `link` record in the vault, whose note ("no previous link")
+is true of the symlink and silent about the directory that was moved out of
+its way. The index rewrite also outdates a record the same run already
+wrote: `memory/MEMORY.md` is journalled early, as a `create` carrying a
+`postimage` or as an `observe` saying it was already present, and
+`_reconcile_index` then changes the file, so the run ends with a record that
+no longer describes it.
 
 The completeness pin (`tests/test_journal.py`) holds the line in the
 meantime: a write path in the package that does not reach the journal fails
@@ -132,9 +160,12 @@ creating -- observing that one would be a claim about the state before
 adoption, written after the plugin had changed it, in an op that has no
 inverse. `patch`,
 `rename`, `remove` and `move` are declared here as part of the domain
-(`journal.OPS`) but have no caller yet in this plugin; `create`, `replace`,
-`observe`, `link` and `append` are the five `init` writes today -- `append`
-for the one line it adds to the repository's ignore file.
+(`journal.OPS`) but have no caller yet in this plugin; `create`, `observe`,
+`link` and `append` are the four `init` writes today -- `append` for the one
+line it adds to the repository's ignore file. `replace` sits between the
+two: `Run.write` emits it whenever it parks a preimage, and no path reaches
+that branch, because the one caller only writes a file it has just found
+absent. It is the op the transaction interface will reach first.
 
 ## Stages and unfinished transactions
 
