@@ -1500,20 +1500,25 @@ def test_the_fault_variable_is_inert_when_unset_or_unreached(
     changes nothing: the same `init`, byte for byte, on both sides.
 
     `run_cli` copies `os.environ` for the subprocess, so `monkeypatch` here
-    reaches it. `after-prepared` is wired into `prepare_op` alone, which
-    only the harness symlink still reaches (`init._record_symlink`), so a
-    plain `init` with no `--harness-memory` never gets there -- which is
-    exactly the "set to a point that is never reached" half of this test.
+    reaches it. Every seam belongs to the executor now, so the run that
+    reaches none of them is the run that mutates nothing: a SECOND `init`
+    over a tree the first one already scaffolded creates no item, appends
+    no record and opens no transaction, and `after-transaction` -- the
+    earliest seam of all -- is never reached in it. That is the "set to a
+    point that is never reached" half; the first run on each side is the
+    setup both halves share.
     """
     baseline = tmp_path / "baseline"
     unreached = tmp_path / "unreached"
     baseline.mkdir()
     unreached.mkdir()
-
     monkeypatch.delenv("VALIDATED_MEMORY_FAULT", raising=False)
+    assert run_cli("init", cwd=baseline).returncode == 0
+    assert run_cli("init", cwd=unreached).returncode == 0
+
     control = run_cli("init", cwd=baseline)
 
-    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-prepared")
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-transaction")
     faulted = run_cli("init", cwd=unreached)
 
     assert control.returncode == 0, control.stderr

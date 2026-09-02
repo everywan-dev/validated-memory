@@ -191,16 +191,14 @@ def new_id():
 # nothing published yet, the new bytes published but the transaction not yet
 # marked, the transaction marked published but the permanent history not yet
 # appended, and the history appended but the transaction not yet resolved.
-# `after-prepared` and `after-mutation` are not executor points -- they are
-# the two-record protocol `prepare_op`/`append_op` still run for the harness
-# symlink alone, and they go with those two methods in task 6.
+# Four, and only four: every mutation this package performs now goes through
+# the executor, so these are the whole of the protocol's seams. The two points
+# that named the older `prepare_op`/`append_op` protocol went with it.
 FAULT_POINTS = (
     "after-transaction",
     "after-publish",
     "after-published",
     "after-history",
-    "after-prepared",
-    "after-mutation",
 )
 
 
@@ -322,8 +320,10 @@ class Intention:
     - `target` -- the new symlink target, for `LINK`; `None` otherwise.
     - `directory` -- `True` for `CREATE` of a directory; `False` (the
       default) otherwise, including for every op that has no notion of one.
-    - `note` -- the same free-text annotation `prepare_op`/`append_op`
-      already carry; `None` when there is nothing to say.
+    - `note` -- the free-text annotation both of the mutation's records
+      carry; `None` when there is nothing to say. It is the whole payload
+      of a `LINK`, whose inverse is "restore the previous target" and
+      whose note is the only place that target survives.
 
     `__post_init__` refuses seven combinations, each a way the payload could
     silently disagree with `op`: a `LINK` carrying `content`, a directory
@@ -778,23 +778,20 @@ def authorise(root, path, durability):
     `OSError` per item, so a path that escapes through a symlink gates the
     one item that named it and nothing else.
 
-    Called once, at the very start of each public `Run` method that can
-    reach the journal -- `observe`, `prepare_op`, `append_op` directly, and
-    `write`/`append_text` through `_location` -- before anything is parked,
-    appended or written, so the resolved question is now asked for
-    `observe`, `prepare_op` and `append_op` too. Before this, only `write`
-    and `append_text` asked it: a `memory/` symlinked to a directory outside
-    the project was lexically fine, so `observe` filed it into the
-    versioned journal as a fact about the tree, even though the bytes it
-    named were never inside the tree at all.
+    Called once, at the very start of each of the two public `Run` methods
+    that can reach the journal -- `observe` and `execute` -- before anything
+    is parked, appended or written, so the resolved question is asked for an
+    observation as well as for a write. Before this, only a write asked it:
+    a `memory/` symlinked to a directory outside the project was lexically
+    fine, so `observe` filed it into the versioned journal as a fact about
+    the tree, even though the bytes it named were never inside the tree at
+    all.
 
     Deliberately NOT called from `_record`: that helper builds both halves
-    of a mutation, and for the two-record protocol `prepare_op`/`append_op`
-    still run, the second call happens after the caller's own mutation has
-    already run. Asking the resolved question there again could refuse
-    after the bytes were already on disk, abandoning a `prepared` record
-    that reconciliation was built to close rather than a fresh failure to
-    raise past -- see `_record`.
+    of a mutation, and `execute` appends the two together AFTER publication.
+    Asking the resolved question there would refuse a mutation that has
+    already happened, which is not a refusal at all -- it is a published
+    write with no record, the one state this protocol exists to rule out.
 
     What this does NOT provide: `dir_fd`-relative ancestor stabilisation.
     Both checks resolve `path` by name, and nothing stops a hostile process
@@ -1729,10 +1726,15 @@ class Run:
     the whole of design §4's protocol and the only thing a caller needs.
     One `Run` per invocation.
 
-    Two methods still run the older two-record protocol -- `prepare_op` and
-    `append_op`, for the harness symlink alone, until task 6 moves it. A
-    `prepared` record of theirs with no `committed` twin is what
-    `journal --check` reconciles; nothing here guesses at one.
+    Three methods, and no fourth: `observe` for a fact about the state
+    adoption found, `execute` for every mutation, `recover` for what an
+    earlier run left open. The older two-record protocol -- a `prepared`
+    record appended to a versioned journal, the caller's own mutation, then
+    a `committed` record -- is gone with its two methods, and with it the
+    ability of any module outside this one to open a stage. A `prepared`
+    record with no `committed` twin is still what `journal --check`
+    reconciles, because every history written before this can hold one;
+    nothing here writes another.
 
     `__init__` takes `Lock` itself, around the two reads and `bootstrap`:
     deciding from what was read that no adoption id exists yet and then
@@ -1828,12 +1830,10 @@ class Run:
         Every public method calls `authorise` itself, once, before it parks
         a preimage, writes bytes or appends anything -- never here, because
         `_record` builds BOTH halves of a mutation. `execute` appends the
-        two together, after publication, so a second call there would refuse
-        a mutation that has already happened; and `prepare_op`/`append_op`
-        are two calls with the caller's own `mkdir`/`relink` between them,
-        so a refusal on the second would leave a `prepared` record with no
-        `committed` twin for a mutation that did happen -- exactly the state
-        reconciliation exists to avoid manufacturing on its own.
+        two together, after publication, so a second call here would refuse
+        a mutation that has already happened -- which leaves published bytes
+        with no record at all, exactly the state reconciliation exists to
+        avoid manufacturing on its own.
 
         What is left here is the cheap lexical guard, kept as a last line
         of defence: a `repo` record whose path is absolute or climbs out
@@ -2080,15 +2080,16 @@ class Run:
             )
 
         # A byte-publishing op may only ever land on nothing or on a
-        # regular file. `write` and `append_text` are public shims that
-        # build their own expectation from whatever they find, so without
-        # this an adopter's symlink would be handed to the replacement
-        # branch: `os.replace` destroys the link itself, no preimage is
-        # parked for it (`park_preimage` sees a symlink, not a file), and
-        # the record would say `replace` with a null preimage -- the exact
-        # trade `init.BROKEN_SYMLINK` refuses everywhere else, made
-        # silently. The expected-state check does not cover it, because a
-        # shim's expectation IS the symlink it just read.
+        # regular file. The check above already refuses every caller that
+        # states what it expects to find; this one stands for the caller
+        # that expects something a symlink can satisfy -- an `append`
+        # naming a digest matches no symlink, but nothing in the shape of
+        # an intention stops a future one from expecting less. Without it
+        # an adopter's symlink reaches the replacement branch:
+        # `os.replace` destroys the link itself, no preimage is parked for
+        # it (`park_preimage` sees a symlink, not a file), and the record
+        # would say `replace` with a null preimage -- the exact trade
+        # `init.BROKEN_SYMLINK` refuses everywhere else, made silently.
         if intention.content is not None and actual["kind"] not in (ABSENT, FILE):
             return self._refused(
                 intention,
@@ -2381,156 +2382,6 @@ class Run:
             # restoring a mode nobody measured is worse than one that knows
             # it was never told.
             return None
-
-    def _location(self, path):
-        """`path` as a record will carry it: relative to the adopter root.
-
-        `authorise` is asked here, before the preimage is parked and before
-        the `prepared` record is appended, so a refusal leaves nothing
-        written and nothing recorded -- and its `OSError` is what the caller
-        already catches per item (`init._ensure_file`, `init._ensure_ignored`):
-        one item gets an ERROR finding and the rest of the run continues,
-        which is what a whole-run abort or a traceback would take away.
-
-        The directory check is this method's own, not `authorise`'s: it is
-        about what a file WRITE may target, not about which path a record
-        may name, and `observe`/`prepare_op`/`append_op` -- which call
-        `authorise` themselves, at their own start -- have no bytes to
-        write and so no reason to refuse a directory.
-        """
-        location = authorise(self.root, path, REPO)
-        if (self.root / location).is_dir():
-            raise IsADirectoryError(
-                f"{location} is a directory; refusing to journal a file write "
-                "against it. Nothing has been recorded."
-            )
-        return location
-
-    def write(self, path, content, purpose, durability=REPO):
-        """Create or replace the text file at `path`, through the executor.
-
-        A shim, and it says so: `init` does not yet state what it expects to
-        find, so this reads the current state and states it on the caller's
-        behalf -- absent, and the op is a `create`; a file, and the op is a
-        `replace` expecting exactly the digest and mode just read. That is
-        strictly weaker than an expectation the caller declares, because
-        anything already there is accepted rather than refused; what it
-        does buy is every step of the protocol, which no caller now
-        reimplements. `init` declares its own expectations in task 6 and
-        this method goes.
-
-        A refusal comes back as `OSError` carrying the executor's message,
-        because that is what the callers already catch per item
-        (`init._ensure_file`, `init._ensure_ignored`): one item gets an
-        ERROR and the rest of the run continues.
-        """
-        return self._through_executor(
-            path, content, purpose, durability, append_to_it=False
-        )
-
-    def append_text(self, path, content, purpose, durability=REPO):
-        """Append `content` to the text file at `path`, through the executor.
-
-        The inverse of an `append` is "truncate to the recorded prior
-        length" (§2), so the record carries `prior_bytes` alongside the
-        preimage and postimage digests -- `_execute` computes both, since
-        only it has read the bytes already there. `preimage` is null when
-        the file did not exist at all, exactly as it is for a `create`: the
-        inverse is then removing the file, not truncating it to nothing, and
-        only the record can say which of the two this was. That is why the
-        op stays `append` over an absent path rather than becoming a
-        `create`: the two have different inverses, and the record is the
-        only place the difference survives.
-
-        The append is a read-modify-write published atomically, not an
-        `open(..., "a")`: a torn append would leave bytes no postimage
-        describes, which is the state this protocol exists to rule out.
-        """
-        return self._through_executor(
-            path, content, purpose, durability, append_to_it=True
-        )
-
-    def _through_executor(self, path, content, purpose, durability, append_to_it):
-        """Build the intention `write`/`append_text` never asked their caller for."""
-        location = self._location(path)
-        actual = current_state(self.root, location)
-        if append_to_it:
-            op = APPEND
-        else:
-            op = CREATE if actual["kind"] == ABSENT else REPLACE
-        outcome = self.execute(
-            Intention(
-                op=op,
-                purpose=purpose,
-                path=location,
-                durability=durability,
-                expected=actual,
-                content=content.encode("utf-8"),
-            )
-        )
-        if outcome.status == OUTCOME_REFUSED:
-            raise OSError(outcome.message)
-        return outcome
-
-    def prepare_op(self, op, purpose, path, note, durability=REPO):
-        """Record that a mutation with no file preimage is about to happen.
-
-        Public for ONE caller, `init._record_symlink`, until the harness
-        link moves onto the executor in task 6; nothing else may open a
-        stage. Design §4 takes `prepare_op` and `append_op` off the public
-        surface precisely so that no module outside this one can
-        reimplement the protocol the way `init.py` did.
-
-        `authorise` runs first, before this method appends anything: the
-        caller has not yet touched the filesystem for this op (that is
-        `prepare_op`'s whole point -- record, then mutate), so a refusal
-        here is still the clean "nothing written and nothing recorded" case.
-
-        The `committed` half is `append_op`. §4 admits no "mutate first"
-        protocol, and a mutation with no bytes to digest is not an
-        exception: a `mkdir` that crashes before its record leaves a
-        directory nothing knows about, and a re-pointed symlink destroys the
-        one fact its own record carries -- the previous target, which is
-        what its inverse restores.
-        """
-        location = authorise(self.root, path, durability)
-        append(
-            [self._record(op, purpose, location, durability, PREPARED, note=note)],
-            self.root,
-            durability,
-        )
-        _fault("after-prepared")
-        self._seen.add((durability, location))
-
-    def append_op(self, op, purpose, path, note, durability=REPO):
-        """Close a mutation with no file preimage: the `committed` half.
-
-        Public for the same one caller as `prepare_op`, and for as long.
-
-        `authorise` runs again here, before THIS method's own append -- not
-        before the caller's `mkdir`/`relink`, which already happened between
-        `prepare_op` and this call. That ordering is fine: `append_op`
-        performs no filesystem mutation of its own, so a refusal here
-        leaves the `prepared` record open with no `committed` twin, which is
-        exactly the shape `journal --check` reconciles, not a new failure
-        mode. What `authorise` must never do is run a second time INSIDE a
-        method that mutates bytes between its own two record-writing calls
-        (see `_record`) -- `append_op` does not, so it is safe here.
-
-        `_fault("after-mutation")` fires first, before `authorise`: the
-        caller's own mutation (`mkdir`, `relink`) already happened between
-        `prepare_op` and this call, so by the time `append_op` runs at all
-        the mutation is done and the only thing left is the `committed`
-        record this method is about to write.
-        """
-        _fault("after-mutation")
-        location = authorise(self.root, path, durability)
-        append(
-            [self._record(op, purpose, location, durability, COMMITTED, note=note)],
-            self.root,
-            durability,
-        )
-        self._seen.add((durability, location))
 
     # --- recovery and resolution: closing what an earlier run left open -------
 
@@ -3103,10 +2954,10 @@ def reconcile(root=Path()):
     every mutation the executor has written since it took over the protocol:
     the id is minted per mutation, so it says which `committed` closes which
     `prepared` without any inference at all. Records without the field --
-    everything written before, and `prepare_op`/`append_op`'s two halves --
-    keep the older rule: file order within a (run, path), so a `committed`
-    record closes the ONE `prepared` record it follows and never every
-    prepared record that happens to share its key.
+    everything a history written before the executor holds -- keep the
+    older rule: file order within a (run, path), so a `committed` record
+    closes the ONE `prepared` record it follows and never every prepared
+    record that happens to share its key.
 
     A pair that agrees on nothing but its id is not a pair. `PAIRED_FIELDS`
     is checked on every id-matched pair, because the two records are the
@@ -3165,7 +3016,7 @@ def _state_of(root, entry):
     target = root / entry["path"]
     if not _resolves_below(root, target):
         # `read()` already refused a repository record naming a path outside
-        # the root, and `Run.write` refuses to write one. What is left is the
+        # the root, and `authorise` refuses to write one. What is left is the
         # filesystem's half of the same question: a lexically fine path that
         # resolves out of the root through a symlink, and a vault record,
         # whose path may legitimately leave the root -- design §7 is explicit
