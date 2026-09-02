@@ -814,6 +814,31 @@ def test_a_field_of_the_wrong_type_is_a_finding_not_a_traceback(run_cli, tmp_pat
         assert "schema" in result.stderr, (arguments, result.stderr)
 
 
+def test_a_boolean_where_a_number_goes_is_refused_in_an_optional_field_too(
+    run_cli, tmp_path
+):
+    """`"mode": true` is not a mode, in the optional half of the table either.
+
+    The common-field loop excludes `bool` from `int` deliberately --
+    `isinstance(True, int)` is true -- and the optional loop did not, so a
+    record carrying `"mode": true` was read back as a valid record. `mode`
+    is what a reversal `chmod`s, and `prior_bytes` is the length an `append`
+    would truncate to: a boolean reaching either of them is a number nobody
+    wrote.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    _append_record(journal, _record(journal, mode=True))
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert (
+        "record field 'mode' holds bool, which it may not" in result.stderr
+    ), result.stderr
+
+
 def test_a_path_that_is_not_a_string_is_a_finding_not_a_traceback(run_cli, tmp_path):
     """The reconciler builds a path out of the record, so its type is load-bearing."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
@@ -3492,6 +3517,64 @@ def test_a_transaction_whose_states_are_not_states_is_damaged(run_cli, tmp_path)
 
 
 # --- bytes that cannot be read are `unknown`, never a traceback ---------------
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
+def test_an_unreadable_path_says_which_stage_its_transaction_reached(
+    run_cli, tmp_path, monkeypatch
+):
+    """`unknown` for an unreadable path, but not the same story for both stages.
+
+    A `prepared` transaction may never have run; a `published` one
+    certainly did, and only its two history records were lost. One sentence
+    served both and said `prepared a mutation of` whichever it was -- the
+    milder story told about the graver state, to a reader deciding between
+    `--accept`, `--restore` and `--abandon`.
+    """
+    published = tmp_path / "published"
+    prepared = tmp_path / "prepared"
+    published.mkdir()
+    prepared.mkdir()
+    # An ignore file that is already there makes the killed intention an
+    # `append` over a real file, so `prepared` has bytes at the path to
+    # make unreadable. A `create` at the same stage has published nothing.
+    (prepared / ".gitignore").write_text("build/\n", encoding="utf-8")
+
+    for tree, fault, stage in (
+        (published, "after-published", "published"),
+        (prepared, "after-transaction", "prepared"),
+    ):
+        monkeypatch.setenv("VALIDATED_MEMORY_FAULT", fault)
+        assert run_cli("init", cwd=tree).returncode == 70
+        monkeypatch.delenv("VALIDATED_MEMORY_FAULT")
+        entry = _transactions(tree)[0]
+        assert entry["stage"] == stage, entry
+        (tree / ".gitignore").chmod(0o000)
+
+        try:
+            result = run_cli("init", cwd=tree)
+
+            assert result.returncode == 1, (result.stdout, result.stderr)
+            assert "Traceback" not in result.stderr, result.stderr
+            if stage == "published":
+                assert (
+                    f"transaction {entry['transaction']} published .gitignore, "
+                    "and .gitignore cannot be read" in result.stderr
+                ), result.stderr
+                assert (
+                    "whether what it published is still there" in result.stderr
+                ), result.stderr
+            else:
+                assert (
+                    f"transaction {entry['transaction']} prepared a mutation "
+                    "of .gitignore, and .gitignore cannot be read"
+                    in result.stderr
+                ), result.stderr
+                assert "whether it ran" in result.stderr, result.stderr
+        finally:
+            (tree / ".gitignore").chmod(0o644)
 
 
 @pytest.mark.skipif(

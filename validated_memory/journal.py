@@ -736,7 +736,17 @@ def _check_types(lineno, entry, where):
                 where,
             )
     for field, expected in OPTIONAL_FIELD_TYPES.items():
-        if field in entry and not isinstance(entry[field], expected):
+        if field not in entry:
+            continue
+        value = entry[field]
+        # The same exclusion the loop above makes, for the same reason:
+        # `isinstance(True, int)` is true, and `"mode": true` is not a mode.
+        # `_well_formed_state` already refuses it inside a transaction
+        # file's states; a record carrying it reached `_restore`, which
+        # `chmod`s what the field holds.
+        if int in expected and isinstance(value, bool):
+            value = None
+        if not isinstance(value, expected):
             raise JournalError(
                 lineno,
                 f"record field '{field}' holds "
@@ -2723,6 +2733,19 @@ class Run:
                 f"transaction {transaction_id} published {path}, but {path} "
                 f"is {_describe(facts['actual'])} now and not what was "
                 "published; nothing here can say whether that is wanted -- "
+                f"{_resolution_advice(transaction_id)}"
+            )
+        elif facts["actual"] is None and facts["stage"] == PUBLISHED:
+            # The stage is most of what is known about a transaction whose
+            # path cannot be read, and the two stages are not the same
+            # trouble: a `prepared` one may never have run, where a
+            # `published` one certainly did and only its records were lost.
+            # One sentence for both said `prepared` whichever it was, which
+            # is the milder story told about the graver state.
+            message = (
+                f"transaction {transaction_id} published {path}, and {path} "
+                f"cannot be read: {facts['reason']}; nothing here can say "
+                "whether what it published is still there -- "
                 f"{_resolution_advice(transaction_id)}"
             )
         elif facts["actual"] is None:
