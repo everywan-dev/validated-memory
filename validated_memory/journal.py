@@ -29,6 +29,7 @@ import json
 import os
 import secrets
 import stat
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -162,6 +163,53 @@ def now():
 def new_id():
     """A short, collision-resistant identifier for a run or an adoption."""
     return secrets.token_hex(8)
+
+
+# Named after the executor's protocol (Task 4, plan order): a transaction
+# file fsynced with nothing published yet, the new bytes published but the
+# transaction not yet marked, the transaction marked published but the
+# permanent history not yet appended, and the history appended but the
+# transaction not yet resolved. `after-prepared` and `after-mutation` are
+# not executor points -- they are wired into the two-record protocol that
+# `Run` already runs today (see `_fault`'s call sites below), so this seam
+# can be proven through the CLI before the executor exists.
+FAULT_POINTS = (
+    "after-transaction",
+    "after-publish",
+    "after-published",
+    "after-history",
+    "after-prepared",
+    "after-mutation",
+)
+
+
+def _fault(point):
+    """Die at `point`, hard, if `VALIDATED_MEMORY_FAULT` names it.
+
+    This is the one place in the package that reads that variable: a test
+    driving the CLI as a subprocess has no `monkeypatch` that reaches past
+    the subprocess boundary, and the only crash simulation this suite had
+    before this function was hand-editing an artifact afterwards, which
+    proves nothing about what the process actually leaves behind mid-write.
+
+    The death is `os._exit`, not `sys.exit` or a raised exception: no
+    `finally` clause runs, no lock is released, no temporary is cleaned up.
+    That is what a real crash looks like, and a fault test's assertions are
+    only honest if the seam does not clean up after itself. `70` (`EX_SOFTWARE`
+    in the BSD sysexits convention this project otherwise ignores) is
+    chosen only to be distinguishable from an ordinary exit code and a
+    signal death; nothing reads it back.
+
+    Unset, this changes nothing: `os.environ.get(...) == point` is false
+    for every `point` when the variable is absent, so every call site below
+    falls through exactly as if `_fault` were not called at all. Set to a
+    point this run never reaches, it is equally inert. Nothing outside this
+    function may read `VALIDATED_MEMORY_FAULT`.
+    """
+    if os.environ.get("VALIDATED_MEMORY_FAULT") == point:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(70)
 
 
 def current_state(root, path):
@@ -1222,8 +1270,10 @@ class Run:
             self.root,
             durability,
         )
+        _fault("after-prepared")
 
         self._write_bytes(location, data)
+        _fault("after-mutation")
 
         append(
             [
@@ -1277,8 +1327,10 @@ class Run:
             self.root,
             durability,
         )
+        _fault("after-prepared")
 
         self._write_bytes(location, data)
+        _fault("after-mutation")
 
         append(
             [
@@ -1312,6 +1364,7 @@ class Run:
             self.root,
             durability,
         )
+        _fault("after-prepared")
         self._seen.add((durability, location))
 
     def append_op(self, op, purpose, path, note, durability=REPO):
@@ -1326,7 +1379,14 @@ class Run:
         mode. What `authorise` must never do is run a second time INSIDE a
         method that mutates bytes between its own two record-writing calls
         (see `_record`) -- `append_op` does not, so it is safe here.
+
+        `_fault("after-mutation")` fires first, before `authorise`: the
+        caller's own mutation (`mkdir`, `relink`) already happened between
+        `prepare_op` and this call, so by the time `append_op` runs at all
+        the mutation is done and the only thing left is the `committed`
+        record this method is about to write.
         """
+        _fault("after-mutation")
         location = authorise(self.root, path, durability)
         append(
             [self._record(op, purpose, location, durability, COMMITTED, note=note)],

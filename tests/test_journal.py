@@ -1272,3 +1272,110 @@ def test_journal_reports_unresolved_transactions_only_when_nonzero(
 
     assert result.returncode == 0, result.stdout
     assert "journal: 1 unresolved transaction(s)" in result.stdout, result.stdout
+
+
+def test_a_kill_at_after_prepared_leaves_an_orphan_prepared_record(
+    run_cli, tmp_path, monkeypatch
+):
+    """The fault seam, proven live: a kill right after the first record.
+
+    `.gitignore` is the first mutation a fresh adopter's `init` performs
+    (`_ensure_ignored` runs before the scaffold, and `_write_entry` calls
+    `append_text`), so this is the earliest `after-prepared` point a plain
+    `init` reaches. What the kill leaves behind -- an open `prepared`
+    record with no bytes on disk to match it -- is exactly what
+    `journal --check` already knows how to reconcile as `unapplied`; this
+    test proves the seam produces that state from a real death, not from a
+    hand edit.
+    """
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-prepared")
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 70, (result.returncode, result.stdout, result.stderr)
+    assert not (tmp_path / ".gitignore").exists()
+    records = _records(tmp_path / "journal.jsonl")
+    assert records[-1]["stage"] == "prepared", records
+    assert records[-1]["path"] == ".gitignore", records
+
+    # `os._exit` skips every `finally`, including `Lock.__exit__`, so the
+    # lock file this run took is still there. Recognising and breaking a
+    # dead owner's lock is Task 3's job, not this one's -- removed by hand
+    # here so the `journal --check` below is not itself blocked by it.
+    (tmp_path / ".validated-memory" / "lock").unlink()
+
+    checked = run_cli("journal", "--check", cwd=tmp_path)
+    assert checked.returncode == 1, checked.stdout
+    assert ".gitignore" in checked.stderr, checked.stderr
+    assert "unapplied" in checked.stderr, checked.stderr
+
+
+def test_a_kill_at_after_mutation_leaves_bytes_with_no_committed_record(
+    run_cli, tmp_path, monkeypatch
+):
+    """A kill after the bytes are on disk but before the closing record.
+
+    For the two-record protocol `init` still runs today, `reconcile` reads
+    this as `applied`: the mutation happened and only the closing record
+    was lost -- the false `applied` design §1 measured was a `prepared`
+    record with no bytes; this is the state where that word is honest.
+    """
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-mutation")
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 70, (result.returncode, result.stdout, result.stderr)
+    assert (tmp_path / ".gitignore").exists()
+    records = _records(tmp_path / "journal.jsonl")
+    assert records[-1]["stage"] == "prepared", records
+    assert records[-1]["path"] == ".gitignore", records
+
+    # Same reason as the sibling test above: a dead-owner lock is Task 3's
+    # job, so it is removed here rather than left to block the check.
+    (tmp_path / ".validated-memory" / "lock").unlink()
+
+    checked = run_cli("journal", "--check", cwd=tmp_path)
+    assert checked.returncode == 1, checked.stdout
+    assert ".gitignore" in checked.stderr, checked.stderr
+    assert "applied" in checked.stderr, checked.stderr
+
+
+def test_the_fault_variable_is_inert_when_unset_or_unreached(
+    run_cli, tmp_path, monkeypatch
+):
+    """`VALIDATED_MEMORY_FAULT`, unset or naming a point this run never reaches,
+    changes nothing: the same `init`, byte for byte, on both sides.
+
+    `run_cli` copies `os.environ` for the subprocess, so `monkeypatch` here
+    reaches it. `after-history` is one of the four points named after the
+    executor's protocol (`FAULT_POINTS`) and nothing in this package's
+    current call sites can reach it, which is exactly the "set to a point
+    that is never reached" half of this test.
+    """
+    baseline = tmp_path / "baseline"
+    unreached = tmp_path / "unreached"
+    baseline.mkdir()
+    unreached.mkdir()
+
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT", raising=False)
+    control = run_cli("init", cwd=baseline)
+
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-history")
+    faulted = run_cli("init", cwd=unreached)
+
+    assert control.returncode == 0, control.stderr
+    assert faulted.returncode == 0, faulted.stderr
+    assert control.stdout == faulted.stdout
+    assert control.stderr == faulted.stderr
+
+    def _stripped(path):
+        # `at`, `adoption` and `run` are the only fields two independent
+        # runs can never agree on; everything else -- op, purpose, path,
+        # stage, preimage, postimage -- is what "identical journals" means
+        # here.
+        return [
+            {k: v for k, v in entry.items() if k not in ("at", "adoption", "run")}
+            for entry in _records(path)
+        ]
+
+    assert _stripped(baseline / "journal.jsonl") == _stripped(
+        unreached / "journal.jsonl"
+    )
