@@ -31,12 +31,15 @@ reader has to know which one they are looking at.
 - **The write-ahead log** -- one file per unresolved transaction under
   `.validated-memory/transactions/`. It says what a mutation intended and
   how far it got; it is read by the executor, by the recovery that runs
-  ahead of it, and by `journal --check`, and by nothing else. A resolved
-  transaction leaves it. It is not history.
-- **The derived publisher** -- no record at all. `derive`, `probe`,
-  `render` and `init --view` write artifacts their own command regenerates,
-  through their own atomic rename rather than through the executor, and
-  they put no line in either journal. They are named in [what is not
+  ahead of it, by `journal --check` and by `journal --resolve`, and by
+  nothing else. A resolved transaction leaves it. It is not history.
+- **The derived publisher** -- no record at all. `derive`, `render` and
+  `init --view` write artifacts their own command rebuilds, and `probe`
+  appends to `verdicts.jsonl`, the other append-only log. All of them write
+  through their own writers rather than through the executor -- only
+  `render` and `init --view` publish by atomic rename; `derive` writes the
+  index in place and `probe` appends -- and none of them puts a line in
+  either journal. They are named in [what is not
   recorded](#what-is-recorded-and-what-is-not-yet) rather than recorded.
 
 So: a line in either `.jsonl` file is history; a file under
@@ -539,8 +542,9 @@ ever closes what that log accounts for.
 ## Recovery
 
 Recovery is what a run does with what an earlier run left open. It runs at
-the start of `init` -- the only mutating command there is, and the one the
-session hook re-runs at every session start -- under the run-wide lock,
+the start of `init` -- the command the session hook re-runs at every session
+start, and the only one that mutates the adopter's scaffold -- under the
+run-wide lock,
 before the ignore gate and before `init`'s own first intention. It only ever
 completes or closes what an earlier run began, and unlinks the files that
 said so, so it reduces what is on disk rather than adding to it, which is
@@ -757,4 +761,5 @@ the residue honest. The four seams are the whole of the executor's protocol:
 Unset, or naming a point a run never reaches, it changes nothing: one
 function reads it, nothing else in the package may, and a test asserts that
 two `init` runs -- one with the variable set to an unreached point, one
-without -- produce byte-identical output and journals.
+without -- produce byte-identical output and, the per-run ids aside
+(`at`, `adoption`, `run`, `transaction`), identical journals.

@@ -142,7 +142,7 @@ project, CI gate included.
 | [`probe`](docs/reference/cli.md#probe) | Run freshness probes; append ternary verdicts to the log |
 | [`render`](docs/reference/cli.md#render) | Write self-contained, inert HTML views of both layers |
 | [`status`](docs/reference/cli.md#status) | Read-only report: structural gates plus a reported (opt-in gated) freshness summary |
-| [`journal`](docs/reference/cli.md#journal) | Report the append-only record of what `init` did; `--check` gates on an unfinished transaction |
+| [`journal`](docs/reference/cli.md#journal) | Report the append-only record of what `init` did; `--check` gates on an unfinished record pair, a pair that disagrees or an open transaction, and `--resolve` closes one |
 
 Exit codes: `0` = clean or WARNING-only findings; `1` = ERROR (gates);
 `2` = usage error. Full contracts in the

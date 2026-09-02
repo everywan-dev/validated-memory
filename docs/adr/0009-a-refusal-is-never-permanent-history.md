@@ -1,12 +1,11 @@
 # A refusal is never permanent history
 
-**Status:** Accepted, 2026-09-02.
-
 The journal shipped with one record and a two-stage protocol: a `prepared`
 line, the caller's own mutation, then a `committed` line. Two fix waves and
 three adversarial reviews closed sixteen defects in it and left a residue
-that would not close the same way. Each item below was reproduced by
-execution before it was believed.
+that would not close the same way, and this is what was decided about that
+residue on 2026-09-02. Each item below was reproduced by execution before it
+was believed.
 
 **A `prepared` record could never be closed, and `--check` then called it
 `applied`.** `_ensure_dir` wrote `prepared`, the `mkdir` failed -- a
@@ -36,14 +35,13 @@ failed. So `init.py` reimplemented fragments of one state machine four
 times, and every correction crossed several dimensions at once. More review
 does not exhaust that space; the space does not shrink.
 
-## The decision
-
-**The record splits in three, by lifetime.** A local write-ahead log
-(`.validated-memory/transactions/<id>.json`, one file per open transaction)
-holds what a mutation intends and how far it got. The permanent history
-(`journal.jsonl` and `.validated-memory/local.jsonl`) holds consummated
-facts only. Derived artifacts get no record at all: their own command
-rebuilds them.
+The decision: **the record splits in three, by lifetime.** A local
+write-ahead log (`.validated-memory/transactions/<id>.json`, one file per
+open transaction) holds what a mutation intends and how far it got. The
+permanent history (`journal.jsonl` and `.validated-memory/local.jsonl`)
+holds consummated facts only. The derived artifacts, and the verdict log
+alongside them, get no record at all: the command that wrote one rebuilds
+or re-appends it.
 
 **One executor over one path owns the protocol.** `execute(intention)` takes
 the lock, authorises the path, checks the expected state, parks and verifies
