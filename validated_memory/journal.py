@@ -1472,7 +1472,6 @@ def _classify(root, item):
     symlink is not a reason to refuse to record a mutation that already
     happened.
     """
-    transaction_id = item["id"]
     facts = {
         "path": None,
         "durability": None,
@@ -1591,12 +1590,18 @@ class Resolution:
 
     `location` is what a `Finding` should name -- the path when the
     transaction names one, the transaction file itself when it does not.
+
+    `kept` is where the bytes `--restore` discarded were parked, when there
+    were any: a restore overwrites or removes whatever the path holds now,
+    and no command of this plugin destroys bytes without leaving a copy
+    behind. None for every resolution that discarded nothing.
     """
 
     transaction: str
     resolution: str
     location: str
     message: str | None = None
+    kept: str | None = None
 
 
 def bootstrap(root=Path(), run=None, records=None, local=None):
@@ -1800,6 +1805,15 @@ class Run:
             path = intention.get("path")
             durability = intention.get("durability")
             if isinstance(path, str) and isinstance(durability, str):
+                # Spelled the way `authorise` returns it, because that is
+                # what `execute` and `observe` look up: a repository path is
+                # normalised and a local one is left exactly as written,
+                # since the vault legitimately names paths this module may
+                # not rewrite (ADR 0008). `_classify` normalises the same
+                # way, so a transaction gates the path its own recovery
+                # reports.
+                if durability == REPO:
+                    path = Path(path).as_posix()
                 self._seen.add((durability, path))
                 self._open_paths.setdefault((durability, path), item["id"])
 
@@ -2670,6 +2684,15 @@ class Run:
         id (`_adoption_id`), this run has already established which, and a
         record filed under any other would attach a mutation of this tree to
         somebody else's history.
+
+        `missing` is ordered by `STAGES`, so the two are appended
+        `prepared` then `committed`, as `_execute` writes them. A history
+        already holding the `committed` half alone -- which no writer in
+        this package can produce, only a hand edit or a torn merge -- would
+        therefore get its `prepared` half appended AFTER it, and
+        `reconcile`, which pairs in file order, would go on reporting it as
+        unfinished. That is the honest outcome: the file order of an
+        append-only journal is not something recovery may rearrange.
         """
         durability = facts["durability"]
         location = facts["path"]
@@ -2788,9 +2811,30 @@ class Run:
                 "it by hand. Nothing has been changed.",
             )
 
+        if verdict not in (PROBLEM_DIVERGED, PROBLEM_UNKNOWN):
+            # Recovery can account for this one, so an operator must not
+            # close it: `--accept` and `--abandon` would write an `observe`
+            # about a path the PLUGIN created and throw away the mutation's
+            # record pair for ever, and `--restore` would undo a mutation
+            # the next run is about to finish recording. The three flags
+            # exist for the states nothing can decide, and this is not one.
+            return Resolution(
+                transaction_id,
+                resolution,
+                facts["path"],
+                f"transaction {transaction_id} on {facts['path']} is "
+                f"{RECOVERABLE}: the next 'validated-memory init' closes it "
+                "on its own, and closing it by hand would lose the record "
+                "of the mutation it carries. --accept, --restore and "
+                "--abandon are for a transaction recovery cannot account "
+                "for. Nothing has been changed.",
+            )
+
         if resolution == RESTORE:
             return self._restore(transaction_id, item, facts)
-        found = current_state(self.root, facts["path"])["kind"]
+        # `_classify` read the path under this same lock, so this is the
+        # state the verdict was reached on and not a second, later reading.
+        found = facts["actual"]["kind"]
         note = (
             f"accepted after divergence: transaction {transaction_id} "
             f"found {found}"
@@ -2846,12 +2890,30 @@ class Run:
         opposite -- an operator's explicit instruction to put that adopter's
         own bytes back.
 
+        What the restore DISCARDS is parked before it is discarded. The
+        operator has chosen to throw the current state away, and that
+        choice is honoured -- but a regular file at the path is bytes
+        somebody wrote, and no command here destroys bytes without leaving
+        a copy: they go into the same content-addressed, verified preimage
+        store the executor parks into, and the success line names the blob.
+        That covers both directions symmetrically -- putting a file back
+        over them, and taking the path away because the preimage says it
+        was never there. A symlink is unlinked with nothing parked: its
+        `readlink` is a fact the transaction file already records, and the
+        bytes it pointed at are not this path's. A directory has no bytes
+        of its own, and `_unpublish` refuses a non-empty one rather than
+        parking anything.
+
         Nothing is recorded. A path returned to the state a record would
         have described the departure from is not a fact about the project.
+        The parked blob is not a record either: it is a copy in the vault,
+        which the vault is for.
         """
         location = facts["path"]
         durability = facts["durability"]
-        artifact = _transaction_path(Path(), transaction_id).as_posix()
+        # The state `_classify` reached its verdict on, read under this
+        # same lock -- what is about to be discarded.
+        present = facts["actual"]
 
         def refuse(message):
             return Resolution(transaction_id, RESTORE, location, message)
@@ -2879,7 +2941,7 @@ class Run:
 
         intention = None
         data = None
-        actual = current_state(self.root, location)
+        actual = present
         if kind == FILE:
             reference = item.get("preimage_blob")
             if not isinstance(reference, str):
@@ -2948,6 +3010,27 @@ class Run:
                 target=target,
             )
 
+        # A regular file, and only a regular file, has bytes to keep. A
+        # node that is neither a directory, a symlink nor a regular file
+        # carries no `digest` (`current_state`) and must not be read at
+        # all: reading through a FIFO can block for ever, and there is
+        # nothing there for a later reader to want back.
+        kept = None
+        if present["kind"] == FILE and "digest" in present:
+            try:
+                reference = self.park_preimage(location)
+            except OSError as error:
+                return refuse(
+                    f"the bytes now at {location} could not be parked, and "
+                    f"nothing here discards bytes it has not kept: {error}. "
+                    "Nothing has been restored."
+                )
+            if reference is not None:
+                kept = (
+                    f"{VAULT_DIRNAME}/{PREIMAGE_DIRNAME}/"
+                    f"{reference.replace('sha256:', '')}"
+                )
+
         try:
             if intention is not None:
                 self._publish(intention, location, actual, data)
@@ -2959,7 +3042,7 @@ class Run:
                 "been restored."
             )
         _resolve_transaction(self.root, transaction_id)
-        return Resolution(transaction_id, RESTORE, location)
+        return Resolution(transaction_id, RESTORE, location, kept=kept)
 
     def _unpublish(self, location, actual):
         """Take the published node away: the inverse of an `absent` preimage.
@@ -2967,7 +3050,11 @@ class Run:
         A directory is `rmdir`, never a recursive removal: anything inside
         it was put there by something this transaction knows nothing about,
         and a non-empty directory raises, which the caller renders as a
-        refusal naming it. A path already absent is nothing to undo. The
+        refusal naming it. A symlink is unlinked with nothing parked: the
+        bytes it resolves to belong to the path it points at, not to this
+        one, and removing a link destroys none of them. A regular file has
+        already been parked by the caller. A path already absent is nothing
+        to undo. The
         parent is fsynced afterwards, for the same reason `install` does:
         the removal of a directory entry is itself buffered.
         """
@@ -3150,8 +3237,9 @@ def run(check, resolve, resolution, stdout, stderr):
     code of 0.
 
     `--resolve` is the third mode and the only one that writes: an
-    operator's answer to a transaction recovery would not touch. It is not
-    reporting and does not report -- see `Run.resolve_transaction`.
+    operator's answer to a transaction recovery would not touch, which is
+    the only kind it may be applied to. It is not reporting and does not
+    report -- see `Run.resolve_transaction`.
 
     A transaction file is reported even without `--check`, but only as a
     count: a reader who did not ask to gate on one should still be told
@@ -3289,8 +3377,11 @@ def _run_resolve(root, transaction_id, resolution, stdout, stderr):
             file=stderr,
         )
         return EXIT_ERROR
-    print(
-        f"journal: resolved {transaction_id} (--{resolution})",
-        file=stdout,
-    )
+    line = f"journal: resolved {transaction_id} (--{resolution})"
+    if outcome.kept is not None:
+        # A restore discards whatever the path held, and the operator is
+        # told where those bytes went in the same breath: a copy nobody can
+        # find is not a copy.
+        line += f"; the discarded bytes are kept at {outcome.kept}"
+    print(line, file=stdout)
     return EXIT_OK

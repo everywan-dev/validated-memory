@@ -274,6 +274,13 @@ def main(argv=None):
             if chosen:
                 args._journal_subparser.error(f"--{chosen[0]} requires --resolve")
         else:
+            if not args.resolve.strip():
+                # An empty id reaches no transaction and names none in the
+                # refusal either, so it is a malformed command line rather
+                # than a fact about the project.
+                args._journal_subparser.error(
+                    "--resolve requires the id of a transaction"
+                )
             if args.check:
                 args._journal_subparser.error(
                     "--resolve may not be combined with --check, which is "

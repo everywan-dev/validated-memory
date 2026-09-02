@@ -7,6 +7,7 @@ record means is `docs/reference/journal.md`; what it is for is
 """
 
 import ast
+import hashlib
 import json
 import os
 import subprocess
@@ -1424,6 +1425,9 @@ def _recovers_to_exactly_one_pair(run_cli, tree, path, monkeypatch):
     ]
     assert len(pair) == 2, pair
     assert {record["stage"] for record in pair} == {"prepared", "committed"}, pair
+    # Asserted before the comparison, so two records carrying no id at all
+    # cannot pass this as agreement.
+    assert pair[0]["transaction"], pair
     assert pair[0]["transaction"] == pair[1]["transaction"], pair
 
     again = run_cli("init", cwd=tree)
@@ -2274,6 +2278,39 @@ def _diverged(tree, before=None, kill_after="an adopter wrote this\n"):
     return open_transactions[0]["transaction"]
 
 
+def _created_then_diverged(tree):
+    """A killed `create` of a file, then an adopter's own bytes over it.
+
+    The residue whose preimage is `absent`: its inverse is removal, not
+    bytes, which is the half of `--restore` that has something to discard
+    and nothing to put back. A complete `init` runs first and one file is
+    taken away, so the killed run's first and only mutation is that file's
+    `create` -- the ignore entry is already there and every other item is a
+    no-op. Returns the transaction id.
+    """
+    environment = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    first = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        capture_output=True, text=True, cwd=tree, env=environment, check=False,
+    )
+    assert first.returncode == 0, (first.stdout, first.stderr)
+    (tree / "knowledge-extension.md").unlink()
+    killed = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        capture_output=True,
+        text=True,
+        cwd=tree,
+        env={**environment, "VALIDATED_MEMORY_FAULT": "after-published"},
+        check=False,
+    )
+    assert killed.returncode == 70, (killed.stdout, killed.stderr)
+    open_transactions = _transactions(tree)
+    assert len(open_transactions) == 1, open_transactions
+    assert open_transactions[0]["preimage"] == {"kind": "absent"}, open_transactions
+    assert open_transactions[0]["intention"]["path"] == "knowledge-extension.md"
+    return open_transactions[0]["transaction"]
+
+
 def _transaction_file(tree, transaction_id, **overrides):
     """Hand-write one transaction file, in `_open_transaction`'s field shape.
 
@@ -2669,7 +2706,9 @@ def test_journal_resolve_needs_exactly_one_of_the_three_flags(run_cli, tmp_path)
 
     Guessing at one would close a transaction on terms the operator did not
     choose, and `--check` is read-only, so pairing it with the one mode that
-    writes is a contradiction rather than a preference.
+    writes is a contradiction rather than a preference. An id that is empty
+    or nothing but spaces is the same kind of fault: there is no transaction
+    it could be a mistyping of.
     """
     assert run_cli("init", cwd=tmp_path).returncode == 0
 
@@ -2678,6 +2717,11 @@ def test_journal_resolve_needs_exactly_one_of_the_three_flags(run_cli, tmp_path)
         ("--resolve", "aaaaaaaaaaaaaaaa", "--accept", "--abandon"),
         ("--accept",),
         ("--check", "--resolve", "aaaaaaaaaaaaaaaa", "--accept"),
+        # An empty id reaches no transaction and names none in the refusal
+        # either, so it is a malformed command line and not a fact about
+        # the project: exit 2, like every other way of mistyping this.
+        ("--resolve", "", "--accept"),
+        ("--resolve", "   ", "--accept"),
     ):
         result = run_cli("journal", *arguments, cwd=tmp_path)
         assert result.returncode == 2, (arguments, result.stdout, result.stderr)
@@ -2748,40 +2792,119 @@ def test_two_halves_of_one_transaction_that_disagree_are_reported(
     assert "journal: 13 record(s), 1 error(s)" in result.stdout, result.stdout
 
 
+def test_journal_resolve_restore_keeps_the_bytes_it_discards(run_cli, tmp_path):
+    """`--restore` throws a state away by the operator's choice, never bytes.
+
+    The preimage here is `absent`, so putting it back means taking the path
+    away -- and what is at the path is an adopter's own writing, which this
+    command has no copy of anywhere. So it is parked into the same
+    content-addressed, verified store the executor parks into before it is
+    discarded, and the success line names the blob: a copy nobody can find
+    is not a copy.
+
+    This is what keeps the two directions symmetric. The file branch parks
+    what it overwrites for exactly the same reason, and the difference
+    between them -- which is which of the two states survives -- is the
+    operator's to choose, not this command's to be careless about.
+    """
+    transaction = _created_then_diverged(tmp_path)
+    intruder = "the adopter's own words\n"
+    (tmp_path / "knowledge-extension.md").write_text(intruder, encoding="utf-8")
+    digest = hashlib.sha256(intruder.encode("utf-8")).hexdigest()
+    before = _records(tmp_path / "journal.jsonl")
+
+    result = run_cli("journal", "--resolve", transaction, "--restore", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert not (tmp_path / "knowledge-extension.md").exists()
+    blob = tmp_path / ".validated-memory" / "preimages" / digest
+    assert blob.read_text(encoding="utf-8") == intruder
+    assert (
+        f"journal: resolved {transaction} (--restore); the discarded bytes "
+        f"are kept at .validated-memory/preimages/{digest}" in result.stdout
+    ), result.stdout
+    # A copy in the vault is not a record: nothing was appended.
+    assert _records(tmp_path / "journal.jsonl") == before
+    assert not _transactions(tmp_path), _transactions(tmp_path)
+
+
 def test_journal_resolve_restore_takes_away_what_an_absent_preimage_names(
     run_cli, tmp_path
 ):
     """The other half of `--restore`: putting back "nothing was here".
 
     A `create` expects the path to be absent, so its preimage is `absent`
-    and its inverse is removal, not bytes. A directory is `rmdir` and never
-    a recursive delete: whatever is inside it was put there by something
-    this transaction knows nothing about, which is why the second half of
-    this test refuses rather than emptying it.
-
-    `.gitignore` already carries the rule, so the first mutation the killed
-    run reaches is `knowledge/`.
+    and its inverse is removal. A directory there is `rmdir` and never a
+    recursive delete: whatever is inside it was put there by something this
+    transaction knows nothing about, so a non-empty one refuses, leaves its
+    contents and leaves the transaction open. A directory has no bytes of
+    its own, which is why nothing is parked and the success line says
+    nothing about a copy.
     """
-    (tmp_path / ".gitignore").write_text("/.validated-memory/\n", encoding="utf-8")
-    transaction = _diverged(tmp_path, kill_after=None)
-    assert (tmp_path / "knowledge").is_dir()
-    (tmp_path / "knowledge" / "left-behind.md").write_text("kept\n", encoding="utf-8")
+    transaction = _created_then_diverged(tmp_path)
+    # The path diverged into something that is not a file at all.
+    (tmp_path / "knowledge-extension.md").unlink()
+    (tmp_path / "knowledge-extension.md").mkdir()
+    (tmp_path / "knowledge-extension.md" / "left-behind.md").write_text(
+        "kept\n", encoding="utf-8"
+    )
 
     occupied = run_cli("journal", "--resolve", transaction, "--restore", cwd=tmp_path)
 
     assert occupied.returncode == 1, occupied.stdout
     assert "could not be put back" in occupied.stderr, occupied.stderr
-    assert (tmp_path / "knowledge" / "left-behind.md").exists()
+    assert (tmp_path / "knowledge-extension.md" / "left-behind.md").exists()
     assert len(_transactions(tmp_path)) == 1, _transactions(tmp_path)
 
-    (tmp_path / "knowledge" / "left-behind.md").unlink()
+    (tmp_path / "knowledge-extension.md" / "left-behind.md").unlink()
     result = run_cli("journal", "--resolve", transaction, "--restore", cwd=tmp_path)
 
     assert result.returncode == 0, (result.stdout, result.stderr)
-    assert not (tmp_path / "knowledge").exists()
+    assert not (tmp_path / "knowledge-extension.md").exists()
+    assert "discarded bytes" not in result.stdout, result.stdout
     assert not _transactions(tmp_path), _transactions(tmp_path)
     assert not [
         record
         for record in _records(tmp_path / "journal.jsonl")
-        if record["path"] == "knowledge"
+        if record["path"] == "knowledge-extension.md"
+        and record["op"] == "observe"
     ]
+
+
+def test_a_transaction_the_next_run_resolves_is_not_an_operator_s_to_close(
+    run_cli, tmp_path
+):
+    """The three flags are for what recovery cannot account for, and no more.
+
+    A `published` transaction whose path still matches its postimage is a
+    mutation the next `init` completes: it appends the two records and
+    removes the file. Closing it by hand would throw that pair away for
+    ever -- `--accept` and `--abandon` would write an `observe` about a path
+    the PLUGIN created, which is the permanent, uninvertible lie the whole
+    of §4 exists to rule out, and `--restore` would undo a mutation nothing
+    had finished recording.
+
+    So all three refuse, and the refusal names the command that does resolve
+    it. The transaction is left exactly as it was found.
+    """
+    transaction = _diverged(tmp_path, kill_after=None)
+    before = _records(tmp_path / "journal.jsonl")
+    residue = (
+        tmp_path / ".validated-memory" / "transactions" / f"{transaction}.json"
+    ).read_text(encoding="utf-8")
+
+    for flag in ("--accept", "--abandon", "--restore"):
+        result = run_cli("journal", "--resolve", transaction, flag, cwd=tmp_path)
+
+        assert result.returncode == 1, (flag, result.stdout, result.stderr)
+        assert "is recoverable" in result.stderr, (flag, result.stderr)
+        assert "validated-memory init" in result.stderr, (flag, result.stderr)
+        assert "Nothing has been changed." in result.stderr, (flag, result.stderr)
+        assert _records(tmp_path / "journal.jsonl") == before, flag
+        assert (
+            tmp_path / ".validated-memory" / "transactions" / f"{transaction}.json"
+        ).read_text(encoding="utf-8") == residue, flag
+
+    # And the run that IS its resolution finishes it.
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    assert not _transactions(tmp_path), _transactions(tmp_path)
