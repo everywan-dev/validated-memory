@@ -693,6 +693,13 @@ def lock_path(root=Path()):
     store to serialise against, `read` refuses such a journal anyway, and
     following the link would create `.validated-memory/` somewhere outside
     the adopter root that nobody asked for.
+
+    One thing a shared store does not get: a store reached over a network
+    filesystem is shared between HOSTS, and the pid `Lock` writes into the
+    file means nothing on another host or in another pid namespace, where
+    it may name a live local process or none at all. The mutual exclusion
+    still holds -- it is `O_CREAT | O_EXCL` -- but breaking a lock left
+    behind by a dead run is a single-host promise.
     """
     root = Path(root)
     artifact = root / JOURNAL_FILENAME
@@ -701,7 +708,11 @@ def lock_path(root=Path()):
         artifact.is_symlink() and not _is_regular_file(resolved)
     ):
         home = _resolved(root)
-        resolved = (root if home is None else home) / JOURNAL_FILENAME
+        if home is None:
+            # Absolute even here: `_HELD` keys on this path, and two
+            # spellings of one directory must not become two holders.
+            home = root.absolute()
+        resolved = home / JOURNAL_FILENAME
     return resolved.parent / VAULT_DIRNAME / LOCK_FILENAME
 
 
@@ -734,7 +745,10 @@ def _is_regular_file(path):
 # the resolved path so that two `Lock` objects naming one file are one
 # holder. Re-entrancy has to be per PROCESS, not per object: `init.run`
 # takes the lock for a whole run and `Run.__init__` takes it again
-# underneath through an object the outer caller never sees.
+# underneath through an object the outer caller never sees. This is process
+# state and it is not thread-safe: the depth is read and written without a
+# mutex, so two threads of one process entering at once can miscount. Every
+# caller today is single-threaded.
 _HELD = {}
 
 
@@ -769,17 +783,37 @@ class Lock:
     age horizon. `STALE_LOCK_SECONDS` covers only what is left: a pid that
     cannot be read.
 
+    Never breaking a live pid has a price, and the contention message pays
+    it: if the operating system has handed that pid to an unrelated process
+    since the run died, nothing here can tell, so the lock is honoured
+    forever and the message says to delete the file when no
+    validated-memory process is running.
+
     Releasing identifies the lock by the device and inode of the descriptor
-    this process holds, not by the name, and unlinks nothing else. A lock
-    broken on the age horizon belongs to a process that may still be
-    running, and that process must not delete the lock its successor is now
-    holding. Breaking is still not atomic between two waiters -- both can
-    see the same dead owner and both unlink -- but only one of them can
-    then create the file with `O_EXCL`, and the loser goes back to waiting.
+    this process holds, not by the name, and unlinks nothing else, so a
+    process whose lock was broken cannot delete its successor's. Breaking
+    re-checks the same identity immediately before it unlinks. Neither
+    makes breaking atomic: between that check and the `unlink` the file can
+    still be replaced, and a break landing in that window can leave two
+    processes holding the lock. What the checks buy is the width of the
+    window -- two adjacent syscalls, rather than the read, the probe and
+    the unlink that spanned it before -- and the certainty that a release
+    never removes a file this process did not create.
     """
 
     def __init__(self, root=Path()):
         self.path = lock_path(root)
+        # What a Finding should call this lock. Naming the vault of the tree
+        # the command ran in would send a reader to a directory that holds
+        # no lock whenever the journal is a symlink into a store, so the
+        # label is the lock's own path: relative to the root while it is
+        # inside it, which is every adopter that has not linked its journal
+        # away, and absolute when it is not.
+        home = _resolved(root) or Path(root).absolute()
+        try:
+            self.artifact = self.path.relative_to(home).as_posix()
+        except ValueError:
+            self.artifact = self.path.as_posix()
         # The registry key, and a count of the entries THIS object made, so
         # an `__exit__` without a matching `__enter__` cannot decrement a
         # depth some other object is holding.
@@ -820,8 +854,10 @@ class Lock:
                     raise JournalError(
                         None,
                         f"another validated-memory process holds "
-                        f"{self.path.as_posix()}; retry when it finishes",
-                        f"{VAULT_DIRNAME}/{LOCK_FILENAME}",
+                        f"{self.path.as_posix()}; retry when it finishes, "
+                        f"or if no validated-memory process is running, "
+                        f"delete {self.path.as_posix()}",
+                        self.artifact,
                     )
                 time.sleep(0.05)
 
@@ -865,48 +901,97 @@ class Lock:
 
         Returns whether it broke one, so the caller can retry at once.
 
+        The file is opened ONCE and every question is asked of that
+        descriptor -- the pid it holds, its age, and which file it is --
+        because a lock file can be replaced between two calls that name it,
+        and the answers would then describe two different files.
+
         Three answers, cheapest and most certain first. The file is gone:
-        someone released it, retry. The pid in it names a process that
-        exists: never break it, whatever the file's age -- that process is
-        inside the mutation this lock protects, and `PermissionError` from
+        someone released it, retry. The pid names a process that exists:
+        never break it, whatever the file's age -- that process is inside
+        the mutation this lock protects, and `PermissionError` from
         `os.kill` is one of those, a live process owned by another user.
         The pid names no process (`ProcessLookupError`): the file outlived
         its owner, so break it now rather than making every later run wait
         out `STALE_LOCK_SECONDS` behind a run that is already dead.
 
         Only a pid that cannot be read -- an empty file from a run killed
-        between creating it and writing to it, or bytes that are not a
-        positive integer -- falls through to the age horizon. `os.kill(0, 0)`
-        signals this process's whole group, so a pid that is not positive is
-        never asked about.
+        between creating it and writing to it, bytes that are not a
+        positive integer, a file that cannot even be opened -- falls
+        through to the age horizon. `os.kill(0, 0)` signals this process's
+        whole group, so a pid that is not positive is never asked about.
         """
         try:
-            raw = self.path.read_bytes()
+            descriptor = os.open(
+                self.path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+            )
         except FileNotFoundError:
             return True  # It went away on its own; try again immediately.
         except OSError:
-            raw = b""
+            # Unopenable, so nothing can be asked of it: the age of the name
+            # is all that is left.
+            return self._break_if_old()
+        try:
+            status = os.fstat(descriptor)
+            raw = os.read(descriptor, 64)
+        except OSError:
+            return self._break_if_old()
+        finally:
+            os.close(descriptor)
+        identity = (status.st_dev, status.st_ino)
         try:
             pid = int(raw.decode("ascii").strip())
         except ValueError:
             pid = 0
-        if pid > 0:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                self.path.unlink(missing_ok=True)
-                return True
-            except OSError:
-                return False  # Alive, or unknowable: either way, not ours.
-            return False
+        if pid <= 0:
+            return self._break_if_old(status, identity)
         try:
-            age = time.time() - self.path.stat().st_mtime
-        except FileNotFoundError:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            self._unlink_if_unchanged(identity)
             return True
-        if age < STALE_LOCK_SECONDS:
+        except OSError:
+            return False  # Alive, or unknowable: either way, not ours.
+        return False
+
+    def _break_if_old(self, status=None, identity=None):
+        """Break the lock on age alone -- the last resort, for an unreadable pid.
+
+        `status` and `identity` come from the descriptor the caller already
+        had, so the age and the file are the same file; without them the
+        name is stat'ed here, which is the only way in when the file could
+        not be opened at all.
+        """
+        if status is None:
+            try:
+                status = os.stat(self.path)
+            except FileNotFoundError:
+                return True  # Gone on its own; try again immediately.
+            except OSError:
+                return False  # Cannot even be looked at: wait it out.
+            identity = (status.st_dev, status.st_ino)
+        if time.time() - status.st_mtime < STALE_LOCK_SECONDS:
             return False
-        self.path.unlink(missing_ok=True)
+        self._unlink_if_unchanged(identity)
         return True
+
+    def _unlink_if_unchanged(self, identity):
+        """Remove the lock only while it is still the file `identity` names.
+
+        Between deciding a lock may be broken and removing it, its owner can
+        have released it and a third process taken its place. Without this
+        re-check the breaker would delete the newcomer's live lock and then
+        create its own, and two processes would hold the lock at once. The
+        re-check does not close that hole -- the file can still be replaced
+        between this `stat` and the `unlink` below -- it narrows it to those
+        two calls.
+        """
+        try:
+            here = os.stat(self.path)
+        except OSError:
+            return
+        if (here.st_dev, here.st_ino) == identity:
+            self.path.unlink(missing_ok=True)
 
 
 def _transactions_dir(root):

@@ -63,10 +63,30 @@ locks and serialising nothing. For an adopter whose journal is a plain file
 the two are the same directory. A `journal.jsonl` symlink that resolves to
 anything but a regular file -- a broken link, a directory -- keeps the local
 lock: there is no store to share, and nothing is created outside the adopter
-root. A lock whose owning pid is still running is never broken, whatever its
-age; one whose pid names no process is broken at once, so a killed run does
-not wedge the next session; and the five-minute age horizon is what is left
-for a lock file whose pid cannot be read at all.
+root. Locking beside a store creates a `.validated-memory/` directory next
+to it on first use; the lock file inside it is removed when the run ends,
+the directory is not, and nothing removes it later.
+
+**A lock is broken only when its owner is provably gone.** A lock whose
+owning pid is still running is never broken, whatever its age; one whose pid
+names no process is broken at once, so a run that was killed does not wedge
+the next session; and the five-minute age horizon is what is left for a lock
+file whose pid cannot be read at all. The case that needs a person is pid
+reuse: if the operating system has given the dead run's pid to an unrelated
+process, the lock reads as held forever and every `init` refuses. That is
+what the message says to do -- when no validated-memory process is running,
+delete the lock file it names. Two runs breaking one dead lock at the same
+instant is a narrow race that neither the pid nor the inode check closes;
+what they do guarantee is that releasing a lock never deletes a file this
+run did not create.
+
+**The owner check is a single-host promise.** The pid in the file is a fact
+about the machine and pid namespace that wrote it. A store shared over a
+network filesystem is shared between hosts, where that pid may name an
+unrelated local process or none at all: mutual exclusion still holds, since
+it rests on `O_CREAT | O_EXCL`, but breaking a lock left behind by a dead
+run does not travel between hosts, and neither does the age horizon's
+assumption about who is slow.
 
 Versioned and strictly append-only is also a standing merge conflict: two
 clones append at the same end of the same file, and an ordinary merge leaves

@@ -1497,6 +1497,18 @@ def test_a_lock_whose_owner_is_alive_is_never_broken(run_cli, tmp_path):
         assert result.returncode == 1, (result.stdout, result.stderr)
         assert "another validated-memory process holds" in result.stderr
         assert os.path.realpath(lock) in result.stderr, result.stderr
+        # An alive pid is never broken, and a pid the system has since
+        # handed to something else is still alive: the message has to say
+        # what an operator can do about a lock nothing will ever release.
+        assert (
+            f"if no validated-memory process is running, delete "
+            f"{os.path.realpath(lock)}" in result.stderr
+        ), result.stderr
+        # The finding names the lock itself. Inside the root, that is the
+        # relative path a reader can act on directly.
+        assert result.stderr.startswith(
+            "ERROR: .validated-memory/lock: journal: "
+        ), result.stderr
         # The holder's own file, untouched: same inode, same pid inside.
         assert lock.stat().st_ino == before
         assert lock.read_text(encoding="ascii").strip() == pid
@@ -1537,14 +1549,18 @@ def test_a_lock_whose_owner_is_gone_is_broken_at_once(run_cli, tmp_path):
 def test_a_run_whose_lock_was_broken_leaves_its_successor_alone(tmp_path):
     """Release identifies the lock by inode, so a broken run deletes nothing.
 
-    Driving this needs a run that is slow while holding the lock, and the
-    one slow thing inside it is reading the journal: the run below reads a
-    padded one for about a second, which is the window the test swaps the
-    lock file in. A lock broken on the age horizon can belong to a process
-    that is still running -- that is the case the identity check exists for
-    -- and this stages exactly that: the file the run created is removed,
-    a successor takes its place, and the run must finish without unlinking
-    a lock that is no longer its own.
+    Driving this needs a run that is still holding the lock a while after
+    taking it. The lock file appears when `init.run` takes the run-wide
+    lock, which is the first thing it does, so what the padded journal
+    below buys is wall-clock INSIDE that outer lock -- about a second of
+    reading, in `journal.Run`'s reads and everything after them -- not a
+    window inside any one call. The test waits for the file, then swaps it.
+
+    A lock broken while its owner is still running -- the age horizon does
+    exactly that to a lock whose pid cannot be read -- is the case the
+    identity check exists for, and this stages it: the file the run created
+    is removed, a successor takes its place, and the run must finish
+    without unlinking a lock that is no longer its own.
 
     The successor's pid is this test's, which is alive, so nothing in the
     run under test may break it either.
