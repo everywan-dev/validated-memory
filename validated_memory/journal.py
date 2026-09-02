@@ -31,7 +31,7 @@ import secrets
 import stat
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -123,6 +123,12 @@ OPTIONAL_FIELD_TYPES = {
     "postimage": (str, type(None)),
     "note": (str,),
     "prior_bytes": (int,),
+    # Written by the executor on both halves of one mutation: the
+    # transaction that carried it (so the two records can be recognised as
+    # one act long after the transaction file is gone) and the mode the
+    # path ended up with (so a reversal can put it back -- design §7).
+    "transaction": (str,),
+    "mode": (int,),
 }
 
 
@@ -344,6 +350,133 @@ class Intention:
             self.content is not None or self.target is not None or self.directory
         ):
             raise ValueError("an observe intention carries no payload")
+
+
+OUTCOME_APPLIED = "applied"
+OUTCOME_NOOP = "noop"
+OUTCOME_REFUSED = "refused"
+OUTCOME_STATUSES = (OUTCOME_APPLIED, OUTCOME_NOOP, OUTCOME_REFUSED)
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """What `Run.execute` did with one intention, and what it did not.
+
+    A refusal is a RESULT here, not an exception. Design §5: a precondition
+    that fails before anything is prepared "writes nothing anywhere -- it is
+    a result the caller renders, not a transaction", and `init` renders one
+    ERROR per item and carries on. `execute` raises only for what it cannot
+    express in this shape: a journal that cannot be written at all.
+
+    - `status` -- `applied` (the mutation happened and both records are in
+      the history), `noop` (the path is already in the state the intention
+      asks for, so nothing was written and nothing was recorded) or
+      `refused`.
+    - `op`, `path`, `durability` -- the intention's, with `path` spelled the
+      way `authorise` normalised it and a record will carry it.
+    - `transaction` -- the id of the transaction that carried the mutation,
+      on an `applied` outcome. None otherwise: a noop and a refusal open no
+      transaction, or close the one they opened before returning.
+    - `message` -- None unless refused, when it is the sentence the caller
+      renders. It always ends by saying what was left untouched, because a
+      refusal a user cannot act on is a stopped session.
+    - `mode` -- the target's mode after publication for an `applied`
+      outcome, the mode it has now for a `noop` or a refusal that found a
+      node there, and None where there is none to report.
+    """
+
+    status: str
+    op: str
+    path: str
+    durability: str
+    transaction: str | None = None
+    message: str | None = None
+    mode: int | None = None
+
+
+def _describe(state):
+    """A state in the words a refusal uses, not in the words a record uses.
+
+    A digest and a mode are what the transaction file carries; a person
+    reading an ERROR needs to know what is at the path, so this says the
+    kind and, for a symlink, where it points -- the one field whose value
+    changes what the reader should do next.
+    """
+    kind = state.get("kind")
+    if kind == ABSENT:
+        return "absent"
+    if kind == DIRECTORY:
+        return "a directory"
+    if kind == SYMLINK:
+        return f"a symlink to '{state.get('target')}'"
+    return "a file"
+
+
+def _postimage_state(intention, actual, data):
+    """The state `intention` will leave at its path, in `current_state`'s words.
+
+    Computed here rather than in `_open_transaction`, for the reason that
+    function's docstring gives: an `append`'s digest needs the bytes already
+    on disk, and only the executor has read them. `data` is the full new
+    bytes publication will write, or None for a mutation that has none.
+
+    `mode` is carried only where publication preserves one. A replacement
+    keeps the target's mode (design §7), so the postimage can name it and
+    recovery can check it; a creation's mode is the umask's answer and is
+    not known until the node exists, so the field is omitted and `satisfies`
+    then matches whatever mode it turns out to have.
+    """
+    if intention.op == LINK:
+        return {"kind": SYMLINK, "target": intention.target}
+    if intention.directory:
+        return {"kind": DIRECTORY}
+    state = {"kind": FILE, "digest": digest(data)}
+    if actual.get("kind") == FILE:
+        state["mode"] = actual["mode"]
+    return state
+
+
+def _write_denied(root, location, actual):
+    """Why this user may not write over `location`, or None when it may.
+
+    The read-only bit is how an adopter says do not write here, and nothing
+    in the install path consulted it: `os.replace` needs write permission on
+    the DIRECTORY, not on the file, so a `.gitignore` at mode 0444 was
+    replaced in silence and handed back at 0644 (design §1, measured).
+
+    The question is asked of the file's own mode bits and the POSIX class
+    this process falls in -- owner, else group, else other -- and of nothing
+    else. `os.access` is not used: it answers for the REAL uid and its own
+    documentation warns against using it to decide whether an operation will
+    succeed. There is no exception for root: a process that can write
+    anywhere still gets the refusal, because the bit is a statement of
+    intent by the adopter and this is the one place that reads it.
+
+    Only a regular file is asked about. An absent path has no mode to deny
+    with, a symlink's mode means nothing on the platforms this runs on, and
+    a directory is never published over.
+    """
+    if actual.get("kind") != FILE:
+        return None
+    try:
+        info = os.lstat(Path(root) / location)
+    except OSError:
+        # The node went away between the check and here; the publication
+        # below will fail or the re-read will refuse, both with a better
+        # message than a guess made from nothing.
+        return None
+    if info.st_uid == os.geteuid():
+        bit = stat.S_IWUSR
+    elif info.st_gid in {os.getegid(), *os.getgroups()}:
+        bit = stat.S_IWGRP
+    else:
+        bit = stat.S_IWOTH
+    if stat.S_IMODE(info.st_mode) & bit:
+        return None
+    return (
+        f"{location} is mode 0{stat.S_IMODE(info.st_mode):o}, which denies "
+        "writing to this user; nothing has been written"
+    )
 
 
 def record(op, purpose, path, durability=REPO, stage=COMMITTED, **extra):
@@ -1334,6 +1467,7 @@ class Run:
             records = read(self.root, REPO)
             local = read(self.root, LOCAL)
             self.adoption = bootstrap(self.root, self.run, records, local)
+            unresolved = _open_transactions(self.root)
         # Every path either journal already carries a record for. `observe`
         # is written on first sight (§2), and first sight is exactly this:
         # a path the record has never mentioned. Keying it on every op
@@ -1348,6 +1482,26 @@ class Run:
             (entry["durability"], entry["path"])
             for entry in records + local
         }
+        # And every path an UNRESOLVED transaction names, which the two
+        # histories cannot know about. The executor appends its records
+        # after publication, so a run killed in between leaves a path the
+        # plugin created on disk with nothing in either journal naming it.
+        # Reading only the histories would then observe it as a fact about
+        # the state adoption found -- the permanent, uninvertible lie
+        # commit `4ce59a9` removed. Recovery (task 5) normally puts the
+        # records back first, but a transaction it cannot resolve stays
+        # open, and this is what makes that state safe to run over.
+        #
+        # A damaged transaction file carries no intention and so names no
+        # path; it is skipped here and reported by `journal --check`.
+        for item in unresolved:
+            intention = item.get("intention")
+            if not isinstance(intention, dict):
+                continue
+            path = intention.get("path")
+            durability = intention.get("durability")
+            if isinstance(path, str) and isinstance(durability, str):
+                self._seen.add((durability, path))
 
     def _record(self, op, purpose, path, durability, stage, **extra):
         """Build one record. The caller has already asked `authorise`.
@@ -1424,6 +1578,21 @@ class Run:
         time a given path is written, because only that copy is the
         pre-adoption state -- a second copy would record an intermediate
         state as if it were the original.
+
+        The blob is VERIFIED before the reference is returned: it is read
+        back and its digest compared with the name it is filed under. A
+        preimage is the only copy of bytes this plugin is about to
+        overwrite, and nothing else ever checks it -- a reversal years later
+        would restore whatever is in the file the record names. So a blob
+        whose bytes disagree with its own name is an `OSError` here, before
+        the mutation it was taken for, rather than a silent lie in the one
+        store the whole reversal plan rests on.
+
+        The check is read-back, not a proof about the platter: a filesystem
+        that lies about what it stored will lie to this read too. What it
+        does catch is the reachable half -- a short or torn write, and a
+        blob some earlier run or a hand edit left corrupt, which is
+        precisely the case the dedup below would otherwise trust for ever.
         """
         target = self.root / path
         if not target.exists() or target.is_dir():
@@ -1448,7 +1617,371 @@ class Run:
                 handle.flush()
                 os.fsync(handle.fileno())
             install(temporary, blob)
+        if digest(blob.read_bytes()) != reference:
+            raise OSError(
+                f"the preimage parked for {path} does not match the digest "
+                f"it is filed under ({reference}); the vault's copy of the "
+                "bytes about to be overwritten cannot be trusted"
+            )
         return reference
+
+    # --- the executor: one intention, one path, one outcome -------------------
+
+    def execute(self, intention):
+        """Perform one `Intention`, wholly, and return an `Outcome`.
+
+        This is the mutating surface design §4 asks for: the executor owns
+        the lock, path authorisation, the expected-state check, the
+        preimage, the transaction file, the publication and its durability
+        barriers, the mode, and both history records. No caller may do any
+        of it for itself, because every caller that did got one of the steps
+        wrong -- the six defects §1 measured are six spellings of the same
+        protocol, reimplemented per call site.
+
+        The order, and why each step is where it is:
+
+        1. **Take the lock.** Re-entrant within the process, so a caller
+           already holding it (`init.run` holds one for a whole run) neither
+           waits here nor has it released early. Everything below happens
+           inside it, including the re-read at step 6: a check taken under a
+           lock the publication does not also hold checks nothing.
+        2. **Authorise the path** -- once, before anything is read or
+           parked. A refusal here is a refusal with nothing written, so it
+           comes back as an `Outcome`, carrying `authorise`'s own message.
+        3. **Compare the current state with the expected one.** A mismatch
+           writes NOTHING ANYWHERE: there is no transaction to abort yet,
+           and design §5 is explicit that a precondition failing before
+           anything is prepared is a result the caller renders, never a line
+           in a versioned file. `init` runs at every session start, so a
+           refusal recorded in the history would be recorded for ever, once
+           per session.
+        4. **Return `noop` if the path is already in the state the intention
+           would produce.** Not an optimisation: a transaction whose
+           preimage and postimage are the same state cannot be recovered --
+           nothing on the filesystem tells recovery whether it ran -- and a
+           mutation that changes nothing is not a mutation to record. It is
+           also not an `observe`: `observe` means "adoption found this",
+           which is a different claim entirely (§4).
+        5. **Refuse a target whose mode denies writing** (`_write_denied`),
+           before the preimage, so this refusal too leaves nothing behind.
+        6. **Park and verify the preimage**, fsynced, and open the
+           transaction file, fsynced. From here on there is a write-ahead
+           record on disk saying what this run intended.
+        7. **Re-read the state, under the same lock, immediately before
+           publishing.** The window between step 3 and here is real -- a
+           preimage is copied and fsynced in it -- and a third party writing
+           there would otherwise be overwritten by a record claiming a
+           preimage that was already gone. This refusal has a transaction to
+           close, so it closes it `aborted` with the reason and removes it.
+        8. **Publish** (`_publish`), then mark the transaction `published`.
+           That marker is what makes recovery possible for the mutations
+           whose two states are indistinguishable on disk.
+        9. **Append both history records together**, carrying the
+           transaction id and the mode. Together, because the history holds
+           consummated facts only (§3): the write-ahead half of this
+           protocol is the transaction file, not a `prepared` line in a
+           versioned journal that no later run can ever close.
+        10. **Resolve the transaction** -- the file leaves the disk -- and
+            remember the path, so it can never be observed as pre-existing.
+
+        The four `_fault` points are the seams between those steps, so a
+        test can kill the process at each and assert what is left.
+        """
+        with Lock(self.root):
+            return self._execute(intention)
+
+    def _execute(self, intention):
+        """`execute`'s body, with the lock already held."""
+        if intention.op == OBSERVE:
+            # An observation publishes nothing, opens no transaction and
+            # has no postimage, so every step below would be a no-op with a
+            # record at the end of it. It is `observe`'s, and the two must
+            # not be confused: §4 turns exactly that confusion into a
+            # permanent lie about the pre-adoption state.
+            raise ValueError(
+                "an observation is not a mutation and does not go through "
+                "the executor; use Run.observe"
+            )
+        try:
+            location = authorise(self.root, intention.path, intention.durability)
+        except (ValueError, OSError) as error:
+            return Outcome(
+                OUTCOME_REFUSED,
+                intention.op,
+                intention.path,
+                intention.durability,
+                message=str(error),
+            )
+        intention = _replace(intention, path=location)
+        actual = current_state(self.root, location)
+
+        if not satisfies(actual, intention.expected):
+            return self._refused(
+                intention,
+                actual,
+                f"{location} is {_describe(actual)}, and this "
+                f"{intention.op} expects it to be "
+                f"{_describe(intention.expected)}. Nothing has been written.",
+            )
+
+        try:
+            data, prior_bytes = self._payload(intention, location, actual)
+        except OSError as error:
+            return self._refused(
+                intention,
+                actual,
+                f"{location} could not be read, so the mutation was not "
+                f"attempted: {error}. Nothing has been written.",
+            )
+        if data is None and intention.content is not None:
+            return self._refused(
+                intention,
+                actual,
+                f"{location} is not a regular file, so nothing here can read "
+                "its bytes or write over it. Nothing has been written.",
+            )
+
+        postimage = _postimage_state(intention, actual, data)
+        if satisfies(actual, postimage):
+            return Outcome(
+                OUTCOME_NOOP,
+                intention.op,
+                location,
+                intention.durability,
+                mode=actual.get("mode"),
+            )
+
+        denied = _write_denied(self.root, location, actual)
+        if denied is not None:
+            return self._refused(intention, actual, denied)
+
+        blob = None
+        if actual["kind"] == FILE:
+            try:
+                blob = self.park_preimage(location)
+            except OSError as error:
+                return self._refused(
+                    intention,
+                    actual,
+                    f"the preimage of {location} could not be parked, so "
+                    f"the mutation was not attempted: {error}. Nothing has "
+                    "been written.",
+                )
+
+        transaction = _open_transaction(
+            self.root,
+            intention,
+            actual,
+            postimage,
+            preimage_blob=blob,
+            mode=actual.get("mode"),
+            adoption=self.adoption,
+            run=self.run,
+        )
+        _fault("after-transaction")
+
+        # The state as it is NOW, not as it was before the preimage was
+        # parked and the transaction fsynced. Compared whole rather than
+        # through `satisfies`: the transaction file has already committed to
+        # `actual` as this mutation's preimage and `_publish` is about to
+        # carry its mode over, so anything but `actual` invalidates both.
+        again = current_state(self.root, location)
+        if again != actual:
+            return self._aborted(
+                transaction,
+                intention,
+                again,
+                f"{location} changed while its mutation was being prepared: "
+                f"it is {_describe(again)} now and was {_describe(actual)} "
+                "when this run checked. Nothing has been written.",
+            )
+
+        try:
+            mode = self._publish(intention, location, actual, data)
+        except OSError as error:
+            return self._aborted(
+                transaction,
+                intention,
+                again,
+                f"{location} could not be written: {error}. Nothing has "
+                "been published.",
+            )
+        _fault("after-publish")
+        _mark_published(self.root, transaction)
+        _fault("after-published")
+
+        fields = {"transaction": transaction}
+        if mode is not None:
+            fields["mode"] = mode
+        if intention.note is not None:
+            fields["note"] = intention.note
+        if data is not None:
+            fields["preimage"] = blob
+            fields["postimage"] = digest(data)
+        if prior_bytes is not None:
+            fields["prior_bytes"] = prior_bytes
+        append(
+            [
+                self._record(
+                    intention.op,
+                    intention.purpose,
+                    location,
+                    intention.durability,
+                    stage,
+                    **fields,
+                )
+                for stage in (PREPARED, COMMITTED)
+            ],
+            self.root,
+            intention.durability,
+        )
+        _fault("after-history")
+
+        _resolve_transaction(self.root, transaction)
+        self._seen.add((intention.durability, location))
+        return Outcome(
+            OUTCOME_APPLIED,
+            intention.op,
+            location,
+            intention.durability,
+            transaction=transaction,
+            mode=mode,
+        )
+
+    def _refused(self, intention, actual, message):
+        """A refusal that left nothing behind: no transaction, no record."""
+        return Outcome(
+            OUTCOME_REFUSED,
+            intention.op,
+            intention.path,
+            intention.durability,
+            message=message,
+            mode=actual.get("mode"),
+        )
+
+    def _aborted(self, transaction, intention, actual, message):
+        """A refusal after the transaction was opened: close it, then remove it.
+
+        `aborted` is written before the file is unlinked rather than instead
+        of it. The two are not one operation, and a crash between them is
+        what recovery reads: an `aborted` entry says a decision was made and
+        nothing was published, where a file that simply vanished says
+        nothing at all.
+        """
+        _abort_transaction(self.root, transaction, message)
+        _resolve_transaction(self.root, transaction)
+        return self._refused(intention, actual, message)
+
+    def _payload(self, intention, location, actual):
+        """The bytes publication will write, and the length the file had.
+
+        `(None, None)` for a mutation with no bytes -- a directory, a
+        symlink. `prior_bytes` is not None only for an `append`, whose
+        inverse is "truncate to the recorded prior length" (§2) and which is
+        therefore the only op that needs it.
+
+        A node that is neither a regular file, a directory nor a symlink --
+        a FIFO, a socket, a device -- is reported by `current_state` as a
+        file with no digest, and reading through one can block for ever.
+        Nothing here reads it: `(None, ...)` for a byte-carrying intention
+        is the caller's signal to refuse.
+        """
+        if intention.content is None:
+            return None, None
+        if actual["kind"] == FILE and "digest" not in actual:
+            return None, None
+        if intention.op != APPEND:
+            return intention.content, None
+        existing = b""
+        if actual["kind"] == FILE:
+            existing = (self.root / location).read_bytes()
+        return existing + intention.content, len(existing)
+
+    def _publish(self, intention, location, actual, data):
+        """Put the new state on disk, atomically and durably; return its mode.
+
+        Publication is not one primitive, and treating it as one is what
+        design §6 refuses. Four shapes, chosen by what is expected to be
+        there rather than by the op's name:
+
+        - **A directory** -- `os.mkdir`, never `parents=True`. Creating an
+          ancestor nobody asked for is a second mutation with no intention
+          and no record, so a missing parent is a refusal that names it.
+        - **A creation over an absent name** -- `O_CREAT | O_EXCL`, which
+          fails if the name is taken. §6 promises "a strong no-replace
+          guarantee for a creation, because the primitive exists", and
+          check-then-`os.replace` is not that primitive: a third party
+          creating the file between the re-read and here would be
+          overwritten by a record that says `create`.
+        - **A replacement** -- a temporary, fsynced, given the TARGET's mode
+          (§7: the install copies the mode onto the temporary before the
+          rename, or the adopter's 0640 comes back 0644), then
+          `os.replace`, then the directory fsync `install` performs.
+        - **A symlink** -- built under a pid-named temporary and `os.replace`d
+          over the path, so the link is never absent for an instant. An
+          `unlink` then `symlink_to` leaves a session with no memory at all
+          if it dies in between.
+
+        A failure anywhere raises `OSError` and leaves the target as it was:
+        the temporary is removed, and a partial `O_EXCL` creation is
+        unlinked, so the caller's `aborted` transaction is the only trace.
+        """
+        target = self.root / location
+        if intention.directory:
+            if not target.parent.is_dir():
+                raise FileNotFoundError(
+                    f"its parent directory "
+                    f"{Path(location).parent.as_posix()} does not exist"
+                )
+            os.mkdir(target)
+            fsync_directory(target.parent)
+        elif intention.op == LINK:
+            temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary.unlink(missing_ok=True)
+            try:
+                os.symlink(intention.target, temporary)
+                os.replace(temporary, target)
+            except OSError:
+                temporary.unlink(missing_ok=True)
+                raise
+            fsync_directory(target.parent)
+        elif actual["kind"] == ABSENT:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(
+                target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666
+            )
+            try:
+                # Through a file object rather than `os.write`, which is
+                # allowed to write fewer bytes than it was given.
+                with open(descriptor, "wb", closefd=True) as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except OSError:
+                target.unlink(missing_ok=True)
+                raise
+            fsync_directory(target.parent)
+        else:
+            temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+            try:
+                with temporary.open("wb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.chmod(temporary, actual["mode"])
+                install(temporary, target)
+            except OSError:
+                temporary.unlink(missing_ok=True)
+                raise
+        try:
+            return stat.S_IMODE(os.lstat(target).st_mode)
+        except OSError:
+            # Published, but its mode cannot be read back. The records are
+            # written without one rather than with a guess: a reversal
+            # restoring a mode nobody measured is worse than one that knows
+            # it was never told.
+            return None
 
     def _location(self, path):
         """`path` as a record will carry it: relative to the adopter root.
