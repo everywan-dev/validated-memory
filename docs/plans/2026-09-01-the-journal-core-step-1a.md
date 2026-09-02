@@ -433,7 +433,7 @@ refusal; and a transaction left open by recovery does not produce an
 
 ## Status
 
-Not started. Written 2026-09-01, revised the same day against two reviews.
+Implemented 2026-09-02 on `feature/uninstall-and-restore` (975de05..d66079f).
 
 ## Context
 
