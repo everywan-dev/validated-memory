@@ -171,14 +171,13 @@ def new_id():
     return secrets.token_hex(8)
 
 
-# Named after the executor's protocol (Task 4, plan order): a transaction
-# file fsynced with nothing published yet, the new bytes published but the
-# transaction not yet marked, the transaction marked published but the
-# permanent history not yet appended, and the history appended but the
-# transaction not yet resolved. `after-prepared` and `after-mutation` are
-# not executor points -- they are wired into the two-record protocol that
-# `Run` already runs today (see `_fault`'s call sites below), so this seam
-# can be proven through the CLI before the executor exists.
+# The seams of the executor's protocol: a transaction file fsynced with
+# nothing published yet, the new bytes published but the transaction not yet
+# marked, the transaction marked published but the permanent history not yet
+# appended, and the history appended but the transaction not yet resolved.
+# `after-prepared` and `after-mutation` are not executor points -- they are
+# the two-record protocol `prepare_op`/`append_op` still run for the harness
+# symlink alone, and they go with those two methods in task 6.
 FAULT_POINTS = (
     "after-transaction",
     "after-publish",
@@ -762,12 +761,13 @@ def authorise(root, path, durability):
     versioned journal as a fact about the tree, even though the bytes it
     named were never inside the tree at all.
 
-    Deliberately NOT called from `_record`: that helper builds both the
-    `prepared` and the `committed` half of a write, and the second call
-    happens after the mutation (`_write_bytes`) has already run. Asking the
-    resolved question there again could refuse after the bytes were already
-    on disk, abandoning a `prepared` record that reconciliation was built
-    to close rather than a fresh failure to raise past -- see `_record`.
+    Deliberately NOT called from `_record`: that helper builds both halves
+    of a mutation, and for the two-record protocol `prepare_op`/`append_op`
+    still run, the second call happens after the caller's own mutation has
+    already run. Asking the resolved question there again could refuse
+    after the bytes were already on disk, abandoning a `prepared` record
+    that reconciliation was built to close rather than a fresh failure to
+    raise past -- see `_record`.
 
     What this does NOT provide: `dir_fd`-relative ancestor stabilisation.
     Both checks resolve `path` by name, and nothing stops a hostile process
@@ -1142,7 +1142,7 @@ def _write_transaction_file(root, transaction_id, entry):
 
     Temporary, fsync, `install` -- the same durability shape every other
     atomic write in this module uses (`bootstrap`, `park_preimage`,
-    `_write_bytes`): the bytes are flushed and fsynced before the rename,
+    `Run._publish`): the bytes are flushed and fsynced before the rename,
     and `install` fsyncs the directory after it, so the file this call
     leaves behind is exactly as durable whether it is the first write of a
     new transaction or a rewrite of `stage` on an existing one.
@@ -1445,11 +1445,15 @@ def _adoption_id(repository, vault):
 class Run:
     """One invocation's journalling context.
 
-    Holds the adoption id and this run's id, and turns a mutation into the
-    three steps §4 of the design requires: a flushed `prepared` record
-    carrying the preimage and the expected postimage, the atomic mutation,
-    then a flushed `committed` record. A `prepared` with no `committed` is
-    what `journal --check` reconciles; nothing here guesses at one.
+    Holds the adoption id, this run's id and the paths either journal
+    already knows about, and performs mutations through `execute`, which is
+    the whole of design §4's protocol and the only thing a caller needs.
+    One `Run` per invocation.
+
+    Two methods still run the older two-record protocol -- `prepare_op` and
+    `append_op`, for the harness symlink alone, until task 6 moves it. A
+    `prepared` record of theirs with no `committed` twin is what
+    `journal --check` reconciles; nothing here guesses at one.
 
     `__init__` takes `Lock` itself, around the two reads and `bootstrap`:
     deciding from what was read that no adoption id exists yet and then
@@ -1508,14 +1512,13 @@ class Run:
 
         Every public method calls `authorise` itself, once, before it parks
         a preimage, writes bytes or appends anything -- never here, because
-        `_record` builds BOTH halves of a mutation, and the second call is
-        made after the mutation has already happened (`_write_bytes` for a
-        write, the caller's own `mkdir`/`relink` for `prepare_op`'s
-        `committed` twin). Asking the resolved question again on that
-        second call could refuse after the bytes are already on disk,
-        leaving a `prepared` record with no `committed` twin for a mutation
-        that did happen -- exactly the state reconciliation exists to
-        avoid manufacturing on its own.
+        `_record` builds BOTH halves of a mutation. `execute` appends the
+        two together, after publication, so a second call there would refuse
+        a mutation that has already happened; and `prepare_op`/`append_op`
+        are two calls with the caller's own `mkdir`/`relink` between them,
+        so a refusal on the second would leave a `prepared` record with no
+        `committed` twin for a mutation that did happen -- exactly the state
+        reconciliation exists to avoid manufacturing on its own.
 
         What is left here is the cheap lexical guard, kept as a last line
         of defence: a `repo` record whose path is absolute or climbs out
@@ -1810,6 +1813,12 @@ class Run:
         _mark_published(self.root, transaction)
         _fault("after-published")
 
+        # Both records carry the transaction that produced them, because the
+        # transaction FILE is local and leaves the disk on the next line:
+        # the id in the history is the only thing that survives to say these
+        # two lines are one act. Everything else each op already carried
+        # stays exactly as it was, so every reader written against the
+        # earlier shape still reads them.
         fields = {"transaction": transaction}
         if mode is not None:
             fields["mode"] = mode
@@ -1818,8 +1827,8 @@ class Run:
         if data is not None:
             fields["preimage"] = blob
             fields["postimage"] = digest(data)
-        if prior_bytes is not None:
-            fields["prior_bytes"] = prior_bytes
+            if prior_bytes is not None:
+                fields["prior_bytes"] = prior_bytes
         append(
             [
                 self._record(
