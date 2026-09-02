@@ -2239,8 +2239,8 @@ def test_a_journal_symlink_that_cannot_be_resolved_refuses_cleanly(
 # --- recovery: what a run does with what an earlier run left open -------------
 
 
-def _diverged(tree, before=None):
-    """Build the one residue nothing can decide: published, then overwritten.
+def _diverged(tree, before=None, kill_after="an adopter wrote this\n"):
+    """Build a residue nothing but an operator can decide.
 
     The kill lands with the bytes on disk and the transaction fsynced
     `published`, and the adopter's own write afterwards is what makes the
@@ -2249,7 +2249,10 @@ def _diverged(tree, before=None):
 
     `before` is what `.gitignore` holds when `init` starts, so a caller that
     needs a real preimage blob in the vault -- everything `--restore`
-    touches -- can ask for one.
+    touches -- can ask for one. `kill_after` is that intruding write, and
+    `None` skips it: a caller whose tree already ignores the vault gets a
+    transaction on `knowledge/` instead, which `--check` calls recoverable
+    and `--resolve` closes just the same.
     """
     if before is not None:
         (tree / ".gitignore").write_text(before, encoding="utf-8")
@@ -2263,7 +2266,8 @@ def _diverged(tree, before=None):
         check=False,
     )
     assert killed.returncode == 70, (killed.stdout, killed.stderr)
-    (tree / ".gitignore").write_text("an adopter wrote this\n", encoding="utf-8")
+    if kill_after is not None:
+        (tree / ".gitignore").write_text(kill_after, encoding="utf-8")
     open_transactions = _transactions(tree)
     assert len(open_transactions) == 1, open_transactions
     return open_transactions[0]["transaction"]
@@ -2741,3 +2745,42 @@ def test_two_halves_of_one_transaction_that_disagree_are_reported(
     ), result.stderr
     assert "validated-memory.md" in result.stderr, result.stderr
     assert "journal: 13 record(s), 1 error(s)" in result.stdout, result.stdout
+
+
+def test_journal_resolve_restore_takes_away_what_an_absent_preimage_names(
+    run_cli, tmp_path
+):
+    """The other half of `--restore`: putting back "nothing was here".
+
+    A `create` expects the path to be absent, so its preimage is `absent`
+    and its inverse is removal, not bytes. A directory is `rmdir` and never
+    a recursive delete: whatever is inside it was put there by something
+    this transaction knows nothing about, which is why the second half of
+    this test refuses rather than emptying it.
+
+    `.gitignore` already carries the rule, so the first mutation the killed
+    run reaches is `knowledge/`.
+    """
+    (tmp_path / ".gitignore").write_text("/.validated-memory/\n", encoding="utf-8")
+    transaction = _diverged(tmp_path, kill_after=None)
+    assert (tmp_path / "knowledge").is_dir()
+    (tmp_path / "knowledge" / "left-behind.md").write_text("kept\n", encoding="utf-8")
+
+    occupied = run_cli("journal", "--resolve", transaction, "--restore", cwd=tmp_path)
+
+    assert occupied.returncode == 1, occupied.stdout
+    assert "could not be put back" in occupied.stderr, occupied.stderr
+    assert (tmp_path / "knowledge" / "left-behind.md").exists()
+    assert len(_transactions(tmp_path)) == 1, _transactions(tmp_path)
+
+    (tmp_path / "knowledge" / "left-behind.md").unlink()
+    result = run_cli("journal", "--resolve", transaction, "--restore", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert not (tmp_path / "knowledge").exists()
+    assert not _transactions(tmp_path), _transactions(tmp_path)
+    assert not [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record["path"] == "knowledge"
+    ]
