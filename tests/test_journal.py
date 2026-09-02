@@ -1496,6 +1496,7 @@ def test_a_lock_whose_owner_is_alive_is_never_broken(run_cli, tmp_path):
 
         assert result.returncode == 1, (result.stdout, result.stderr)
         assert "another validated-memory process holds" in result.stderr
+        assert os.path.realpath(lock) in result.stderr, result.stderr
         # The holder's own file, untouched: same inode, same pid inside.
         assert lock.stat().st_ino == before
         assert lock.read_text(encoding="ascii").strip() == pid
@@ -1590,3 +1591,88 @@ def test_a_run_whose_lock_was_broken_leaves_its_successor_alone(tmp_path):
     assert lock.stat().st_ino == successor
     assert lock.read_text(encoding="ascii").strip() == str(os.getpid())
 
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
+def test_two_trees_sharing_one_journal_take_one_lock(run_cli, tmp_path):
+    """A `journal.jsonl` symlinked into a store locks beside the store.
+
+    Two adopter trees pointing at one journal used to take two different
+    local locks and serialise nothing, which is the whole point of the lock
+    gone. Both runs below are made to fail at the lock by taking the write
+    permission off the store's vault directory, so each one names the lock
+    file it actually tried to create -- and both name the store's.
+    """
+    store = tmp_path / "store"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for tree in (store, first, second):
+        tree.mkdir()
+
+    seeded = run_cli("init", cwd=first)
+    assert seeded.returncode == 0, seeded.stderr
+    (first / "journal.jsonl").rename(store / "journal.jsonl")
+    for tree in (first, second):
+        (tree / "journal.jsonl").symlink_to(store / "journal.jsonl")
+
+    shared_vault = store / ".validated-memory"
+    shared_vault.mkdir()
+    os.chmod(shared_vault, 0o500)  # read + execute: no lock can be created
+    try:
+        refusals = {tree: run_cli("init", cwd=tree) for tree in (first, second)}
+    finally:
+        os.chmod(shared_vault, 0o700)
+
+    shared_lock = str(shared_vault / "lock")
+    for tree, result in refusals.items():
+        assert result.returncode == 1, (tree, result.stdout, result.stderr)
+        assert shared_lock in result.stderr, (tree, result.stderr)
+    # And neither tree fell back to a lock of its own.
+    assert not (first / ".validated-memory" / "lock").exists()
+    assert not (second / ".validated-memory").exists()
+
+
+def test_a_broken_journal_symlink_locks_inside_the_root(run_cli, tmp_path):
+    """A link that resolves to nothing creates nothing outside the root.
+
+    `journal.jsonl` may be a symlink into a shared store, and the lock
+    follows it -- but only as far as a regular file. A broken link (a
+    directory is the same case) has no store behind it to serialise
+    against, and following it would put a `.validated-memory/` directory
+    somewhere the adopter never named. The journal itself is refused, as it
+    already was, by `bootstrap`.
+    """
+    root = tmp_path / "adopter"
+    elsewhere = tmp_path / "elsewhere"
+    root.mkdir()
+    (root / "journal.jsonl").symlink_to(elsewhere / "journal.jsonl")
+
+    result = run_cli("init", cwd=root)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "symlink" in result.stderr, result.stderr
+    assert not elsewhere.exists(), "the lock was taken outside the adopter root"
+    assert (root / ".validated-memory").is_dir()
+
+
+def test_a_journal_symlink_that_cannot_be_resolved_refuses_cleanly(
+    run_cli, tmp_path
+):
+    """A link pointing at itself is refused by the reader, not by a crash.
+
+    Choosing where the lock goes resolves `journal.jsonl`, and resolving a
+    symlink loop raises `RuntimeError` -- which is not `OSError`, so nothing
+    in `init` catches it and the whole command would end in a traceback
+    before the journal was ever read. The lock stays home when the name
+    cannot be resolved, and the run reaches the refusal `read` already had
+    for a journal it cannot open.
+    """
+    (tmp_path / "journal.jsonl").symlink_to("journal.jsonl")
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "journal could not be read" in result.stderr, result.stderr
+    assert "journal.jsonl" in result.stderr, result.stderr

@@ -55,6 +55,19 @@ refused instead, and at the point it matters, is bootstrapping a journal
 over a symlink that holds no records: `os.replace` would put a regular file
 where the adopter's link was, and nothing can put that link back.
 
+**The lock is taken beside the journal that is really there.** A mutating
+run holds `.validated-memory/lock` under the directory `journal.jsonl`
+resolves into, not under the tree the command was run in, so two adopters
+linked at one shared store exclude each other instead of taking two local
+locks and serialising nothing. For an adopter whose journal is a plain file
+the two are the same directory. A `journal.jsonl` symlink that resolves to
+anything but a regular file -- a broken link, a directory -- keeps the local
+lock: there is no store to share, and nothing is created outside the adopter
+root. A lock whose owning pid is still running is never broken, whatever its
+age; one whose pid names no process is broken at once, so a killed run does
+not wedge the next session; and the five-minute age horizon is what is left
+for a lock file whose pid cannot be read at all.
+
 Versioned and strictly append-only is also a standing merge conflict: two
 clones append at the same end of the same file, and an ordinary merge leaves
 conflict markers there, which is exactly the unparseable case above -- every

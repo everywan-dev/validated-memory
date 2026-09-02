@@ -674,6 +674,62 @@ def authorise(root, path, durability):
 STALE_LOCK_SECONDS = 300
 
 
+def lock_path(root=Path()):
+    """Where `root`'s lock file lives: beside the journal it protects.
+
+    The lock exists to stop two processes appending interleaved records to
+    ONE journal, and `journal.jsonl` is allowed to be a symlink into a
+    shared store (`read` reads through it, `append` writes through it). Two
+    adopter trees linked at one store would take two different local locks
+    and serialise nothing, so the answer is taken from the RESOLVED
+    artifact: the lock is `.validated-memory/lock` under the directory the
+    journal really lives in. For an adopter whose journal is a plain file
+    -- every adopter until someone links one -- that directory is the
+    adopter root, and this names the same file as before, spelled
+    absolutely.
+
+    A `journal.jsonl` symlink that resolves to anything but a regular file
+    -- broken, or a directory -- keeps the local lock. There is no shared
+    store to serialise against, `read` refuses such a journal anyway, and
+    following the link would create `.validated-memory/` somewhere outside
+    the adopter root that nobody asked for.
+    """
+    root = Path(root)
+    artifact = root / JOURNAL_FILENAME
+    resolved = _resolved(artifact)
+    if resolved is None or (
+        artifact.is_symlink() and not _is_regular_file(resolved)
+    ):
+        home = _resolved(root)
+        resolved = (root if home is None else home) / JOURNAL_FILENAME
+    return resolved.parent / VAULT_DIRNAME / LOCK_FILENAME
+
+
+def _resolved(path):
+    """`path` with its symlinks followed, or None when they cannot be.
+
+    Resolution is not total: a symlink loop raises, and it raises
+    `RuntimeError` rather than `OSError`, which is not what any caller of
+    this module catches. Deciding where the lock goes must not be the step
+    that ends a run with a traceback -- a journal whose name cannot be
+    resolved is refused moments later by `read`, with a message that names
+    the file and the reason. So an unresolvable name gets the local answer
+    and the run reaches that refusal.
+    """
+    try:
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+
+
+def _is_regular_file(path):
+    """Whether `path` is a regular file, following links, without raising."""
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
 # The locks this process holds: `{lock path: [descriptor, depth]}`, keyed by
 # the resolved path so that two `Lock` objects naming one file are one
 # holder. Re-entrancy has to be per PROCESS, not per object: `init.run`
@@ -723,7 +779,7 @@ class Lock:
     """
 
     def __init__(self, root=Path()):
-        self.path = Path(root) / VAULT_DIRNAME / LOCK_FILENAME
+        self.path = lock_path(root)
         # The registry key, and a count of the entries THIS object made, so
         # an `__exit__` without a matching `__enter__` cannot decrement a
         # depth some other object is holding.

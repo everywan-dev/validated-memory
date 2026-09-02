@@ -256,7 +256,7 @@ def run(harness_memory, view, stdout, stderr):
     # `journal.Run` does not lock on its own, above all the harness
     # take-over in `_sync_symlink`, which moves an adopter's directory and
     # is not journalled at all. `journal.Lock` is re-entrant, so the lock
-    # `journal.Run()` takes over its own reads is this one.
+    # `journal.Run()` takes around its own reads is this one.
     journal_failure = None
     try:
         with journal.Lock():
@@ -307,7 +307,11 @@ def run(harness_memory, view, stdout, stderr):
         # `.validated-memory/` and `journal.jsonl` before any scaffold item
         # is attempted; an adopter root that cannot be written to at all
         # (e.g. read-only permissions) fails here first, ahead of any
-        # per-item ERROR `_ensure_dir`/`_ensure_file` would otherwise raise.
+        # per-item ERROR `_ensure_dir`/`_ensure_file` would otherwise
+        # raise. The lock's own directory is not always this root's --
+        # `journal.lock_path` puts it beside a journal that is a symlink
+        # into a shared store -- which is why the filename the OS refused
+        # is reported below rather than a path assembled here.
         journal_failure = Finding(
             ERROR,
             # The path the OS refused, when it named one: the lock, the
