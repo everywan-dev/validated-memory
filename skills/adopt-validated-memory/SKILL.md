@@ -26,7 +26,9 @@ start still hold.
    - **Versioned** -- the default, and the method's premise: knowledge and
      memory travel with the repository, every clone and every CI run sees
      them, and supersession is history the repository keeps. Nothing to
-     write; go on to the next question.
+     write; go on to the next question. (`init` still writes the one entry
+     for `/.validated-memory/`, the vault, which is never part of this
+     choice -- see the "Local, ignored" answer below for why.)
    - **Local, ignored** -- the layout stays in this clone and every remote
      sees only the ignore rule. Append to the repository's `.gitignore`:
 
@@ -36,11 +38,23 @@ start still hold.
      /memory/
      /validated-memory.md
      /knowledge-extension.md
+     /.validated-memory/
      /knowledge-index.md
      /verdicts.jsonl
      /knowledge.html
      /memory.html
      ```
+
+     `journal.jsonl` is **not** part of this choice and is never added to the
+     ignore list. It is the record of what adoption did, it is not
+     regenerable by anything, and a clone without it cannot reverse an
+     adoption or diff one scan's coverage against the next. `.validated-memory/`
+     is the other half of that split and is always ignored, whatever the
+     answer here: it holds preimages, which may carry bytes this very
+     question chose to keep local. `init` writes that one entry into
+     `.gitignore` itself on every run, so it does not depend on this answer;
+     it is listed here only so this list is complete, and `init` adds
+     nothing when the entry is already there.
 
      Anchored at the root on purpose: a fixture or a package named `memory`
      deeper in the tree is not the layout.

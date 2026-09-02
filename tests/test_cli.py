@@ -7,7 +7,18 @@ package's internals.
 
 import pytest
 
-SUBCOMMANDS = ["init", "lint", "validate", "derive", "probe", "render", "status"]
+# The set moved deliberately: task 5 adds "journal", the read side of the
+# append-only record init already writes to.
+SUBCOMMANDS = [
+    "init",
+    "lint",
+    "validate",
+    "derive",
+    "probe",
+    "render",
+    "status",
+    "journal",
+]
 
 
 def test_global_help_lists_every_subcommand(adopter_dir, run_cli):

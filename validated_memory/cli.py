@@ -9,7 +9,17 @@ Exit code convention:
 import argparse
 import sys
 
-from . import __version__, derive, init, lint, probe, render, status, validate
+from . import (
+    __version__,
+    derive,
+    init,
+    journal,
+    lint,
+    probe,
+    render,
+    status,
+    validate,
+)
 
 SUBCOMMANDS = {
     "init": "Scaffold the validated-memory layout in an adopter project",
@@ -19,6 +29,7 @@ SUBCOMMANDS = {
     "probe": "Run freshness probes and record ternary verdicts",
     "render": "Render static HTML views of the curated and agent-memory layers",
     "status": "Report project consistency and freshness; read-only, never probes",
+    "journal": "Report the append-only record of what the plugin has written",
 }
 
 
@@ -165,6 +176,49 @@ def build_parser():
             # argparse usage error (this subparser's own usage line) for a
             # combination no `type=`/`choices=` check can express on its own.
             subparser.set_defaults(_status_subparser=subparser)
+        if name == "journal":
+            subparser.add_argument(
+                "--check",
+                action="store_true",
+                help=(
+                    "report every unfinished transaction and gate on it "
+                    "(exit 1); without it, reporting never gates"
+                ),
+            )
+            subparser.add_argument(
+                "--resolve",
+                metavar="ID",
+                help=(
+                    "close the unresolved transaction ID, with exactly one "
+                    "of --accept, --restore or --abandon"
+                ),
+            )
+            subparser.add_argument(
+                "--accept",
+                action="store_true",
+                help=(
+                    "--resolve: keep the state the path is in, recorded as "
+                    "an observation of fact and never as a mutation"
+                ),
+            )
+            subparser.add_argument(
+                "--restore",
+                action="store_true",
+                help=(
+                    "--resolve: put the preimage back from the vault, "
+                    "refusing if its blob is missing or does not match"
+                ),
+            )
+            subparser.add_argument(
+                "--abandon",
+                action="store_true",
+                help="--resolve: leave the path as found, and record that",
+            )
+            # Kept on the namespace for the same reason `status` keeps its
+            # own: the combinations below are cross-flag rules no `type=` or
+            # `choices=` can express, and they must fail as this
+            # subcommand's usage error rather than as anything else.
+            subparser.set_defaults(_journal_subparser=subparser)
     return parser
 
 
@@ -202,6 +256,45 @@ def main(argv=None):
             args.max_verdict_age,
             args.fail_on_aged,
             args.as_of,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+    if args.command == "journal":
+        # Fail-explicit, exactly as `status` above: a resolution flag with
+        # no transaction to apply it to, two of them at once, or one
+        # alongside the read-only `--check`, is a request with no single
+        # meaning, and guessing at one would close a transaction the user
+        # did not name.
+        chosen = [
+            name
+            for name in journal.RESOLUTIONS
+            if getattr(args, name.replace("-", "_"))
+        ]
+        if args.resolve is None:
+            if chosen:
+                args._journal_subparser.error(f"--{chosen[0]} requires --resolve")
+        else:
+            if not args.resolve.strip():
+                # An empty id reaches no transaction and names none in the
+                # refusal either, so it is a malformed command line rather
+                # than a fact about the project.
+                args._journal_subparser.error(
+                    "--resolve requires the id of a transaction"
+                )
+            if args.check:
+                args._journal_subparser.error(
+                    "--resolve may not be combined with --check, which is "
+                    "read-only"
+                )
+            if len(chosen) != 1:
+                args._journal_subparser.error(
+                    "--resolve requires exactly one of --accept, --restore "
+                    "or --abandon"
+                )
+        return journal.run(
+            args.check,
+            args.resolve,
+            chosen[0] if chosen else None,
             stdout=sys.stdout,
             stderr=sys.stderr,
         )

@@ -105,6 +105,13 @@ plugin_root="$(dirname "$script_dir")"
 
 # Whatever happened inside the subshell above -- created, kept, re-pointed,
 # or even an internal error -- this hook always reports success: init's own
-# fail-open WARNINGs are already visible on stderr (stdout alone is
-# silenced), and a SessionStart hook must never gate session startup.
+# findings are already visible on stderr (stdout alone is silenced), and a
+# SessionStart hook must never gate session startup.
+#
+# `init` can exit non-zero here without the symlink being at fault: a
+# journal that cannot be read or written is an ERROR by design (ADR 0008),
+# and `init` restores the symlink anyway, reporting the record it could not
+# write as a WARNING. So the exit code above is deliberately not consulted:
+# the link is restored on the paths that gate as well as on the ones that
+# do not.
 exit 0

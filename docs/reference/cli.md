@@ -6,7 +6,7 @@ python3 -P -m validated_memory <command>
 
 Commands: [`init`](#init), [`lint`](#lint), [`validate`](#validate),
 [`derive`](#derive), [`probe`](#probe), [`render`](#render),
-[`status`](#status).
+[`status`](#status), [`journal`](#journal).
 
 Exit codes: `0` = clean run or WARNING-only findings (does not gate);
 `1` = ERROR (gates); `2` = usage error.
@@ -36,8 +36,80 @@ gate.)
 Each item is created only if missing. An existing item -- including one
 already hand-edited -- is never touched: `init` reports `init: created
 <path>` or `init: kept <path>` per item, so re-running it is idempotent and
-says so. The only way `init` gates (exit 1) is an item it could not create at
-all, e.g. no write permission on the target directory.
+says so. `init` gates (exit 1) on an item it could not create at all (e.g.
+no write permission on the target directory, or a broken symlink standing
+where the item goes -- installing over it would replace the link, and `init`
+never destroys something already there), and on a journal it could not read
+or write -- see [Journal](journal.md).
+
+An item `init` cannot create is refused by the executor, which names what it
+found rather than what it expected in the abstract. The three shapes an
+adopter meets:
+
+```
+ERROR: .gitignore: ignore-rule: the vault's ignore entry (/.validated-memory/) could not be written: .gitignore is mode 0444, which denies writing to this user. Nothing has been written.
+ERROR: memory: create: directory could not be created: memory is a file, and this create expects it to be absent. Nothing has been written.
+ERROR: validated-memory.md: create: file could not be created: validated-memory.md is a symlink to 'real.md', and this create expects it to be absent. Nothing has been written.
+```
+
+The first is new in this release and is the one behaviour change: a target
+whose mode denies writing to the current user is refused rather than
+rewritten, so a `.gitignore` the adopter made read-only used to come back at
+0644 and now gates every session until someone `chmod`s it, or until the
+rule reaches `.git/info/exclude` -- see [Expected
+states](journal.md#expected-states-and-what-a-precondition-promises). The
+other two used to be reported `kept` and journalled as "already present",
+which was a permanent, uninvertible claim about something that was not what
+it said.
+
+Before any of that, `init` closes what an earlier run left half done: it
+recovers every open transaction in the write-ahead log, under its own lock
+and ahead of its first intention (see [Recovery](journal.md#recovery)). A
+mutation that had been published but not yet recorded gets its records a
+session late, and says so:
+
+```
+init: recovered .gitignore from transaction 9e368fbaf699d836
+```
+
+That line is printed only when records were actually appended. A crash
+between the append and the transaction file's removal leaves a history
+that is already complete, so the recovery that finds it removes the file,
+gains nothing and says nothing: "recovered" about it would announce a
+mutation the journal already carried.
+
+A transaction recovery cannot account for is an ERROR that gates that one
+path -- nothing may write over it until `journal --resolve` closes it -- and
+the rest of the run proceeds.
+
+`init` also appends one line to the repository's ignore file (`.gitignore`,
+created if missing): `/.validated-memory/`, the vault. That entry is not one
+of the adoption questionnaire's answers and is written on every adoption,
+whatever the project versions -- the vault holds preimages, which may carry
+bytes the adopter deliberately kept local (ADR 0008). It is written once:
+an ignore file that already carries the rule is left exactly as it is, and
+the edit is journalled with purpose `ignore-rule` -- as a `create` when
+there was no ignore file at all, and as an `append` when there was one, the
+two having different inverses. It is reported on its own line
+(`init: ignored /.validated-memory/ in .gitignore`) and is not counted
+among the items created or kept, because it is a line appended to a file
+the adopter owns rather than an item `init` manages. An ignore file that is
+a symlink, or that cannot be read, is left untouched and reported as an
+ERROR, unless `.git/info/exclude` already carries the rule --
+that is the one other source git still consults when it cannot read
+`.gitignore` itself, and a vault git already ignores needs no gate. A
+symlinked `.gitignore` is never read through: git opens that file with
+`O_NOFOLLOW` and ignores nothing it says, so reading the target would call
+an exposed vault ignored.
+
+That ERROR stops the run: no scaffold item is created, and no harness
+memory is absorbed or parked. An unignored vault is the one thing the entry
+exists to prevent, so nothing may write into it -- the vault is left
+byte-for-byte as it was. The harness symlink is the exception, because
+restoring it moves no data: it is restored without its record, with the
+WARNING saying why, so a renamed project still finds its memory. Nothing is
+linked when this project has no `memory/` of its own, there being nothing
+to point at.
 
 `validated-memory.md` declares the full adopter surface `extension.py`
 validates: the declared extension (`schema`, `version`), the `id_prefix`,
@@ -71,6 +143,15 @@ adoption guide](../adoption.md#2-decide-what-this-repository-versions)):
   not agent memory): fail-open. `init` reports a WARNING naming what it found
   and why the directory did not qualify, and leaves PATH exactly as it was --
   exit 0, nothing deleted, nothing moved.
+
+The link is journalled like any other mutation, in the vault: a `link`
+record pair in `.validated-memory/local.jsonl`, carrying the transaction
+that published it and the previous target as its note (`no previous link`
+when there was none), and no mode -- a symlink has none worth recording. It
+is the one mutation the journal does not have the last word on: when the
+journal cannot be written at all, or refuses, the link is restored anyway
+and a WARNING carries the reason and the previous target, because giving a
+session its memory back is the `SessionStart` hook's only job.
 
 Computing PATH from the harness's own layout and calling `init
 --harness-memory PATH` automatically on every session start is the plugin's
@@ -565,3 +646,140 @@ Exit codes: `0` clean, or WARNING-only findings (including a reported but
 not gated `drifted`/`unknown`/aged verdict); `1` an ERROR from any gate that
 ran (validation, lint, index, or an opted-in freshness/age upgrade); `2` a
 usage error.
+
+### `journal`
+
+```
+python3 -P -m validated_memory journal [--check]
+python3 -P -m validated_memory journal --resolve ID (--accept | --restore | --abandon)
+```
+
+Reports the append-only record of what adoption did to this project --
+`journal.jsonl` at the adopter root plus `.validated-memory/local.jsonl`,
+read together (see [Journal](journal.md) for the record format and both
+files' durability). The scaffold `init` writes is in it. Two things are not
+yet: the derived artifacts `derive`, `probe`, `render` and `init --view`
+write, and the harness take-over `init --harness-memory` performs when the
+path it names is a real directory.
+[Journal](journal.md#what-is-recorded-and-what-is-not-yet) names both and
+the plan that records them. Read-only in both reporting modes: neither runs
+`probe` and neither writes to either file. `--resolve` is the third mode
+and the only one that writes.
+
+Without `--check`, it reports the combined record count and never gates on
+what it finds -- a reader can inspect a project's history without gating a
+session on it:
+
+```
+journal: 13 record(s)
+```
+
+A transaction an earlier run left open is worth saying even here, so it is
+counted on a second line, printed only when there is one:
+
+```
+journal: 1 record(s)
+journal: 1 unresolved transaction(s)
+```
+
+**`--check`** additionally reconciles the two journals and classifies every
+unresolved transaction in the write-ahead log
+(`.validated-memory/transactions/`). It reports, it never repairs, and every
+finding is an ERROR:
+
+```
+ERROR: .gitignore: journal: open transaction 56eeba099c335aaa (published) on .gitignore: diverged
+journal: 1 record(s), 1 error(s)
+```
+
+There are five shapes of finding:
+
+```
+ERROR: validated-memory.md: journal: unfinished transaction from run 6815e8b2323e4886: the path is applied
+ERROR: knowledge: journal: records of transaction 7901cd24a8758b62 disagree on note
+ERROR: .gitignore: journal: records of transaction 1ed016d9e88b5435: committed without a prepared half
+ERROR: .gitignore: journal: transaction e85966eeb6de80ef is recorded 4 times
+ERROR: .gitignore: journal: open transaction 56eeba099c335aaa (published) on .gitignore: diverged
+ERROR: .validated-memory/transactions/deadbeefdeadbeef.json: journal: damaged transaction deadbeefdeadbeef: not valid JSON: Expecting value
+```
+
+In order: a `prepared` record with no matching `committed`
+twin, reported with which of four states its bytes are in (`applied`,
+`unapplied`, `diverged`, `unknown` -- see
+[Journal](journal.md#stages-and-unfinished-transactions)); a closed pair
+whose two halves disagree on a field the mutation itself decided; an id
+that is not a pair at all, which has two messages -- a `committed` half
+with no `prepared` half, and a transaction recorded more than twice; an
+open transaction, with its file's own stage in brackets and the verdict
+recovery would reach (`recoverable`, `diverged` or `unknown` -- see
+[Journal](journal.md#recovery)); and a transaction file too damaged to name
+a path, which is named by its own file instead -- a file that is not this
+project's transaction at all, by its schema, its own id, its adoption, its
+operation or its states (see [Journal](journal.md#recovery)).
+
+**`--resolve ID`** closes one transaction the way the operator says, with
+exactly one of `--accept` (keep the state the path is in, recorded as an
+observation and never as a mutation), `--restore` (put the preimage back
+from the vault) or `--abandon` (leave the path as found, and record that).
+It applies only to a transaction recovery cannot account for -- one that is
+`recoverable` or `damaged` is refused, with the reason -- and it recovers
+nothing else on the way. Over a `diverged` transaction, whose bytes were
+published before the crash, `--accept` and `--abandon` record the mutation's
+own pair first and their `observe` after it: closing the divergence answers
+for the path and does not take the write out of the history. See [Resolving
+a transaction](journal.md#resolving-a-transaction) for what each flag
+records and what `--restore` refuses.
+
+```
+journal: resolved 51de77210788b0fd (--accept)
+```
+
+A `--restore` that discarded bytes says where they went, because no command
+here destroys bytes without leaving a copy:
+
+```
+journal: resolved 56eeba099c335aaa (--restore); the discarded bytes are kept at .validated-memory/preimages/896206210afdc58bebda73324b1601db00749e6b365c8055352d4a85f45ffa1f
+```
+
+A refusal is an ERROR and exit 1, not a traceback and not a usage error: the
+id was well formed and the flags were legal, and what could not be done is a
+fact about this project's state. An id no unresolved transaction has is one
+of those:
+
+```
+ERROR: .validated-memory/transactions/51de77210788b0fd.json: journal: there is no unresolved transaction 51de77210788b0fd; 'validated-memory journal --check' lists the ones there are. Nothing has been changed.
+```
+
+That refusal is reached before anything is opened, so its last sentence is
+true of the tree as well as of the log: run in a directory that has never
+been adopted, it leaves no `journal.jsonl` and no `.validated-memory/`
+behind.
+
+A journal that is present but cannot be parsed is refused with its line
+number, in either reporting mode:
+
+```
+ERROR: journal.jsonl:5: journal: line is not valid JSON: Expecting value
+journal: 0 record(s), 1 error(s)
+```
+
+So is a directory the plugin owns under the vault that is not a directory.
+`.validated-memory/transactions` and `.validated-memory/preimages` are
+written by name, and a symlink or a plain file standing where one of them
+goes is refused in every mode rather than followed (see
+[Journal](journal.md#the-write-ahead-log)):
+
+```
+ERROR: .validated-memory/transactions: journal: .validated-memory/transactions is not a directory, and this plugin writes what it owns only into a real directory of its own: everything under that name is created, written and removed by name, and a name that is somebody else's carries all of it somewhere this project promises nothing about. Move it aside.
+journal: 13 record(s), 1 error(s)
+```
+
+Exit codes: `0` clean; with `--check`, `1` if anything was found and `0`
+otherwise; with `--resolve`, `0` when the transaction was closed and `1`
+when it was refused; `1` in every mode, `--check` or not, for a journal
+that cannot be read as records at all or a vault directory the plugin owns
+that is not a directory -- both of the ERRORs above; `2` a usage error --
+a resolution flag with no `--resolve`, `--resolve` with none of the three
+or with two of them, `--resolve` alongside the read-only `--check`, or an
+empty id, which reaches no transaction and would name none in a refusal
+either.

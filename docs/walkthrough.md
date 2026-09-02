@@ -2,10 +2,11 @@
 
 A complete, reproducible run through validated-memory: adopt a project,
 write a curated-knowledge unit, validate it, derive the index, probe its
-freshness, correct it by superseding, and derive again. Every command below
-is exactly what [`tests/test_walkthrough.py`](../tests/test_walkthrough.py)
-runs; that test is the source of truth -- if this page and the test ever
-disagree, the test is right and this page gets corrected.
+freshness, correct it by superseding, derive again, and check the
+journal. Every command below is exactly what
+[`tests/test_walkthrough.py`](../tests/test_walkthrough.py) runs; that
+test is the source of truth -- if this page and the test ever disagree,
+the test is right and this page gets corrected.
 
 Run every command from the adopter project's root, with the package on
 `sys.path` -- from a plugin checkout, prefix each command with
@@ -22,6 +23,7 @@ python3 -P -m validated_memory init
 ```
 
 ```
+init: ignored /.validated-memory/ in .gitignore
 init: created knowledge
 init: created memory
 init: created memory/MEMORY.md
@@ -175,3 +177,39 @@ recorded for it: `derive` never mutates a unit and never re-probes on its
 own. `kb-0002` is active with its own anchor, not yet probed, so it starts
 at `unknown` again. Running `probe` once more would pick it up; see the
 `probe-freshness` skill.
+
+## 8. Check the journal
+
+Every write `init` made back in step 1 was recorded as it happened, in
+`journal.jsonl` -- see [Journal](reference/journal.md). Nothing after `init`
+in this walkthrough added to it. `validate` writes nothing at all; `derive`
+and `probe` write derived artifacts (`knowledge-index.md`,
+`verdicts.jsonl`) which are **not journalled yet** -- see [what is recorded
+and what is not
+yet](reference/journal.md#what-is-recorded-and-what-is-not-yet) -- and the
+units were written by hand, outside the CLI. So the record count from step
+1 still stands.
+
+```
+python3 -P -m validated_memory journal
+```
+
+```
+journal: 13 record(s)
+```
+
+**`--check`** additionally reconciles every unfinished transaction -- a
+`prepared` record with no matching `committed` twin, left behind by a run
+that died mid-write:
+
+```
+python3 -P -m validated_memory journal --check
+```
+
+```
+journal: 13 record(s), 0 error(s)
+```
+
+Nothing is unfinished here: every write in this walkthrough ran to
+completion. `--check` gates (exit 1) only when it finds one; without the
+flag, `journal` never gates on what it finds.

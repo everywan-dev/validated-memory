@@ -173,9 +173,192 @@ def test_a_directory_that_cannot_be_created_gates_with_an_error(adopter_dir, run
 
         assert result.returncode == 1
         assert "ERROR" in result.stderr
-        assert "knowledge" in result.stderr
+        # A locked root can't create `.validated-memory/` for the lock or
+        # `journal.jsonl` for the bootstrap record either, so that fails
+        # before any scaffold item (e.g. "knowledge") is even attempted.
+        assert "journal" in result.stderr, result.stderr
     finally:
         os.chmod(locked, 0o700)
+
+
+def test_a_directory_blocked_by_a_broken_symlink_gates_and_records_nothing(
+    adopter_dir, run_cli
+):
+    """`init` never destroys what the adopter put there, and never files junk.
+
+    `Path.exists()` follows a symlink and reads a broken one as absent, so
+    `_ensure_dir` wrote the `create` `prepared` record and only then found
+    the link in the way of `mkdir`. The ERROR was right; the record was
+    not. Nothing closed it and nothing ever could, and the reconciler reads
+    the link itself as evidence the mutation happened -- `applied`, for a
+    `create` whose inverse is "remove the adopter's own symlink".
+    `journal.jsonl` is versioned, so each session start appended another
+    one to shared history. `_ensure_file` has guarded this exact shape all
+    along: nothing is recorded, because nothing happened.
+    """
+    import json
+
+    (adopter_dir / "knowledge").symlink_to("nowhere-at-all")
+
+    for _ in range(3):
+        result = run_cli("init", cwd=adopter_dir)
+        assert result.returncode == 1, result.stdout
+
+    assert "knowledge" in result.stderr, result.stderr
+    assert "broken symlink" in result.stderr, result.stderr
+    assert (adopter_dir / "knowledge").is_symlink()
+    assert not (adopter_dir / "knowledge").exists()
+    records = [
+        json.loads(line)
+        for line in (adopter_dir / "journal.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert not [
+        entry for entry in records if entry["path"] == "knowledge"
+    ], records
+    check = run_cli("journal", "--check", cwd=adopter_dir)
+    assert check.returncode == 0, check.stdout
+
+
+def test_a_file_blocked_by_a_broken_symlink_gates_and_leaves_the_link(
+    adopter_dir, run_cli
+):
+    """`init` never destroys something the adopter put there, link included.
+
+    `Path.exists()` follows a symlink and reads a broken one as absent, so
+    the scaffold walked straight into it: routing the write through
+    `os.replace` (which does not follow) turned what used to be an ERROR
+    into a silent success that destroyed the link -- and recorded it as a
+    `create` with a null preimage, whose inverse is "remove", so a reversal
+    would delete the file and restore nothing. `_ensure_views` has guarded
+    this exact shape all along; the scaffold now guards it the same way.
+    """
+    import json
+
+    (adopter_dir / "validated-memory.md").symlink_to("/nonexistent/elsewhere.md")
+
+    result = run_cli("init", cwd=adopter_dir)
+
+    assert result.returncode == 1, result.stdout
+    assert "broken symlink" in result.stderr, result.stderr
+    assert (adopter_dir / "validated-memory.md").is_symlink()
+    assert not (adopter_dir / "validated-memory.md").exists()
+    records = [
+        json.loads(line)
+        for line in (adopter_dir / "journal.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert not [
+        entry for entry in records if entry["path"] == "validated-memory.md"
+    ], records
+
+
+def test_a_directory_where_a_scaffold_file_goes_is_refused_not_kept(
+    adopter_dir, run_cli
+):
+    """`kept` means a regular file was found, and a directory is not one.
+
+    `Path.exists()` answers "something is there", which is a different
+    question, so a directory named `validated-memory.md` was reported
+    `kept` and observed as "file already present": a permanent,
+    uninvertible claim that adoption found a file, written about a
+    directory, after which every command that reads the configuration
+    fails on the name the journal describes wrongly. It is the mirror of
+    the plain file where `memory/` goes, and it now gets the same answer --
+    the intention expects the name to be absent, and the refusal names what
+    is really there.
+    """
+    import json
+
+    (adopter_dir / "validated-memory.md").mkdir()
+
+    result = run_cli("init", cwd=adopter_dir)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        "validated-memory.md is a directory, and this create expects it to "
+        "be absent. Nothing has been written." in result.stderr
+    ), result.stderr
+    assert "kept validated-memory.md" not in result.stdout, result.stdout
+    assert (adopter_dir / "validated-memory.md").is_dir()
+    records = [
+        json.loads(line)
+        for line in (adopter_dir / "journal.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert not [
+        entry for entry in records if entry["path"] == "validated-memory.md"
+    ], records
+    # The refusal is about that one item: the rest of the scaffold is there.
+    assert (adopter_dir / "knowledge").is_dir()
+    assert (adopter_dir / "knowledge-extension.md").is_file()
+
+
+def test_a_symlink_to_a_file_where_a_scaffold_file_goes_is_refused_not_kept(
+    adopter_dir, run_cli
+):
+    """A link that resolves is still not the file `init` would have made.
+
+    The link's own record would say `observe`, which means "adoption found
+    this file here", and the bytes it names are somewhere else entirely --
+    the same false claim a broken symlink earns an ERROR for, made quietly
+    because this one happens to resolve. Nothing is written and nothing is
+    recorded: the link is the adopter's.
+    """
+    (adopter_dir / "elsewhere.md").write_text("hand written\n", encoding="utf-8")
+    (adopter_dir / "validated-memory.md").symlink_to("elsewhere.md")
+
+    result = run_cli("init", cwd=adopter_dir)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        "validated-memory.md is a symlink to 'elsewhere.md'" in result.stderr
+    ), result.stderr
+    assert (adopter_dir / "validated-memory.md").is_symlink()
+    assert (
+        adopter_dir / "elsewhere.md"
+    ).read_text(encoding="utf-8") == "hand written\n"
+
+
+def test_an_observation_that_cannot_be_recorded_gates_only_its_own_item(
+    tmp_path, run_cli
+):
+    """One item's record refuses; the other items are still created.
+
+    `memory/` is a symlink to a directory outside the project, so the fact
+    that adoption found it there may not be filed in the versioned journal
+    (`journal.authorise`, design §7). `authorise` raises `OSError` for
+    exactly that reason -- so a caller can gate the one item that named it
+    -- and `_ensure_dir` let it reach `init.run`'s outer handler instead:
+    the run was reported as "the journal could not be opened" against
+    `journal.jsonl`, a file that is perfectly valid, and every other item
+    was abandoned with it. `journal.authorise`'s own docstring says `init`
+    gates per item; this is what makes that true.
+    """
+    outside = tmp_path / "outside" / "other"
+    outside.mkdir(parents=True)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    (adopter / "memory").symlink_to(
+        os.path.join("..", "outside", "other"), target_is_directory=True
+    )
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "ERROR: memory: journal: memory resolves outside the adopter root" in (
+        result.stderr
+    ), result.stderr
+    assert "journal could not be opened" not in result.stderr, result.stderr
+    # The items that named nothing outside the root were created anyway.
+    assert (adopter / "knowledge").is_dir()
+    assert (adopter / "validated-memory.md").is_file()
+    assert (adopter / "knowledge-extension.md").is_file()
+    assert not (outside / "MEMORY.md").exists()
 
 
 def test_an_item_blocked_by_a_file_gates_with_an_error(adopter_dir, run_cli):
@@ -344,6 +527,199 @@ def test_harness_memory_existing_real_file_warns_and_is_left_untouched(
     assert "WARNING" in result.stderr
     assert not harness_memory.is_symlink()
     assert harness_memory.read_text(encoding="utf-8") == "Do not touch.\n"
+
+
+def test_a_repointed_symlink_records_its_previous_target_before_losing_it(
+    adopter_dir, tmp_path, run_cli
+):
+    """The record comes first, because the mutation destroys what it records.
+
+    A `link` record's payload is the previous target, and its inverse is
+    "restore the previous target". Re-pointing the symlink is what makes
+    that target unreadable, so a record written afterwards has a window in
+    which the only copy of it is in memory -- and the same window leaves a
+    re-pointed link no record mentions at all.
+
+    The link goes through the executor now, so what is written first is the
+    transaction file, fsynced with the previous target in it, and the two
+    history records are appended together afterwards under one transaction
+    id -- which is what says the two lines are one act, since the
+    transaction file itself is local and leaves the disk on the next line.
+    The stages and the note are what this pins; the id is what ties them.
+
+    The link is never absent between two runs either, by construction
+    rather than by measurement: publication builds the new link under a
+    pid-named temporary and renames it over the path (`journal.Run._publish`
+    for the recorded path, `init._sync_symlink.relink` for the fail-open
+    one), and nothing on either path unlinks anything. A test cannot
+    observe a window that does not exist; reading the two code paths is how
+    this is checked.
+    """
+    import json
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory.parent.mkdir(parents=True)
+    harness_memory.symlink_to(elsewhere, target_is_directory=True)
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert harness_memory.resolve() == (adopter_dir / "memory").resolve()
+    vault = adopter_dir / ".validated-memory" / "local.jsonl"
+    links = [
+        json.loads(line)
+        for line in vault.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["op"] == "link"
+    ]
+    assert [entry["stage"] for entry in links] == ["prepared", "committed"], links
+    for entry in links:
+        assert entry["note"] == f"previous target: {elsewhere}", entry
+    assert len({entry["transaction"] for entry in links}) == 1, links
+    # And the transaction it names is closed: nothing is left open for the
+    # next run to gate on.
+    assert not list(
+        (adopter_dir / ".validated-memory" / "transactions").glob("*.json")
+    ), sorted((adopter_dir / ".validated-memory" / "transactions").iterdir())
+
+
+def test_a_recorded_symlink_carries_no_mode(
+    adopter_dir, tmp_path, run_cli, monkeypatch
+):
+    """A symlink's `lstat` mode is 0777, and 0777 is not a fact about anything.
+
+    Nobody chooses it, no platform this runs on varies it, and the node it
+    describes is a pointer rather than bytes. A record carrying `mode: 511`
+    would be read back by a reversal as the mode to restore -- and the only
+    thing a `chmod` on that path can reach is the DIRECTORY the link points
+    at, this project's `memory/`. The executor already refuses to record it
+    as a link's PREIMAGE mode for exactly that reason; the postimage is the
+    same fact and gets the same answer, in the records `execute` writes and
+    in the ones recovery rebuilds.
+    """
+    import json
+
+    harness_memory = tmp_path / "harness" / "memory"
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+
+    assert result.returncode == 0, result.stderr
+    vault = adopter_dir / ".validated-memory" / "local.jsonl"
+    links = [
+        json.loads(line)
+        for line in vault.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["op"] == "link"
+    ]
+    assert [entry["stage"] for entry in links] == ["prepared", "committed"], links
+    for entry in links:
+        assert "mode" not in entry, entry
+    # And the directory the link points at is still a directory: nothing
+    # here ever asked for a mode on it.
+    assert (adopter_dir / "memory").is_dir()
+
+    # The records recovery rebuilds are the records `execute` would have
+    # written, and that includes the field it would have left out. The
+    # ignore entry and every item are already there, so the link is this
+    # run's first and only mutation and the kill lands on it.
+    harness_memory.unlink()
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-published")
+    killed = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+    assert killed.returncode == 70, (killed.stdout, killed.stderr)
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT")
+
+    recovered = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+
+    assert recovered.returncode == 0, recovered.stderr
+    rebuilt = [
+        json.loads(line)
+        for line in vault.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["op"] == "link"
+    ][len(links):]
+    assert [entry["stage"] for entry in rebuilt] == ["prepared", "committed"], rebuilt
+    for entry in rebuilt:
+        assert "mode" not in entry, entry
+
+
+def test_a_corrupt_journal_still_restores_the_harness_symlink(
+    adopter_dir, tmp_path, run_cli
+):
+    """A journal failure must never cost the user their memory symlink.
+
+    `journal.jsonl` is always versioned and append-only, so two branches
+    that both ran `init` conflict in it on every merge, and a botched
+    resolution leaves exactly this file. The corrupt journal still gates
+    (ADR 0008: required history that cannot be read is exit 1), but the
+    harness half of `init` is what the `SessionStart` hook exists for and it
+    runs regardless -- with the loss of its own record reported, not hidden.
+    """
+    harness_memory = tmp_path / "harness" / "memory"
+    assert (
+        run_cli(
+            "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+        ).returncode
+        == 0
+    )
+    harness_memory.unlink()
+    journal = adopter_dir / "journal.jsonl"
+    journal.write_text(
+        journal.read_text(encoding="utf-8") + "{not json\n", encoding="utf-8"
+    )
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+
+    assert result.returncode == 1, result.stdout
+    assert "not valid JSON" in result.stderr, result.stderr
+    assert harness_memory.is_symlink(), "the symlink was not restored"
+    assert harness_memory.resolve() == (adopter_dir / "memory").resolve()
+    assert "could not be recorded" in result.stderr, result.stderr
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
+def test_an_unwritable_root_gates_and_leaves_no_link_pointing_nowhere(
+    adopter_dir, tmp_path, run_cli
+):
+    """A link to a `memory/` that does not exist is not a restored link.
+
+    An adopter root that cannot be written to fails before any scaffold item
+    -- the lock and the journal's own bootstrap both need to create files in
+    it -- so this project has no `memory/` and cannot get one. Measured
+    before this test said so: `init` printed `created symlink` and left the
+    harness's memory path dangling at a directory that does not exist, which
+    is the one outcome worse than not linking at all -- the harness then has
+    no memory, where an untouched path leaves it its own, and a later run
+    absorbs that into the project (`adopt.take_over`).
+
+    The gate itself is unchanged: exit 1, and the journal ERROR says why.
+    """
+    locked = adopter_dir / "locked"
+    locked.mkdir()
+    harness_memory = tmp_path / "harness" / "memory"
+    os.chmod(locked, 0o500)
+    try:
+        result = run_cli(
+            "init", "--harness-memory", str(harness_memory), cwd=locked
+        )
+
+        assert result.returncode == 1, result.stdout
+        assert "journal" in result.stderr, result.stderr
+        assert "no 'memory/' to link to" in result.stderr, result.stderr
+        assert not harness_memory.is_symlink(), "the harness path was linked"
+        assert not harness_memory.exists()
+    finally:
+        os.chmod(locked, 0o700)
 
 
 def test_without_harness_memory_flag_nothing_outside_the_project_is_touched(

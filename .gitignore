@@ -25,4 +25,5 @@ build/
 /TODO.md
 /SESSION.md
 /sessions/
+/.superpowers/
 /tests/test_codex_agents.py

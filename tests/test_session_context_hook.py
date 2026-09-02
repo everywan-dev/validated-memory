@@ -808,6 +808,80 @@ def test_a_hostile_validated_memory_package_never_runs(tmp_path):
 # --- the hook and the skill agree on the whole status domain ------------------
 
 
+def _lint(project_dir):
+    """Run `lint` over the fixture, as a subprocess, and return the result."""
+    return subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "lint"],
+        capture_output=True,
+        text=True,
+        cwd=project_dir,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        check=False,
+    )
+
+
+def test_a_tab_in_a_record_counts_here_and_is_an_error_in_the_parser(tmp_path):
+    """A named divergence, pinned so that "named rather than mirrored" stays true.
+
+    The hook strips ASCII space and tab from the end of a line; the CLI's
+    frontmatter parser rejects a tab anywhere in frontmatter. So an entry
+    carrying one counts here and is an ERROR there. That is deliberate --
+    the awk character classes are not portable across gawk, mawk and busybox
+    awk (`hooks/session-context.sh`, and "Two divergences are left" in
+    `docs/reference/hooks.md`) -- and it is safe precisely because nothing
+    is silent: a gate is already telling the user about that file. This test
+    is what makes the claim checkable rather than prose that decays; if
+    either side changes, decide again, do not just re-baseline it.
+    """
+    project_dir = _init_adopter(tmp_path / "project")
+    _write_source_entry(
+        project_dir, "source-tab.md", "knowledge source tab: imported\t"
+    )
+
+    result = _run_hook_checked(project_dir)
+
+    assert _counts_line(result) == (
+        "knowledge sources: 1 imported, 0 declared not scanned, "
+        "0 found not imported, 0 not located"
+    )
+    lint = _lint(project_dir)
+    assert lint.returncode == 1, lint.stdout
+    assert "tabs are not allowed in frontmatter" in lint.stderr, lint.stderr
+
+
+def test_a_no_break_space_parses_and_counts_nowhere(tmp_path):
+    """The other named divergence, and the weaker of the two: a silent undercount.
+
+    The hook strips ASCII space and tab; the parser strips every character
+    Python calls whitespace. So a value padded with a no-break space (or a
+    vertical tab, or a form feed) is a source record the CLI accepts --
+    `lint` passes clean -- and counts nowhere in the session context the
+    agent reads at startup. Nothing gates, so nothing tells the user.
+
+    It is left unmirrored for the portability reason in
+    `hooks/session-context.sh` and `docs/reference/hooks.md`, and pinned
+    here so the decision is visible when either side moves. A count that
+    claims completeness it does not have is the failure mode the journal
+    design opens with; if this is ever closed, it will be by the count
+    saying what it could not read, not by awk learning the class.
+    """
+    project_dir = _init_adopter(tmp_path / "project")
+    _write_source_entry(
+        project_dir,
+        "source-nbsp.md",
+        "knowledge source nbsp: imported\u00a0",
+    )
+
+    result = _run_hook_checked(project_dir)
+
+    assert _counts_line(result) == (
+        "knowledge sources: 0 imported, 0 declared not scanned, "
+        "0 found not imported, 0 not located"
+    )
+    lint = _lint(project_dir)
+    assert lint.returncode == 0, lint.stderr
+
+
 def _literals_from_skill():
     """The four literals, read out of the skill's own grammar sentence."""
     text = " ".join(BOOTSTRAP_SKILL.read_text(encoding="utf-8").split())
