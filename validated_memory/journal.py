@@ -662,23 +662,23 @@ def authorise(root, path, durability):
     return location
 
 
-# A lock older than this is broken rather than waited on -- by age alone.
-# Nothing checks whether the process that took it is still running, so this
-# is a bet that no legitimate holder is slower than five minutes, not a
-# liveness test. It holds today because every caller holds the lock for
-# milliseconds; a caller that held it across a tree walk would have its lock
-# broken under it, and would need the liveness check (`os.kill(pid, 0)` on
-# the pid in the file) that is not written yet. Without it, a process killed
-# between taking the lock and releasing it would wedge every later run of a
-# startup hook.
+# The last resort, not the liveness test: a lock older than this is broken on
+# age alone. `Lock` reads the owning pid first and never breaks a lock whose
+# owner is still running, whatever its age, and breaks one whose owner is
+# gone at once -- a run killed mid-mutation must not wedge the next session's
+# `init` for five minutes. What is left for this horizon is a lock file whose
+# pid cannot be read at all: a run killed between creating the file and
+# writing its pid leaves an empty one, and nothing about it says who to ask.
+# Five minutes is a bet that no legitimate holder is slower than that, which
+# holds today because the lock is held for the length of one `init`.
 STALE_LOCK_SECONDS = 300
 
 
 # The locks this process holds: `{lock path: [descriptor, depth]}`, keyed by
-# the path so that two `Lock` objects naming one file are one holder.
-# Re-entrancy has to be per PROCESS, not per object: `init.run` takes the
-# lock for a whole run and `Run.__init__` takes it again underneath through
-# an object the outer caller never sees.
+# the resolved path so that two `Lock` objects naming one file are one
+# holder. Re-entrancy has to be per PROCESS, not per object: `init.run`
+# takes the lock for a whole run and `Run.__init__` takes it again
+# underneath through an object the outer caller never sees.
 _HELD = {}
 
 
@@ -692,12 +692,11 @@ class Lock:
     existed.
 
     The lock is a file created with `O_CREAT | O_EXCL`, which is atomic. Its
-    contents are the owning pid, for a person looking at a lock file that
-    should not be there; no code reads them, and the contention message names
-    the path rather than the holder.
+    contents are the owning pid, and that pid is what the rest of this class
+    is built on: it is read back to ask whether the owner is still running.
 
-    Within one process the lock is RE-ENTRANT, counted per lock path and
-    not per object (`_HELD`): `init.run` holds it for a whole run
+    Within one process the lock is RE-ENTRANT, counted per resolved lock
+    path and not per object (`_HELD`): `init.run` holds it for a whole run
     and `Run.__init__` takes it again underneath, and a second `O_EXCL`
     create would wait out the whole ten seconds and then refuse the run.
     The file is created by the outermost `__enter__` and removed by the
@@ -706,11 +705,21 @@ class Lock:
     object means nothing outside the process that entered it: one must not
     be shared with a child process or carried across a fork as held.
 
-    Releasing is unconditional: `__exit__` unlinks the path whether or not
-    the file there is still the one this object created. A lock broken as
-    stale (see `STALE_LOCK_SECONDS`) and then taken by a third process would
-    therefore be released twice, once by each. Nothing can reach that state
-    today, because no caller holds the lock long enough to be broken.
+    Waiting for a lock someone else holds breaks in only when the holder is
+    provably gone. A lock whose pid names a live process is never broken,
+    whatever its age -- the holder is doing the work the lock protects. A
+    lock whose pid names no process is broken at once, because a run that
+    died mid-mutation must not wedge the next session's `init` behind the
+    age horizon. `STALE_LOCK_SECONDS` covers only what is left: a pid that
+    cannot be read.
+
+    Releasing identifies the lock by the device and inode of the descriptor
+    this process holds, not by the name, and unlinks nothing else. A lock
+    broken on the age horizon belongs to a process that may still be
+    running, and that process must not delete the lock its successor is now
+    holding. Breaking is still not atomic between two waiters -- both can
+    see the same dead owner and both unlink -- but only one of them can
+    then create the file with `O_EXCL`, and the loser goes back to waiting.
     """
 
     def __init__(self, root=Path()):
@@ -739,7 +748,9 @@ class Lock:
                 except OSError:
                     # `__exit__` never runs when `__enter__` raises, so the
                     # descriptor and the lock file have to be released here or
-                    # they outlive the failure by the whole stale window.
+                    # they outlive the failure by the whole stale window. A
+                    # lock file with no pid in it is also the one shape no
+                    # later run can ask about, so it must not be left behind.
                     os.close(descriptor)
                     self.path.unlink(missing_ok=True)
                     raise
@@ -747,7 +758,7 @@ class Lock:
                 self._entries += 1
                 return self
             except FileExistsError:
-                if self._break_if_stale():
+                if self._break_if_unowned():
                     continue
                 if time.monotonic() >= deadline:
                     raise JournalError(
@@ -769,20 +780,73 @@ class Lock:
         if held[1] > 0:
             return False
         del _HELD[self._key]
-        os.close(held[0])
-        self.path.unlink(missing_ok=True)
+        descriptor = held[0]
+        try:
+            self._unlink_if_still_ours(descriptor)
+        finally:
+            os.close(descriptor)
         return False
 
-    def _break_if_stale(self):
-        """Remove the lock when it is older than the stale window.
+    def _unlink_if_still_ours(self, descriptor):
+        """Remove the lock file only when it is still the one we created.
 
-        Returns whether it broke one. The owner is not consulted: see
-        `STALE_LOCK_SECONDS` for what that costs and what would fix it.
+        The descriptor outlives the name: if this lock was broken and a
+        successor created its own file under the same path, `st_dev` and
+        `st_ino` differ and the successor's lock is left exactly where it
+        is. A path that is already gone -- broken and not yet retaken -- is
+        nothing to undo either.
         """
+        try:
+            mine = os.fstat(descriptor)
+            there = os.stat(self.path)
+        except OSError:
+            return
+        if (there.st_dev, there.st_ino) == (mine.st_dev, mine.st_ino):
+            self.path.unlink(missing_ok=True)
+
+    def _break_if_unowned(self):
+        """Remove the lock when nothing is holding it any more.
+
+        Returns whether it broke one, so the caller can retry at once.
+
+        Three answers, cheapest and most certain first. The file is gone:
+        someone released it, retry. The pid in it names a process that
+        exists: never break it, whatever the file's age -- that process is
+        inside the mutation this lock protects, and `PermissionError` from
+        `os.kill` is one of those, a live process owned by another user.
+        The pid names no process (`ProcessLookupError`): the file outlived
+        its owner, so break it now rather than making every later run wait
+        out `STALE_LOCK_SECONDS` behind a run that is already dead.
+
+        Only a pid that cannot be read -- an empty file from a run killed
+        between creating it and writing to it, or bytes that are not a
+        positive integer -- falls through to the age horizon. `os.kill(0, 0)`
+        signals this process's whole group, so a pid that is not positive is
+        never asked about.
+        """
+        try:
+            raw = self.path.read_bytes()
+        except FileNotFoundError:
+            return True  # It went away on its own; try again immediately.
+        except OSError:
+            raw = b""
+        try:
+            pid = int(raw.decode("ascii").strip())
+        except ValueError:
+            pid = 0
+        if pid > 0:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                self.path.unlink(missing_ok=True)
+                return True
+            except OSError:
+                return False  # Alive, or unknowable: either way, not ours.
+            return False
         try:
             age = time.time() - self.path.stat().st_mtime
         except FileNotFoundError:
-            return True  # It went away on its own; try again immediately.
+            return True
         if age < STALE_LOCK_SECONDS:
             return False
         self.path.unlink(missing_ok=True)

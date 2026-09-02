@@ -9,6 +9,9 @@ record means is `docs/reference/journal.md`; what it is for is
 import ast
 import json
 import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1298,10 +1301,12 @@ def test_a_kill_at_after_prepared_leaves_an_orphan_prepared_record(
     assert records[-1]["path"] == ".gitignore", records
 
     # `os._exit` skips every `finally`, including `Lock.__exit__`, so the
-    # lock file this run took is still there. Recognising and breaking a
-    # dead owner's lock is Task 3's job, not this one's -- removed by hand
-    # here so the `journal --check` below is not itself blocked by it.
-    (tmp_path / ".validated-memory" / "lock").unlink()
+    # lock file this run took is still there, with the pid of a process that
+    # no longer exists inside it. It is left exactly where the kill left it:
+    # `journal --check` reads and takes no lock, and the next run that does
+    # take one breaks a lock whose owner is gone
+    # (`test_a_lock_whose_owner_is_gone_is_broken_at_once`).
+    assert (tmp_path / ".validated-memory" / "lock").exists()
 
     checked = run_cli("journal", "--check", cwd=tmp_path)
     assert checked.returncode == 1, checked.stdout
@@ -1328,9 +1333,10 @@ def test_a_kill_at_after_mutation_leaves_bytes_with_no_committed_record(
     assert records[-1]["stage"] == "prepared", records
     assert records[-1]["path"] == ".gitignore", records
 
-    # Same reason as the sibling test above: a dead-owner lock is Task 3's
-    # job, so it is removed here rather than left to block the check.
-    (tmp_path / ".validated-memory" / "lock").unlink()
+    # Left where the kill left it, as in the sibling test above: nothing
+    # removes a dead owner's lock by hand, and the next run to take one
+    # breaks it.
+    assert (tmp_path / ".validated-memory" / "lock").exists()
 
     checked = run_cli("journal", "--check", cwd=tmp_path)
     assert checked.returncode == 1, checked.stdout
@@ -1383,6 +1389,73 @@ def test_the_fault_variable_is_inert_when_unset_or_unreached(
 
 # --- the lock: who holds it, who may break it, and where it lives -------------
 
+# A lock holder that is not this plugin: it takes the lock file exactly as
+# `Lock` does -- `O_CREAT | O_EXCL`, its own pid inside -- announces the pid
+# it wrote, and then stays alive until the test kills it. Standard library
+# only, and it imports nothing from the package: these tests drive the CLI
+# from the outside and this holder is part of the outside.
+HOLD_THE_LOCK = """
+import os
+import sys
+import time
+
+path = sys.argv[1]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+os.write(descriptor, ("%d\\n" % os.getpid()).encode("ascii"))
+os.close(descriptor)
+print(os.getpid(), flush=True)
+time.sleep(600)
+"""
+
+
+def _hold_the_lock(path):
+    """Start the holder above on `path` and return it, already holding."""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLD_THE_LOCK, str(path)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    pid = holder.stdout.readline().strip()
+    assert pid, "the lock holder died before it took the lock"
+    return holder, pid
+
+
+def _a_pid_that_is_gone():
+    """A pid nothing owns, asked of the system rather than assumed.
+
+    A child that has exited and been reaped gives up its pid, so that is the
+    first candidate; the walk upwards covers the case where the kernel has
+    already handed it out again by the time this is asked.
+    """
+    child = subprocess.Popen([sys.executable, "-c", ""])
+    child.wait(timeout=30)
+    reaped = child.pid
+    for offset in range(10000):
+        candidate = reaped + offset
+        try:
+            os.kill(candidate, 0)
+        except ProcessLookupError:
+            return candidate
+        except OSError:
+            continue
+    raise AssertionError("every probed pid was in use")
+
+
+def _run_init_in_background(cwd):
+    """Start `init` as a subprocess the test can interfere with while it runs."""
+    environment = dict(os.environ)
+    environment.setdefault("PYTHONPATH", str(REPO_ROOT))
+    return subprocess.Popen(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        env=environment,
+    )
+
+
 def test_init_takes_the_lock_it_already_holds(run_cli, tmp_path):
     """The nested acquisition: `init` holds the lock, `Run` takes it again.
 
@@ -1399,4 +1472,121 @@ def test_init_takes_the_lock_it_already_holds(run_cli, tmp_path):
     assert (tmp_path / "journal.jsonl").exists()
     # Taken and released, not leaked: the next run must not have to break it.
     assert not (tmp_path / ".validated-memory" / "lock").exists()
+
+
+def test_a_lock_whose_owner_is_alive_is_never_broken(run_cli, tmp_path):
+    """An age-old lock whose pid is still running is waited on, not taken.
+
+    This test costs the whole contention deadline -- about ten seconds -- on
+    purpose: refusing is what takes that long, and there is no shorter way
+    to see the run give up rather than break in.
+
+    The mtime is backdated far past `STALE_LOCK_SECONDS`, which is exactly
+    the state the old age-only rule broke: a live holder in the middle of a
+    slow mutation would have had its lock taken from under it.
+    """
+    lock = tmp_path / ".validated-memory" / "lock"
+    holder, pid = _hold_the_lock(lock)
+    try:
+        ancient = time.time() - 100 * 300
+        os.utime(lock, (ancient, ancient))
+        before = lock.stat().st_ino
+
+        result = run_cli("init", cwd=tmp_path)
+
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert "another validated-memory process holds" in result.stderr
+        # The holder's own file, untouched: same inode, same pid inside.
+        assert lock.stat().st_ino == before
+        assert lock.read_text(encoding="ascii").strip() == pid
+        # And the run that was refused mutated nothing.
+        assert not (tmp_path / "journal.jsonl").exists()
+        assert not (tmp_path / ".gitignore").exists()
+    finally:
+        holder.terminate()
+        holder.wait(timeout=30)
+        holder.stdout.close()
+
+
+def test_a_lock_whose_owner_is_gone_is_broken_at_once(run_cli, tmp_path):
+    """A lock file that outlived its owner is broken now, not in five minutes.
+
+    A run killed between taking the lock and releasing it leaves the file
+    behind with its pid inside. Under the age-only rule the next `init` --
+    the one a session start runs -- waited ten seconds and then failed, and
+    kept failing until the file was five minutes old. The mtime here is
+    fresh, so age alone would refuse.
+    """
+    lock = tmp_path / ".validated-memory" / "lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(f"{_a_pid_that_is_gone()}\n", encoding="ascii")
+
+    started = time.monotonic()
+    result = run_cli("init", cwd=tmp_path)
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    # Well inside the ten-second deadline: broken on the first attempt, not
+    # waited on and then given up.
+    assert elapsed < 5, elapsed
+    assert (tmp_path / "journal.jsonl").exists()
+    assert not lock.exists()
+
+
+def test_a_run_whose_lock_was_broken_leaves_its_successor_alone(tmp_path):
+    """Release identifies the lock by inode, so a broken run deletes nothing.
+
+    Driving this needs a run that is slow while holding the lock, and the
+    one slow thing inside it is reading the journal: the run below reads a
+    padded one for about a second, which is the window the test swaps the
+    lock file in. A lock broken on the age horizon can belong to a process
+    that is still running -- that is the case the identity check exists for
+    -- and this stages exactly that: the file the run created is removed,
+    a successor takes its place, and the run must finish without unlinking
+    a lock that is no longer its own.
+
+    The successor's pid is this test's, which is alive, so nothing in the
+    run under test may break it either.
+    """
+    seed = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        check=False,
+    )
+    assert seed.returncode == 0, seed.stderr
+    journal = tmp_path / "journal.jsonl"
+    line = journal.read_text(encoding="utf-8").splitlines()[0]
+    with journal.open("a", encoding="utf-8") as handle:
+        handle.write((line + "\n") * 150000)
+
+    lock = tmp_path / ".validated-memory" / "lock"
+    assert not lock.exists()
+    running = _run_init_in_background(tmp_path)
+    try:
+        deadline = time.monotonic() + 30
+        while not lock.exists():
+            assert running.poll() is None, "the run ended before it took the lock"
+            assert time.monotonic() < deadline, "the run never took the lock"
+            time.sleep(0.005)
+        broken = lock.stat().st_ino
+        lock.unlink()
+        descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        os.write(descriptor, f"{os.getpid()}\n".encode("ascii"))
+        os.close(descriptor)
+        successor = lock.stat().st_ino
+        assert successor != broken
+        assert running.poll() is None, "the run finished before the lock was swapped"
+        stdout, stderr = running.communicate(timeout=120)
+    finally:
+        if running.poll() is None:  # pragma: no cover - only on a timeout
+            running.kill()
+            running.communicate()
+
+    assert running.returncode == 0, (stdout, stderr)
+    assert lock.exists(), "the run deleted a lock it no longer owned"
+    assert lock.stat().st_ino == successor
+    assert lock.read_text(encoding="ascii").strip() == str(os.getpid())
 
