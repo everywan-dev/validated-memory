@@ -185,6 +185,40 @@ def build_parser():
                     "(exit 1); without it, reporting never gates"
                 ),
             )
+            subparser.add_argument(
+                "--resolve",
+                metavar="ID",
+                help=(
+                    "close the unresolved transaction ID, with exactly one "
+                    "of --accept, --restore or --abandon"
+                ),
+            )
+            subparser.add_argument(
+                "--accept",
+                action="store_true",
+                help=(
+                    "--resolve: keep the state the path is in, recorded as "
+                    "an observation of fact and never as a mutation"
+                ),
+            )
+            subparser.add_argument(
+                "--restore",
+                action="store_true",
+                help=(
+                    "--resolve: put the preimage back from the vault, "
+                    "refusing if its blob is missing or does not match"
+                ),
+            )
+            subparser.add_argument(
+                "--abandon",
+                action="store_true",
+                help="--resolve: leave the path as found, and record that",
+            )
+            # Kept on the namespace for the same reason `status` keeps its
+            # own: the combinations below are cross-flag rules no `type=` or
+            # `choices=` can express, and they must fail as this
+            # subcommand's usage error rather than as anything else.
+            subparser.set_defaults(_journal_subparser=subparser)
     return parser
 
 
@@ -226,7 +260,37 @@ def main(argv=None):
             stderr=sys.stderr,
         )
     if args.command == "journal":
-        return journal.run(args.check, stdout=sys.stdout, stderr=sys.stderr)
+        # Fail-explicit, exactly as `status` above: a resolution flag with
+        # no transaction to apply it to, two of them at once, or one
+        # alongside the read-only `--check`, is a request with no single
+        # meaning, and guessing at one would close a transaction the user
+        # did not name.
+        chosen = [
+            name
+            for name in journal.RESOLUTIONS
+            if getattr(args, name.replace("-", "_"))
+        ]
+        if args.resolve is None:
+            if chosen:
+                args._journal_subparser.error(f"--{chosen[0]} requires --resolve")
+        else:
+            if args.check:
+                args._journal_subparser.error(
+                    "--resolve may not be combined with --check, which is "
+                    "read-only"
+                )
+            if len(chosen) != 1:
+                args._journal_subparser.error(
+                    "--resolve requires exactly one of --accept, --restore "
+                    "or --abandon"
+                )
+        return journal.run(
+            args.check,
+            args.resolve,
+            chosen[0] if chosen else None,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
     return init.run(
         args.harness_memory, args.view, stdout=sys.stdout, stderr=sys.stderr
     )

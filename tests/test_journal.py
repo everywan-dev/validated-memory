@@ -2474,6 +2474,211 @@ def test_an_aborted_transaction_is_reported_and_removed(run_cli, tmp_path):
     assert run_cli("journal", "--check", cwd=tmp_path).returncode == 0
 
 
+def test_journal_resolve_accept_records_an_observation_never_a_mutation(
+    run_cli, tmp_path
+):
+    """`--accept`: the state found is a fact, not something the plugin did.
+
+    A `replace` record here would claim the plugin produced these bytes and
+    would offer a reversal that undoes somebody else's work. What is true is
+    that a state was found and accepted, which is what `observe` means -- and
+    the note says which transaction found what, because this is the one
+    `observe` written about a path the journal already mentions.
+    """
+    transaction = _diverged(tmp_path)
+
+    result = run_cli("journal", "--resolve", transaction, "--accept", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stderr == "", result.stderr
+    assert f"journal: resolved {transaction} (--accept)" in result.stdout
+    assert not _transactions(tmp_path), _transactions(tmp_path)
+
+    written = [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record["path"] == ".gitignore"
+    ]
+    assert len(written) == 1, written
+    assert written[0]["op"] == "observe", written
+    assert written[0]["stage"] == "committed", written
+    assert written[0]["note"] == (
+        f"accepted after divergence: transaction {transaction} found file"
+    ), written
+    # The path is untouched, and the run that follows is clean.
+    assert (tmp_path / ".gitignore").read_text(
+        encoding="utf-8"
+    ) == "an adopter wrote this\n"
+    assert run_cli("journal", "--check", cwd=tmp_path).returncode == 0
+
+
+def test_journal_resolve_abandon_records_that_the_path_was_left_as_found(
+    run_cli, tmp_path
+):
+    """`--abandon`: nothing is published and nothing is undone, and it says so."""
+    transaction = _diverged(tmp_path)
+
+    result = run_cli("journal", "--resolve", transaction, "--abandon", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert f"journal: resolved {transaction} (--abandon)" in result.stdout
+    assert not _transactions(tmp_path), _transactions(tmp_path)
+    written = [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record["path"] == ".gitignore"
+    ]
+    assert len(written) == 1, written
+    assert written[0]["op"] == "observe", written
+    assert written[0]["note"] == (
+        f"abandoned: transaction {transaction}, path left as found"
+    ), written
+    assert (tmp_path / ".gitignore").read_text(
+        encoding="utf-8"
+    ) == "an adopter wrote this\n"
+
+
+def test_journal_resolve_restore_puts_the_preimage_back_and_records_nothing(
+    run_cli, tmp_path
+):
+    """`--restore`: the adopter's own bytes and mode, through the same publication.
+
+    Nothing is recorded, because a path returned to the state a record would
+    have described the departure from is not a fact about the project. The
+    mode comes from the transaction file -- the preimage's own -- and not
+    from whatever is at the path now, which here is the intruding write.
+    """
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    (tmp_path / ".gitignore").chmod(0o640)
+    transaction = _diverged(tmp_path, before="build/\n")
+    before = _records(tmp_path / "journal.jsonl")
+
+    result = run_cli("journal", "--resolve", transaction, "--restore", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert f"journal: resolved {transaction} (--restore)" in result.stdout
+    assert not _transactions(tmp_path), _transactions(tmp_path)
+    assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == "build/\n"
+    assert (tmp_path / ".gitignore").stat().st_mode & 0o777 == 0o640
+    assert _records(tmp_path / "journal.jsonl") == before
+    # And the path is writable again: the next run ignores the vault.
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    assert "/.validated-memory/" in (tmp_path / ".gitignore").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_journal_resolve_restore_refuses_a_blob_that_is_not_the_preimage(
+    run_cli, tmp_path
+):
+    """An OPEN transaction's blob is the only copy: a bad one is a damaged log.
+
+    Design §10 keeps the two cases apart, and so must this. For a CLOSED
+    history record a missing blob is normal -- the journal travels and the
+    vault does not -- and means only that this clone cannot reverse that
+    mutation. Here the transaction is open, the blob was parked and verified
+    moments before the crash, and bytes that disagree with the name they are
+    filed under are not the preimage: `--restore` refuses rather than
+    writing something else over the adopter's path.
+    """
+    transaction = _diverged(tmp_path, before="build/\n")
+    preimages = tmp_path / ".validated-memory" / "preimages"
+    blob = next(iter(preimages.iterdir()))
+    blob.write_text("not the bytes that were parked\n", encoding="utf-8")
+
+    mismatched = run_cli(
+        "journal", "--resolve", transaction, "--restore", cwd=tmp_path
+    )
+
+    assert mismatched.returncode == 1, mismatched.stdout
+    assert "does not digest to" in mismatched.stderr, mismatched.stderr
+    assert "Nothing has been restored." in mismatched.stderr, mismatched.stderr
+    assert (tmp_path / ".gitignore").read_text(
+        encoding="utf-8"
+    ) == "an adopter wrote this\n"
+    assert len(_transactions(tmp_path)) == 1, _transactions(tmp_path)
+
+    blob.unlink()
+    missing = run_cli("journal", "--resolve", transaction, "--restore", cwd=tmp_path)
+
+    assert missing.returncode == 1, missing.stdout
+    assert "is not in .validated-memory/preimages/" in missing.stderr, missing.stderr
+    assert "damaged log" in missing.stderr, missing.stderr
+    assert len(_transactions(tmp_path)) == 1, _transactions(tmp_path)
+
+
+def test_journal_resolve_restore_refuses_once_the_mutation_is_history(
+    run_cli, tmp_path, monkeypatch
+):
+    """A `committed` record means it happened, and history is not taken back.
+
+    The kill lands after both records are appended and before the
+    transaction is removed, so the mutation is in a versioned append-only
+    file. Restoring the bytes without removing the record -- which cannot be
+    removed -- would leave the journal describing a state that is not there.
+    """
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-history")
+    assert run_cli("init", cwd=tmp_path).returncode == 70
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT")
+    (tmp_path / ".gitignore").write_text("an adopter wrote this\n", encoding="utf-8")
+    transaction = _transactions(tmp_path)[0]["transaction"]
+
+    result = run_cli("journal", "--resolve", transaction, "--restore", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "already recorded in journal.jsonl" in result.stderr, result.stderr
+    assert "--accept or --abandon" in result.stderr, result.stderr
+    assert len(_transactions(tmp_path)) == 1, _transactions(tmp_path)
+    assert (tmp_path / ".gitignore").read_text(
+        encoding="utf-8"
+    ) == "an adopter wrote this\n"
+
+    accepted = run_cli("journal", "--resolve", transaction, "--accept", cwd=tmp_path)
+    assert accepted.returncode == 0, (accepted.stdout, accepted.stderr)
+    assert run_cli("journal", "--check", cwd=tmp_path).returncode == 0
+
+
+def test_journal_resolve_refuses_an_id_no_transaction_carries(run_cli, tmp_path):
+    """An unknown id is an ERROR about this project's state, not a usage error.
+
+    The id was well formed and the flag was legal; what is missing is the
+    transaction, which is a fact about the tree. So it gates (exit 1) and
+    names the command that lists the ones there are, rather than printing a
+    usage line the operator has no way to act on.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    result = run_cli(
+        "journal", "--resolve", "deadbeefdeadbeef", "--accept", cwd=tmp_path
+    )
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "no unresolved transaction deadbeefdeadbeef" in result.stderr
+    assert "Nothing has been changed." in result.stderr, result.stderr
+
+
+def test_journal_resolve_needs_exactly_one_of_the_three_flags(run_cli, tmp_path):
+    """Every other combination is a usage error, because none has one meaning.
+
+    Guessing at one would close a transaction on terms the operator did not
+    choose, and `--check` is read-only, so pairing it with the one mode that
+    writes is a contradiction rather than a preference.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    for arguments in (
+        ("--resolve", "aaaaaaaaaaaaaaaa"),
+        ("--resolve", "aaaaaaaaaaaaaaaa", "--accept", "--abandon"),
+        ("--accept",),
+        ("--check", "--resolve", "aaaaaaaaaaaaaaaa", "--accept"),
+    ):
+        result = run_cli("journal", *arguments, cwd=tmp_path)
+        assert result.returncode == 2, (arguments, result.stdout, result.stderr)
+        assert "usage: validated-memory journal" in result.stderr, arguments
+
+
 def test_a_missing_preimage_blob_for_a_closed_record_is_never_an_error(
     run_cli, tmp_path
 ):

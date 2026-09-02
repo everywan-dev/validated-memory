@@ -1571,6 +1571,33 @@ def _resolution_advice(transaction_id):
     )
 
 
+# The operator's three ways out of a transaction recovery will not touch.
+# They are flags on `journal`, not a subcommand of their own: the pinned
+# subcommand set moves once, with the public write interface (design §13).
+ACCEPT = "accept"
+RESTORE = "restore"
+ABANDON = "abandon"
+RESOLUTIONS = (ACCEPT, RESTORE, ABANDON)
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """What `journal --resolve` did with one transaction, or why it would not.
+
+    `message` is None when the transaction was closed, and the refusal
+    otherwise -- the same shape `Outcome` uses, and for the same reason: a
+    refusal here is a result the caller renders, never an exception, and it
+    always ends by saying what was left untouched.
+
+    `location` is what a `Finding` should name -- the path when the
+    transaction names one, the transaction file itself when it does not.
+    """
+
+    transaction: str
+    resolution: str
+    location: str
+    message: str | None = None
+
 
 def bootstrap(root=Path(), run=None, records=None, local=None):
     """Ensure the journal exists, and return this adoption's id.
@@ -2693,12 +2720,269 @@ class Run:
         records.extend(built)
         return True
 
+    def resolve_transaction(self, transaction_id, resolution):
+        """Close ONE transaction the way an operator says; return a `Resolution`.
+
+        `journal --resolve <id>` with `--accept`, `--restore` or
+        `--abandon`. Design §8 is explicit that recovery needs its own
+        interface or the project deadlocks: "refuse" is not a terminal
+        state, and a diverged transaction gates its path for ever without a
+        way out.
+
+        Under the lock, because two of the three write to a journal and one
+        of them publishes bytes. It recovers nothing else on the way: an
+        operator closing one transaction has not asked for the others.
+
+        What each one records is what is true of it, and no more:
+
+        - `--accept` -- the state the path is in is what the user wants. ONE
+          `observe` record, whose note says it was accepted after
+          divergence and which transaction found what. An observation, not a
+          mutation: the plugin did not produce this state, and a `create`
+          or `replace` record would claim it did and offer a reversal that
+          would undo somebody else's work. It is the one `observe` written
+          about a path the journal already mentions, which is why it does
+          not go through `observe` -- its note is what keeps it honest.
+        - `--abandon` -- ONE `observe` record saying the path was left as
+          found. Nothing is published, nothing is undone.
+        - `--restore` -- the preimage goes back and NOTHING is recorded:
+          putting a path back where it was leaves no fact about the project
+          behind, and the transaction that intended the mutation is the
+          thing being cancelled.
+        """
+        if resolution not in RESOLUTIONS:
+            raise ValueError(f"unknown resolution '{resolution}'")
+        with Lock(self.root):
+            return self._resolve_one(transaction_id, resolution)
+
+    def _resolve_one(self, transaction_id, resolution):
+        """`resolve_transaction`'s body, with the lock already held."""
+        artifact = _transaction_path(Path(), transaction_id).as_posix()
+        item = next(
+            (
+                entry
+                for entry in _open_transactions(self.root)
+                if entry["id"] == transaction_id
+            ),
+            None,
+        )
+        if item is None:
+            return Resolution(
+                transaction_id,
+                resolution,
+                artifact,
+                f"there is no unresolved transaction {transaction_id}; "
+                "'validated-memory journal --check' lists the ones there "
+                "are. Nothing has been changed.",
+            )
+
+        verdict, facts = _classify(self.root, item)
+        if verdict == PROBLEM_DAMAGED:
+            return Resolution(
+                transaction_id,
+                resolution,
+                artifact,
+                f"transaction {transaction_id} is damaged "
+                f"({facts['reason']}), so nothing here can say what it did "
+                f"or what to record about it; inspect {artifact} and remove "
+                "it by hand. Nothing has been changed.",
+            )
+
+        if resolution == RESTORE:
+            return self._restore(transaction_id, item, facts)
+        found = current_state(self.root, facts["path"])["kind"]
+        note = (
+            f"accepted after divergence: transaction {transaction_id} "
+            f"found {found}"
+            if resolution == ACCEPT
+            else f"abandoned: transaction {transaction_id}, path left as found"
+        )
+        append(
+            [
+                self._record(
+                    OBSERVE,
+                    facts["intention"]["purpose"],
+                    facts["path"],
+                    facts["durability"],
+                    COMMITTED,
+                    note=note,
+                )
+            ],
+            self.root,
+            facts["durability"],
+        )
+        _resolve_transaction(self.root, transaction_id)
+        return Resolution(transaction_id, resolution, facts["path"])
+
+    def _restore(self, transaction_id, item, facts):
+        """Put the preimage back, or refuse and leave everything alone.
+
+        Two refusals come first, and both leave the transaction open.
+
+        A transaction whose records are ALREADY in the history is not one
+        recovery may reverse. The `committed` record means the mutation
+        happened and is history; taking the bytes back without taking the
+        record back would make the journal describe a state that is not
+        there, and the record cannot be taken back -- the history is
+        append-only. `--accept` or `--abandon` is the answer.
+
+        A preimage blob that is missing, or whose bytes do not digest to the
+        name it is filed under, refuses. This is the case design §10 says
+        must never be confused with the other one: for a CLOSED history
+        record a missing blob is normal, because the journal travels and the
+        vault does not, and it means only that this clone cannot reverse
+        that mutation. For an OPEN transaction the blob is the sole copy of
+        the bytes the plugin was about to overwrite, parked and verified
+        moments before -- its absence is a damaged log, and writing
+        something else over the path would be writing wrong bytes.
+
+        The publication is the executor's own (`_publish`), so a restore is
+        as atomic and as durable as the mutation it reverses. The mode comes
+        from the transaction file, which recorded the preimage's own -- not
+        from whatever is at the path now, which may be the plugin's
+        replacement or a third party's file. The read-only bit is NOT
+        consulted: `_write_denied` exists so a mutation never quietly
+        overwrites what an adopter marked unwritable, and this is the
+        opposite -- an operator's explicit instruction to put that adopter's
+        own bytes back.
+
+        Nothing is recorded. A path returned to the state a record would
+        have described the departure from is not a fact about the project.
+        """
+        location = facts["path"]
+        durability = facts["durability"]
+        artifact = _transaction_path(Path(), transaction_id).as_posix()
+
+        def refuse(message):
+            return Resolution(transaction_id, RESTORE, location, message)
+
+        if any(
+            entry.get("transaction") == transaction_id
+            for entry in read(self.root, durability)
+        ):
+            return refuse(
+                f"transaction {transaction_id} is already recorded in "
+                f"{artifact_name(durability)}: the mutation happened, and an "
+                "append-only history is not taken back. Close it with "
+                "--accept or --abandon instead. Nothing has been restored."
+            )
+
+        preimage = facts["preimage"]
+        kind = preimage["kind"]
+        if kind == DIRECTORY:
+            return refuse(
+                f"the preimage of {location} is a directory, and nothing "
+                "here rebuilds one: its contents were never parked. Close "
+                "the transaction with --accept or --abandon. Nothing has "
+                "been restored."
+            )
+
+        intention = None
+        data = None
+        actual = current_state(self.root, location)
+        if kind == FILE:
+            reference = item.get("preimage_blob")
+            if not isinstance(reference, str):
+                return refuse(
+                    f"transaction {transaction_id} says {location} was a "
+                    "file and names no preimage for it, so the bytes it was "
+                    "about to overwrite were never parked; this log is "
+                    "damaged. Nothing has been restored."
+                )
+            blob = (
+                self.root
+                / VAULT_DIRNAME
+                / PREIMAGE_DIRNAME
+                / reference.replace("sha256:", "")
+            )
+            if not blob.exists():
+                return refuse(
+                    f"the preimage of {location}, {reference}, is not in "
+                    f"{VAULT_DIRNAME}/{PREIMAGE_DIRNAME}/. This transaction "
+                    "is still OPEN, so that blob is the only copy of the "
+                    "bytes it was about to overwrite: this is a damaged "
+                    "log, not a clone whose vault stayed behind. Nothing "
+                    "has been restored."
+                )
+            if not _blob_matches(blob, reference):
+                return refuse(
+                    f"the preimage of {location} in "
+                    f"{VAULT_DIRNAME}/{PREIMAGE_DIRNAME}/ does not digest to "
+                    f"{reference}, the name it is filed under, so it is not "
+                    "the bytes this transaction parked. Nothing has been "
+                    "restored."
+                )
+            mode = item.get("mode")
+            if mode is None:
+                mode = preimage.get("mode")
+            if not isinstance(mode, int) or isinstance(mode, bool):
+                return refuse(
+                    f"transaction {transaction_id} records no mode for the "
+                    f"preimage of {location}, and bytes are not put back "
+                    "under a mode nobody chose. Nothing has been restored."
+                )
+            data = blob.read_bytes()
+            actual = {"kind": FILE, "mode": mode}
+            intention = Intention(
+                op=REPLACE,
+                purpose=facts["intention"]["purpose"],
+                path=location,
+                durability=durability,
+                expected=preimage,
+                content=data,
+            )
+        elif kind == SYMLINK:
+            target = preimage.get("target")
+            if not isinstance(target, str):
+                return refuse(
+                    f"transaction {transaction_id} says {location} was a "
+                    "symlink and does not say where it pointed; this log is "
+                    "damaged. Nothing has been restored."
+                )
+            intention = Intention(
+                op=LINK,
+                purpose=facts["intention"]["purpose"],
+                path=location,
+                durability=durability,
+                expected=preimage,
+                target=target,
+            )
+
+        try:
+            if intention is not None:
+                self._publish(intention, location, actual, data)
+            else:
+                self._unpublish(location, actual)
+        except OSError as error:
+            return refuse(
+                f"{location} could not be put back: {error}. Nothing has "
+                "been restored."
+            )
+        _resolve_transaction(self.root, transaction_id)
+        return Resolution(transaction_id, RESTORE, location)
+
+    def _unpublish(self, location, actual):
+        """Take the published node away: the inverse of an `absent` preimage.
+
+        A directory is `rmdir`, never a recursive removal: anything inside
+        it was put there by something this transaction knows nothing about,
+        and a non-empty directory raises, which the caller renders as a
+        refusal naming it. A path already absent is nothing to undo. The
+        parent is fsynced afterwards, for the same reason `install` does:
+        the removal of a directory entry is itself buffered.
+        """
+        target = self.root / location
+        if actual["kind"] == DIRECTORY:
+            os.rmdir(target)
+        elif actual["kind"] != ABSENT:
+            target.unlink()
+        fsync_directory(target.parent)
+
 
 UNAPPLIED = "unapplied"
 APPLIED = "applied"
 DIVERGED = "diverged"
 UNKNOWN = "unknown"
-
 
 
 # What both halves of one mutation must say identically. `at` is excluded
@@ -2852,18 +3136,22 @@ def _resolves_below(root, target):
         return False
 
 
-def run(check, stdout, stderr):
-    """The `journal` subcommand: report the record, and optionally reconcile.
+def run(check, resolve, resolution, stdout, stderr):
+    """The `journal` subcommand: report the record, reconcile, or resolve one.
 
-    Read-only in both modes, and `--check` is read-only in particular: it
-    classifies every unresolved transaction by what recovery WOULD do with
-    it and does none of it. Without `--check` it summarises and exits 0
-    whatever it finds, so a reader can look at a project without gating on
-    it; with `--check` an unfinished transaction -- from the two journals'
-    own pairing (`reconcile`), from a pair whose halves disagree, or from a
-    transaction file still on disk (`_open_transactions`) -- is an ERROR,
-    because a caller that asked to be told cannot be told by an exit code
-    of 0.
+    Read-only in both REPORTING modes, and `--check` is read-only in
+    particular: it classifies every unresolved transaction by what recovery
+    WOULD do with it and does none of it. Without `--check` it summarises
+    and exits 0 whatever it finds, so a reader can look at a project without
+    gating on it; with `--check` an unfinished transaction -- from the two
+    journals' own pairing (`reconcile`), from a pair whose halves disagree,
+    or from a transaction file still on disk (`_open_transactions`) -- is an
+    ERROR, because a caller that asked to be told cannot be told by an exit
+    code of 0.
+
+    `--resolve` is the third mode and the only one that writes: an
+    operator's answer to a transaction recovery would not touch. It is not
+    reporting and does not report -- see `Run.resolve_transaction`.
 
     A transaction file is reported even without `--check`, but only as a
     count: a reader who did not ask to gate on one should still be told
@@ -2873,6 +3161,8 @@ def run(check, stdout, stderr):
     from .findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
 
     root = Path()
+    if resolve is not None:
+        return _run_resolve(root, resolve, resolution, stdout, stderr)
     # Accumulated one artifact at a time so the summary below can say how
     # many records were actually read when a later one is refused. Printing
     # a hardcoded 0 there described a project with no history at all, which
@@ -2955,3 +3245,52 @@ def run(check, stdout, stderr):
         file=stdout,
     )
     return EXIT_ERROR if total_errors else EXIT_OK
+
+
+def _run_resolve(root, transaction_id, resolution, stdout, stderr):
+    """`journal --resolve`: close one transaction the way the operator says.
+
+    The one mode of this subcommand that writes, and the only place outside
+    `init` that opens a `Run`. It does NOT recover: `Run.recover` is
+    explicit precisely so that an operator answering for one transaction
+    does not have every other one closed underneath them in the same
+    breath.
+
+    A refusal is an ERROR and exit 1, not a traceback and not a usage
+    error: the id was well formed and the flags were legal, and what could
+    not be done is a fact about this project's state. An unknown id is one
+    of those. The success line names the flag as it was typed, because a
+    resolution is a decision someone made and the record of the session
+    should show which one.
+    """
+    from .findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
+
+    try:
+        outcome = Run(root).resolve_transaction(transaction_id, resolution)
+    except JournalError as error:
+        where = error.artifact or JOURNAL_FILENAME
+        location = where if error.lineno is None else f"{where}:{error.lineno}"
+        print(Finding(ERROR, location, "journal", error.message).render(), file=stderr)
+        return EXIT_ERROR
+    except OSError as error:
+        print(
+            Finding(
+                ERROR,
+                error.filename or JOURNAL_FILENAME,
+                "journal",
+                f"the transaction could not be resolved: {error}",
+            ).render(),
+            file=stderr,
+        )
+        return EXIT_ERROR
+    if outcome.message is not None:
+        print(
+            Finding(ERROR, outcome.location, "journal", outcome.message).render(),
+            file=stderr,
+        )
+        return EXIT_ERROR
+    print(
+        f"journal: resolved {transaction_id} (--{resolution})",
+        file=stdout,
+    )
+    return EXIT_OK
