@@ -84,6 +84,7 @@ ABSENT = "absent"
 DIRECTORY = "directory"
 FILE = "file"
 SYMLINK = "symlink"
+KINDS = (ABSENT, DIRECTORY, FILE, SYMLINK)
 
 COMMON_FIELDS = (
     "schema",
@@ -1195,6 +1196,7 @@ def _open_transaction(
     postimage,
     preimage_blob=None,
     mode=None,
+    prior_bytes=None,
     adoption=None,
     run=None,
 ):
@@ -1219,8 +1221,15 @@ def _open_transaction(
     | `postimage`      | the postimage STATE, computed by the caller                    |
     | `preimage_blob`  | the parked preimage's `sha256:...` reference, or `None`         |
     | `mode`           | the target's mode bits when it had one, or `None`               |
+    | `prior_bytes`    | an `append`'s prior length, or `None` for every other op        |
     | `stage`          | `"prepared"`, `"published"` or `"aborted"`                     |
     | `reason`         | present only once `stage` is `"aborted"`                       |
+
+    `prior_bytes` is here for recovery alone. The inverse of an `append` is
+    "truncate to the recorded prior length" (§2), so the `committed` record
+    carries it -- and recovery, which rebuilds that record from this file
+    and the current state, has nowhere else to read it from: the bytes it
+    describes have already been appended to by the time recovery runs.
 
     `postimage` is not derived here: an `APPEND`'s digest needs the bytes
     already on disk, which only the caller (the executor, Task 4) has read.
@@ -1257,6 +1266,7 @@ def _open_transaction(
         "postimage": postimage,
         "preimage_blob": preimage_blob,
         "mode": mode,
+        "prior_bytes": prior_bytes,
         "stage": PREPARED,
     }
     _write_transaction_file(root, transaction_id, entry)
@@ -1349,6 +1359,214 @@ def _open_transactions(root):
         results.append(entry)
     results.sort(key=lambda item: (item.get("at", ""), item["id"]))
     return results
+
+
+# --- recovery: what a run does with what an earlier run left open -------------
+#
+# A crash leaves a transaction file, and design §3 makes the residue
+# decidable rather than inferable: the file records a FACT -- what stage the
+# mutation reached -- so the next run reads it instead of guessing from a
+# filesystem some later process may have changed.
+
+# What recovery did with one unresolved transaction.
+RECOVERED = "completed"
+DISCARDED = "discarded"
+REMOVED = "aborted-removed"
+RECOVERY_ACTIONS = (RECOVERED, DISCARDED, REMOVED)
+
+# ... or why it could do nothing with it. `reconcile`'s four words below
+# answer a different question -- what state one PATH is in, for a record
+# pair the two journals never closed -- and are deliberately not the same
+# names. Two of the strings coincide because a reader meets the same word
+# for the same shape of trouble.
+PROBLEM_DIVERGED = "diverged"
+PROBLEM_UNKNOWN = "unknown"
+PROBLEM_DAMAGED = "damaged"
+RECOVERY_PROBLEMS = (PROBLEM_DIVERGED, PROBLEM_UNKNOWN, PROBLEM_DAMAGED)
+
+# What `_classify` says when recovery would resolve the transaction on its
+# own.
+_COMPLETE = "complete"
+_DISCARD = "discard"
+_REMOVE = "remove"
+
+
+@dataclass(frozen=True)
+class Recovery:
+    """What recovery did with one unresolved transaction, or why it could not.
+
+    Exactly one of `action` and `problem` is set, and `__post_init__`
+    refuses anything else: "recovered it" and "could not touch it" are the
+    whole of what this can report, and a caller rendering both or neither
+    would be rendering a state recovery cannot be in.
+
+    - `transaction` -- the id, which is also the file's name stem.
+    - `path`, `durability` -- the intention's, or None for a transaction so
+      damaged that it names neither.
+    - `action` -- `completed` (the mutation happened; the history now holds
+      its two records), `discarded` (it never published; nothing was
+      recorded) or `aborted-removed` (it was already closed `aborted`, and
+      its file is gone).
+    - `problem` -- `diverged`, `unknown` or `damaged`. The transaction file
+      is LEFT where it is in all three: recovery closes only what it can
+      account for, and `journal --resolve` is the way out.
+    - `message` -- the sentence a caller renders. For a problem it names the
+      transaction and the three flags, because a finding a user cannot act
+      on is a stopped session.
+    """
+
+    transaction: str
+    path: str | None
+    durability: str | None
+    action: str | None = None
+    problem: str | None = None
+    message: str = ""
+
+    def __post_init__(self):
+        if (self.action is None) == (self.problem is None):
+            raise ValueError(
+                "a recovery reports exactly one of an action and a problem"
+            )
+        if self.action is not None and self.action not in RECOVERY_ACTIONS:
+            raise ValueError(f"unknown recovery action '{self.action}'")
+        if self.problem is not None and self.problem not in RECOVERY_PROBLEMS:
+            raise ValueError(f"unknown recovery problem '{self.problem}'")
+
+
+def _classify(root, item):
+    """What recovery would do with one unresolved transaction, doing none of it.
+
+    Returns `(verdict, facts)`. The verdict is `_COMPLETE`, `_DISCARD`,
+    `_REMOVE` or one of the three `RECOVERY_PROBLEMS`; `facts` carries what
+    the file and the filesystem said, so the caller neither re-reads nor
+    re-decides. This function writes nothing and is the ONE place the table
+    in the step's brief is expressed -- `Run.recover` acts on it and
+    `journal --check` reports it, and a reader who has to compare two copies
+    of a decision table is a reader who will find them disagreeing.
+
+    The rules, in order:
+
+    - A file that could not be read at all (`_open_transactions` said so),
+      or that is readable but says nothing recovery can use -- no intention,
+      no operation, no path, no pair of states in `current_state`'s
+      vocabulary -- is `damaged`. Nothing is inferred from half a file.
+    - `aborted` is closed already: `_REMOVE`, and the file goes.
+    - `published` means publication completed and the history had not been
+      appended when the process died. The path matching the postimage is
+      the mutation: `_COMPLETE`. Anything else means something wrote the
+      path afterwards: `diverged`.
+    - `prepared` means the write-ahead entry was fsynced and nothing more is
+      known from the file. The path matching the preimage says the mutation
+      never happened: `_DISCARD`. Matching the postimage says it did, and
+      only the marker was lost: `_COMPLETE`. Neither, or BOTH -- which the
+      executor's no-op rule makes unreachable for a transaction it opened,
+      but not for a hand-written one -- is `unknown`.
+
+    The path is checked lexically for a repository transaction and not
+    resolved: `read` refuses a repository record whose path is absolute or
+    climbs out with `..`, so a record recovery is about to append has to
+    pass that test, but a path that resolves out of the root through a
+    symlink is not a reason to refuse to record a mutation that already
+    happened.
+    """
+    transaction_id = item["id"]
+    facts = {
+        "path": None,
+        "durability": None,
+        "stage": item.get("stage"),
+        "reason": None,
+    }
+
+    def damaged(reason):
+        facts["reason"] = reason
+        return PROBLEM_DAMAGED, facts
+
+    if "damaged" in item:
+        return damaged(item["damaged"])
+
+    intention = item.get("intention")
+    if not isinstance(intention, dict):
+        return damaged("it carries no intention")
+    op = intention.get("op")
+    purpose = intention.get("purpose")
+    path = intention.get("path")
+    durability = intention.get("durability")
+    note = intention.get("note")
+    if op not in OPS:
+        return damaged("its intention names no operation this plugin knows")
+    if not isinstance(purpose, str) or not isinstance(path, str):
+        return damaged("its intention names no path and purpose")
+    if durability not in DURABILITIES:
+        return damaged(f"its intention claims durability '{durability}'")
+    if note is not None and not isinstance(note, str):
+        return damaged("its intention's note is not text")
+    if durability == REPO and not _is_inside_path(path):
+        return damaged(
+            f"its intention names '{path}', which is not a path inside the "
+            "adopter root"
+        )
+    facts["path"] = Path(path).as_posix() if durability == REPO else path
+    facts["durability"] = durability
+    facts["intention"] = intention
+
+    for field in ("mode", "prior_bytes"):
+        value = item.get(field)
+        if value is not None and (
+            not isinstance(value, int) or isinstance(value, bool)
+        ):
+            return damaged(f"its {field} is not a number")
+    blob = item.get("preimage_blob")
+    if blob is not None and not isinstance(blob, str):
+        return damaged("its preimage reference is not a digest")
+
+    stage = item.get("stage")
+    if stage == ABORTED:
+        return _REMOVE, facts
+    if stage not in (PREPARED, PUBLISHED):
+        return damaged(
+            f"its stage is '{stage}', and a transaction is one of "
+            f"{', '.join(TRANSACTION_STAGES)}"
+        )
+
+    preimage = item.get("preimage")
+    postimage = item.get("postimage")
+    if not isinstance(preimage, dict) or not isinstance(postimage, dict):
+        return damaged("it records no preimage and postimage states")
+    if preimage.get("kind") not in KINDS or postimage.get("kind") not in KINDS:
+        return damaged("its preimage or postimage is in no state this plugin knows")
+    facts["preimage"] = preimage
+    facts["postimage"] = postimage
+
+    actual = current_state(root, facts["path"])
+    facts["actual"] = actual
+    matches_post = satisfies(actual, postimage)
+    if stage == PUBLISHED:
+        return (_COMPLETE if matches_post else PROBLEM_DIVERGED), facts
+    if matches_post and satisfies(actual, preimage):
+        # The two states this transaction names cannot be told apart on
+        # disk, so nothing here can say whether the mutation ran. The
+        # executor never opens such a transaction -- step 4 of `execute`
+        # returns `noop` for exactly this -- so it can only be hand-written.
+        return PROBLEM_UNKNOWN, facts
+    if matches_post:
+        return _COMPLETE, facts
+    if satisfies(actual, preimage):
+        return _DISCARD, facts
+    return PROBLEM_UNKNOWN, facts
+
+
+def _resolution_advice(transaction_id):
+    """How an operator closes a transaction recovery would not touch.
+
+    Every problem message ends with this: a path that gates and a
+    transaction nothing will ever clear is a project stuck at the session
+    hook, and the three flags are the whole of the way out.
+    """
+    return (
+        f"run 'validated-memory journal --resolve {transaction_id}' with "
+        "one of --accept, --restore or --abandon"
+    )
+
 
 
 def bootstrap(root=Path(), run=None, records=None, local=None):
@@ -1497,34 +1715,55 @@ class Run:
             records = read(self.root, REPO)
             local = read(self.root, LOCAL)
             self.adoption = bootstrap(self.root, self.run, records, local)
-            unresolved = _open_transactions(self.root)
-        # Every path either journal already carries a record for. `observe`
-        # is written on first sight (§2), and first sight is exactly this:
-        # a path the record has never mentioned. Keying it on every op
-        # rather than on `observe` alone is what stops a path the plugin
-        # itself created -- or was interrupted while creating -- from being
-        # observed later as a fact about the state adoption found.
-        #
-        # Both journals are read here, so a vault that cannot be parsed
-        # refuses the run rather than being written to blind; `init` keeps
-        # the harness symlink working over that failure (`init.run`).
+            self._survey(records, local)
+
+    def _survey(self, records, local):
+        """Take stock of what the histories and the open transactions say.
+
+        Sets two things, and is called again by `recover` once it has
+        finished, because recovery moves paths between them: a completed
+        transaction puts its path in the history, a discarded one leaves the
+        path as adoption found it, and a transaction recovery could not
+        touch keeps gating.
+
+        `_seen` -- every path either journal already carries a record for.
+        `observe` is written on first sight (§2), and first sight is exactly
+        this: a path the record has never mentioned. Keying it on every op
+        rather than on `observe` alone is what stops a path the plugin
+        itself created -- or was interrupted while creating -- from being
+        observed later as a fact about the state adoption found.
+
+        Both journals are read by the caller, so a vault that cannot be
+        parsed refuses the run rather than being written to blind; `init`
+        keeps the harness symlink working over that failure (`init.run`).
+
+        `_seen` also holds every path an UNRESOLVED transaction names, which
+        the two histories cannot know about. The executor appends its
+        records after publication, so a run killed in between leaves a path
+        the plugin created on disk with nothing in either journal naming it.
+        Reading only the histories would then observe it as a fact about the
+        state adoption found -- the permanent, uninvertible lie commit
+        `4ce59a9` removed. Recovery normally puts the records back first,
+        but a transaction it cannot resolve stays open, and this is what
+        makes that state safe to run over.
+
+        `_open_paths` -- the transaction id still open on each of those
+        paths, which is what `_execute` refuses to write over. Only the
+        affected path gates: the rest of the run proceeds, which is
+        narrower than design §8's "no mutating command proceeds", because a
+        single-path transaction can be reasoned about piecewise and
+        blocking everything would brick the session hook over one stale
+        file.
+
+        A damaged transaction file carries no intention and so names no
+        path; it is skipped here and reported by `journal --check`.
+        """
         self._seen = {
             (entry["durability"], entry["path"])
             for entry in records + local
         }
-        # And every path an UNRESOLVED transaction names, which the two
-        # histories cannot know about. The executor appends its records
-        # after publication, so a run killed in between leaves a path the
-        # plugin created on disk with nothing in either journal naming it.
-        # Reading only the histories would then observe it as a fact about
-        # the state adoption found -- the permanent, uninvertible lie
-        # commit `4ce59a9` removed. Recovery (task 5) normally puts the
-        # records back first, but a transaction it cannot resolve stays
-        # open, and this is what makes that state safe to run over.
-        #
-        # A damaged transaction file carries no intention and so names no
-        # path; it is skipped here and reported by `journal --check`.
-        for item in unresolved:
+        self._open_paths = {}
+        for item in _open_transactions(self.root):
             intention = item.get("intention")
             if not isinstance(intention, dict):
                 continue
@@ -1532,9 +1771,15 @@ class Run:
             durability = intention.get("durability")
             if isinstance(path, str) and isinstance(durability, str):
                 self._seen.add((durability, path))
+                self._open_paths.setdefault((durability, path), item["id"])
 
-    def _record(self, op, purpose, path, durability, stage, **extra):
+    def _record(self, op, purpose, path, durability, stage, run=None, **extra):
         """Build one record. The caller has already asked `authorise`.
+
+        `run` is this invocation's unless the caller names another, which
+        exactly one caller does: recovery, rebuilding the two records of a
+        mutation an EARLIER run performed. Filing those under the run that
+        recovered them would say a run wrote bytes it never wrote.
 
         Every public method calls `authorise` itself, once, before it parks
         a preimage, writes bytes or appends anything -- never here, because
@@ -1565,7 +1810,7 @@ class Run:
             durability=durability,
             stage=stage,
             adoption=self.adoption,
-            run=self.run,
+            run=self.run if run is None else run,
             **extra,
         )
 
@@ -1764,6 +2009,23 @@ class Run:
         intention = _replace(intention, path=location)
         actual = current_state(self.root, location)
 
+        # A path an earlier run left an unresolved transaction on is a path
+        # nothing knows the truth about: recovery either could not tell
+        # whether the mutation ran, or found the path changed since. Writing
+        # over it would destroy the evidence the operator needs to decide,
+        # and the record it wrote would name a preimage that was already
+        # gone. Only THIS path gates; the rest of the run proceeds.
+        held = self._open_paths.get((intention.durability, location))
+        if held is not None:
+            return self._refused(
+                intention,
+                actual,
+                f"{location} has an unresolved transaction {held} that "
+                "recovery could neither complete nor discard; nothing may "
+                f"write to it until it is closed -- "
+                f"{_resolution_advice(held)}. Nothing has been written.",
+            )
+
         if not satisfies(actual, intention.expected):
             return self._refused(
                 intention,
@@ -1849,6 +2111,7 @@ class Run:
             postimage,
             preimage_blob=blob,
             mode=preimage_mode,
+            prior_bytes=prior_bytes,
             adoption=self.adoption,
             run=self.run,
         )
@@ -2225,11 +2488,214 @@ class Run:
         )
         self._seen.add((durability, location))
 
+    # --- recovery and resolution: closing what an earlier run left open -------
+
+    def recover(self):
+        """Resolve every transaction an earlier run left behind; report each.
+
+        Explicit, and not a side effect of `__init__`: a constructor that
+        completes half-finished mutations is a constructor with a
+        filesystem's worth of failure modes, and `journal --resolve` needs
+        a `Run` that does NOT recover -- an operator closing one transaction
+        by hand must not have the others silently closed underneath.
+
+        `init` calls this immediately after building its `Run`, under the
+        run-wide lock and BEFORE its own first intention. Recovery only ever
+        completes or closes what an earlier run began, and unlinks the
+        files that said so, so it reduces what is on disk rather than adding
+        to it -- and an open transaction on `.gitignore` itself is settled
+        before the new `.gitignore` intention is formed.
+
+        Idempotent over the same residue, in both directions. A transaction
+        this resolves leaves the disk, so a second pass never sees it again;
+        and completing one appends only the history records that are not
+        already there, checked by transaction id AND stage, because a crash
+        between `append` and `_resolve_transaction` leaves a `published`
+        transaction whose records exist. Appending them again would double
+        the mutation in a versioned, append-only file, where nothing takes
+        it back.
+
+        A problem leaves the transaction file exactly where it is. That is
+        the point: `diverged`, `unknown` and `damaged` are the three states
+        nothing here may decide for the user, and the file is what keeps the
+        path gated and the evidence available until they do.
+        """
+        with Lock(self.root):
+            histories = {}
+            results = [
+                self._recover_one(item, histories)
+                for item in _open_transactions(self.root)
+            ]
+            self._survey(read(self.root, REPO), read(self.root, LOCAL))
+            return results
+
+    def _recover_one(self, item, histories):
+        """Act on `_classify`'s verdict for one transaction; return a `Recovery`.
+
+        `histories` caches each journal's records across the pass, so a tree
+        with several open transactions reads each file once.
+        """
+        transaction_id = item["id"]
+        verdict, facts = _classify(self.root, item)
+        path = facts["path"]
+        durability = facts["durability"]
+
+        if verdict == PROBLEM_DAMAGED:
+            return Recovery(
+                transaction_id,
+                path,
+                durability,
+                problem=PROBLEM_DAMAGED,
+                message=(
+                    f"damaged transaction {transaction_id}: {facts['reason']}; "
+                    f"nothing here can say what it did, so "
+                    f"{_transaction_path(Path(), transaction_id).as_posix()} "
+                    "is left for inspection"
+                ),
+            )
+
+        if verdict == _REMOVE:
+            reason = item.get("reason")
+            _resolve_transaction(self.root, transaction_id)
+            said = f" ({reason})" if isinstance(reason, str) else ""
+            return Recovery(
+                transaction_id,
+                path,
+                durability,
+                action=REMOVED,
+                message=(
+                    f"transaction {transaction_id} on {path} was closed "
+                    f"aborted{said} and published nothing; its file has been "
+                    "removed"
+                ),
+            )
+
+        if verdict == _DISCARD:
+            _resolve_transaction(self.root, transaction_id)
+            return Recovery(
+                transaction_id,
+                path,
+                durability,
+                action=DISCARDED,
+                message=(
+                    f"transaction {transaction_id} never published, so {path} "
+                    "is as it was and nothing has been recorded"
+                ),
+            )
+
+        if verdict == _COMPLETE:
+            appended = self._complete(transaction_id, item, facts, histories)
+            _resolve_transaction(self.root, transaction_id)
+            return Recovery(
+                transaction_id,
+                path,
+                durability,
+                action=RECOVERED,
+                message=(
+                    f"transaction {transaction_id} published {path}, and its "
+                    "two history records have been appended"
+                    if appended
+                    else f"transaction {transaction_id} published {path} and "
+                    "was already recorded; only its file was left to remove"
+                ),
+            )
+
+        if verdict == PROBLEM_DIVERGED:
+            message = (
+                f"transaction {transaction_id} published {path}, but {path} "
+                f"is {_describe(facts['actual'])} now and not what was "
+                "published; nothing here can say whether that is wanted -- "
+                f"{_resolution_advice(transaction_id)}"
+            )
+        else:
+            message = (
+                f"transaction {transaction_id} prepared a mutation of {path}, "
+                f"and {path} is {_describe(facts['actual'])} now, which is "
+                "neither the state it was to change from nor the one it was "
+                "to change to; nothing here can say whether it ran -- "
+                f"{_resolution_advice(transaction_id)}"
+            )
+        return Recovery(
+            transaction_id, path, durability, problem=verdict, message=message
+        )
+
+    def _complete(self, transaction_id, item, facts, histories):
+        """Append whichever of the mutation's two records is not there yet.
+
+        Returns whether anything was appended, so the caller can say which
+        of the two shapes of `completed` this was.
+
+        The records are rebuilt from the transaction file and the state the
+        path is in NOW -- which `_classify` has just proven is the postimage
+        this transaction published. `op`, `purpose`, `path`, `durability`
+        and `note` come from the intention; `preimage` (the parked blob's
+        reference) and `prior_bytes` from the file; `postimage` from the
+        postimage STATE's own digest, which is the same value `_execute`
+        wrote; `mode` from the published node. Both halves carry the
+        `transaction`, exactly as `_execute` writes them, because that id is
+        the only thing that survives the file to say the two lines are one
+        act. `run` is the crashed run's: it is the run that wrote the bytes.
+
+        `adoption` is NOT taken from the file. One project has one adoption
+        id (`_adoption_id`), this run has already established which, and a
+        record filed under any other would attach a mutation of this tree to
+        somebody else's history.
+        """
+        durability = facts["durability"]
+        location = facts["path"]
+        intention = facts["intention"]
+        postimage = facts["postimage"]
+        if durability not in histories:
+            histories[durability] = read(self.root, durability)
+        records = histories[durability]
+        present = {
+            entry["stage"]
+            for entry in records
+            if entry.get("transaction") == transaction_id
+        }
+        missing = [stage for stage in STAGES if stage not in present]
+        if not missing:
+            return False
+
+        fields = {"transaction": transaction_id}
+        mode = facts["actual"].get("mode")
+        if mode is not None:
+            fields["mode"] = mode
+        if intention.get("note") is not None:
+            fields["note"] = intention["note"]
+        if postimage["kind"] == FILE and "digest" in postimage:
+            # A byte-publishing mutation, and the only kind whose records
+            # carry digests. `preimage` is the blob reference, null for a
+            # path that did not exist -- the same null `_execute` writes,
+            # and the same one that distinguishes "undo by truncating" from
+            # "undo by removing".
+            fields["preimage"] = item.get("preimage_blob")
+            fields["postimage"] = postimage["digest"]
+            if item.get("prior_bytes") is not None:
+                fields["prior_bytes"] = item["prior_bytes"]
+        run = item.get("run")
+        built = [
+            self._record(
+                intention["op"],
+                intention["purpose"],
+                location,
+                durability,
+                stage,
+                run=run if isinstance(run, str) else None,
+                **fields,
+            )
+            for stage in missing
+        ]
+        append(built, self.root, durability)
+        records.extend(built)
+        return True
+
 
 UNAPPLIED = "unapplied"
 APPLIED = "applied"
 DIVERGED = "diverged"
 UNKNOWN = "unknown"
+
 
 
 def reconcile(root=Path()):
@@ -2347,11 +2813,9 @@ def run(check, stdout, stderr):
     that asked to be told cannot be told by an exit code of 0.
 
     A transaction file is reported even without `--check`, but only as a
-    count: no caller opens one yet (Task 4's executor is what will), so
-    today it can only be a hand-written fixture or a genuinely interrupted
-    run, and either way a reader who did not ask to gate on it should still
-    be told something is open, on a second line, only when there is
-    something to say.
+    count: a reader who did not ask to gate on one should still be told
+    something is open, on a second line, only when there is something to
+    say.
     """
     from .findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
 

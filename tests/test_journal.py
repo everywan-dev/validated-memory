@@ -1330,6 +1330,107 @@ def test_a_kill_at_after_transaction_leaves_the_path_untouched(
     assert ".gitignore" in checked.stderr, checked.stderr
     assert f"open transaction {entry['transaction']} (prepared)" in checked.stderr
 
+    _recovers_to_exactly_one_pair(run_cli, tmp_path, ".gitignore", monkeypatch)
+
+
+def test_a_kill_at_after_publish_leaves_bytes_the_transaction_has_not_claimed(
+    run_cli, tmp_path, monkeypatch
+):
+    """A kill between publication and the marker that records it.
+
+    The narrowest window in the protocol, and the one that makes the
+    `published` marker worth writing at all: the bytes are on disk and the
+    transaction still says `prepared`, so nothing in the write-ahead log
+    asserts that the mutation ran. Recovery answers it from the filesystem
+    instead -- the path matches the postimage, and the postimage is a state
+    the executor's no-op rule guarantees is distinguishable from the
+    preimage, so "it ran" is a reading and not a guess.
+    """
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-publish")
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 70, (result.returncode, result.stdout, result.stderr)
+    ignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert "/.validated-memory/" in ignore, ignore
+    records = _records(tmp_path / "journal.jsonl")
+    assert not [e for e in records if e["path"] == ".gitignore"], records
+
+    open_transactions = _transactions(tmp_path)
+    assert len(open_transactions) == 1, open_transactions
+    assert open_transactions[0]["stage"] == "prepared", open_transactions
+
+    _recovers_to_exactly_one_pair(run_cli, tmp_path, ".gitignore", monkeypatch)
+
+
+def test_a_kill_at_after_history_leaves_records_the_transaction_outlived(
+    run_cli, tmp_path, monkeypatch
+):
+    """A kill between the two history records and the transaction's removal.
+
+    This is the residue the idempotency rule exists for, and the only one
+    where recovery must write NOTHING: the mutation is already in the
+    permanent history, in full, and appending the pair again would double a
+    mutation in an append-only versioned file where nothing takes it back.
+    The transaction id in each record is what makes the check possible.
+    """
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-history")
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 70, (result.returncode, result.stdout, result.stderr)
+    open_transactions = _transactions(tmp_path)
+    assert len(open_transactions) == 1, open_transactions
+    entry = open_transactions[0]
+    assert entry["stage"] == "published", entry
+
+    written = [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record.get("transaction") == entry["transaction"]
+    ]
+    assert {record["stage"] for record in written} == {
+        "prepared",
+        "committed",
+    }, written
+
+    _recovers_to_exactly_one_pair(run_cli, tmp_path, ".gitignore", monkeypatch)
+
+
+def _recovers_to_exactly_one_pair(run_cli, tree, path, monkeypatch):
+    """The next run recovers `path` to one record pair; the one after adds none.
+
+    The acceptance every fault point shares. "Exactly one pair" is the
+    whole of it: zero would be the mutation the history never admits to,
+    and two would be the doubled record recovery must not append over a
+    crash it has already completed once. The third run is the idempotency
+    half -- recovery over a residue it already cleared has nothing left to
+    find, and a run that keeps appending on every session start is the
+    failure this file's oldest tests were written against.
+
+    Returns the records, so a caller can assert more about them.
+    """
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT", raising=False)
+    recovered = run_cli("init", cwd=tree)
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    assert not _transactions(tree), _transactions(tree)
+
+    checked = run_cli("journal", "--check", cwd=tree)
+    assert checked.returncode == 0, (checked.stdout, checked.stderr)
+
+    records = _records(tree / "journal.jsonl")
+    pair = [
+        record
+        for record in records
+        if record["path"] == path and record["op"] != "observe"
+    ]
+    assert len(pair) == 2, pair
+    assert {record["stage"] for record in pair} == {"prepared", "committed"}, pair
+    assert pair[0]["transaction"] == pair[1]["transaction"], pair
+
+    again = run_cli("init", cwd=tree)
+    assert again.returncode == 0, again.stderr
+    assert _records(tree / "journal.jsonl") == records
+    return records
+
 
 def test_a_kill_at_after_published_leaves_bytes_with_no_history(
     run_cli, tmp_path, monkeypatch
@@ -1368,6 +1469,21 @@ def test_a_kill_at_after_published_leaves_bytes_with_no_history(
     assert checked.returncode == 1, checked.stdout
     assert ".gitignore" in checked.stderr, checked.stderr
     assert f"open transaction {entry['transaction']} (published)" in checked.stderr
+
+    recovered = _recovers_to_exactly_one_pair(
+        run_cli, tmp_path, ".gitignore", monkeypatch
+    )
+    # The two records recovery rebuilt are filed under the run that wrote
+    # the bytes, not the run that found them: the mutation happened in the
+    # run the kill ended, and a record saying otherwise would put a write
+    # in a session that performed none.
+    rebuilt = [
+        item
+        for item in recovered
+        if item["path"] == ".gitignore" and item["op"] != "observe"
+    ]
+    assert rebuilt[0]["run"] == entry["run"], (rebuilt, entry)
+    assert rebuilt[0]["transaction"] == entry["transaction"], (rebuilt, entry)
 
 
 def test_the_fault_variable_is_inert_when_unset_or_unreached(
@@ -2118,3 +2234,202 @@ def test_a_journal_symlink_that_cannot_be_resolved_refuses_cleanly(
     assert "Traceback" not in result.stderr, result.stderr
     assert "journal could not be read" in result.stderr, result.stderr
     assert "journal.jsonl" in result.stderr, result.stderr
+
+
+# --- recovery: what a run does with what an earlier run left open -------------
+
+
+def _diverged(tree, before=None):
+    """Build the one residue nothing can decide: published, then overwritten.
+
+    The kill lands with the bytes on disk and the transaction fsynced
+    `published`, and the adopter's own write afterwards is what makes the
+    path match neither of the two states the transaction names. Returns the
+    transaction id.
+
+    `before` is what `.gitignore` holds when `init` starts, so a caller that
+    needs a real preimage blob in the vault -- everything `--restore`
+    touches -- can ask for one.
+    """
+    if before is not None:
+        (tree / ".gitignore").write_text(before, encoding="utf-8")
+    environment = dict(os.environ, VALIDATED_MEMORY_FAULT="after-published")
+    killed = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        capture_output=True,
+        text=True,
+        cwd=tree,
+        env={**environment, "PYTHONPATH": str(REPO_ROOT)},
+        check=False,
+    )
+    assert killed.returncode == 70, (killed.stdout, killed.stderr)
+    (tree / ".gitignore").write_text("an adopter wrote this\n", encoding="utf-8")
+    open_transactions = _transactions(tree)
+    assert len(open_transactions) == 1, open_transactions
+    return open_transactions[0]["transaction"]
+
+
+def _transaction_file(tree, transaction_id, **overrides):
+    """Hand-write one transaction file, in `_open_transaction`'s field shape.
+
+    The same fixture `test_journal_check_reports_a_readable_open_transaction`
+    builds, factored out because the classification has four answers and
+    three of them need a residue no kill produces on demand.
+    """
+    adoption = _records(tree / "journal.jsonl")[0]["adoption"]
+    entry = {
+        "schema": 1,
+        "at": "2026-09-01T00:00:00Z",
+        "version": "1.6.0",
+        "adoption": adoption,
+        "run": "7777777777777777",
+        "transaction": transaction_id,
+        "intention": {
+            "op": "replace",
+            "purpose": "init",
+            "path": "validated-memory.md",
+            "durability": "repo",
+        },
+        "preimage": {"kind": "file", "digest": "sha256:" + "0" * 64, "mode": 420},
+        "postimage": {"kind": "file", "digest": "sha256:" + "1" * 64, "mode": 420},
+        "preimage_blob": "sha256:" + "0" * 64,
+        "mode": 420,
+        "prior_bytes": None,
+        "stage": "prepared",
+    }
+    entry.update(overrides)
+    directory = tree / ".validated-memory" / "transactions"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{transaction_id}.json").write_text(
+        json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return entry
+
+
+def test_recovery_leaves_a_transaction_it_cannot_account_for_untouched(
+    run_cli, tmp_path
+):
+    """Idempotency for the half of the table recovery may not resolve.
+
+    A diverged transaction is the one thing a run must NOT clear away: the
+    file is what keeps the path gated and the evidence available until
+    someone decides. So two runs over it produce the same ERROR, the same
+    file, and the same history -- a recovery that appended a line per
+    session would be the versioned refusal design §3 refuses, one per
+    session start, for ever.
+    """
+    transaction = _diverged(tmp_path)
+    residue = (
+        tmp_path / ".validated-memory" / "transactions" / f"{transaction}.json"
+    ).read_text(encoding="utf-8")
+
+    first = run_cli("init", cwd=tmp_path)
+    records = _records(tmp_path / "journal.jsonl")
+    second = run_cli("init", cwd=tmp_path)
+
+    assert first.returncode == 1, (first.stdout, first.stderr)
+    assert second.returncode == 1, (second.stdout, second.stderr)
+    assert transaction in first.stderr, first.stderr
+    assert first.stderr == second.stderr, (first.stderr, second.stderr)
+    assert _records(tmp_path / "journal.jsonl") == records
+    assert (
+        tmp_path / ".validated-memory" / "transactions" / f"{transaction}.json"
+    ).read_text(encoding="utf-8") == residue
+
+
+def test_only_the_path_a_transaction_names_is_gated(
+    run_cli, tmp_path, monkeypatch
+):
+    """The rest of the run proceeds, which is narrower than design §8.
+
+    A group spans paths and cannot be reasoned about piecewise, so §8 blocks
+    every mutating command while one is open. A single-path transaction can,
+    and blocking everything would brick the session hook over one stale
+    file: everything but `knowledge/` is created.
+
+    `.gitignore` already carries the rule, so the first mutation the killed
+    run reaches is `knowledge/` -- the ignore entry is the one item whose
+    own ERROR gates the whole scaffold on its own (`init._ensure_ignored`),
+    which would hide the narrowing this test is about.
+    """
+    (tmp_path / ".gitignore").write_text("/.validated-memory/\n", encoding="utf-8")
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-published")
+    assert run_cli("init", cwd=tmp_path).returncode == 70
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT")
+    # The directory the kill published is taken away, so the transaction's
+    # postimage describes a state that is no longer there and recovery can
+    # say neither that the mutation happened nor that it did not.
+    (tmp_path / "knowledge").rmdir()
+    transaction = _transactions(tmp_path)[0]["transaction"]
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert (tmp_path / "memory" / "MEMORY.md").exists()
+    assert (tmp_path / "validated-memory.md").exists()
+    assert "init: created memory" in result.stdout, result.stdout
+    assert not (tmp_path / "knowledge").exists()
+    assert (
+        f"has an unresolved transaction {transaction}" in result.stderr
+    ), result.stderr
+    for flag in ("--accept", "--restore", "--abandon"):
+        assert flag in result.stderr, result.stderr
+
+
+def test_an_aborted_transaction_is_reported_and_removed(run_cli, tmp_path):
+    """`aborted` is closed already: recovery unlinks it and records nothing.
+
+    Design §5: an `aborted` entry "is never inverted by a reversal, and
+    disappears with the log once resolved". It is not a problem the operator
+    has to answer for -- the decision was made and nothing was published --
+    so the run that finds it clears it and carries on clean.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    _transaction_file(
+        tmp_path,
+        "5555555555555555",
+        stage="aborted",
+        reason="validated-memory.md changed while its mutation was prepared",
+    )
+    before = _records(tmp_path / "journal.jsonl")
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert not _transactions(tmp_path), _transactions(tmp_path)
+    assert _records(tmp_path / "journal.jsonl") == before
+    assert "5555555555555555" not in result.stdout, result.stdout
+    assert run_cli("journal", "--check", cwd=tmp_path).returncode == 0
+
+
+def test_a_missing_preimage_blob_for_a_closed_record_is_never_an_error(
+    run_cli, tmp_path
+):
+    """The vault does not travel, and a clone without one is not damaged.
+
+    Design §10: "a missing preimage blob in a clone is normal, not
+    corruption". This is exactly what a fresh clone looks like -- the
+    versioned journal carries a `replace` record naming a preimage, and the
+    ignored vault that held the bytes is not there -- and nothing task 5
+    added may report it. The refusal in
+    `test_journal_resolve_restore_refuses_a_blob_that_is_not_the_preimage`
+    is the OTHER case, where the transaction is still open.
+    """
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    replaced = [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record["path"] == ".gitignore" and record.get("preimage")
+    ]
+    assert replaced, "init recorded no preimage for the ignore file"
+    for blob in (tmp_path / ".validated-memory" / "preimages").iterdir():
+        blob.unlink()
+
+    checked = run_cli("journal", "--check", cwd=tmp_path)
+    again = run_cli("init", cwd=tmp_path)
+
+    assert checked.returncode == 0, (checked.stdout, checked.stderr)
+    assert "preimage" not in checked.stderr, checked.stderr
+    assert again.returncode == 0, (again.stdout, again.stderr)
+    assert again.stderr == "", again.stderr

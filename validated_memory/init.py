@@ -261,6 +261,14 @@ def run(harness_memory, view, stdout, stderr):
     try:
         with journal.Lock():
             session = journal.Run()
+            # Before anything this run intends: recovery only completes or
+            # closes what an EARLIER run began, and unlinks the files that
+            # said so, so it reduces what is on disk rather than adding to
+            # it -- and an open transaction on `.gitignore` itself is
+            # settled before the new `.gitignore` intention is formed. A
+            # transaction it cannot account for is an ERROR that gates that
+            # ONE path (`journal.Run._survey`), not the run.
+            findings.extend(_report_recovery(session, stdout))
             # First, because it is what keeps the vault out of the
             # repository, and the vault is written to from here on.
             ignore_findings = _ensure_ignored(session, stdout)
@@ -364,6 +372,43 @@ def run(harness_memory, view, stdout, stderr):
         file=stdout,
     )
     return EXIT_ERROR if errors else EXIT_OK
+
+
+def _report_recovery(session, stdout):
+    """Resolve what an earlier run left open; return the findings it raised.
+
+    A COMPLETED recovery is printed, because a mutation reaching the
+    history a session late is a thing that happened to this project and the
+    line is where the user sees it. A discarded or removed one prints
+    nothing: the transaction is gone, the path is exactly as it was, and a
+    line about a mutation that never happened is noise on every session
+    start after a crash.
+
+    A problem is an ERROR against the path it names, or against the
+    transaction when it is too damaged to name one. The run carries on -- a
+    stale transaction on one path is not a reason to stop scaffolding the
+    others -- and the exit code gates, because `journal --check` reports
+    exactly these and a caller told nothing by `init` would have to run it
+    to find out.
+    """
+    findings = []
+    for recovery in session.recover():
+        if recovery.problem is not None:
+            findings.append(
+                Finding(
+                    ERROR,
+                    recovery.path or recovery.transaction,
+                    "journal",
+                    recovery.message,
+                )
+            )
+        elif recovery.action == journal.RECOVERED:
+            print(
+                f"init: recovered {recovery.path} from transaction "
+                f"{recovery.transaction}",
+                file=stdout,
+            )
+    return findings
 
 
 def _journal_artifact(error):
