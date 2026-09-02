@@ -48,12 +48,14 @@ of the adoption questionnaire's answers and is written on every adoption,
 whatever the project versions -- the vault holds preimages, which may carry
 bytes the adopter deliberately kept local (ADR 0008). It is written once:
 an ignore file that already carries the rule is left exactly as it is, and
-the edit is journalled as an `append` with purpose `ignore-rule`. It is
-reported on its own line (`init: ignored /.validated-memory/ in .gitignore`)
-and is not counted among the items created or kept, because it is a line
-appended to a file the adopter owns rather than an item `init` manages. An
-ignore file that is a symlink, or that cannot be read, is left untouched and
-reported as an ERROR, unless `.git/info/exclude` already carries the rule --
+the edit is journalled with purpose `ignore-rule` -- as a `create` when
+there was no ignore file at all, and as an `append` when there was one, the
+two having different inverses. It is reported on its own line
+(`init: ignored /.validated-memory/ in .gitignore`) and is not counted
+among the items created or kept, because it is a line appended to a file
+the adopter owns rather than an item `init` manages. An ignore file that is
+a symlink, or that cannot be read, is left untouched and reported as an
+ERROR, unless `.git/info/exclude` already carries the rule --
 that is the one other source git still consults when it cannot read
 `.gitignore` itself, and a vault git already ignores needs no gate. A
 symlinked `.gitignore` is never read through: git opens that file with

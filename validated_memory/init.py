@@ -463,7 +463,7 @@ def _ensure_ignored(session, stdout):
     be read, one that is a symlink -- installing over a symlink replaces
     the link itself, and destroying a link to record an ignore rule is not a
     trade `init` may make -- and one whose mode denies writing to this user,
-    which the executor refuses (`journal._write_denied`).
+    which the executor refuses before anything is prepared.
 
     The unreadable one and the symlinked one only gate when the vault is
     really exposed, which is not the same question. `.git/info/exclude`
@@ -474,14 +474,18 @@ def _ensure_ignored(session, stdout):
     git does not follow a symlinked ignore file at all, so what it points
     at ignores nothing.
 
-    This runs first, and what that buys is precise: no `local` transaction
-    file and no preimage exists while the vault is unignored. Its own
-    intention opens a transaction, and may -- that file names `.gitignore`,
-    relative, with two digests and no bytes of the adopter's in it, no more
-    exposed than the lock file already beside it. On every path where this
-    gate actually fires, nothing has reached the vault at all: a symlinked
-    or unreadable ignore file never reaches the executor, and a read-only
-    one is refused before a preimage is parked.
+    This runs first, and what that buys is precise: while the vault is
+    unignored, no `local` transaction file and no history record exists.
+    Those are the two that carry what a commit must never carry -- a
+    `local` path is absolute by construction (ADR 0008), and a record is
+    versioned. This function's own intention opens a `repo` transaction,
+    and may: that file names `.gitignore`, relative, with two digests and
+    no bytes of the adopter's in it, no more exposed than the lock file
+    already beside it. A parked preimage of `.gitignore` may exist too --
+    an `append` over an existing file parks one before the re-read that
+    can still abort the mutation -- and it holds bytes the adopter already
+    versioned, which is why it is the vault content this gate can afford
+    to be one race short about.
     """
     path = Path(IGNORE_FILENAME)
     missing = _write_entry(session, path, stdout)
@@ -809,11 +813,6 @@ def _sync_symlink(
             freed, findings = adopt.take_over(path, target, stdout)
             if not freed:
                 return findings
-        # Both ways of publishing the link need the parent to be there --
-        # the executor's own publication and `relink`'s rename -- and only
-        # this one is reached on every branch below, so the tree the two
-        # start from is made here, once, before either is chosen.
-        path.parent.mkdir(parents=True, exist_ok=True)
         findings.extend(
             _record_symlink(
                 session, path, previous, target, relink, unrecorded
@@ -854,7 +853,13 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
     - `refused`, or a journal that cannot be written at all -- a WARNING
       carrying the executor's own message and the previous target, then
       `relink()`, which publishes the same link the same way and records
-      nothing.
+      nothing. That covers the refusal an unresolved transaction on this
+      path produces too, and overriding it is the ruling rather than an
+      oversight: the transaction file still holds the previous target, so
+      the evidence an operator needs to resolve it is not what the relink
+      destroys, and leaving a session without its memory to protect a file
+      nothing has read yet is not a trade the `SessionStart` hook may
+      make.
     - `session is None` -- nothing may be written to the journal at all
       (it failed earlier in the run, or the vault holding this record is
       not ignored, and `unrecorded` says which). The same WARNING, with
