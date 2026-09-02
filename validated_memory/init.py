@@ -53,6 +53,14 @@ from anything `init` may do on its own. So the scaffold, the take-over and
 the views do not run: the ERROR names the one line to add by hand, and the
 next run picks up from a tree `init` has not touched.
 
+An ignore file the adopter marked read-only is one of those: mode 0444
+denies writing to this user, so the entry is refused before anything is
+prepared and the ERROR names the file and its mode. That is a gated
+adoption on every session start until one `chmod` fixes it. Writing to a
+file the adopter marked read-only is not an option this method takes --
+through 1.5.2 it did exactly that, silently, and handed the file back at
+0644.
+
 The harness symlink is the one act that outlives that gate, because
 restoring it moves no data and it is the whole job of the `SessionStart`
 hook. Its record is the one that could only live in the vault, which is
@@ -244,6 +252,18 @@ def run(harness_memory, view, stdout, stderr):
     into a directory the adopter owns runs after it. The harness symlink
     still does, without its record, because restoring a link moves no data
     and the `SessionStart` hook has no other job.
+
+    What that ordering guarantees, stated exactly: no `local` transaction
+    file and no preimage is written while the vault is unignored. A `local`
+    path is absolute by construction (ADR 0008), which is what a commit
+    must never carry, and the run's only `local` intention -- the harness
+    symlink's -- is dropped when this gate fires. The entry's OWN
+    transaction is written before it, and may be: it names `.gitignore`,
+    relative, with two digests and no bytes, which is what the lock file
+    beside it already is. Recovery runs before the gate too, for the
+    opposite reason: it only completes or closes what an earlier run began,
+    and unlinks the files that said so, so it takes things off the disk
+    rather than putting new ones there.
     """
     findings = []
     created = 0
@@ -438,19 +458,30 @@ def _ensure_ignored(session, stdout):
     about the layout `init` owns; this is one line appended to a file the
     adopter owns, and the run reports it on its own line.
 
-    Three shapes are left alone rather than written to: an ignore file that
+    Four shapes are left alone rather than written to: an ignore file that
     already carries the rule in any of its usual spellings, one that cannot
-    be read, and one that is a symlink -- installing over a symlink replaces
+    be read, one that is a symlink -- installing over a symlink replaces
     the link itself, and destroying a link to record an ignore rule is not a
-    trade `init` may make.
+    trade `init` may make -- and one whose mode denies writing to this user,
+    which the executor refuses (`journal._write_denied`).
 
-    The last two only gate when the vault is really exposed, which is not
-    the same question. `.git/info/exclude` ignores the same paths, is never
-    versioned, and -- because git will not read an ignore file it cannot
-    open either -- is the highest-precedence source git still consults in
-    exactly these two shapes, so a rule there settles it and the run goes
-    on. The symlink's own target is not read: git does not follow a
-    symlinked ignore file at all, so what it points at ignores nothing.
+    The unreadable one and the symlinked one only gate when the vault is
+    really exposed, which is not the same question. `.git/info/exclude`
+    ignores the same paths, is never versioned, and -- because git will not
+    read an ignore file it cannot open either -- is the highest-precedence
+    source git still consults in exactly these two shapes, so a rule there
+    settles it and the run goes on. The symlink's own target is not read:
+    git does not follow a symlinked ignore file at all, so what it points
+    at ignores nothing.
+
+    This runs first, and what that buys is precise: no `local` transaction
+    file and no preimage exists while the vault is unignored. Its own
+    intention opens a transaction, and may -- that file names `.gitignore`,
+    relative, with two digests and no bytes of the adopter's in it, no more
+    exposed than the lock file already beside it. On every path where this
+    gate actually fires, nothing has reached the vault at all: a symlinked
+    or unreadable ignore file never reaches the executor, and a read-only
+    one is refused before a preimage is parked.
     """
     path = Path(IGNORE_FILENAME)
     missing = _write_entry(session, path, stdout)
