@@ -674,6 +674,14 @@ def authorise(root, path, durability):
 STALE_LOCK_SECONDS = 300
 
 
+# The locks this process holds: `{lock path: [descriptor, depth]}`, keyed by
+# the path so that two `Lock` objects naming one file are one holder.
+# Re-entrancy has to be per PROCESS, not per object: `init.run` takes the
+# lock for a whole run and `Run.__init__` takes it again underneath through
+# an object the outer caller never sees.
+_HELD = {}
+
+
 class Lock:
     """A per-adopter exclusive lock, taken for the duration of a mutation.
 
@@ -688,6 +696,16 @@ class Lock:
     should not be there; no code reads them, and the contention message names
     the path rather than the holder.
 
+    Within one process the lock is RE-ENTRANT, counted per lock path and
+    not per object (`_HELD`): `init.run` holds it for a whole run
+    and `Run.__init__` takes it again underneath, and a second `O_EXCL`
+    create would wait out the whole ten seconds and then refuse the run.
+    The file is created by the outermost `__enter__` and removed by the
+    `__exit__` that brings the depth back to zero. Between processes it
+    excludes exactly as before. The registry is module state, so a `Lock`
+    object means nothing outside the process that entered it: one must not
+    be shared with a child process or carried across a fork as held.
+
     Releasing is unconditional: `__exit__` unlinks the path whether or not
     the file there is still the one this object created. A lock broken as
     stale (see `STALE_LOCK_SECONDS`) and then taken by a third process would
@@ -697,26 +715,36 @@ class Lock:
 
     def __init__(self, root=Path()):
         self.path = Path(root) / VAULT_DIRNAME / LOCK_FILENAME
-        self._fd = None
+        # The registry key, and a count of the entries THIS object made, so
+        # an `__exit__` without a matching `__enter__` cannot decrement a
+        # depth some other object is holding.
+        self._key = str(self.path)
+        self._entries = 0
 
     def __enter__(self):
+        held = _HELD.get(self._key)
+        if held is not None:
+            held[1] += 1
+            self._entries += 1
+            return self
         self.path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + 10
         while True:
             try:
-                self._fd = os.open(
+                descriptor = os.open(
                     self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
                 )
                 try:
-                    os.write(self._fd, f"{os.getpid()}\n".encode("ascii"))
+                    os.write(descriptor, f"{os.getpid()}\n".encode("ascii"))
                 except OSError:
                     # `__exit__` never runs when `__enter__` raises, so the
                     # descriptor and the lock file have to be released here or
                     # they outlive the failure by the whole stale window.
-                    os.close(self._fd)
-                    self._fd = None
+                    os.close(descriptor)
                     self.path.unlink(missing_ok=True)
                     raise
+                _HELD[self._key] = [descriptor, 1]
+                self._entries += 1
                 return self
             except FileExistsError:
                 if self._break_if_stale():
@@ -731,9 +759,17 @@ class Lock:
                 time.sleep(0.05)
 
     def __exit__(self, exc_type, exc, traceback):
-        if self._fd is not None:
-            os.close(self._fd)
-            self._fd = None
+        if not self._entries:
+            return False
+        self._entries -= 1
+        held = _HELD.get(self._key)
+        if held is None:
+            return False
+        held[1] -= 1
+        if held[1] > 0:
+            return False
+        del _HELD[self._key]
+        os.close(held[0])
         self.path.unlink(missing_ok=True)
         return False
 
@@ -968,8 +1004,9 @@ def bootstrap(root=Path(), run=None, records=None, local=None):
     A caller that does not have one yet (there is none besides `Run`) gets
     one minted here, so the record is always complete.
 
-    The caller must already hold `Lock`. This does not take it: `init` holds
-    it for the whole run, and re-entering would need a re-entrant lock. Two
+    `Run.__init__` holds the lock across this call, so a caller does not
+    have to: `Lock` is re-entrant within a process, and the run-wide lock
+    `init` already holds and the one taken there are the same lock. Two
     processes bootstrapping the same new adopter without it would mint two
     adoption ids, and the second install would win in silence.
 
@@ -1076,16 +1113,22 @@ class Run:
     then a flushed `committed` record. A `prepared` with no `committed` is
     what `journal --check` reconciles; nothing here guesses at one.
 
-    It does NOT hold the lock. `bootstrap`, which `__init__` calls, requires
-    the caller to hold `Lock` already, and so does every mutation below it.
+    `__init__` takes `Lock` itself, around the two reads and `bootstrap`:
+    deciding from what was read that no adoption id exists yet and then
+    installing one is a read-modify-write, and two runs interleaving there
+    mint two ids for one project. `Lock` is re-entrant, so a caller already
+    holding it -- `init.run` holds it for the whole run -- neither waits
+    here nor has it released early. The mutation methods below do not take
+    it: every caller of them today runs inside that run-wide lock.
     """
 
     def __init__(self, root=Path()):
         self.root = Path(root)
         self.run = new_id()
-        records = read(self.root, REPO)
-        local = read(self.root, LOCAL)
-        self.adoption = bootstrap(self.root, self.run, records, local)
+        with Lock(self.root):
+            records = read(self.root, REPO)
+            local = read(self.root, LOCAL)
+            self.adoption = bootstrap(self.root, self.run, records, local)
         # Every path either journal already carries a record for. `observe`
         # is written on first sight (§2), and first sight is exactly this:
         # a path the record has never mentioned. Keying it on every op

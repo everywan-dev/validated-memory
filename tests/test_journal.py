@@ -1379,3 +1379,24 @@ def test_the_fault_variable_is_inert_when_unset_or_unreached(
     assert _stripped(baseline / "journal.jsonl") == _stripped(
         unreached / "journal.jsonl"
     )
+
+
+# --- the lock: who holds it, who may break it, and where it lives -------------
+
+def test_init_takes_the_lock_it_already_holds(run_cli, tmp_path):
+    """The nested acquisition: `init` holds the lock, `Run` takes it again.
+
+    `init.run` wraps the whole run in one lock and `journal.Run.__init__`
+    takes it again around its reads and `bootstrap`. Without re-entrancy the
+    inner one is a second `O_CREAT | O_EXCL` create against a file this same
+    process holds: it waits out the ten-second deadline and then refuses, so
+    every session start would exit 1 on a lock nobody else wants.
+    """
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    assert "another validated-memory process holds" not in result.stderr
+    assert (tmp_path / "journal.jsonl").exists()
+    # Taken and released, not leaked: the next run must not have to break it.
+    assert not (tmp_path / ".validated-memory" / "lock").exists()
+

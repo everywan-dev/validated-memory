@@ -250,10 +250,13 @@ def run(harness_memory, view, stdout, stderr):
     kept = 0
     unignored = False
 
-    # Everything that journals -- the scaffold and the harness symlink -- runs
-    # under one lock for the whole run: `init` is deliberately re-runnable at
-    # session start, and two concurrent runs on a brand-new adopter must not
-    # be able to mint two adoption ids.
+    # Everything that journals -- the scaffold and the harness symlink --
+    # runs under one lock for the whole run: `init` is deliberately
+    # re-runnable at session start, and this is what serialises the work
+    # `journal.Run` does not lock on its own, above all the harness
+    # take-over in `_sync_symlink`, which moves an adopter's directory and
+    # is not journalled at all. `journal.Lock` is re-entrant, so the lock
+    # `journal.Run()` takes over its own reads is this one.
     journal_failure = None
     try:
         with journal.Lock():
