@@ -683,6 +683,17 @@ log: a directory that had never been adopted is left without a
   path returned to the state a record would have described the departure
   from is not a fact about the project.
 
+Over a `diverged` transaction, `--accept` and `--abandon` write the
+**mutation's own record pair first**, and their `observe` after it. That
+transaction is `published`: its bytes reached the disk, only the two history
+records were lost, and the divergence says something wrote the path
+*afterwards* -- not that the write never ran. The pair is the one recovery
+would have appended, carrying the crashed run's id, the transaction's id and
+the state the transaction published, and only the halves that are not
+already there are added, so a resolution never doubles a record. `unknown`
+gets no pair: it is a `prepared` transaction whose path matches neither of
+its states, and nothing there says the mutation ever ran.
+
 `--restore` is the only one that writes bytes, and it is hedged accordingly:
 
 - It applies **only while no history record for that transaction exists**. A

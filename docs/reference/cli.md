@@ -717,9 +717,12 @@ observation and never as a mutation), `--restore` (put the preimage back
 from the vault) or `--abandon` (leave the path as found, and record that).
 It applies only to a transaction recovery cannot account for -- one that is
 `recoverable` or `damaged` is refused, with the reason -- and it recovers
-nothing else on the way. See [Resolving a
-transaction](journal.md#resolving-a-transaction) for what each flag records
-and what `--restore` refuses.
+nothing else on the way. Over a `diverged` transaction, whose bytes were
+published before the crash, `--accept` and `--abandon` record the mutation's
+own pair first and their `observe` after it: closing the divergence answers
+for the path and does not take the write out of the history. See [Resolving
+a transaction](journal.md#resolving-a-transaction) for what each flag
+records and what `--restore` refuses.
 
 ```
 journal: resolved 51de77210788b0fd (--accept)

@@ -2726,23 +2726,28 @@ class Run:
             transaction_id, path, durability, problem=verdict, message=message
         )
 
-    def _complete(self, transaction_id, item, facts, histories):
+    def _complete(self, transaction_id, item, facts, histories, published=None):
         """Append whichever of the mutation's two records is not there yet.
 
         Returns whether anything was appended, so the caller can say which
         of the two shapes of `completed` this was.
 
         The records are rebuilt from the transaction file and the state the
-        path is in NOW -- which `_classify` has just proven is the postimage
-        this transaction published. `op`, `purpose`, `path`, `durability`
-        and `note` come from the intention; `preimage` (the parked blob's
-        reference) and `prior_bytes` from the file; `postimage` from the
-        postimage STATE's own digest, which is the same value `_execute`
-        wrote; `mode` from the published node, unless that node is a
-        symlink, whose mode is 0777 and means nothing. Both halves carry the
-        `transaction`, exactly as `_execute` writes them, because that id is
-        the only thing that survives the file to say the two lines are one
-        act. `run` is the crashed run's: it is the run that wrote the bytes.
+        mutation PUBLISHED. Recovery passes nothing for `published` and the
+        state is the one the path is in now, which `_classify` has just
+        proven is that postimage; `_resolve_one` passes the transaction's
+        own postimage, because a `diverged` transaction did publish and
+        something wrote over it afterwards, and the mode of that later
+        write is not a fact about the mutation. `op`, `purpose`, `path`,
+        `durability` and `note` come from the intention; `preimage` (the
+        parked blob's reference) and `prior_bytes` from the file;
+        `postimage` from the postimage STATE's own digest, which is the
+        same value `_execute` wrote; `mode` from the published node, unless
+        that node is a symlink, whose mode is 0777 and means nothing. Both
+        halves carry the `transaction`, exactly as `_execute` writes them,
+        because that id is the only thing that survives the file to say the
+        two lines are one act. `run` is the crashed run's: it is the run
+        that wrote the bytes.
 
         `adoption` is NOT taken from the file. One project has one adoption
         id (`_adoption_id`), this run has already established which, and a
@@ -2775,13 +2780,14 @@ class Run:
             return False
 
         fields = {"transaction": transaction_id}
-        mode = facts["actual"].get("mode")
+        state = facts["actual"] if published is None else published
+        mode = state.get("mode")
         # A symlink's mode is 0777 on every platform this runs on and means
         # nothing, so it is not a fact these records may carry -- the same
         # rule `_execute` applies to a link's preimage mode and to the mode
         # `_publish` reports. Recovery rebuilds the records `_execute` would
         # have written, and that includes the field it would have omitted.
-        if mode is not None and facts["actual"].get("kind") != SYMLINK:
+        if mode is not None and state.get("kind") != SYMLINK:
             fields["mode"] = mode
         if intention.get("note") is not None:
             fields["note"] = intention["note"]
@@ -2837,6 +2843,10 @@ class Run:
           not go through `observe` -- its note is what keeps it honest.
         - `--abandon` -- ONE `observe` record saying the path was left as
           found. Nothing is published, nothing is undone.
+        - Over a `diverged` transaction both of them append the MUTATION's
+          own record pair first: that transaction published, and a
+          resolution is not a reason for the history to forget it. See
+          `_resolve_one`.
         - `--restore` -- the preimage goes back and NOTHING is recorded:
           putting a path back where it was leaves no fact about the project
           behind, and the transaction that intended the mutation is the
@@ -2911,6 +2921,28 @@ class Run:
 
         if resolution == RESTORE:
             return self._restore(transaction_id, item, facts)
+
+        # `diverged` is a `published` transaction: its bytes reached the
+        # disk and only the two history records were lost, and what the
+        # verdict adds is that something wrote the path AFTERWARDS. The
+        # mutation happened, so it is a fact about this project whichever
+        # way the operator closes it, and its own pair goes into the
+        # history FIRST -- the same pair recovery would have appended, the
+        # crashed run's id and all -- with the resolution's `observe` after
+        # it. Closing with the observe alone left published bytes with no
+        # record at all, in an append-only history where nothing puts them
+        # back: exactly the lie the executor exists to stop manufacturing.
+        # Idempotent per record, as recovery is -- `_complete` appends only
+        # the halves that are not already there -- and the postimage is
+        # passed because the mode of whatever wrote the path afterwards is
+        # not a fact about the mutation. `unknown` gets no pair: it is a
+        # `prepared` transaction whose path matches neither of its states,
+        # and nothing there says the mutation ever ran.
+        if verdict == PROBLEM_DIVERGED:
+            self._complete(
+                transaction_id, item, facts, {}, published=facts["postimage"]
+            )
+
         # `_classify` read the path under this same lock, so this is the
         # state the verdict was reached on and not a second, later reading.
         found = facts["actual"]["kind"]

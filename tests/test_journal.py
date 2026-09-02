@@ -2751,10 +2751,13 @@ def test_journal_resolve_accept_records_an_observation_never_a_mutation(
     assert f"journal: resolved {transaction} (--accept)" in result.stdout
     assert not _transactions(tmp_path), _transactions(tmp_path)
 
+    # The mutation's own pair goes in ahead of it, because the transaction
+    # is `published` and the bytes are on disk -- asserted by the test
+    # below. What this one is about is the last record, the resolution's.
     written = [
         record
         for record in _records(tmp_path / "journal.jsonl")
-        if record["path"] == ".gitignore"
+        if record["path"] == ".gitignore" and record["op"] == "observe"
     ]
     assert len(written) == 1, written
     assert written[0]["op"] == "observe", written
@@ -2783,7 +2786,7 @@ def test_journal_resolve_abandon_records_that_the_path_was_left_as_found(
     written = [
         record
         for record in _records(tmp_path / "journal.jsonl")
-        if record["path"] == ".gitignore"
+        if record["path"] == ".gitignore" and record["op"] == "observe"
     ]
     assert len(written) == 1, written
     assert written[0]["op"] == "observe", written
@@ -2793,6 +2796,76 @@ def test_journal_resolve_abandon_records_that_the_path_was_left_as_found(
     assert (tmp_path / ".gitignore").read_text(
         encoding="utf-8"
     ) == "an adopter wrote this\n"
+
+
+def test_journal_resolve_over_a_published_transaction_keeps_its_record_pair(
+    run_cli, tmp_path
+):
+    """Closing a divergence answers for the path; it does not erase the write.
+
+    The transaction is `published`: the bytes reached the disk, only the two
+    history records were lost, and what `diverged` adds is that something
+    wrote the path AFTERWARDS -- not that the write never ran. Closing it
+    with the resolution's `observe` alone left the plugin's own creation of
+    `.gitignore` with no record at all, in an append-only history where
+    nothing puts one back. The mutation's pair goes in first, under the
+    crashed run's id and the transaction's, and the `observe` after it.
+
+    The intruding write here keeps the ignore entry, so the runs that
+    follow have nothing of their own to add to that file and "no growth"
+    means what it says.
+    """
+    _diverged(tmp_path, kill_after="/.validated-memory/\nbuild/\n")
+    entry = _transactions(tmp_path)[0]
+    transaction = entry["transaction"]
+
+    result = run_cli("journal", "--resolve", transaction, "--accept", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert not _transactions(tmp_path), _transactions(tmp_path)
+    written = [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record["path"] == ".gitignore"
+    ]
+    assert [record["op"] for record in written] == [
+        "create",
+        "create",
+        "observe",
+    ], written
+    assert [record["stage"] for record in written] == [
+        "prepared",
+        "committed",
+        "committed",
+    ], written
+    # One act, filed under the run that wrote the bytes -- not under the
+    # run that resolved it, which wrote none.
+    assert [record.get("transaction") for record in written[:2]] == [
+        transaction,
+        transaction,
+    ], written
+    assert [record["run"] for record in written[:2]] == [
+        entry["run"],
+        entry["run"],
+    ], (written, entry)
+    assert written[2].get("transaction") is None, written
+    assert written[2]["note"] == (
+        f"accepted after divergence: transaction {transaction} found file"
+    ), written
+
+    # A closed pair is not reconciled again, so the next run has nothing to
+    # complete and nothing to say about it.
+    assert run_cli("journal", "--check", cwd=tmp_path).returncode == 0
+    settled = run_cli("init", cwd=tmp_path)
+    assert settled.returncode == 0, (settled.stdout, settled.stderr)
+    assert "recovered" not in settled.stdout, settled.stdout
+    records = _records(tmp_path / "journal.jsonl")
+    assert [
+        record for record in records if record["path"] == ".gitignore"
+    ] == written, records
+    again = run_cli("init", cwd=tmp_path)
+    assert again.returncode == 0, again.stderr
+    assert _records(tmp_path / "journal.jsonl") == records
 
 
 def test_journal_resolve_restore_puts_the_preimage_back_and_records_nothing(
