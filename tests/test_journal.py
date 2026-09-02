@@ -1293,9 +1293,11 @@ def test_a_kill_at_after_transaction_leaves_the_path_untouched(
     """The fault seam, proven live: a kill with the write-ahead entry fsynced.
 
     `.gitignore` is the first mutation a fresh adopter's `init` performs
-    (`_ensure_ignored` runs before the scaffold, and `_write_entry` calls
-    `append_text`), so this is the earliest `after-transaction` point a
-    plain `init` reaches.
+    (`_ensure_ignored` runs before the scaffold), so this is the earliest
+    `after-transaction` point a plain `init` reaches. The op is a `create`
+    because this tree has no ignore file at all: `_write_entry` appends the
+    entry only to a file that is already there, whose inverse is a
+    truncation rather than the removal of a file `init` made.
 
     What the kill leaves is the shape design §3 asks for and §5 explains:
     the write-ahead log knows what was intended, and the permanent history
@@ -1316,7 +1318,7 @@ def test_a_kill_at_after_transaction_leaves_the_path_untouched(
     entry = open_transactions[0]
     assert entry["stage"] == "prepared", entry
     assert entry["intention"]["path"] == ".gitignore", entry
-    assert entry["intention"]["op"] == "append", entry
+    assert entry["intention"]["op"] == "create", entry
 
     # `os._exit` skips every `finally`, including `Lock.__exit__`, so the
     # lock file this run took is still there, with the pid of a process that

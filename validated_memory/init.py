@@ -472,6 +472,22 @@ def _write_entry(session, path, stdout):
     None means the rule is in the file -- appended just now, or already
     there when `init` looked. Everything else is a reason, which is the
     ERROR's message when the caller finds nothing else ignoring the vault.
+
+    The two shapes the entry can be added to get two different intentions,
+    because their inverses differ and only the record says which was done:
+    an ignore file that is not there at all is a `create` of the whole
+    block, whose inverse is removing a file `init` made; one that is
+    already there is an `append` of the addition alone, whose inverse is
+    truncating the adopter's own file back to the length it had. The
+    expected state is stated, not read on the caller's behalf: the digest
+    of the bytes just read, so an ignore file rewritten between the read
+    and the write is refused rather than appended to blind.
+
+    A refusal comes back as the reason, exactly as an `OSError` did. This
+    is where a read-only ignore file lands: mode 0444 denies writing to
+    this user, the executor refuses before anything is prepared, and the
+    run gates with an ERROR naming the file and its mode. Writing to a file
+    the adopter marked read-only is not an option this method takes.
     """
     if path.is_symlink():
         return (
@@ -480,7 +496,8 @@ def _write_entry(session, path, stdout):
             "would replace the link. Add the entry by hand."
         )
     try:
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        raw = path.read_bytes() if path.exists() else b""
+        existing = raw.decode("utf-8")
     except (OSError, UnicodeDecodeError) as error:
         return (
             f"the ignore file could not be read, so the vault's entry "
@@ -488,16 +505,52 @@ def _write_entry(session, path, stdout):
         )
     if _carries_entry(existing):
         return None
-    try:
-        session.append_text(
-            IGNORE_FILENAME, _ignore_addition(existing), "ignore-rule"
+    addition = _ignore_addition(existing)
+    if path.exists():
+        op = journal.APPEND
+        expected = {"kind": journal.FILE, "digest": journal.digest(raw)}
+    else:
+        op = journal.CREATE
+        expected = {"kind": journal.ABSENT}
+    outcome = session.execute(
+        journal.Intention(
+            op=op,
+            purpose="ignore-rule",
+            path=IGNORE_FILENAME,
+            durability=journal.REPO,
+            expected=expected,
+            content=addition.encode("utf-8"),
         )
-    except OSError as error:
-        return (
-            f"the vault's ignore entry ({IGNORE_ENTRY}) could not be "
-            f"written: {error}"
-        )
+    )
+    refusal = _refusal(
+        outcome,
+        f"the vault's ignore entry ({IGNORE_ENTRY}) could not be written",
+    )
+    if refusal is not None:
+        return refusal
     print(f"init: ignored {IGNORE_ENTRY} in {IGNORE_FILENAME}", file=stdout)
+    return None
+
+
+def _refusal(outcome, prefix):
+    """The message an executor refusal carries, or None when it applied.
+
+    `noop` is not a third answer here. Every intention `init` forms names a
+    state the path is not in -- an entry the file does not carry, an item
+    that is not there -- so an outcome saying the path already holds what
+    was intended would mean the check that decided to write it read
+    something else than the executor did. Reporting that as `created` or as
+    a silent success is how a claim about the tree stops being true, so it
+    raises instead.
+    """
+    if outcome.status == journal.OUTCOME_REFUSED:
+        return f"{prefix}: {outcome.message}"
+    if outcome.status == journal.OUTCOME_NOOP:
+        raise AssertionError(
+            f"{outcome.path}: the executor found nothing to do for an "
+            f"intention `init` forms only when the path needs it "
+            f"({outcome.op}); nothing was written and nothing was recorded"
+        )
     return None
 
 
@@ -556,7 +609,9 @@ def _ensure_dir(path, session):
     if path.is_symlink() and not path.exists():
         return location, None, Finding(ERROR, location, "create", BROKEN_SYMLINK)
     if path.is_dir():
-        session.observe(location, "directory already present")
+        finding = _observe(session, location, "directory already present")
+        if finding is not None:
+            return location, None, finding
         return location, "kept", None
     # A `mkdir` has no preimage to park, which is not the same as having no
     # transaction: §4 rejects "mutate first, record after", and a directory
@@ -575,13 +630,9 @@ def _ensure_dir(path, session):
             note="directory created",
         )
     )
-    if outcome.status == journal.OUTCOME_REFUSED:
-        return location, None, Finding(
-            ERROR,
-            location,
-            "create",
-            f"directory could not be created: {outcome.message}",
-        )
+    refusal = _refusal(outcome, "directory could not be created")
+    if refusal is not None:
+        return location, None, Finding(ERROR, location, "create", refusal)
     return location, "created", None
 
 
@@ -593,20 +644,57 @@ def _ensure_file(path, content, session):
     what the adopter put in its place, so it gates, exactly as an item
     blocked by anything else real does -- and nothing is recorded, because
     nothing happened.
+
+    A REGULAR file is what `kept` means, and nothing else. A directory
+    where a file goes, or a symlink pointing at one, used to be reported
+    `kept` and observed as "file already present" -- a permanent,
+    uninvertible claim that adoption found a file, written about something
+    that is not one, after which every command that reads the layout works
+    on a name the journal describes wrongly. It is the mirror of the plain
+    file where `memory/` goes, and it gets the same answer: the intention
+    expects the name to be absent, and the executor's refusal names what is
+    really there.
     """
     location = path.as_posix()
     if path.is_symlink() and not path.exists():
         return location, None, Finding(ERROR, location, "create", BROKEN_SYMLINK)
-    if path.exists():
-        session.observe(location, "file already present")
+    if path.is_file() and not path.is_symlink():
+        finding = _observe(session, location, "file already present")
+        if finding is not None:
+            return location, None, finding
         return location, "kept", None
-    try:
-        session.write(location, content, "init")
-    except OSError as error:
-        return location, None, Finding(
-            ERROR, location, "create", f"file could not be created: {error}"
+    outcome = session.execute(
+        journal.Intention(
+            op=journal.CREATE,
+            purpose="init",
+            path=location,
+            durability=journal.REPO,
+            expected={"kind": journal.ABSENT},
+            content=content.encode("utf-8"),
         )
+    )
+    refusal = _refusal(outcome, "file could not be created")
+    if refusal is not None:
+        return location, None, Finding(ERROR, location, "create", refusal)
     return location, "created", None
+
+
+def _observe(session, location, note):
+    """Record what adoption found at `location`. Returns a finding, or None.
+
+    The refusal `observe` raises is a path that resolves out of the adopter
+    root through a symlink, and it is about this ONE item: `authorise` gives
+    it as an `OSError` precisely so a caller can gate the item that named it
+    and carry on with the rest (`journal.authorise`). Left to reach
+    `init.run`'s outer handler it became "the journal could not be opened",
+    reported against `journal.jsonl` -- a whole-run failure naming a file
+    that is perfectly valid, and the other items never attempted.
+    """
+    try:
+        session.observe(location, note)
+    except OSError as error:
+        return Finding(ERROR, location, "journal", str(error))
+    return None
 
 
 def _sync_symlink(

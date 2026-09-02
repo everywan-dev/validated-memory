@@ -255,6 +255,112 @@ def test_a_file_blocked_by_a_broken_symlink_gates_and_leaves_the_link(
     ], records
 
 
+def test_a_directory_where_a_scaffold_file_goes_is_refused_not_kept(
+    adopter_dir, run_cli
+):
+    """`kept` means a regular file was found, and a directory is not one.
+
+    `Path.exists()` answers "something is there", which is a different
+    question, so a directory named `validated-memory.md` was reported
+    `kept` and observed as "file already present": a permanent,
+    uninvertible claim that adoption found a file, written about a
+    directory, after which every command that reads the configuration
+    fails on the name the journal describes wrongly. It is the mirror of
+    the plain file where `memory/` goes, and it now gets the same answer --
+    the intention expects the name to be absent, and the refusal names what
+    is really there.
+    """
+    import json
+
+    (adopter_dir / "validated-memory.md").mkdir()
+
+    result = run_cli("init", cwd=adopter_dir)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        "validated-memory.md is a directory, and this create expects it to "
+        "be absent. Nothing has been written." in result.stderr
+    ), result.stderr
+    assert "kept validated-memory.md" not in result.stdout, result.stdout
+    assert (adopter_dir / "validated-memory.md").is_dir()
+    records = [
+        json.loads(line)
+        for line in (adopter_dir / "journal.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert not [
+        entry for entry in records if entry["path"] == "validated-memory.md"
+    ], records
+    # The refusal is about that one item: the rest of the scaffold is there.
+    assert (adopter_dir / "knowledge").is_dir()
+    assert (adopter_dir / "knowledge-extension.md").is_file()
+
+
+def test_a_symlink_to_a_file_where_a_scaffold_file_goes_is_refused_not_kept(
+    adopter_dir, run_cli
+):
+    """A link that resolves is still not the file `init` would have made.
+
+    The link's own record would say `observe`, which means "adoption found
+    this file here", and the bytes it names are somewhere else entirely --
+    the same false claim a broken symlink earns an ERROR for, made quietly
+    because this one happens to resolve. Nothing is written and nothing is
+    recorded: the link is the adopter's.
+    """
+    (adopter_dir / "elsewhere.md").write_text("hand written\n", encoding="utf-8")
+    (adopter_dir / "validated-memory.md").symlink_to("elsewhere.md")
+
+    result = run_cli("init", cwd=adopter_dir)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        "validated-memory.md is a symlink to 'elsewhere.md'" in result.stderr
+    ), result.stderr
+    assert (adopter_dir / "validated-memory.md").is_symlink()
+    assert (
+        adopter_dir / "elsewhere.md"
+    ).read_text(encoding="utf-8") == "hand written\n"
+
+
+def test_an_observation_that_cannot_be_recorded_gates_only_its_own_item(
+    adopter_dir, tmp_path, run_cli
+):
+    """One item's record refuses; the other items are still created.
+
+    `memory/` is a symlink to a directory outside the project, so the fact
+    that adoption found it there may not be filed in the versioned journal
+    (`journal.authorise`, design §7). `authorise` raises `OSError` for
+    exactly that reason -- so a caller can gate the one item that named it
+    -- and `_ensure_dir` let it reach `init.run`'s outer handler instead:
+    the run was reported as "the journal could not be opened" against
+    `journal.jsonl`, a file that is perfectly valid, and every other item
+    was abandoned with it. `journal.authorise`'s own docstring says `init`
+    gates per item; this is what makes that true.
+    """
+    outside = tmp_path / "outside" / "other"
+    outside.mkdir(parents=True)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    (adopter / "memory").symlink_to(
+        os.path.join("..", "outside", "other"), target_is_directory=True
+    )
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "ERROR: memory: journal: memory resolves outside the adopter root" in (
+        result.stderr
+    ), result.stderr
+    assert "journal could not be opened" not in result.stderr, result.stderr
+    # The items that named nothing outside the root were created anyway.
+    assert (adopter / "knowledge").is_dir()
+    assert (adopter / "validated-memory.md").is_file()
+    assert (adopter / "knowledge-extension.md").is_file()
+    assert not (outside / "MEMORY.md").exists()
+
+
 def test_an_item_blocked_by_a_file_gates_with_an_error(adopter_dir, run_cli):
     # A regular file where the scaffold needs a directory: creating
     # memory/MEMORY.md fails for every user, root included -- unlike
