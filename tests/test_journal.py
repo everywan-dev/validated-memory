@@ -1443,7 +1443,8 @@ def test_a_kill_at_after_published_leaves_bytes_with_no_history(
     recovery that the mutation happened, rather than leaving it to infer it
     from a filesystem some later run may have changed.
 
-    Recovery itself is task 5's; what is asserted here is only the residue.
+    The recovery this residue feeds is asserted below, by the shared
+    helper; what is asserted here is the residue itself.
     """
     monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-published")
     result = run_cli("init", cwd=tmp_path)
@@ -2691,8 +2692,8 @@ def test_a_missing_preimage_blob_for_a_closed_record_is_never_an_error(
     Design §10: "a missing preimage blob in a clone is normal, not
     corruption". This is exactly what a fresh clone looks like -- the
     versioned journal carries a `replace` record naming a preimage, and the
-    ignored vault that held the bytes is not there -- and nothing task 5
-    added may report it. The refusal in
+    ignored vault that held the bytes is not there -- and nothing recovery
+    or resolution added may report it. The refusal in
     `test_journal_resolve_restore_refuses_a_blob_that_is_not_the_preimage`
     is the OTHER case, where the transaction is still open.
     """
