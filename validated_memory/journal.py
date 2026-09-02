@@ -30,6 +30,7 @@ import os
 import secrets
 import stat
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,6 +41,7 @@ VAULT_DIRNAME = ".validated-memory"
 VAULT_JOURNAL = "local.jsonl"
 PREIMAGE_DIRNAME = "preimages"
 LOCK_FILENAME = "lock"
+TRANSACTIONS_DIRNAME = "transactions"
 
 # The record format. A reader that meets a higher number refuses rather than
 # guessing at fields it does not know.
@@ -63,6 +65,14 @@ OPS = (OBSERVE, CREATE, REPLACE, PATCH, APPEND, LINK, RENAME, REMOVE, MOVE)
 PREPARED = "prepared"
 COMMITTED = "committed"
 STAGES = (PREPARED, COMMITTED)
+
+# A transaction file's own stage word, not a journal record's: the two
+# artifacts are different files with different lifetimes (design §3), and
+# `PREPARED` is shared between them on purpose -- both name the same moment,
+# a write-ahead entry fsynced with nothing published yet.
+PUBLISHED = "published"
+ABORTED = "aborted"
+TRANSACTION_STAGES = (PREPARED, PUBLISHED, ABORTED)
 
 # The state a path is expected to be in, or found to be in -- lstat
 # semantics throughout, so a symlink is a fact about itself, never about
@@ -209,6 +219,83 @@ def satisfies(actual, expected):
     if "mode" in expected and actual.get("mode") != expected["mode"]:
         return False
     return True
+
+
+INTENTION_OPS = (OBSERVE, CREATE, REPLACE, APPEND, LINK)
+
+
+@dataclass(frozen=True)
+class Intention:
+    """One validated, tagged mutation the executor (Task 4) will consume.
+
+    A frozen dataclass rather than a dict, so a caller building one gets
+    the invalid combinations below refused at construction, not discovered
+    by the executor three calls later. Field by field:
+
+    - `op` -- one of `INTENTION_OPS`: `OBSERVE`, `CREATE`, `REPLACE`,
+      `APPEND` or `LINK`. `PATCH`, `RENAME`, `REMOVE` and `MOVE` are in
+      `OPS` for the journal record vocabulary but have no intention shape
+      yet; they are not accepted here.
+    - `purpose` -- the same free-text word every record already carries
+      (`"init"`, `"ignore-rule"`, ...).
+    - `path` -- relative to the adopter root for `REPO`, unrestricted for
+      `LOCAL` (`authorise`'s rule, ADR 0008).
+    - `durability` -- one of `DURABILITIES`.
+    - `expected` -- the preimage state, in `current_state`'s vocabulary
+      (`{"kind": ABSENT}`, `{"kind": FILE, "digest": ..., "mode": ...}`,
+      ...): what the executor's expected-state check compares against.
+    - `content` -- `bytes`, or `None`. The full new bytes for `CREATE` of a
+      file and `REPLACE`; the bytes to add for `APPEND`. Always `None` for
+      `OBSERVE`, `LINK` and `CREATE` of a directory -- this is never a
+      diff or a patch, and it is never persisted: `_open_transaction`
+      writes the transaction file's `preimage`/`postimage` STATE, never
+      these bytes, so payload content never touches the local disk twice.
+    - `target` -- the new symlink target, for `LINK`; `None` otherwise.
+    - `directory` -- `True` for `CREATE` of a directory; `False` (the
+      default) otherwise, including for every op that has no notion of one.
+    - `note` -- the same free-text annotation `prepare_op`/`append_op`
+      already carry; `None` when there is nothing to say.
+
+    `__post_init__` refuses six combinations, each a way the payload could
+    silently disagree with `op`: a `LINK` carrying `content`, a directory
+    `CREATE` carrying `content`, a file `CREATE`/`REPLACE`/`APPEND` carrying
+    no `content`, a `LINK` carrying no `target`, an `OBSERVE` carrying any
+    payload (`content`, `target` or `directory=True`), and an unknown `op`
+    or `durability`. Every refusal is `ValueError`: nothing has been
+    touched yet to reach it.
+    """
+
+    op: str
+    purpose: str
+    path: str
+    durability: str
+    expected: dict
+    content: bytes | None = None
+    target: str | None = None
+    directory: bool = False
+    note: str | None = None
+
+    def __post_init__(self):
+        if self.op not in INTENTION_OPS:
+            raise ValueError(f"unknown op '{self.op}'")
+        if self.durability not in DURABILITIES:
+            raise ValueError(f"unknown durability '{self.durability}'")
+        if self.op == LINK and self.content is not None:
+            raise ValueError("a link intention carries no content")
+        if self.op == CREATE and self.directory and self.content is not None:
+            raise ValueError("a directory creation carries no content")
+        if (
+            self.op in (CREATE, REPLACE, APPEND)
+            and not self.directory
+            and self.content is None
+        ):
+            raise ValueError(f"a {self.op} intention of a file must carry content")
+        if self.op == LINK and self.target is None:
+            raise ValueError("a link intention must carry its target")
+        if self.op == OBSERVE and (
+            self.content is not None or self.target is not None or self.directory
+        ):
+            raise ValueError("an observe intention carries no payload")
 
 
 def record(op, purpose, path, durability=REPO, stage=COMMITTED, **extra):
@@ -616,6 +703,204 @@ class Lock:
             return False
         self.path.unlink(missing_ok=True)
         return True
+
+
+def _transactions_dir(root):
+    """Where transaction files live: under the vault, never versioned."""
+    return Path(root) / VAULT_DIRNAME / TRANSACTIONS_DIRNAME
+
+
+def _transaction_path(root, transaction_id):
+    """The file one transaction lives in."""
+    return _transactions_dir(root) / f"{transaction_id}.json"
+
+
+def _write_transaction_file(root, transaction_id, entry):
+    """Write `entry` as the whole of one transaction file, fsynced in place.
+
+    Temporary, fsync, `install` -- the same durability shape every other
+    atomic write in this module uses (`bootstrap`, `park_preimage`,
+    `_write_bytes`): the bytes are flushed and fsynced before the rename,
+    and `install` fsyncs the directory after it, so the file this call
+    leaves behind is exactly as durable whether it is the first write of a
+    new transaction or a rewrite of `stage` on an existing one.
+    """
+    directory = _transactions_dir(root)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = _transaction_path(root, transaction_id)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        install(temporary, path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _open_transaction(
+    root,
+    intention,
+    preimage,
+    postimage,
+    preimage_blob=None,
+    mode=None,
+    adoption=None,
+    run=None,
+):
+    """Open the local write-ahead log entry for one mutation; return its id.
+
+    The transaction file NEVER holds payload bytes -- `intention.content`
+    is not written here, only the states either side of it -- so a torn or
+    truncated transaction file never rewrites data on recovery; it only
+    ever tells recovery what the mutation intended and what it should have
+    changed. Its fields:
+
+    | field            | holds                                                        |
+    |------------------|---------------------------------------------------------------|
+    | `schema`         | the same `SCHEMA` a journal record uses                       |
+    | `at`             | when this transaction was opened                               |
+    | `version`        | the plugin version that opened it                              |
+    | `adoption`       | this project's adoption id                                    |
+    | `run`            | the invocation's run id                                        |
+    | `transaction`    | this transaction's own id (also the filename stem)             |
+    | `intention`      | `{op, purpose, path, durability, note?, directory?, target?}`  |
+    | `preimage`       | the preimage STATE (a `current_state`-shaped dict)              |
+    | `postimage`      | the postimage STATE, computed by the caller                    |
+    | `preimage_blob`  | the parked preimage's `sha256:...` reference, or `None`         |
+    | `mode`           | the target's mode bits when it had one, or `None`               |
+    | `stage`          | `"prepared"`, `"published"` or `"aborted"`                     |
+    | `reason`         | present only once `stage` is `"aborted"`                       |
+
+    `postimage` is not derived here: an `APPEND`'s digest needs the bytes
+    already on disk, which only the caller (the executor, Task 4) has read.
+    `intention.expected` is the caller's precondition, not this file's
+    `preimage` -- the two usually agree, but the transaction records what
+    the state actually was, not what the caller hoped to find.
+
+    Fsynced before the id is returned: a transaction file that exists but
+    is not yet durable is worse than no transaction file at all, since
+    recovery would then trust a record a crash could still make disappear.
+    """
+    transaction_id = new_id()
+    payload_intention = {
+        "op": intention.op,
+        "purpose": intention.purpose,
+        "path": intention.path,
+        "durability": intention.durability,
+    }
+    if intention.note is not None:
+        payload_intention["note"] = intention.note
+    if intention.directory:
+        payload_intention["directory"] = True
+    if intention.target is not None:
+        payload_intention["target"] = intention.target
+    entry = {
+        "schema": SCHEMA,
+        "at": now(),
+        "version": __version__,
+        "adoption": adoption,
+        "run": run,
+        "transaction": transaction_id,
+        "intention": payload_intention,
+        "preimage": preimage,
+        "postimage": postimage,
+        "preimage_blob": preimage_blob,
+        "mode": mode,
+        "stage": PREPARED,
+    }
+    _write_transaction_file(root, transaction_id, entry)
+    return transaction_id
+
+
+def _mark_published(root, transaction_id):
+    """Record, fsynced, that publication completed.
+
+    Not decoration: a `replace` whose new bytes equal the old, an `append`
+    of empty content, and every no-bytes intention (`create` of a
+    directory, `link`) satisfy the preimage and postimage states at once,
+    so recovery cannot always tell from the filesystem alone whether the
+    mutation happened. This marker, fsynced after publication, is what
+    turns that inference into a fact (design §3).
+    """
+    path = _transaction_path(root, transaction_id)
+    entry = json.loads(path.read_text(encoding="utf-8"))
+    entry["stage"] = PUBLISHED
+    _write_transaction_file(root, transaction_id, entry)
+
+
+def _abort_transaction(root, transaction_id, reason):
+    """Close a transaction that will never publish, recording why."""
+    path = _transaction_path(root, transaction_id)
+    entry = json.loads(path.read_text(encoding="utf-8"))
+    entry["stage"] = ABORTED
+    entry["reason"] = reason
+    _write_transaction_file(root, transaction_id, entry)
+
+
+def _resolve_transaction(root, transaction_id):
+    """Unlink a transaction's file and fsync the directory that held it.
+
+    A resolved transaction leaves the directory: this is the only function
+    that removes a transaction file, called once recovery (or the executor
+    itself, on its own successful run) has no further use for it.
+    """
+    path = _transaction_path(root, transaction_id)
+    path.unlink(missing_ok=True)
+    fsync_directory(path.parent)
+
+
+def _open_transactions(root):
+    """Every unresolved transaction, ordered by `at` with `id` as tiebreaker.
+
+    A transaction FILE present is "unresolved"; among those, `prepared` and
+    `published` are "open" and `aborted` is closed pending removal -- this
+    function does not distinguish the three, because a caller such as
+    `journal --check` reports all of them the same way: something is still
+    on disk that a clean run would have resolved away.
+
+    Each entry carries its `id` (the filename stem) alongside whatever the
+    file held. A file that is not readable, not valid JSON, or not a JSON
+    object yields `{"id": <stem>, "damaged": "<reason>"}` and nothing else
+    -- never a traceback, never silently skipped, the same promise `read`
+    makes for the two journals. `*.tmp` temporaries -- `_write_transaction_file`'s
+    own in-flight writes -- are not transactions and are ignored.
+    """
+    directory = _transactions_dir(root)
+    try:
+        names = sorted(entry.name for entry in directory.iterdir())
+    except FileNotFoundError:
+        return []
+    results = []
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        transaction_id = name[: -len(".json")]
+        path = directory / name
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as error:
+            results.append({"id": transaction_id, "damaged": str(error)})
+            continue
+        try:
+            entry = json.loads(text)
+        except json.JSONDecodeError as error:
+            results.append(
+                {"id": transaction_id, "damaged": f"not valid JSON: {error.msg}"}
+            )
+            continue
+        if not isinstance(entry, dict):
+            results.append(
+                {"id": transaction_id, "damaged": "record is not a JSON object"}
+            )
+            continue
+        entry = dict(entry)
+        entry["id"] = transaction_id
+        results.append(entry)
+    results.sort(key=lambda item: (item.get("at", ""), item["id"]))
+    return results
 
 
 def bootstrap(root=Path(), run=None, records=None, local=None):
@@ -1166,8 +1451,17 @@ def run(check, stdout, stderr):
 
     Read-only in both modes. Without `--check` it summarises and exits 0
     whatever it finds, so a reader can look at a project without gating on
-    it; with `--check` an unfinished transaction is an ERROR, because a
-    caller that asked to be told cannot be told by an exit code of 0.
+    it; with `--check` an unfinished transaction -- from the two journals'
+    own `prepared`/`committed` pairing (`reconcile`), or a transaction file
+    still on disk (`_open_transactions`) -- is an ERROR, because a caller
+    that asked to be told cannot be told by an exit code of 0.
+
+    A transaction file is reported even without `--check`, but only as a
+    count: no caller opens one yet (Task 4's executor is what will), so
+    today it can only be a hand-written fixture or a genuinely interrupted
+    run, and either way a reader who did not ask to gate on it should still
+    be told something is open, on a second line, only when there is
+    something to say.
     """
     from .findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
 
@@ -1185,6 +1479,12 @@ def run(check, stdout, stderr):
         # two reads must be reported the same way as anything else the
         # reader cannot accept.
         unfinished = reconcile(root) if check else []
+        # `_open_transactions` never raises -- an unreadable transaction file
+        # is one of its own results, not a `JournalError` -- so it does not
+        # need this `try`, but reading the log alongside the two journals in
+        # one pass is what lets the summary below count everything actually
+        # read even when one of them is later refused.
+        transactions = _open_transactions(root)
     except JournalError as error:
         where = error.artifact or JOURNAL_FILENAME
         location = where if error.lineno is None else f"{where}:{error.lineno}"
@@ -1194,6 +1494,11 @@ def run(check, stdout, stderr):
 
     if not check:
         print(f"journal: {len(records)} record(s)", file=stdout)
+        if transactions:
+            print(
+                f"journal: {len(transactions)} unresolved transaction(s)",
+                file=stdout,
+            )
         return EXIT_OK
 
     for entry, state in unfinished:
@@ -1207,8 +1512,20 @@ def run(check, stdout, stderr):
             ).render(),
             file=stderr,
         )
+    for item in transactions:
+        artifact = f"{VAULT_DIRNAME}/{TRANSACTIONS_DIRNAME}/{item['id']}.json"
+        if "damaged" in item:
+            location = artifact
+            message = f"open transaction {item['id']} is damaged: {item['damaged']}"
+        else:
+            location = item.get("intention", {}).get("path", artifact)
+            stage = item.get("stage", "?")
+            message = f"open transaction {item['id']} ({stage}) on {location}"
+        print(Finding(ERROR, location, "journal", message).render(), file=stderr)
+
+    total_errors = len(unfinished) + len(transactions)
     print(
-        f"journal: {len(records)} record(s), {len(unfinished)} error(s)",
+        f"journal: {len(records)} record(s), {total_errors} error(s)",
         file=stdout,
     )
-    return EXIT_ERROR if unfinished else EXIT_OK
+    return EXIT_ERROR if total_errors else EXIT_OK

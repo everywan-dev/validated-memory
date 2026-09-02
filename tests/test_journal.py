@@ -1168,3 +1168,107 @@ def test_a_journal_that_is_a_broken_symlink_is_never_replaced(
     assert "journal.jsonl" in result.stderr, result.stderr
     assert journal.is_symlink(), "the adopter's symlink was replaced"
     assert not journal.exists(), "the symlink was followed and written through"
+
+
+# --- the transaction log, and the fault seam ------------------------------
+
+
+def test_journal_check_reports_a_readable_open_transaction(run_cli, tmp_path):
+    """A hand-written transaction file, in `_open_transaction`'s own field shape.
+
+    No caller opens a transaction until Task 4's executor exists, so this is
+    the contract the reader (`_open_transactions`, exercised through
+    `journal --check`) and Task 4's writer have to agree on. The exact
+    shape is `_open_transaction`'s docstring, in `validated_memory/journal.py`.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    adoption = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])[
+        "adoption"
+    ]
+
+    transactions = tmp_path / ".validated-memory" / "transactions"
+    transactions.mkdir(parents=True)
+    entry = {
+        "schema": 1,
+        "at": "2026-09-01T00:00:00Z",
+        "version": "1.6.0",
+        "adoption": adoption,
+        "run": "7777777777777777",
+        "transaction": "aaaaaaaaaaaaaaaa",
+        "intention": {
+            "op": "replace",
+            "purpose": "init",
+            "path": "validated-memory.md",
+            "durability": "repo",
+        },
+        "preimage": {"kind": "file", "digest": "sha256:" + "0" * 64, "mode": 420},
+        "postimage": {"kind": "file", "digest": "sha256:" + "1" * 64, "mode": 420},
+        "preimage_blob": "sha256:" + "0" * 64,
+        "mode": 420,
+        "stage": "prepared",
+    }
+    (transactions / "aaaaaaaaaaaaaaaa.json").write_text(
+        json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        "open transaction aaaaaaaaaaaaaaaa (prepared) on validated-memory.md"
+        in result.stderr
+    ), result.stderr
+    read_back = len(_records(journal))
+    assert (
+        f"journal: {read_back} record(s), 1 error(s)" in result.stdout
+    ), result.stdout
+
+
+def test_journal_check_reports_a_damaged_transaction_file(run_cli, tmp_path):
+    """A transaction file that is not valid JSON is reported, never a traceback.
+
+    Same promise `read` already makes for the two journals: the id is
+    named, the file is called out as damaged, and the pass over every other
+    unresolved transaction continues rather than raising out of `--check`.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    transactions = tmp_path / ".validated-memory" / "transactions"
+    transactions.mkdir(parents=True)
+    (transactions / "bbbbbbbbbbbbbbbb.json").write_text(
+        "{not json", encoding="utf-8"
+    )
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "bbbbbbbbbbbbbbbb" in result.stderr, result.stderr
+    assert "damaged" in result.stderr, result.stderr
+
+
+def test_journal_reports_unresolved_transactions_only_when_nonzero(
+    run_cli, tmp_path
+):
+    """Without `--check`, the second line appears only when there is one to say.
+
+    `journal` never gates on its own (`test_journal_reports_the_log_and_exits_clean`),
+    and a transaction count is no exception: the summary below stays exit 0
+    whether or not the second line prints.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    clean = run_cli("journal", cwd=tmp_path)
+    assert clean.returncode == 0, clean.stdout
+    assert "unresolved transaction" not in clean.stdout, clean.stdout
+
+    transactions = tmp_path / ".validated-memory" / "transactions"
+    transactions.mkdir(parents=True)
+    (transactions / "cccccccccccccccc.json").write_text(
+        "{not json", encoding="utf-8"
+    )
+
+    result = run_cli("journal", cwd=tmp_path)
+
+    assert result.returncode == 0, result.stdout
+    assert "journal: 1 unresolved transaction(s)" in result.stdout, result.stdout
