@@ -529,6 +529,42 @@ def test_journal_check_reports_each_of_the_four_states(run_cli, tmp_path):
     assert "the path is unknown" in reported["knowledge"], reported
 
 
+def test_a_broken_symlink_where_a_directory_was_expected_is_not_applied(
+    run_cli, tmp_path
+):
+    """`directory` means a directory is there, not merely that the name resolves.
+
+    A `create` record with no postimage describes a `mkdir` (`_ensure_dir`
+    is the only writer of that shape today). Reading `exists() or
+    is_symlink()` for that case read a broken symlink as `applied`, since
+    `is_symlink()` is true whether or not the link resolves -- design §6's
+    false `applied`, reachable this time through the reconciler rather than
+    through `write`. `current_state`'s `directory` check reads the node
+    itself, so a broken symlink left where a directory was expected is
+    `unapplied`: the `mkdir` never happened, and nothing here pretends
+    otherwise.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    orphan = _record(
+        journal,
+        run="6666666666666666",
+        op="create",
+        path="never-created-dir",
+    )
+    del orphan["preimage"]
+    del orphan["postimage"]
+    orphan["note"] = "directory created"
+    _append_record(journal, orphan)
+    (tmp_path / "never-created-dir").symlink_to(tmp_path / "does-not-exist")
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "never-created-dir" in result.stderr, result.stderr
+    assert "the path is unapplied" in result.stderr, result.stderr
+
+
 def test_a_write_over_an_existing_file_parks_its_preimage(run_cli, tmp_path):
     """The preimage store, driven through the CLI rather than hand-written.
 

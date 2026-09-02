@@ -64,6 +64,16 @@ PREPARED = "prepared"
 COMMITTED = "committed"
 STAGES = (PREPARED, COMMITTED)
 
+# The state a path is expected to be in, or found to be in -- lstat
+# semantics throughout, so a symlink is a fact about itself, never about
+# what it points at. `absent` needs no other field; `directory`, `file` and
+# `symlink` may each carry a `mode` (see `satisfies`); `file` also carries a
+# content `digest`, `symlink` also carries its `target` (a `readlink`).
+ABSENT = "absent"
+DIRECTORY = "directory"
+FILE = "file"
+SYMLINK = "symlink"
+
 COMMON_FIELDS = (
     "schema",
     "at",
@@ -142,6 +152,63 @@ def now():
 def new_id():
     """A short, collision-resistant identifier for a run or an adoption."""
     return secrets.token_hex(8)
+
+
+def current_state(root, path):
+    """What is actually at `path` (under `root`), in the vocabulary above.
+
+    `lstat`, never `stat`: the node itself is what is reported, so a symlink
+    is `symlink` whether or not it resolves -- a broken one is `symlink`,
+    never `absent` or `directory`. `directory` exists because a `create`
+    record with no bytes to digest needs a check richer than "the name
+    resolves to something", which a broken symlink also satisfies; that is
+    today's false `applied` (design §6).
+
+    Anything `lstat` cannot see at all -- nothing there, a missing parent, a
+    parent that denies traversal -- reads as `absent`; this function asks
+    one question, "what is at this exact name", and every reason `lstat`
+    has for not answering it collapses to the same "nothing was found"
+    here. A regular file's bytes are read for its digest; a node that is
+    neither a directory, a symlink nor a regular file (a FIFO, a socket, a
+    device -- nothing this project ever creates) is reported as `file`
+    without a `digest`, since reading through it could block forever and
+    the vocabulary has no fifth word for it.
+
+    Always carries `mode`, on every kind but `absent`: this is the actual
+    side of a `satisfies` comparison, and the "any mode matches" case has to
+    have something to compare away, not the absence of a comparison.
+    """
+    target = Path(root) / path
+    try:
+        info = os.lstat(target)
+    except OSError:
+        return {"kind": ABSENT}
+    mode = stat.S_IMODE(info.st_mode)
+    if stat.S_ISDIR(info.st_mode):
+        return {"kind": DIRECTORY, "mode": mode}
+    if stat.S_ISLNK(info.st_mode):
+        return {"kind": SYMLINK, "target": os.readlink(target), "mode": mode}
+    if stat.S_ISREG(info.st_mode):
+        return {"kind": FILE, "digest": digest(target.read_bytes()), "mode": mode}
+    return {"kind": FILE, "mode": mode}
+
+
+def satisfies(actual, expected):
+    """Whether `actual` (from `current_state`) matches `expected`.
+
+    Every field `expected` names must equal the same field of `actual`,
+    except `mode`: an expected state that omits it matches any mode, and one
+    that carries it must match exactly. This is one comparison for every
+    kind rather than a branch per kind, because the fields that matter
+    already differ by kind (`digest` for `file`, `target` for `symlink`) and
+    `expected` only ever names the ones its own kind carries.
+    """
+    for field, value in expected.items():
+        if field != "mode" and actual.get(field) != value:
+            return False
+    if "mode" in expected and actual.get("mode") != expected["mode"]:
+        return False
+    return True
 
 
 def record(op, purpose, path, durability=REPO, stage=COMMITTED, **extra):
@@ -968,9 +1035,21 @@ def _state_of(root, entry):
         return UNKNOWN
     if "postimage" not in entry:
         # A mutation with no bytes to digest -- a directory, a symlink.
-        # Existence is the whole of its state, so that is what is compared;
-        # comparing digests here would read a missing path as `applied`,
-        # since both sides would be None.
+        # `create` (a `mkdir`, from `_ensure_dir`) is checked against
+        # `directory`, not mere existence: a broken symlink resolves to
+        # nothing and used to read as `applied` under `exists() or
+        # is_symlink()`, since `is_symlink()` is true whether or not the
+        # link resolves -- exactly the false `applied` design §6 names.
+        # Every other no-postimage op (`link`, from `_record_symlink`) has
+        # no state word richer than existence yet: the record's own subject
+        # IS the symlink, so a symlink being there, resolvable or not, is
+        # what its `link` record describes as applied.
+        if entry["op"] == CREATE:
+            return (
+                APPLIED
+                if current_state(root, entry["path"])["kind"] == DIRECTORY
+                else UNAPPLIED
+            )
         return APPLIED if target.exists() or target.is_symlink() else UNAPPLIED
     try:
         actual = digest(target.read_bytes())
