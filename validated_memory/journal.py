@@ -1385,10 +1385,13 @@ PROBLEM_DAMAGED = "damaged"
 RECOVERY_PROBLEMS = (PROBLEM_DIVERGED, PROBLEM_UNKNOWN, PROBLEM_DAMAGED)
 
 # What `_classify` says when recovery would resolve the transaction on its
-# own.
+# own, and what `journal --check` calls all three: it reports, so the three
+# ways of resolving one are one answer to the only question it asks --
+# would a run clear this away by itself?
 _COMPLETE = "complete"
 _DISCARD = "discard"
 _REMOVE = "remove"
+RECOVERABLE = "recoverable"
 
 
 @dataclass(frozen=True)
@@ -2805,7 +2808,9 @@ def _resolves_below(root, target):
 def run(check, stdout, stderr):
     """The `journal` subcommand: report the record, and optionally reconcile.
 
-    Read-only in both modes. Without `--check` it summarises and exits 0
+    Read-only in both modes, and `--check` is read-only in particular: it
+    classifies every unresolved transaction by what recovery WOULD do with
+    it and does none of it. Without `--check` it summarises and exits 0
     whatever it finds, so a reader can look at a project without gating on
     it; with `--check` an unfinished transaction -- from the two journals'
     own `prepared`/`committed` pairing (`reconcile`), or a transaction file
@@ -2867,14 +2872,23 @@ def run(check, stdout, stderr):
             file=stderr,
         )
     for item in transactions:
-        artifact = f"{VAULT_DIRNAME}/{TRANSACTIONS_DIRNAME}/{item['id']}.json"
-        if "damaged" in item:
-            location = artifact
-            message = f"open transaction {item['id']} is damaged: {item['damaged']}"
+        # Classified by the one function recovery itself acts on, so what
+        # `--check` promises and what the next run does cannot drift apart.
+        verdict, facts = _classify(root, item)
+        if verdict == PROBLEM_DAMAGED:
+            location = _transaction_path(Path(), item["id"]).as_posix()
+            message = f"damaged transaction {item['id']}: {facts['reason']}"
         else:
-            location = item.get("intention", {}).get("path", artifact)
-            stage = item.get("stage", "?")
-            message = f"open transaction {item['id']} ({stage}) on {location}"
+            location = facts["path"]
+            word = (
+                RECOVERABLE
+                if verdict in (_COMPLETE, _DISCARD, _REMOVE)
+                else verdict
+            )
+            message = (
+                f"open transaction {item['id']} ({facts['stage']}) on "
+                f"{location}: {word}"
+            )
         print(Finding(ERROR, location, "journal", message).render(), file=stderr)
 
     total_errors = len(unfinished) + len(transactions)

@@ -2376,6 +2376,78 @@ def test_only_the_path_a_transaction_names_is_gated(
         assert flag in result.stderr, result.stderr
 
 
+def test_journal_check_says_what_recovery_would_do_with_each_transaction(
+    run_cli, tmp_path
+):
+    """Four words, one per row of the table, and `--check` writes nothing.
+
+    The classification is `_classify`'s, which is also what `Run.recover`
+    acts on, so what `--check` promises and what the next run does cannot
+    drift apart. `recoverable` covers complete, discard and remove alike:
+    `--check` asks one question -- would a run clear this away by itself?
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    # `published`, and the path is the postimage: recovery completes it.
+    _transaction_file(
+        tmp_path,
+        "1111111111111111",
+        stage="published",
+        postimage={
+            "kind": "file",
+            "digest": _records(tmp_path / "journal.jsonl")[-1]["postimage"],
+        },
+        intention={
+            "op": "create",
+            "purpose": "init",
+            "path": "knowledge-extension.md",
+            "durability": "repo",
+        },
+    )
+    # `published`, and the path is something else entirely.
+    _transaction_file(
+        tmp_path,
+        "2222222222222222",
+        stage="published",
+        intention={
+            "op": "replace",
+            "purpose": "init",
+            "path": "memory/MEMORY.md",
+            "durability": "repo",
+        },
+    )
+    # `prepared`, and the path matches neither state.
+    _transaction_file(tmp_path, "3333333333333333")
+    (tmp_path / ".validated-memory" / "transactions" / "4444444444444444.json").write_text(
+        "{not json", encoding="utf-8"
+    )
+    before = (tmp_path / "journal.jsonl").read_text(encoding="utf-8")
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        "open transaction 1111111111111111 (published) on "
+        "knowledge-extension.md: recoverable" in result.stderr
+    ), result.stderr
+    assert (
+        "open transaction 2222222222222222 (published) on "
+        "memory/MEMORY.md: diverged" in result.stderr
+    ), result.stderr
+    assert (
+        "open transaction 3333333333333333 (prepared) on "
+        "validated-memory.md: unknown" in result.stderr
+    ), result.stderr
+    assert "damaged transaction 4444444444444444:" in result.stderr, result.stderr
+    assert "journal: 13 record(s), 4 error(s)" in result.stdout, result.stdout
+    # Read-only: nothing was completed, discarded or removed.
+    assert (tmp_path / "journal.jsonl").read_text(encoding="utf-8") == before
+    left = sorted(
+        entry.name
+        for entry in (tmp_path / ".validated-memory" / "transactions").iterdir()
+    )
+    assert len(left) == 4, left
+
+
 def test_an_aborted_transaction_is_reported_and_removed(run_cli, tmp_path):
     """`aborted` is closed already: recovery unlinks it and records nothing.
 
