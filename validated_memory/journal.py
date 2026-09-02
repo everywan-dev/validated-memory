@@ -1571,6 +1571,12 @@ def _classify(root, item, adoption=None):
       only the marker was lost: `_COMPLETE`. Neither, or BOTH -- which the
       executor's no-op rule makes unreachable for a transaction it opened,
       but not for a hand-written one -- is `unknown`.
+    - A path whose bytes cannot be READ at all -- a file this user may not
+      open, an I/O error -- is `unknown` too, whatever the stage, and
+      `facts["actual"]` is None with the reason in `facts["reason"]`.
+      Nothing is known about the path, which is exactly what the word
+      says; asserting `absent` or `diverged` out of a failed read would be
+      the guess this function exists to remove.
 
     The path is checked lexically for a repository transaction and not
     resolved: `read` refuses a repository record whose path is absolute or
@@ -1686,7 +1692,19 @@ def _classify(root, item, adoption=None):
     facts["preimage"] = preimage
     facts["postimage"] = postimage
 
-    actual = current_state(root, facts["path"])
+    try:
+        actual = current_state(root, facts["path"])
+    except OSError as error:
+        # `current_state` swallows every `lstat` failure -- what it cannot
+        # see at all is `absent` -- but a regular file it CAN see is read
+        # for its digest, and that read raises: a file the adopter set to
+        # mode 000 came out of `journal --check` as a `PermissionError`
+        # traceback. What is at the path cannot be established, which is
+        # what `unknown` says; `actual` is None because there is no state
+        # to report, and every caller reads `reason` instead.
+        facts["actual"] = None
+        facts["reason"] = str(error)
+        return PROBLEM_UNKNOWN, facts
     facts["actual"] = actual
     matches_post = satisfies(actual, postimage)
     if stage == PUBLISHED:
@@ -2196,7 +2214,24 @@ class Run:
                 message=str(error),
             )
         intention = _replace(intention, path=location)
-        actual = current_state(self.root, location)
+        try:
+            actual = current_state(self.root, location)
+        except OSError as error:
+            # The expected-state check is the first thing that reads the
+            # path, and a regular file this user may not read raises out of
+            # the digest `current_state` takes. A refusal, like every other
+            # precondition that cannot be met: nothing has been prepared, so
+            # there is nothing to record and nothing to take back.
+            return Outcome(
+                OUTCOME_REFUSED,
+                intention.op,
+                intention.path,
+                intention.durability,
+                message=(
+                    f"{location} could not be read, so nothing here can say "
+                    f"what state it is in: {error}. Nothing has been written."
+                ),
+            )
 
         # A path an earlier run left an unresolved transaction on is a path
         # nothing knows the truth about: recovery either could not tell
@@ -2656,6 +2691,13 @@ class Run:
                 "published; nothing here can say whether that is wanted -- "
                 f"{_resolution_advice(transaction_id)}"
             )
+        elif facts["actual"] is None:
+            message = (
+                f"transaction {transaction_id} prepared a mutation of {path}, "
+                f"and {path} cannot be read: {facts['reason']}; nothing here "
+                "can say whether it ran -- "
+                f"{_resolution_advice(transaction_id)}"
+            )
         else:
             message = (
                 f"transaction {transaction_id} prepared a mutation of {path}, "
@@ -2839,6 +2881,21 @@ class Run:
                 "of the mutation it carries. --accept, --restore and "
                 "--abandon are for a transaction recovery cannot account "
                 "for. Nothing has been changed.",
+            )
+
+        if facts["actual"] is None:
+            # `unknown` because the path could not be read at all. All three
+            # flags need to know what is there: `--accept` records the state
+            # it accepted, `--abandon` records that the path was left as
+            # found, and `--restore` parks what it is about to discard. None
+            # of them may be answered out of a state nothing established.
+            return Resolution(
+                transaction_id,
+                resolution,
+                facts["path"],
+                f"{facts['path']} could not be read ({facts['reason']}), so "
+                "nothing here can say what state is being closed over. "
+                "Nothing has been changed.",
             )
 
         if resolution == RESTORE:

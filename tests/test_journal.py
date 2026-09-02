@@ -3400,3 +3400,95 @@ def test_a_transaction_whose_states_are_not_states_is_damaged(run_cli, tmp_path)
             f"damaged transaction {transaction_id}: its preimage or "
             "postimage is in no state this plugin knows" in result.stderr
         ), result.stderr
+
+
+# --- bytes that cannot be read are `unknown`, never a traceback ---------------
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
+def test_a_path_whose_bytes_cannot_be_read_classifies_as_unknown(
+    run_cli, tmp_path, monkeypatch
+):
+    """`current_state` digests a regular file, and that read can be refused.
+
+    Every `lstat` failure already collapses to `absent`; the read that
+    follows it for a regular file was unguarded, so an adopter file at mode
+    000 came out of `journal --check` as a `PermissionError` traceback
+    rather than as a finding. Nothing is known about the path, which is the
+    word `unknown` already means.
+    """
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-published")
+    assert run_cli("init", cwd=tmp_path).returncode == 70
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT")
+    transaction = _transactions(tmp_path)[0]["transaction"]
+    (tmp_path / ".gitignore").chmod(0o000)
+
+    try:
+        result = run_cli("journal", "--check", cwd=tmp_path)
+
+        assert result.returncode == 1, result.stdout
+        assert "Traceback" not in result.stderr, result.stderr
+        assert (
+            f"open transaction {transaction} (published) on .gitignore: unknown"
+            in result.stderr
+        ), result.stderr
+
+        # And the run that meets it reports it rather than raising, leaving
+        # the transaction exactly where it was.
+        recovered = run_cli("init", cwd=tmp_path)
+        assert recovered.returncode == 1, (recovered.stdout, recovered.stderr)
+        assert "Traceback" not in recovered.stderr, recovered.stderr
+        assert ".gitignore cannot be read" in recovered.stderr, recovered.stderr
+        assert len(_transactions(tmp_path)) == 1, _transactions(tmp_path)
+
+        # As does the operator's way out: it cannot say what state it would
+        # be closing over, so it closes nothing.
+        refused = run_cli(
+            "journal", "--resolve", transaction, "--accept", cwd=tmp_path
+        )
+        assert refused.returncode == 1, (refused.stdout, refused.stderr)
+        assert "Traceback" not in refused.stderr, refused.stderr
+        assert "could not be read" in refused.stderr, refused.stderr
+        assert "Nothing has been changed." in refused.stderr, refused.stderr
+        assert len(_transactions(tmp_path)) == 1, _transactions(tmp_path)
+    finally:
+        (tmp_path / ".gitignore").chmod(0o644)
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
+def test_the_executor_refuses_a_path_whose_state_it_cannot_read(run_cli, tmp_path):
+    """The expected-state check is the first read, and it can be denied.
+
+    A plain file where `knowledge/` goes is already an ERROR, and the
+    executor is what says so: the intention expects the name to be absent
+    and the refusal names what is really there. One at mode 000 has no
+    state this run can establish at all, and reading it raised a
+    `PermissionError` out of `init` instead. A refusal like every other
+    precondition that cannot be met: nothing was prepared, so there is
+    nothing to record and nothing to take back.
+    """
+    (tmp_path / "knowledge").write_text("not a directory\n", encoding="utf-8")
+    (tmp_path / "knowledge").chmod(0o000)
+
+    try:
+        result = run_cli("init", cwd=tmp_path)
+
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert "Traceback" not in result.stderr, result.stderr
+        assert (
+            "knowledge could not be read, so nothing here can say what state "
+            "it is in" in result.stderr
+        ), result.stderr
+        assert "Nothing has been written." in result.stderr, result.stderr
+        assert not _transactions(tmp_path), "a refusal opens no transaction"
+        assert not [
+            entry
+            for entry in _records(tmp_path / "journal.jsonl")
+            if entry["path"] == "knowledge"
+        ], "and records nothing"
+    finally:
+        (tmp_path / "knowledge").chmod(0o644)
