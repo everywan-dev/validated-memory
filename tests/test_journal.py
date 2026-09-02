@@ -10,6 +10,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -43,35 +44,95 @@ SHUTIL_MUTATORS = {
 # is a mutation like any other when called from outside `journal.py`.
 JOURNAL_MUTATORS = {"install"}
 
-# A call reaches the journal when it is made ON the journal -- `session.write`,
-# `journal.append` -- or is the one helper that wraps it. Matching the bare
-# method name would let `findings.append(...)` and `handle.write(...)` stand
-# in for a record, and `adopt._absorb` contains exactly such a call while
-# genuinely recording nothing.
+# A call reaches the journal when it is made ON the journal --
+# `session.execute`, `session.observe`. Matching the bare method name would
+# let `findings.append(...)` and `handle.write(...)` stand in for a record,
+# and `adopt._absorb` contains exactly such a call while genuinely recording
+# nothing.
 RECORDERS = {"session", "journal"}
-RECORDING_METHODS = {"observe", "write", "append_op", "append", "execute"}
-RECORDING_FUNCTIONS = {"_record_symlink"}
+# The whole of what a module outside the journal may call to reach it:
+# `execute` for a mutation, `observe` for a fact about the state adoption
+# found, `recover` and `resolve_transaction` for what an earlier run left
+# open. There is no fifth, and nothing here opens a stage.
+RECORDING_METHODS = {"execute", "observe", "recover", "resolve_transaction"}
 
-# Exempt, each with the reason it is not an adopter mutation this plan
-# records. `journal.py` IS the write path. `render.py` and `derive.py` write
-# only derived artifacts, which their own commands regenerate. The four
-# `adopt.py` functions perform the harness absorption, deferred whole to the
-# reversal plan -- named one by one rather than by module, so a new write
-# added to that file is still caught.
-EXEMPT_MODULES = {"journal.py", "render.py", "derive.py"}
-EXEMPT_FUNCTIONS = {
-    ("init.py", "_ensure_views"),
-    ("adopt.py", "take_over"),
-    ("adopt.py", "_absorb"),
-    ("adopt.py", "_reconcile_index"),
-    ("adopt.py", "_park"),
-    # `verdicts.jsonl` is the other append-only log. `probe` writes it and
-    # re-running `probe` rebuilds it, which is exactly what a journal is
-    # not -- and why journalling it is deferred with the rest of the write
-    # paths outside `init` (see `docs/reference/journal.md`, "What is
-    # recorded, and what is not yet").
-    ("verdicts.py", "append"),
+# The module that IS the write path: the two sets below are exceptions to it,
+# so it can be neither.
+WRITE_PATH = "journal.py"
+
+# --- the two exception sets, and why they are two ------------------------------
+#
+# Both name callers the pin lets past, and they are not the same kind of
+# thing, which the plan's first draft conflated. Each entry carries the
+# reason it is there; a `*` for the function name covers a whole module.
+
+# Callers that mutate the adopter's tree WITHOUT going through the executor,
+# by decision (design §4). Exactly two decisions, listed by every function
+# that implements one.
+EXECUTOR_EXCEPTIONS = {
+    ("init.py", "_sync_symlink"): (
+        "the fail-open harness link: the contract requires the link back "
+        "when the journal cannot be read or written at all, which is the "
+        "SessionStart hook's only job, and an executor that requires a "
+        "working journal cannot serve it (design §4)"
+    ),
+    ("init.py", "relink"): (
+        "the repair itself, the closure `_sync_symlink` hands to "
+        "`_record_symlink`: it publishes that one symlink atomically and "
+        "nothing else"
+    ),
+    ("adopt.py", "take_over"): (
+        "the harness absorption: it recognises a tree, copies "
+        "conditionally, reconciles an index and renames the source, and "
+        "tolerates a per-file conflict -- which needs its own planner "
+        "before the executor can apply it (design §4)"
+    ),
+    ("adopt.py", "_absorb"): "the same absorption, one function of it",
+    ("adopt.py", "_reconcile_index"): "the same absorption, one function of it",
+    ("adopt.py", "_park"): "the same absorption, one function of it",
 }
+
+# Writes that reach no journal because what they write is not adopter data:
+# a derived artifact its own command regenerates, or another append-only log.
+# These are not executor exceptions -- there is nothing about them for the
+# executor to own.
+UNRECORDED_WRITES = {
+    ("render.py", "*"): "writes only derived artifacts, which `render` rebuilds",
+    ("derive.py", "*"): "writes only derived artifacts, which `derive` rebuilds",
+    ("init.py", "_ensure_views"): (
+        "`init --view` builds the same derived artifacts `render` does"
+    ),
+    ("verdicts.py", "append"): (
+        "`verdicts.jsonl` is the other append-only log: `probe` writes it "
+        "and re-running `probe` rebuilds it, which is exactly what a "
+        "journal is not (see `docs/reference/journal.md`, \"What is "
+        "recorded, and what is not yet\")"
+    ),
+}
+
+# Names the journal keeps to itself: the two halves of the older two-record
+# protocol, the raw append, and the transaction file's own machinery. A
+# module outside `journal.py` naming any of them is reaching past `execute`,
+# which is the thing design §4 removed the public surface for. Matched as
+# text, because prose that tells the next reader such a surface exists is
+# how it gets used again -- which is safe here only because none of these
+# spellings occurs in English.
+PRIVATE_JOURNAL_NAMES = (
+    "prepare_op",
+    "append_op",
+    "journal.append",
+    "_open_transaction",
+    "_mark_published",
+    "_abort_transaction",
+    "_resolve_transaction",
+    "_write_transaction_file",
+)
+
+# The two primitives every one of the six reimplementations of the protocol
+# started from: one record, and one atomic install. Matched as CALLS rather
+# than as text -- `record(s)` is how the views count a verdict log, and a pin
+# that failed on English would be turned off rather than obeyed.
+PRIVATE_JOURNAL_CALLS = ("record", "install")
 
 
 def _writing_mode(call):
@@ -126,56 +187,56 @@ def _mutating_call(call):
 def _recording_call(call):
     """Whether this call reaches the journal."""
     function = call.func
-    if isinstance(function, ast.Attribute):
-        return (
-            function.attr in RECORDING_METHODS
-            and isinstance(function.value, ast.Name)
-            and function.value.id in RECORDERS
-        )
-    return isinstance(function, ast.Name) and function.id in RECORDING_FUNCTIONS
+    return (
+        isinstance(function, ast.Attribute)
+        and function.attr in RECORDING_METHODS
+        and isinstance(function.value, ast.Name)
+        and function.value.id in RECORDERS
+    )
 
 
 def _scopes(tree):
     """Every scope in a module, as `(name, [call nodes])`.
 
-    One scope per function that is not defined inside another function,
-    carrying everything nested in it -- a closure is part of the function
-    that builds it, which is how `_sync_symlink` can hand its own mutation
-    to the function that journals it. Plus one `<module>` scope for
-    everything else, because a write at module level runs on import and is
-    no less a write for having no `def` above it.
+    One scope per function, nested ones included and named on their own,
+    each carrying only the calls that are really its own. A closure used to
+    count as part of the function that builds it, which was how
+    `_sync_symlink` handed its own mutation to the function that journalled
+    it; that indirection is gone, and a closure that mutates is now a write
+    path with a name, which is what an exception set has to be able to
+    point at. Plus one `<module>` scope for everything else, because a
+    write at module level runs on import and is no less a write for having
+    no `def` above it.
+
+    A name defined twice in one module -- two closures called `relink`, a
+    method and a function sharing a name -- yields two scopes with the same
+    name, and an exception naming it covers both. Nothing in this package
+    does that today, and the pin would rather over-cover than pretend the
+    ambiguity away.
     """
     functions = [
         node
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
-    nested = {
-        id(child)
-        for function in functions
-        for child in ast.walk(function)
-        if child is not function
-        and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    outer = [function for function in functions if id(function) not in nested]
-    inside = {id(node) for function in outer for node in ast.walk(function)}
-    scopes = [
-        (
-            function.name,
-            [node for node in ast.walk(function) if isinstance(node, ast.Call)],
-        )
-        for function in outer
-    ]
-    scopes.append(
-        (
-            "<module>",
-            [
-                node
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Call) and id(node) not in inside
-            ],
-        )
-    )
+
+    def _own(node):
+        """The calls made directly in `node`, not inside a function within it."""
+        nested = {
+            id(inner)
+            for child in ast.walk(node)
+            if child is not node
+            and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for inner in ast.walk(child)
+        }
+        return [
+            call
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call) and id(call) not in nested
+        ]
+
+    scopes = [(function.name, _own(function)) for function in functions]
+    scopes.append(("<module>", _own(tree)))
     return scopes
 
 
@@ -371,7 +432,15 @@ def test_a_directory_is_recorded_before_it_is_created(run_cli, tmp_path):
 
     Design §4 rejects both one-record protocols, and "mutate first, record
     after" is one of them: a crash in between leaves a directory nothing
-    knows about. The `prepared` record is what makes that window visible.
+    knows about. What closes that window is the transaction file, fsynced
+    with the intention and both states in it BEFORE the `mkdir` runs -- the
+    write-ahead half of the protocol lives there, not in a versioned
+    journal a later run could never close (design §3). The two records here
+    are appended together afterwards, once the directory exists, and what
+    they are is the consummated fact: both halves of one act, in order,
+    under one transaction. Their presence and their order is what this
+    pins; the window is the transaction file's to close and the kill tests'
+    to prove.
     """
     assert run_cli("init", cwd=tmp_path).returncode == 0
 
@@ -809,21 +878,38 @@ def test_a_corrupt_vault_journal_is_reported_against_the_vault(run_cli, tmp_path
     assert ".validated-memory/local.jsonl:" in result.stderr, result.stderr
 
 
+def _package_modules():
+    """Every module of the package, in path order."""
+    return sorted((REPO_ROOT / "validated_memory").rglob("*.py"))
+
+
 def test_every_write_in_the_package_goes_through_the_journal():
     """A mutation with no record fails here, not in the field.
 
     The 1.5.0 and 1.5.1 failures were both silent narrowings that no test
     could see. This is the pin that makes a new unjournalled write path
     visible the moment it is added: a function that mutates the filesystem
-    must also reach the journal, or be named exempt above with its reason.
+    must also reach the journal, or be named in one of the two sets above
+    with its reason.
+
+    The two sets are two different claims, and the plan's first draft
+    conflated them. `EXECUTOR_EXCEPTIONS` names the callers that mutate the
+    adopter's tree without the executor BY DECISION -- the fail-open
+    harness link and the harness absorption, the two design §4 declares --
+    listed by every function that implements one, so a third of that kind
+    fails here rather than passing unnoticed. `UNRECORDED_WRITES` names
+    writes that reach no journal because what they write is not adopter
+    data: a derived artifact its own command regenerates, or another
+    append-only log. A write in the second set is not an exception to the
+    executor; there is nothing about it for the executor to own.
 
     The check is deliberately coarse -- it asks whether a scope contains
     both kinds of call, not whether one guards the other -- so a function
     that mutates and separately calls something journal-shaped would pass.
     A call-graph would be exact and would also be a second implementation of
     the thing it checks. A recording call is recognised by its receiver
-    (`session.write`, `journal.append`), not by its bare method name, so a
-    plain `list.append(...)` or `handle.write(...)` elsewhere in the same
+    (`session.execute`, `session.observe`), not by its bare method name, so
+    a plain `list.append(...)` or `handle.write(...)` elsewhere in the same
     scope cannot stand in for a record.
 
     What it does NOT see, stated because a pin trusted beyond its reach is
@@ -837,13 +923,14 @@ def test_every_write_in_the_package_goes_through_the_journal():
     confirm the vocabulary; a new idiom in the package is a reason to add it
     here.
     """
+    exempt = {**EXECUTOR_EXCEPTIONS, **UNRECORDED_WRITES}
     offenders = []
-    for path in sorted((REPO_ROOT / "validated_memory").rglob("*.py")):
-        if path.name in EXEMPT_MODULES:
+    for path in _package_modules():
+        if path.name == WRITE_PATH or (path.name, "*") in exempt:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for name, calls in _scopes(tree):
-            if (path.name, name) in EXEMPT_FUNCTIONS:
+            if (path.name, name) in exempt:
                 continue
             mutations = [
                 (_mutating_call(call), call.lineno)
@@ -858,9 +945,91 @@ def test_every_write_in_the_package_goes_through_the_journal():
                     "and never reaches the journal"
                 )
     assert not offenders, (
-        "these mutate without reaching the journal; route them through a "
-        "`Run` method or add them to EXEMPT_MODULES/EXEMPT_FUNCTIONS with "
-        "the reason:\n" + "\n".join(offenders)
+        "these mutate without reaching the journal; route them through "
+        "`Run.execute` or add them to EXECUTOR_EXCEPTIONS / "
+        "UNRECORDED_WRITES with the reason:\n" + "\n".join(offenders)
+    )
+
+
+def test_no_module_outside_the_journal_reaches_past_the_executor():
+    """The stage-writing surface is the journal's own, and nothing else may name it.
+
+    Design §4 takes `prepare_op` and `append_op` off the public surface
+    precisely so that no module outside `journal.py` can reimplement the
+    protocol the way `init.py` did -- six spellings of it, each getting a
+    different step wrong. Deleting the two methods is what makes that true
+    today; this is what keeps it true, and it covers the rest of the
+    machinery a reimplementation would reach for next: the transaction
+    file's own functions, and the `record` and `install` primitives every
+    one of those six spellings started from.
+
+    Names, not calls, and the whole source rather than its code: prose that
+    tells the next reader such a surface exists is how it gets used again.
+    """
+    offenders = []
+    for path in _package_modules():
+        if path.name == WRITE_PATH:
+            continue
+        source = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            for name in PRIVATE_JOURNAL_NAMES:
+                if re.search(r"\b" + re.escape(name) + r"\b", line):
+                    offenders.append(f"{path.name}:{lineno}: names `{name}`")
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Call):
+                continue
+            called = node.func
+            name = None
+            if isinstance(called, ast.Name):
+                name = called.id
+            elif isinstance(called, ast.Attribute):
+                name = called.attr
+            if name in PRIVATE_JOURNAL_CALLS:
+                offenders.append(f"{path.name}:{node.lineno}: calls `{name}(...)`")
+    assert not offenders, (
+        "these reach past `Run.execute` into the journal's own protocol; "
+        "the only journal surface a module outside it may touch is `Run`, "
+        "`Run.execute`, `Run.observe`, `Run.recover`, `Lock`, "
+        "`resolve_transaction`, `run`, and the constants:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_every_named_exception_exists_and_says_why_it_is_one():
+    """A set of names is only a gate while every name still means something.
+
+    Two ways it stops meaning something: a function that was renamed or
+    deleted leaves an entry that exempts nothing, and quietly widens what
+    the next entry beside it looks like it may do; and an entry added
+    without a reason is a decision nobody has to defend. So each entry
+    names a function (or a whole module, with `*`) that is really there,
+    and carries the sentence that says why it is exempt.
+    """
+    stale = []
+    unexplained = []
+    for label, entries in (
+        ("EXECUTOR_EXCEPTIONS", EXECUTOR_EXCEPTIONS),
+        ("UNRECORDED_WRITES", UNRECORDED_WRITES),
+    ):
+        for (module, function), reason in entries.items():
+            path = REPO_ROOT / "validated_memory" / module
+            if not path.is_file():
+                stale.append(f"{label}: {module} is not a module of the package")
+                continue
+            if function != "*":
+                defined = {
+                    node.name
+                    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                }
+                if function not in defined:
+                    stale.append(f"{label}: {module} defines no `{function}`")
+            if not reason.strip():
+                unexplained.append(f"{label}: ({module}, {function})")
+    assert not stale, "\n".join(stale)
+    assert not unexplained, (
+        "an exception with no reason is a decision nobody has to defend:\n"
+        + "\n".join(unexplained)
     )
 
 
