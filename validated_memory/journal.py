@@ -2007,125 +2007,80 @@ class Run:
             )
         return location
 
-    def _write_bytes(self, location, data):
-        """Put `data` at `location`, atomically: temporary, fsync, install.
-
-        The temporary is plugin-owned and pid-named, so it is not itself an
-        adopter mutation and is not journalled (§4). A failure removes it
-        and raises, leaving the target exactly as it was -- which is what
-        makes the open `prepared` record the only trace, and an honest one.
-        """
-        target = self.root / location
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
-        try:
-            with temporary.open("wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            install(temporary, target)
-        except OSError:
-            temporary.unlink(missing_ok=True)
-            raise
-
     def write(self, path, content, purpose, durability=REPO):
-        """Create or replace the text file at `path`, journalling both stages."""
-        location = self._location(path)
-        data = content.encode("utf-8")
-        preimage = self.park_preimage(location)
-        op = CREATE if preimage is None else REPLACE
-        postimage = digest(data)
+        """Create or replace the text file at `path`, through the executor.
 
-        append(
-            [
-                self._record(
-                    op,
-                    purpose,
-                    location,
-                    durability,
-                    PREPARED,
-                    preimage=preimage,
-                    postimage=postimage,
-                )
-            ],
-            self.root,
-            durability,
+        A shim, and it says so: `init` does not yet state what it expects to
+        find, so this reads the current state and states it on the caller's
+        behalf -- absent, and the op is a `create`; a file, and the op is a
+        `replace` expecting exactly the digest and mode just read. That is
+        strictly weaker than an expectation the caller declares, because
+        anything already there is accepted rather than refused; what it
+        does buy is every step of the protocol, which no caller now
+        reimplements. `init` declares its own expectations in task 6 and
+        this method goes.
+
+        A refusal comes back as `OSError` carrying the executor's message,
+        because that is what the callers already catch per item
+        (`init._ensure_file`, `init._ensure_ignored`): one item gets an
+        ERROR and the rest of the run continues.
+        """
+        return self._through_executor(
+            path, content, purpose, durability, append_to_it=False
         )
-        _fault("after-prepared")
-
-        self._write_bytes(location, data)
-        _fault("after-mutation")
-
-        append(
-            [
-                self._record(
-                    op,
-                    purpose,
-                    location,
-                    durability,
-                    COMMITTED,
-                    preimage=preimage,
-                    postimage=postimage,
-                )
-            ],
-            self.root,
-            durability,
-        )
-        self._seen.add((durability, location))
 
     def append_text(self, path, content, purpose, durability=REPO):
-        """Append `content` to the text file at `path`, journalling both stages.
+        """Append `content` to the text file at `path`, through the executor.
 
         The inverse of an `append` is "truncate to the recorded prior
         length" (§2), so the record carries `prior_bytes` alongside the
-        preimage and postimage digests. `preimage` is null when the file did
-        not exist at all, exactly as it is for a `create`: the inverse is
-        then removing the file, not truncating it to nothing, and only the
-        record can say which of the two this was.
+        preimage and postimage digests -- `_execute` computes both, since
+        only it has read the bytes already there. `preimage` is null when
+        the file did not exist at all, exactly as it is for a `create`: the
+        inverse is then removing the file, not truncating it to nothing, and
+        only the record can say which of the two this was. That is why the
+        op stays `append` over an absent path rather than becoming a
+        `create`: the two have different inverses, and the record is the
+        only place the difference survives.
 
-        The append is a read-modify-write into a temporary file and an
-        atomic install, not an `open(..., "a")`: a torn append would leave
-        bytes no postimage describes, which is the state the two-record
-        protocol exists to rule out.
+        The append is a read-modify-write published atomically, not an
+        `open(..., "a")`: a torn append would leave bytes no postimage
+        describes, which is the state this protocol exists to rule out.
         """
+        return self._through_executor(
+            path, content, purpose, durability, append_to_it=True
+        )
+
+    def _through_executor(self, path, content, purpose, durability, append_to_it):
+        """Build the intention `write`/`append_text` never asked their caller for."""
         location = self._location(path)
-        target = self.root / location
-        preimage = self.park_preimage(location)
-        existing = target.read_bytes() if preimage is not None else b""
-        data = existing + content.encode("utf-8")
-        fields = {
-            "preimage": preimage,
-            "postimage": digest(data),
-            "prior_bytes": len(existing),
-        }
-
-        append(
-            [
-                self._record(
-                    APPEND, purpose, location, durability, PREPARED, **fields
-                )
-            ],
-            self.root,
-            durability,
+        actual = current_state(self.root, location)
+        if append_to_it:
+            op = APPEND
+        else:
+            op = CREATE if actual["kind"] == ABSENT else REPLACE
+        outcome = self.execute(
+            Intention(
+                op=op,
+                purpose=purpose,
+                path=location,
+                durability=durability,
+                expected=actual,
+                content=content.encode("utf-8"),
+            )
         )
-        _fault("after-prepared")
-
-        self._write_bytes(location, data)
-        _fault("after-mutation")
-
-        append(
-            [
-                self._record(
-                    APPEND, purpose, location, durability, COMMITTED, **fields
-                )
-            ],
-            self.root,
-            durability,
-        )
-        self._seen.add((durability, location))
+        if outcome.status == OUTCOME_REFUSED:
+            raise OSError(outcome.message)
+        return outcome
 
     def prepare_op(self, op, purpose, path, note, durability=REPO):
         """Record that a mutation with no file preimage is about to happen.
+
+        Public for ONE caller, `init._record_symlink`, until the harness
+        link moves onto the executor in task 6; nothing else may open a
+        stage. Design §4 takes `prepare_op` and `append_op` off the public
+        surface precisely so that no module outside this one can
+        reimplement the protocol the way `init.py` did.
 
         `authorise` runs first, before this method appends anything: the
         caller has not yet touched the filesystem for this op (that is
@@ -2150,6 +2105,8 @@ class Run:
 
     def append_op(self, op, purpose, path, note, durability=REPO):
         """Close a mutation with no file preimage: the `committed` half.
+
+        Public for the same one caller as `prepare_op`, and for as long.
 
         `authorise` runs again here, before THIS method's own append -- not
         before the caller's `mkdir`/`relink`, which already happened between

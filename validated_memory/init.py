@@ -494,32 +494,49 @@ def _ensure_dir(path, session):
     re-derive it later.
 
     A broken symlink is the same shape `_ensure_file` refuses, and it earns
-    the same answer here: `mkdir` cannot create through it, so the `prepared`
-    record below would be opened for a mutation that never happens and could
-    never be closed -- and the reconciler reads the link itself as evidence
-    the directory was created, so it reports `applied` for a `create` whose
-    inverse is removing the adopter's own link. The repository journal is
-    versioned, so leaving that record to be written would append one junk
-    line to shared history on every session start.
+    the same answer here: `mkdir` cannot create through it, and the
+    reconciler reads the link itself as evidence the directory was created,
+    so it would report `applied` for a `create` whose inverse is removing
+    the adopter's own link.
+
+    Anything else that is not a directory -- a plain file where `memory/`
+    goes -- is an ERROR, not a `kept`. It was reported `kept` and journalled
+    as "directory already present" through 1.5.2: a permanent, uninvertible
+    claim that adoption found a directory, written about a file, after which
+    every command that reads the layout fails on the file it was told was a
+    directory. Saying so is now the executor's: the intention expects the
+    name to be absent, and the state it finds is what the message names.
     """
     location = path.as_posix()
     if path.is_symlink() and not path.exists():
         return location, None, Finding(ERROR, location, "create", BROKEN_SYMLINK)
-    if path.exists():
+    if path.is_dir():
         session.observe(location, "directory already present")
         return location, "kept", None
     # A `mkdir` has no preimage to park, which is not the same as having no
     # transaction: §4 rejects "mutate first, record after", and a directory
     # created between the two records is one the journal would never
-    # mention. The `prepared` record is written first and closed after.
-    session.prepare_op(journal.CREATE, "init", location, "directory created")
-    try:
-        path.mkdir(parents=True)
-    except OSError as error:
-        return location, None, Finding(
-            ERROR, location, "create", f"directory could not be created: {error}"
+    # mention. The executor owns all of it -- the expected state, the
+    # transaction file, the mkdir and both records -- so this states what it
+    # wants and renders what came back.
+    outcome = session.execute(
+        journal.Intention(
+            op=journal.CREATE,
+            purpose="init",
+            path=location,
+            durability=journal.REPO,
+            expected={"kind": journal.ABSENT},
+            directory=True,
+            note="directory created",
         )
-    session.append_op(journal.CREATE, "init", location, "directory created")
+    )
+    if outcome.status == journal.OUTCOME_REFUSED:
+        return location, None, Finding(
+            ERROR,
+            location,
+            "create",
+            f"directory could not be created: {outcome.message}",
+        )
     return location, "created", None
 
 

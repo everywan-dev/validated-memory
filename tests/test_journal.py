@@ -48,7 +48,7 @@ JOURNAL_MUTATORS = {"install"}
 # in for a record, and `adopt._absorb` contains exactly such a call while
 # genuinely recording nothing.
 RECORDERS = {"session", "journal"}
-RECORDING_METHODS = {"observe", "write", "append_op", "append"}
+RECORDING_METHODS = {"observe", "write", "append_op", "append", "execute"}
 RECORDING_FUNCTIONS = {"_record_symlink"}
 
 # Exempt, each with the reason it is not an adopter mutation this plan
@@ -1191,7 +1191,7 @@ def test_journal_check_reports_a_readable_open_transaction(run_cli, tmp_path):
     ]
 
     transactions = tmp_path / ".validated-memory" / "transactions"
-    transactions.mkdir(parents=True)
+    transactions.mkdir(parents=True, exist_ok=True)
     entry = {
         "schema": 1,
         "at": "2026-09-01T00:00:00Z",
@@ -1237,7 +1237,7 @@ def test_journal_check_reports_a_damaged_transaction_file(run_cli, tmp_path):
     """
     assert run_cli("init", cwd=tmp_path).returncode == 0
     transactions = tmp_path / ".validated-memory" / "transactions"
-    transactions.mkdir(parents=True)
+    transactions.mkdir(parents=True, exist_ok=True)
     (transactions / "bbbbbbbbbbbbbbbb.json").write_text(
         "{not json", encoding="utf-8"
     )
@@ -1266,7 +1266,7 @@ def test_journal_reports_unresolved_transactions_only_when_nonzero(
     assert "unresolved transaction" not in clean.stdout, clean.stdout
 
     transactions = tmp_path / ".validated-memory" / "transactions"
-    transactions.mkdir(parents=True)
+    transactions.mkdir(parents=True, exist_ok=True)
     (transactions / "cccccccccccccccc.json").write_text(
         "{not json", encoding="utf-8"
     )
@@ -1277,28 +1277,45 @@ def test_journal_reports_unresolved_transactions_only_when_nonzero(
     assert "journal: 1 unresolved transaction(s)" in result.stdout, result.stdout
 
 
-def test_a_kill_at_after_prepared_leaves_an_orphan_prepared_record(
+def _transactions(root):
+    """Every transaction file left in a tree's vault, newest name last."""
+    directory = root / ".validated-memory" / "transactions"
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(directory.glob("*.json"))
+    ]
+
+
+def test_a_kill_at_after_transaction_leaves_the_path_untouched(
     run_cli, tmp_path, monkeypatch
 ):
-    """The fault seam, proven live: a kill right after the first record.
+    """The fault seam, proven live: a kill with the write-ahead entry fsynced.
 
     `.gitignore` is the first mutation a fresh adopter's `init` performs
     (`_ensure_ignored` runs before the scaffold, and `_write_entry` calls
-    `append_text`), so this is the earliest `after-prepared` point a plain
-    `init` reaches. What the kill leaves behind -- an open `prepared`
-    record with no bytes on disk to match it -- is exactly what
-    `journal --check` already knows how to reconcile as `unapplied`; this
-    test proves the seam produces that state from a real death, not from a
-    hand edit.
+    `append_text`), so this is the earliest `after-transaction` point a
+    plain `init` reaches.
+
+    What the kill leaves is the shape design §3 asks for and §5 explains:
+    the write-ahead log knows what was intended, and the permanent history
+    -- which is versioned, and holds consummated facts only -- says nothing
+    at all. Nothing was published, so there is nothing on disk for the
+    history to have described.
     """
-    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-prepared")
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-transaction")
     result = run_cli("init", cwd=tmp_path)
 
     assert result.returncode == 70, (result.returncode, result.stdout, result.stderr)
     assert not (tmp_path / ".gitignore").exists()
     records = _records(tmp_path / "journal.jsonl")
-    assert records[-1]["stage"] == "prepared", records
-    assert records[-1]["path"] == ".gitignore", records
+    assert not [e for e in records if e["path"] == ".gitignore"], records
+
+    open_transactions = _transactions(tmp_path)
+    assert len(open_transactions) == 1, open_transactions
+    entry = open_transactions[0]
+    assert entry["stage"] == "prepared", entry
+    assert entry["intention"]["path"] == ".gitignore", entry
+    assert entry["intention"]["op"] == "append", entry
 
     # `os._exit` skips every `finally`, including `Lock.__exit__`, so the
     # lock file this run took is still there, with the pid of a process that
@@ -1311,27 +1328,36 @@ def test_a_kill_at_after_prepared_leaves_an_orphan_prepared_record(
     checked = run_cli("journal", "--check", cwd=tmp_path)
     assert checked.returncode == 1, checked.stdout
     assert ".gitignore" in checked.stderr, checked.stderr
-    assert "unapplied" in checked.stderr, checked.stderr
+    assert f"open transaction {entry['transaction']} (prepared)" in checked.stderr
 
 
-def test_a_kill_at_after_mutation_leaves_bytes_with_no_committed_record(
+def test_a_kill_at_after_published_leaves_bytes_with_no_history(
     run_cli, tmp_path, monkeypatch
 ):
-    """A kill after the bytes are on disk but before the closing record.
+    """A kill after the bytes are on disk and the transaction says so.
 
-    For the two-record protocol `init` still runs today, `reconcile` reads
-    this as `applied`: the mutation happened and only the closing record
-    was lost -- the false `applied` design §1 measured was a `prepared`
-    record with no bytes; this is the state where that word is honest.
+    This is the state the marker exists for. The bytes are published and
+    the history has not been written, and the transaction file -- fsynced
+    as `published` before the records are appended -- is what tells a later
+    recovery that the mutation happened, rather than leaving it to infer it
+    from a filesystem some later run may have changed.
+
+    Recovery itself is task 5's; what is asserted here is only the residue.
     """
-    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-mutation")
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-published")
     result = run_cli("init", cwd=tmp_path)
 
     assert result.returncode == 70, (result.returncode, result.stdout, result.stderr)
-    assert (tmp_path / ".gitignore").exists()
+    ignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert "/.validated-memory/" in ignore, ignore
     records = _records(tmp_path / "journal.jsonl")
-    assert records[-1]["stage"] == "prepared", records
-    assert records[-1]["path"] == ".gitignore", records
+    assert not [e for e in records if e["path"] == ".gitignore"], records
+
+    open_transactions = _transactions(tmp_path)
+    assert len(open_transactions) == 1, open_transactions
+    entry = open_transactions[0]
+    assert entry["stage"] == "published", entry
+    assert entry["intention"]["path"] == ".gitignore", entry
 
     # Left where the kill left it, as in the sibling test above: nothing
     # removes a dead owner's lock by hand, and the next run to take one
@@ -1341,7 +1367,7 @@ def test_a_kill_at_after_mutation_leaves_bytes_with_no_committed_record(
     checked = run_cli("journal", "--check", cwd=tmp_path)
     assert checked.returncode == 1, checked.stdout
     assert ".gitignore" in checked.stderr, checked.stderr
-    assert "applied" in checked.stderr, checked.stderr
+    assert f"open transaction {entry['transaction']} (published)" in checked.stderr
 
 
 def test_the_fault_variable_is_inert_when_unset_or_unreached(
@@ -1351,10 +1377,10 @@ def test_the_fault_variable_is_inert_when_unset_or_unreached(
     changes nothing: the same `init`, byte for byte, on both sides.
 
     `run_cli` copies `os.environ` for the subprocess, so `monkeypatch` here
-    reaches it. `after-history` is one of the four points named after the
-    executor's protocol (`FAULT_POINTS`) and nothing in this package's
-    current call sites can reach it, which is exactly the "set to a point
-    that is never reached" half of this test.
+    reaches it. `after-prepared` is wired into `prepare_op` alone, which
+    only the harness symlink still reaches (`init._record_symlink`), so a
+    plain `init` with no `--harness-memory` never gets there -- which is
+    exactly the "set to a point that is never reached" half of this test.
     """
     baseline = tmp_path / "baseline"
     unreached = tmp_path / "unreached"
@@ -1364,7 +1390,7 @@ def test_the_fault_variable_is_inert_when_unset_or_unreached(
     monkeypatch.delenv("VALIDATED_MEMORY_FAULT", raising=False)
     control = run_cli("init", cwd=baseline)
 
-    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-history")
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-prepared")
     faulted = run_cli("init", cwd=unreached)
 
     assert control.returncode == 0, control.stderr
@@ -1373,18 +1399,198 @@ def test_the_fault_variable_is_inert_when_unset_or_unreached(
     assert control.stderr == faulted.stderr
 
     def _stripped(path):
-        # `at`, `adoption` and `run` are the only fields two independent
-        # runs can never agree on; everything else -- op, purpose, path,
-        # stage, preimage, postimage -- is what "identical journals" means
+        # `at`, `adoption`, `run` and `transaction` are the only fields two
+        # independent runs can never agree on -- all four are minted per
+        # run or per mutation; everything else -- op, purpose, path, stage,
+        # preimage, postimage, mode -- is what "identical journals" means
         # here.
         return [
-            {k: v for k, v in entry.items() if k not in ("at", "adoption", "run")}
+            {
+                k: v
+                for k, v in entry.items()
+                if k not in ("at", "adoption", "run", "transaction")
+            }
             for entry in _records(path)
         ]
 
     assert _stripped(baseline / "journal.jsonl") == _stripped(
         unreached / "journal.jsonl"
     )
+
+
+# --- the executor: what it refuses, what it preserves, what it records ---------
+
+
+def test_a_read_only_file_is_refused_and_left_exactly_as_it_was(run_cli, tmp_path):
+    """The read-only bit is how an adopter says do not write here.
+
+    Measured on shipped 1.5.2 (design §1): a `.gitignore` at mode 0444
+    holding `build/` came back at 0644 and 276 bytes, with
+    `0 error(s), 0 warning(s)` and exit 0. `os.replace` needs write
+    permission on the DIRECTORY, not on the file, so nothing in the install
+    path ever consulted the bit, and the temporary carried a fresh mode over
+    the adopter's.
+
+    Now it is a refusal (§7), and a refusal that reaches the user: the ERROR
+    names the file and its mode, the bytes are the adopter's own, and the
+    mode is untouched.
+    """
+    before = "build/\n"
+    ignore = tmp_path / ".gitignore"
+    ignore.write_text(before, encoding="utf-8")
+    ignore.chmod(0o444)
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert ".gitignore" in result.stderr, result.stderr
+    assert "mode 0444" in result.stderr, result.stderr
+    assert ignore.read_text(encoding="utf-8") == before
+    assert oct(ignore.stat().st_mode & 0o777) == "0o444"
+    # A refusal before anything was prepared writes nothing anywhere
+    # (design §5): not a record, not a transaction file, not a preimage.
+    assert not [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry["path"] == ".gitignore"
+    ]
+    assert not _transactions(tmp_path)
+    assert not (tmp_path / ".validated-memory" / "preimages").exists()
+
+
+def test_a_writable_file_keeps_the_mode_the_adopter_gave_it(run_cli, tmp_path):
+    """A file `init` may write comes back with its own mode, not a fresh one.
+
+    0640 is writable by its owner, so the append happens; what it must not
+    do is hand back 0644, which is what a temporary created under the
+    default umask carries. §7: the install copies the target's mode onto
+    the temporary before the rename.
+    """
+    ignore = tmp_path / ".gitignore"
+    ignore.write_text("build/\n", encoding="utf-8")
+    ignore.chmod(0o640)
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "/.validated-memory/" in ignore.read_text(encoding="utf-8")
+    assert oct(ignore.stat().st_mode & 0o777) == "0o640"
+    # And the mode it kept is what the record says it kept, so a reversal
+    # has something to restore.
+    committed = next(
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry["path"] == ".gitignore" and entry["stage"] == "committed"
+    )
+    assert committed["mode"] == 0o640, committed
+
+
+def test_a_plain_file_where_a_directory_goes_is_refused_not_kept(run_cli, tmp_path):
+    """An expected state is a precondition, and `exists()` is not one.
+
+    Through 1.5.2 a regular file at `memory/` was reported `kept` and
+    journalled as `observe: directory already present` -- a permanent,
+    uninvertible claim about the pre-adoption state, written about
+    something that is not a directory at all. The intention expects the
+    name to be absent, the executor finds a file, and a mismatch "writes
+    nothing anywhere, because at this point there is no transaction to
+    abort".
+    """
+    placeholder = tmp_path / "memory"
+    placeholder.write_text("notes\n", encoding="utf-8")
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "memory: create" in result.stderr, result.stderr
+    assert "expects it to be absent" in result.stderr, result.stderr
+    assert "init: kept memory" not in result.stdout, result.stdout
+    assert placeholder.read_text(encoding="utf-8") == "notes\n"
+    assert not [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry["path"] == "memory"
+    ]
+    assert not _transactions(tmp_path)
+
+
+def test_both_records_of_one_mutation_carry_one_transaction_id(run_cli, tmp_path):
+    """The two halves of one act are recognisable as one act, for ever.
+
+    The transaction file is local and short-lived -- it leaves the disk as
+    soon as the mutation resolves -- so the id is the only thing that
+    survives to say these two records are one mutation and not two. Design
+    §3: the write-ahead log "is not history and must never grow without
+    bound"; the history is where the pairing has to keep working.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    records = [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry["op"] != "observe"
+    ]
+    assert records, "init recorded no mutation"
+    by_stage = {}
+    for entry in records:
+        by_stage.setdefault(entry["path"], {})[entry["stage"]] = entry
+    for path, stages in by_stage.items():
+        assert set(stages) == {"prepared", "committed"}, (path, stages)
+        assert stages["prepared"]["transaction"], (path, stages)
+        assert (
+            stages["prepared"]["transaction"] == stages["committed"]["transaction"]
+        ), (path, stages)
+        # And the mode the path ended up with, on both halves.
+        assert isinstance(stages["committed"]["mode"], int), stages
+
+    # One id per mutation, never one per run: two mutations of one run that
+    # shared an id could not be told apart either.
+    ids = {stages["committed"]["transaction"] for stages in by_stage.values()}
+    assert len(ids) == len(by_stage), by_stage
+
+    # Every transaction the run opened was resolved, so none is left behind.
+    assert not _transactions(tmp_path)
+    assert run_cli("journal", "--check", cwd=tmp_path).returncode == 0
+
+
+def test_a_path_left_by_an_open_transaction_is_never_observed_as_pre_existing(
+    run_cli, tmp_path, monkeypatch
+):
+    """A path the plugin created, with nothing in the history naming it.
+
+    The kill lands after publication and before the two records are
+    appended, so `knowledge/` is on disk and BOTH journals are silent about
+    it -- the state `_seen` cannot learn from the history, because there is
+    no record to learn from. Reading only the histories would observe it as
+    a fact about the state adoption found: the permanent, uninvertible lie
+    commit `4ce59a9` removed. The unresolved transaction file is what makes
+    the next run safe.
+
+    `.gitignore` already carries the rule, so the first mutation the run
+    reaches is `knowledge/` rather than the ignore entry.
+    """
+    (tmp_path / ".gitignore").write_text("/.validated-memory/\n", encoding="utf-8")
+
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-published")
+    killed = run_cli("init", cwd=tmp_path)
+    assert killed.returncode == 70, (killed.stdout, killed.stderr)
+    assert (tmp_path / "knowledge").is_dir()
+    assert not [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry["path"] == "knowledge"
+    ]
+
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT")
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "init: kept knowledge" in result.stdout, result.stdout
+    assert not [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry["op"] == "observe" and entry["path"] == "knowledge"
+    ], _records(tmp_path / "journal.jsonl")
 
 
 # --- the lock: who holds it, who may break it, and where it lives -------------
