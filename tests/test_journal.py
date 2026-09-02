@@ -3634,3 +3634,52 @@ def test_recovery_still_appends_exactly_one_pair_over_a_history_that_has_it(
         if entry.get("transaction") == transaction
     ]
     assert len(written) == 2, written
+
+
+# --- a refusal that says nothing changed has changed nothing ------------------
+
+
+def test_resolving_an_id_nothing_carries_leaves_a_virgin_tree_virgin(
+    run_cli, tmp_path
+):
+    """`--resolve` on an unknown id adopts no project.
+
+    The refusal's last sentence is "Nothing has been changed", and it was
+    not true: `Run.__init__` bootstraps the journal before anything looks
+    for the id, so a tree that had never been adopted came out of the
+    refusal with a `.validated-memory/` and a `journal.jsonl` carrying a
+    freshly minted adoption id. The question is now asked first.
+    """
+    result = run_cli(
+        "journal", "--resolve", "deadbeefdeadbeef", "--accept", cwd=tmp_path
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert (
+        "ERROR: .validated-memory/transactions/deadbeefdeadbeef.json: "
+        "journal: there is no unresolved transaction deadbeefdeadbeef; "
+        "'validated-memory journal --check' lists the ones there are. "
+        "Nothing has been changed." in result.stderr
+    ), result.stderr
+    assert not (tmp_path / "journal.jsonl").exists(), "the journal was created"
+    assert not (tmp_path / ".validated-memory").exists(), "the vault was created"
+    assert not list(tmp_path.iterdir()), sorted(p.name for p in tmp_path.iterdir())
+
+
+def test_resolving_an_id_nothing_carries_is_the_same_refusal_in_an_adopted_tree(
+    run_cli, tmp_path
+):
+    """And an adopted project is left exactly as it was, with the same sentence."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    before = (tmp_path / "journal.jsonl").read_text(encoding="utf-8")
+
+    result = run_cli(
+        "journal", "--resolve", "deadbeefdeadbeef", "--abandon", cwd=tmp_path
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert (
+        "there is no unresolved transaction deadbeefdeadbeef" in result.stderr
+    ), result.stderr
+    assert (tmp_path / "journal.jsonl").read_text(encoding="utf-8") == before

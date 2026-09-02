@@ -1722,6 +1722,22 @@ def _classify(root, item, adoption=None):
     return PROBLEM_UNKNOWN, facts
 
 
+def _no_such_transaction(transaction_id):
+    """The refusal for an id nothing in the log carries.
+
+    One sentence, in two places: `_run_resolve` asks the question before it
+    opens a `Run`, so a tree with no adoption at all is not given one by a
+    command that then says it changed nothing; the resolver asks it again
+    under the lock, where a file can have gone since. Two spellings of it
+    would drift, and this one is what `docs/reference/cli.md` prints.
+    """
+    return (
+        f"there is no unresolved transaction {transaction_id}; "
+        "'validated-memory journal --check' lists the ones there are. "
+        "Nothing has been changed."
+    )
+
+
 def _resolution_advice(transaction_id):
     """How an operator closes a transaction recovery would not touch.
 
@@ -2844,12 +2860,7 @@ class Run:
         )
         if item is None:
             return Resolution(
-                transaction_id,
-                resolution,
-                artifact,
-                f"there is no unresolved transaction {transaction_id}; "
-                "'validated-memory journal --check' lists the ones there "
-                "are. Nothing has been changed.",
+                transaction_id, resolution, artifact, _no_such_transaction(transaction_id)
             )
 
         verdict, facts = _classify(self.root, item, self.adoption)
@@ -3464,14 +3475,31 @@ def _run_resolve(root, transaction_id, resolution, stdout, stderr):
     A refusal is an ERROR and exit 1, not a traceback and not a usage
     error: the id was well formed and the flags were legal, and what could
     not be done is a fact about this project's state. An unknown id is one
-    of those. The success line names the flag as it was typed, because a
+    of those, and it is answered before anything is opened, so the refusal's
+    own promise that nothing has been changed is true of the tree as well as
+    of the log. The success line names the flag as it was typed, because a
     resolution is a decision someone made and the record of the session
     should show which one.
     """
     from .findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
 
     try:
-        outcome = Run(root).resolve_transaction(transaction_id, resolution)
+        # Asked BEFORE a `Run` is built. `Run.__init__` bootstraps the
+        # journal -- it mints an adoption id and installs `journal.jsonl`
+        # with its opening record -- so an id nothing carries used to leave
+        # a virgin tree adopted, under a refusal whose own last sentence
+        # said nothing had been changed. `lexists`, so a transaction file
+        # that is there but unreadable still reaches the resolver, which
+        # has a `damaged` answer for it.
+        if not os.path.lexists(_transaction_path(root, transaction_id)):
+            outcome = Resolution(
+                transaction_id,
+                resolution,
+                _transaction_artifact(transaction_id),
+                _no_such_transaction(transaction_id),
+            )
+        else:
+            outcome = Run(root).resolve_transaction(transaction_id, resolution)
     except JournalError as error:
         where = error.artifact or JOURNAL_FILENAME
         location = where if error.lineno is None else f"{where}:{error.lineno}"
