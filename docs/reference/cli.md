@@ -686,11 +686,13 @@ ERROR: .gitignore: journal: open transaction 56eeba099c335aaa (published) on .gi
 journal: 1 record(s), 1 error(s)
 ```
 
-There are four shapes of finding:
+There are five shapes of finding:
 
 ```
 ERROR: validated-memory.md: journal: unfinished transaction from run 6815e8b2323e4886: the path is applied
 ERROR: knowledge: journal: records of transaction 7901cd24a8758b62 disagree on note
+ERROR: .gitignore: journal: records of transaction 1ed016d9e88b5435: committed without a prepared half
+ERROR: .gitignore: journal: transaction e85966eeb6de80ef is recorded 4 times
 ERROR: .gitignore: journal: open transaction 56eeba099c335aaa (published) on .gitignore: diverged
 ERROR: .validated-memory/transactions/deadbeefdeadbeef.json: journal: damaged transaction deadbeefdeadbeef: not valid JSON: Expecting value
 ```
@@ -699,11 +701,15 @@ In order: a `prepared` record with no matching `committed`
 twin, reported with which of four states its bytes are in (`applied`,
 `unapplied`, `diverged`, `unknown` -- see
 [Journal](journal.md#stages-and-unfinished-transactions)); a closed pair
-whose two halves disagree on a field the mutation itself decided; an open
-transaction, with its file's own stage in brackets and the verdict recovery
-would reach (`recoverable`, `diverged` or `unknown` -- see
+whose two halves disagree on a field the mutation itself decided; an id
+that is not a pair at all, which has two messages -- a `committed` half
+with no `prepared` half, and a transaction recorded more than twice; an
+open transaction, with its file's own stage in brackets and the verdict
+recovery would reach (`recoverable`, `diverged` or `unknown` -- see
 [Journal](journal.md#recovery)); and a transaction file too damaged to name
-a path, which is named by its own file instead.
+a path, which is named by its own file instead -- a file that is not this
+project's transaction at all, by its schema, its own id, its adoption, its
+operation or its states (see [Journal](journal.md#recovery)).
 
 **`--resolve ID`** closes one transaction the way the operator says, with
 exactly one of `--accept` (keep the state the path is in, recorded as an
@@ -735,12 +741,28 @@ of those:
 ERROR: .validated-memory/transactions/51de77210788b0fd.json: journal: there is no unresolved transaction 51de77210788b0fd; 'validated-memory journal --check' lists the ones there are. Nothing has been changed.
 ```
 
+That refusal is reached before anything is opened, so its last sentence is
+true of the tree as well as of the log: run in a directory that has never
+been adopted, it leaves no `journal.jsonl` and no `.validated-memory/`
+behind.
+
 A journal that is present but cannot be parsed is refused with its line
 number, in either reporting mode:
 
 ```
 ERROR: journal.jsonl:5: journal: line is not valid JSON: Expecting value
 journal: 0 record(s), 1 error(s)
+```
+
+So is a directory the plugin owns under the vault that is not a directory.
+`.validated-memory/transactions` and `.validated-memory/preimages` are
+written by name, and a symlink or a plain file standing where one of them
+goes is refused in every mode rather than followed (see
+[Journal](journal.md#the-write-ahead-log)):
+
+```
+ERROR: .validated-memory/transactions: journal: .validated-memory/transactions is not a directory, and this plugin writes what it owns only into a real directory of its own: everything under that name is created, written and removed by name, and a name that is somebody else's carries all of it somewhere this project promises nothing about. Move it aside.
+journal: 13 record(s), 1 error(s)
 ```
 
 Exit codes: `0` without `--check`, whatever the record count; with

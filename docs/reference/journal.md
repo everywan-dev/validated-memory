@@ -175,6 +175,28 @@ transaction, and a run that completes leaves none: the executor removes its
 own on success, and recovery removes every one it can account for. The
 `transactions/` directory itself stays behind, empty.
 
+**Both directories the plugin owns under the vault must be real
+directories.** `.validated-memory/transactions` and
+`.validated-memory/preimages` are created, written and unlinked *by name*,
+and `mkdir`, `open` and `os.replace` follow a symlink standing there
+without a word: a link pointing out of the adopter root would put the
+write-ahead entry, or the only copy of the bytes a mutation is about to
+overwrite, somewhere this project promises nothing about. So each is
+`lstat`ed where it is resolved, before anything is created, written,
+replaced or unlinked through it, and a symlink or a non-directory is an
+ERROR naming the artifact -- exit `1` from `init`, from `journal --check`
+and from `journal --resolve`, never a traceback:
+
+```
+ERROR: .validated-memory/transactions: journal: .validated-memory/transactions is not a directory, and this plugin writes what it owns only into a real directory of its own: everything under that name is created, written and removed by name, and a name that is somebody else's carries all of it somewhere this project promises nothing about. Move it aside.
+```
+
+The check is where the name is *used*, so the preimage store is checked by
+a run that parks or reads back a preimage rather than by every command.
+`.validated-memory/` itself is not checked: the vault's own name may be a
+link into a shared store, exactly as `journal.jsonl` may, and what this
+refuses is a name inside it that the plugin alone writes.
+
 Each file holds:
 
 | Field | Holds |
@@ -509,13 +531,33 @@ A pair that agrees on nothing but its id is not a pair. These fields must
 say the same thing in both halves, and a disagreement is reported as its own
 ERROR, never resolved by preferring one half:
 
-`op`, `path`, `durability`, `preimage`, `postimage`, `note`, `prior_bytes`,
-`mode`.
+`op`, `purpose`, `path`, `durability`, `preimage`, `postimage`, `note`,
+`prior_bytes`, `mode`.
 
 `at` is excluded because the two records are written in one append but
 stamped separately; `stage` because it is what tells them apart; and `run`,
 `adoption`, `schema` and `version` because both halves are filled in from
 one source.
+
+**An id is a half of exactly one act**, and two shapes say otherwise.
+Nothing in this package writes a `committed` record without the `prepared`
+one before it -- the executor appends both in one call, and recovery
+rebuilds both -- so a lone one is a hand edit or a torn merge, and it is
+its own ERROR:
+
+```
+ERROR: .gitignore: journal: records of transaction 1ed016d9e88b5435: committed without a prepared half
+```
+
+And the id is minted per mutation, so a third line carrying it counts one
+mutation twice in a file nothing takes back -- the exact residue recovery's
+idempotency rule exists to avoid appending:
+
+```
+ERROR: .gitignore: journal: transaction e85966eeb6de80ef is recorded 4 times
+```
+
+Both are reported and neither is repaired, like every other finding here.
 
 For each unfinished transaction, `reconcile()` reads the current bytes at
 `path` and reports one of four states -- it never guesses between them, and
@@ -543,14 +585,14 @@ ever closes what that log accounts for.
 
 Recovery is what a run does with what an earlier run left open. It runs at
 the start of `init` -- the command the session hook re-runs at every session
-start, and the only one that mutates the adopter's scaffold -- under the
-run-wide lock,
-before the ignore gate and before `init`'s own first intention. It only ever
-completes or closes what an earlier run began, and unlinks the files that
-said so, so it reduces what is on disk rather than adding to it, which is
-why it may run ahead of the gate that keeps the vault out of the repository.
-`journal --resolve` deliberately does **not** recover: an operator answering
-for one transaction must not have the others closed underneath them.
+start -- under the run-wide lock, before the ignore gate and before
+`init`'s own first intention. It only ever completes or closes what an
+earlier run began, and unlinks the files that said so, so it reduces what is
+on disk rather than adding to it, which is why it may run ahead of the gate
+that keeps the vault out of the repository. `journal --resolve` is the only
+other command that writes through the executor, and it deliberately does
+**not** recover: an operator answering for one transaction must not have the
+others closed underneath them.
 
 It reads the write-ahead log, not the two journals. Each unresolved
 transaction is classified by the file's own record of how far it got, not
@@ -562,12 +604,25 @@ inferred from a filesystem some later process may have changed:
 | `recoverable` -- *discard* | The file says `prepared` and the path is in the preimage state and not in the postimage state | Removes the file. Nothing happened and nothing is recorded, so nothing is printed |
 | `recoverable` -- *remove* | The file says `aborted` | Removes the file. It published nothing |
 | `diverged` | The file says `published` and the path is not in the postimage state -- something wrote it afterwards | Nothing. The file stays, and an ERROR names the path and the way out |
-| `unknown` | The file says `prepared` and the path matches neither state -- or matches both, which only a hand-written file can do | Nothing. The file stays, and an ERROR names the path and the way out |
-| `damaged` | The file could not be read, is not JSON, is not an object, or names no operation, path, durability or pair of states this plugin knows | Nothing. The file stays for inspection, and the ERROR names the file rather than a path, because it names none |
+| `unknown` | The file says `prepared` and the path matches neither state -- or matches both, which only a hand-written file can do; or the path's bytes cannot be read at all, whatever the stage, in which case the message carries the reason instead of the state | Nothing. The file stays, and an ERROR names the path and the way out |
+| `damaged` | The file is not a well-formed transaction **of this project**: it could not be read, is not valid UTF-8, is not JSON, is not an object, names a `schema` this reader does not know, calls itself an id that is not its own file's name, is filed under another `adoption`, names an operation no intention carries (which includes `observe`, since an observation opens no transaction), or holds a preimage or postimage that is not a state | Nothing. The file stays for inspection, and the ERROR names the file rather than a path, because it names none |
 
 `journal --check` reports exactly these verdicts, from the same
 classification, so what `--check` promises and what the next `init` does
-cannot drift apart.
+cannot drift apart. The `damaged` reasons read as sentences about the file:
+
+```
+ERROR: .validated-memory/transactions/1111111111111111.json: journal: damaged transaction 1111111111111111: its schema is 999 and this plugin reads up to 1; a reader that meets a higher number refuses rather than guessing at fields it does not know
+ERROR: .validated-memory/transactions/2222222222222222.json: journal: damaged transaction 2222222222222222: it belongs to adoption ffffffffffffffff, this project is 9784e63239c5a8e6; a mutation of somebody else's tree is not one this history may record
+ERROR: .validated-memory/transactions/3333333333333333.json: journal: damaged transaction 3333333333333333: it calls itself transaction aaaabbbbccccdddd and its file is named 3333333333333333; the two are one id, and nothing here can say which of them the history should carry
+ERROR: .validated-memory/transactions/4444444444444444.json: journal: damaged transaction 4444444444444444: its intention names no operation this plugin prepares
+ERROR: .validated-memory/transactions/5555555555555555.json: journal: damaged transaction 5555555555555555: its preimage or postimage is in no state this plugin knows
+ERROR: .validated-memory/transactions/6666666666666666.json: journal: damaged transaction 6666666666666666: it is not valid UTF-8: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+```
+
+`adoption` is compared only when the journals say what this project's id
+is: a tree whose history is gone has none to compare against, and inventing
+one there would call every transaction foreign.
 
 **Exactly one pair of records per mutation, whatever happens.** Completing a
 transaction appends only the records that are not already there, checked by
@@ -608,7 +663,16 @@ One that is `recoverable` is refused and told to let the next `init` close
 it -- closing it by hand would throw away the record pair of a mutation that
 happened. One that is `damaged` is refused too: nothing there says what it
 did or what to record about it, so the file is left to be inspected and
-removed by hand.
+removed by hand. And one whose path cannot be READ is refused whichever
+flag was given: all three need to know what is there -- `--accept` records
+the state it accepted, `--abandon` that the path was left as found, and
+`--restore` parks what it is about to discard -- and none of them may be
+answered out of a state nothing established.
+
+An id no unresolved transaction has is refused before anything is opened,
+so the refusal's own last sentence is true of the tree as well as of the
+log: a directory that had never been adopted is left without a
+`journal.jsonl` and without a `.validated-memory/`.
 
 - **`--accept`** -- the state the path is in is what the user wants. It
   writes **one `observe`** whose note says it was accepted after divergence
@@ -687,9 +751,11 @@ ERROR: .gitignore: journal: open transaction 56eeba099c335aaa (published) on .gi
 journal: 1 record(s), 1 error(s)
 ```
 
-There are four shapes of finding. In order: a `prepared` record with no
+There are five shapes of finding. In order: a `prepared` record with no
 matching `committed` twin, with which of the four states its bytes are in; a
 closed pair whose halves disagree on a field the mutation itself decided; an
+id that is not a pair at all, which has two messages -- a `committed` half
+with no `prepared` half, and a transaction recorded more than twice; an
 open transaction, with its file's own stage in brackets and the verdict from
 the [recovery table](#recovery); and a transaction file too damaged to name
 a path, which is named by its own file instead.
@@ -697,6 +763,8 @@ a path, which is named by its own file instead.
 ```
 ERROR: validated-memory.md: journal: unfinished transaction from run 6815e8b2323e4886: the path is applied
 ERROR: knowledge: journal: records of transaction 7901cd24a8758b62 disagree on note
+ERROR: .gitignore: journal: records of transaction 1ed016d9e88b5435: committed without a prepared half
+ERROR: .gitignore: journal: transaction e85966eeb6de80ef is recorded 4 times
 ERROR: .gitignore: journal: open transaction 56eeba099c335aaa (published) on .gitignore: diverged
 ERROR: .validated-memory/transactions/deadbeefdeadbeef.json: journal: damaged transaction deadbeefdeadbeef: not valid JSON: Expecting value
 ```
@@ -727,10 +795,11 @@ and exit `1`, not a traceback and not a usage error: the id was well formed
 and the flags were legal, and what could not be done is a fact about this
 project's state.
 
-**Any mode**, a journal that is present but cannot be parsed is reported the
-same way -- one ERROR naming the file (and the line, when the fault is a
-single line's rather than the file's) and the count folded into the
-summary -- and always exits `1`, `--check` or not:
+**Any mode**, a journal that is present but cannot be parsed -- or a
+directory the plugin owns under the vault that is not a directory -- is
+reported the same way: one ERROR naming the artifact (and the line, when
+the fault is a single line's rather than the file's) and the count folded
+into the summary, always exiting `1`, `--check` or not:
 
 ```
 $ python3 -P -m validated_memory journal
