@@ -452,14 +452,79 @@ def _check_types(lineno, entry, where):
 def _is_inside_path(path):
     """Whether `path` is relative and names nothing above the adopter root.
 
-    Lexical, because this runs on every record read: `Run.write` applies the
-    same rule to what it writes. The filesystem question -- whether the path
-    resolves below the root once symlinks are followed -- is asked where
-    something is about to be touched: `Run._location` before a write,
-    `_state_of` before a read.
+    Lexical, because this runs on every record read: `authorise` applies the
+    same rule to a record before it is written. The filesystem question --
+    whether the path resolves below the root once symlinks are followed --
+    is asked where something is about to be touched: `authorise` again,
+    before every write and every record, and `_state_of` before a read.
     """
     candidate = Path(path)
     return not candidate.is_absolute() and ".." not in candidate.parts
+
+
+def authorise(root, path, durability):
+    """The location a record for `path` may carry, or refuse it.
+
+    `local` asks neither question: the vault and the harness symlink
+    legitimately name paths outside the adopter root (ADR 0008), so nothing
+    here may narrow what a `local` record can say, and `path` comes back
+    exactly as given.
+
+    A `repo` intention asks both, in order:
+
+    - Lexical -- `path` is relative and does not climb out with `..`
+      (`_is_inside_path`). `ValueError`, because nothing was touched to
+      find that out.
+    - Resolved -- the location, joined to `root`, still resolves below
+      `root` once every symlink on the way is followed (`_resolves_below`).
+      `OSError`, because a caller may already have read something (a
+      preimage, an existing record) to reach this line.
+
+    The two exception types are load-bearing, not incidental: `init` catches
+    `OSError` per item, so a path that escapes through a symlink gates the
+    one item that named it and nothing else.
+
+    Called once, at the very start of each public `Run` method that can
+    reach the journal -- `observe`, `prepare_op`, `append_op` directly, and
+    `write`/`append_text` through `_location` -- before anything is parked,
+    appended or written, so the resolved question is now asked for
+    `observe`, `prepare_op` and `append_op` too. Before this, only `write`
+    and `append_text` asked it: a `memory/` symlinked to a directory outside
+    the project was lexically fine, so `observe` filed it into the
+    versioned journal as a fact about the tree, even though the bytes it
+    named were never inside the tree at all.
+
+    Deliberately NOT called from `_record`: that helper builds both the
+    `prepared` and the `committed` half of a write, and the second call
+    happens after the mutation (`_write_bytes`) has already run. Asking the
+    resolved question there again could refuse after the bytes were already
+    on disk, abandoning a `prepared` record that reconciliation was built
+    to close rather than a fresh failure to raise past -- see `_record`.
+
+    What this does NOT provide: `dir_fd`-relative ancestor stabilisation.
+    Both checks resolve `path` by name, and nothing stops a hostile process
+    from swapping an ancestor directory for a symlink between this call
+    returning and the action that follows it acting on the same name --
+    that window is real, this project's test seam cannot demonstrate it,
+    and closing it needs the executor's own descriptor-relative operations
+    rather than a second `resolve()` here. It belongs to step 1b.
+    """
+    if durability != REPO:
+        return path
+    location = Path(path).as_posix()
+    if not _is_inside_path(location):
+        raise ValueError(
+            f"{location} is not a path inside the adopter root; a "
+            "repository record may only carry a relative path that stays "
+            "below it. Nothing has been recorded."
+        )
+    if not _resolves_below(Path(root), Path(root) / location):
+        raise OSError(
+            f"{location} resolves outside the adopter root; a repository "
+            "record may only name bytes that stay below it. Nothing has "
+            "been written and nothing has been recorded."
+        )
+    return location
 
 
 # A lock older than this is broken rather than waited on -- by age alone.
@@ -704,20 +769,30 @@ class Run:
         }
 
     def _record(self, op, purpose, path, durability, stage, **extra):
+        """Build one record. The caller has already asked `authorise`.
+
+        Every public method calls `authorise` itself, once, before it parks
+        a preimage, writes bytes or appends anything -- never here, because
+        `_record` builds BOTH halves of a mutation, and the second call is
+        made after the mutation has already happened (`_write_bytes` for a
+        write, the caller's own `mkdir`/`relink` for `prepare_op`'s
+        `committed` twin). Asking the resolved question again on that
+        second call could refuse after the bytes are already on disk,
+        leaving a `prepared` record with no `committed` twin for a mutation
+        that did happen -- exactly the state reconciliation exists to
+        avoid manufacturing on its own.
+
+        What is left here is the cheap lexical guard, kept as a last line
+        of defence: a `repo` record whose path is absolute or climbs out
+        with `..` must never reach `append` even if some future caller
+        forgets to ask `authorise` first, because `read` refuses exactly
+        that record back.
+        """
         if durability == REPO and not _is_inside_path(path):
-            # `read` refuses a repository record whose path leaves the root,
-            # so writing one would produce a journal that cannot be read
-            # back -- and the whole point of refusing on the read side is
-            # that such a record must never be in the file. `write` and
-            # `append_text` check the same rule earlier, on the path they
-            # are about to touch; this catches the note-only methods, which
-            # have no path to touch and so had no check at all. Nothing in
-            # the CLI can reach it today: every repository path `init`
-            # passes is a literal.
             raise ValueError(
-                f"{path} is not a path inside the adopter root; a repository "
-                "record may only carry a relative path that stays below it. "
-                "Nothing has been recorded."
+                f"{path} is not a path inside the adopter root; a "
+                "repository record may only carry a relative path that "
+                "stays below it. Nothing has been recorded."
             )
         return record(
             op,
@@ -733,20 +808,32 @@ class Run:
     def observe(self, path, note, durability=REPO):
         """Record a pre-adoption fact about `path`, on first sight only.
 
+        `authorise` is asked before the `_seen` check, not after: a path
+        this journal has never mentioned but that resolves outside the root
+        through a symlink (`memory/` pointing out of the project, found
+        already there) must never be filed as a fact about the tree, and
+        the `_seen` lookup itself does not know that -- only `authorise`
+        does.
+
         Never inverted, and never written twice: a path this journal already
         mentions is not one adoption found there. A second `observe` would
         be a claim about the state before adoption written after the plugin
         had already changed it, and `observe` has no inverse, so nothing
         would ever take it back.
         """
-        if (durability, path) in self._seen:
+        location = authorise(self.root, path, durability)
+        if (durability, location) in self._seen:
             return
         append(
-            [self._record(OBSERVE, "init", path, durability, COMMITTED, note=note)],
+            [
+                self._record(
+                    OBSERVE, "init", location, durability, COMMITTED, note=note
+                )
+            ],
             self.root,
             durability,
         )
-        self._seen.add((durability, path))
+        self._seen.add((durability, location))
 
     def park_preimage(self, path):
         """Copy the current bytes of `path` into the vault; return the reference.
@@ -785,41 +872,20 @@ class Run:
     def _location(self, path):
         """`path` as a record will carry it: relative to the adopter root.
 
-        Written to the journal exactly as given, so a record never carries
-        an absolute path -- which §7 of the design refuses to act on later.
-        Refusing to write such a record is what keeps it out of the history;
-        `read` applies the same rule to what it finds there.
+        `authorise` is asked here, before the preimage is parked and before
+        the `prepared` record is appended, so a refusal leaves nothing
+        written and nothing recorded -- and its `OSError` is what the caller
+        already catches per item (`init._ensure_file`, `init._ensure_ignored`):
+        one item gets an ERROR finding and the rest of the run continues,
+        which is what a whole-run abort or a traceback would take away.
 
-        The lexical rule is only half of it. §7 requires a
-        repository-relative record to resolve below the resolved root
-        WITHOUT following a symlink out of it, and a lexically perfect
-        `memory/MEMORY.md` lands outside the project the moment `memory/`
-        is a symlink pointing there -- bytes written outside the repository
-        under a record that says they are in it. Nothing later notices:
-        `read` is lexical by design, and `_state_of`'s filesystem check
-        only ever runs on an UNFINISHED transaction, so a completed escape
-        is invisible for the life of the journal. Asked here, before the
-        preimage is parked and before the `prepared` record is appended,
-        so a refusal leaves nothing written and nothing recorded.
-
-        The refusal is an `OSError` because that is what the caller already
-        catches per item (`init._ensure_file`, `init._ensure_ignored`): one
-        item gets an ERROR finding and the rest of the run continues, which
-        is what a whole-run abort or a traceback would take away.
+        The directory check is this method's own, not `authorise`'s: it is
+        about what a file WRITE may target, not about which path a record
+        may name, and `observe`/`prepare_op`/`append_op` -- which call
+        `authorise` themselves, at their own start -- have no bytes to
+        write and so no reason to refuse a directory.
         """
-        location = Path(path).as_posix()
-        if not _is_inside_path(location):
-            raise ValueError(
-                f"{location} is not a path inside the adopter root; a "
-                "repository record may only carry a relative path that stays "
-                "below it. Nothing has been recorded."
-            )
-        if not _resolves_below(self.root, self.root / location):
-            raise OSError(
-                f"{location} resolves outside the adopter root; a repository "
-                "record may only name bytes that stay below it. Nothing has "
-                "been written and nothing has been recorded."
-            )
+        location = authorise(self.root, path, REPO)
         if (self.root / location).is_dir():
             raise IsADirectoryError(
                 f"{location} is a directory; refusing to journal a file write "
@@ -943,6 +1009,11 @@ class Run:
     def prepare_op(self, op, purpose, path, note, durability=REPO):
         """Record that a mutation with no file preimage is about to happen.
 
+        `authorise` runs first, before this method appends anything: the
+        caller has not yet touched the filesystem for this op (that is
+        `prepare_op`'s whole point -- record, then mutate), so a refusal
+        here is still the clean "nothing written and nothing recorded" case.
+
         The `committed` half is `append_op`. §4 admits no "mutate first"
         protocol, and a mutation with no bytes to digest is not an
         exception: a `mkdir` that crashes before its record leaves a
@@ -950,21 +1021,34 @@ class Run:
         one fact its own record carries -- the previous target, which is
         what its inverse restores.
         """
+        location = authorise(self.root, path, durability)
         append(
-            [self._record(op, purpose, path, durability, PREPARED, note=note)],
+            [self._record(op, purpose, location, durability, PREPARED, note=note)],
             self.root,
             durability,
         )
-        self._seen.add((durability, path))
+        self._seen.add((durability, location))
 
     def append_op(self, op, purpose, path, note, durability=REPO):
-        """Close a mutation with no file preimage: the `committed` half."""
+        """Close a mutation with no file preimage: the `committed` half.
+
+        `authorise` runs again here, before THIS method's own append -- not
+        before the caller's `mkdir`/`relink`, which already happened between
+        `prepare_op` and this call. That ordering is fine: `append_op`
+        performs no filesystem mutation of its own, so a refusal here
+        leaves the `prepared` record open with no `committed` twin, which is
+        exactly the shape `journal --check` reconciles, not a new failure
+        mode. What `authorise` must never do is run a second time INSIDE a
+        method that mutates bytes between its own two record-writing calls
+        (see `_record`) -- `append_op` does not, so it is safe here.
+        """
+        location = authorise(self.root, path, durability)
         append(
-            [self._record(op, purpose, path, durability, COMMITTED, note=note)],
+            [self._record(op, purpose, location, durability, COMMITTED, note=note)],
             self.root,
             durability,
         )
-        self._seen.add((durability, path))
+        self._seen.add((durability, location))
 
 
 UNAPPLIED = "unapplied"

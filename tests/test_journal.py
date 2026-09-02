@@ -863,18 +863,21 @@ def test_every_write_in_the_package_goes_through_the_journal():
 # --- the root a record names, and the root the filesystem agrees with ---------
 
 
-def test_a_write_that_escapes_the_root_through_a_symlink_is_refused(
+def test_an_observation_that_escapes_the_root_through_a_symlink_is_refused(
     run_cli, tmp_path
 ):
-    """A record saying `memory/MEMORY.md` must not mean bytes outside the root.
+    """A record saying `memory` must not mean bytes outside the root, even to observe it.
 
-    `memory/` is a symlink out of the project, so the path is lexically
-    fine and the write lands somewhere the journal cannot describe: the
-    record claims a repository-relative path for bytes that are not in the
-    repository, and reversal would restore a file it never touched. Design
-    §7 requires a repository-relative record to resolve below the resolved
-    root without following a symlink out of it, so the write is refused
-    before anything is written and before anything is recorded.
+    `memory/` is a symlink to a directory outside the adopter root, so
+    `_ensure_dir` finds it already there and observes it -- lexically the
+    path is fine, and the record would claim a repository-relative fact
+    about bytes that are not in the repository at all. Design §7 requires a
+    repository-relative record to resolve below the resolved root without
+    following a symlink out of it, and `authorise` now asks that question
+    for `observe`, not only for a write: before this, only the file `init`
+    tried to write beneath `memory/` was refused, and `memory` itself was
+    filed into the versioned journal as a fact about the tree that was
+    false the moment it was read back.
     """
     adopter = tmp_path / "adopter"
     adopter.mkdir()
@@ -888,14 +891,14 @@ def test_a_write_that_escapes_the_root_through_a_symlink_is_refused(
 
     assert result.returncode == 1, result.stdout
     assert "Traceback" not in result.stderr, result.stderr
-    assert "memory/MEMORY.md" in result.stderr, result.stderr
+    assert "memory" in result.stderr, result.stderr
     assert "adopter root" in result.stderr, result.stderr
     # Nothing outside the root was created, and nothing claims it was.
     assert not (outside / "MEMORY.md").exists(), sorted(
         p.name for p in outside.iterdir()
     )
     records = _records(adopter / "journal.jsonl")
-    assert not [e for e in records if e["path"] == "memory/MEMORY.md"], records
+    assert not [e for e in records if e["path"] == "memory"], records
 
 
 def test_one_record_the_reader_may_not_follow_does_not_hide_the_others(
