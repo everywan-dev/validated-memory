@@ -114,6 +114,19 @@ UNRECORDED_WRITES = {
 # text, because prose that tells the next reader such a surface exists is
 # how it gets used again -- which is safe here only because none of these
 # spellings occurs in English.
+#
+# `prepare_op` and `append_op` were the two-record protocol's own methods;
+# `journal.append` is the raw line-writer under every record;
+# `_open_transaction`, `_mark_published`, `_abort_transaction`,
+# `_resolve_transaction` and `_write_transaction_file` are the write-ahead
+# log's four stages and the atomic write beneath them; `_write_denied` is
+# the read-only check a caller must not make for itself; `bootstrap` mints
+# this project's adoption id and installs the journal, which is the one
+# write no record can describe and so the one no caller may repeat;
+# `park_preimage` is the only copy of bytes about to be overwritten, and a
+# caller that parks its own decides for itself what the pre-adoption state
+# was; `_publish` is the atomic publication with its durability barriers,
+# which is precisely the step the six reimplementations each got wrong.
 PRIVATE_JOURNAL_NAMES = (
     "prepare_op",
     "append_op",
@@ -124,6 +137,9 @@ PRIVATE_JOURNAL_NAMES = (
     "_resolve_transaction",
     "_write_transaction_file",
     "_write_denied",
+    "bootstrap",
+    "park_preimage",
+    "_publish",
 )
 
 # The other side of the same rule: everything of the journal a module outside

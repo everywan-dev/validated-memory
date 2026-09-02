@@ -331,7 +331,7 @@ def run(harness_memory, view, stdout, stderr):
             ERROR, _journal_artifact(error), "journal", error.message
         )
     except OSError as error:
-        # The lock and the journal's own bootstrap both need to create
+        # The lock and the journal's own opening record both need to create
         # `.validated-memory/` and `journal.jsonl` before any scaffold item
         # is attempted; an adopter root that cannot be written to at all
         # (e.g. read-only permissions) fails here first, ahead of any
