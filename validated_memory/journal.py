@@ -2701,13 +2701,47 @@ UNKNOWN = "unknown"
 
 
 
-def reconcile(root=Path()):
-    """Every unfinished transaction, paired with the state its path is in.
+# What both halves of one mutation must say identically. `at` is excluded
+# because the two records are written in one `append` but stamped
+# separately, `stage` because it is what tells them apart, and `run`,
+# `adoption`, `schema` and `version` because `_record` fills them in from
+# one source for both. What is left is everything the mutation itself
+# decided -- and a `committed` half that disagrees with its `prepared` half
+# describes a mutation nobody performed.
+PAIRED_FIELDS = (
+    "op",
+    "path",
+    "durability",
+    "preimage",
+    "postimage",
+    "note",
+    "prior_bytes",
+    "mode",
+)
 
-    Records are paired in file order, not by set membership: one run may
-    write the same path more than once, and a `committed` record closes the
-    ONE `prepared` record it follows, never every prepared record that
-    happens to share its (run, path).
+
+def reconcile(root=Path()):
+    """Every unfinished transaction and every disagreeing pair, as two lists.
+
+    Returns `(unfinished, disagreements)`: `(record, state)` pairs for the
+    `prepared` records nothing ever closed, and `(transaction, field,
+    record)` triples for the closed pairs whose two halves do not say the
+    same thing.
+
+    Pairing is by TRANSACTION ID wherever both records carry one, which is
+    every mutation the executor has written since it took over the protocol:
+    the id is minted per mutation, so it says which `committed` closes which
+    `prepared` without any inference at all. Records without the field --
+    everything written before, and `prepare_op`/`append_op`'s two halves --
+    keep the older rule: file order within a (run, path), so a `committed`
+    record closes the ONE `prepared` record it follows and never every
+    prepared record that happens to share its key.
+
+    A pair that agrees on nothing but its id is not a pair. `PAIRED_FIELDS`
+    is checked on every id-matched pair, because the two records are the
+    only evidence a mutation left behind and a reader that averages them is
+    a reader inventing a third mutation. A disagreement is reported; it is
+    never resolved by preferring one half.
 
     `unapplied` -- the bytes still match the preimage, so the mutation never
     happened. `applied` -- they match the postimage, so it happened and only
@@ -2721,26 +2755,39 @@ def reconcile(root=Path()):
 
     This reports. It does not repair: choosing for the user between the
     states the record cannot distinguish is exactly the guessing this
-    component exists to remove.
+    component exists to remove. Repair is `Run.recover`, which reads the
+    write-ahead log rather than these two journals, and only ever closes
+    what that log accounts for.
     """
     root = Path(root)
     unfinished = []
+    disagreements = []
     for durability in DURABILITIES:
-        # Records are paired in file order, not by set membership: one run
-        # may write the same path more than once, and a `committed` record
-        # closes the ONE `prepared` record it follows, never every prepared
-        # record that happens to share its (run, path).
+        open_by_id = {}
         open_by_key = {}
         for entry in read(root, durability):
+            transaction = entry.get("transaction")
+            if isinstance(transaction, str):
+                if entry["stage"] == PREPARED:
+                    open_by_id.setdefault(transaction, []).append(entry)
+                elif entry["stage"] == COMMITTED and open_by_id.get(transaction):
+                    prepared = open_by_id[transaction].pop(0)
+                    disagreements.extend(
+                        (transaction, field, entry)
+                        for field in PAIRED_FIELDS
+                        if prepared.get(field) != entry.get(field)
+                    )
+                continue
             key = (entry["run"], entry["path"])
             if entry["stage"] == PREPARED:
                 open_by_key.setdefault(key, []).append(entry)
             elif entry["stage"] == COMMITTED and open_by_key.get(key):
                 open_by_key[key].pop(0)
-        for entries in open_by_key.values():
-            for entry in entries:
-                unfinished.append((entry, _state_of(root, entry)))
-    return unfinished
+        for group in (open_by_id, open_by_key):
+            for entries in group.values():
+                for entry in entries:
+                    unfinished.append((entry, _state_of(root, entry)))
+    return unfinished, disagreements
 
 
 def _state_of(root, entry):
@@ -2813,9 +2860,10 @@ def run(check, stdout, stderr):
     it and does none of it. Without `--check` it summarises and exits 0
     whatever it finds, so a reader can look at a project without gating on
     it; with `--check` an unfinished transaction -- from the two journals'
-    own `prepared`/`committed` pairing (`reconcile`), or a transaction file
-    still on disk (`_open_transactions`) -- is an ERROR, because a caller
-    that asked to be told cannot be told by an exit code of 0.
+    own pairing (`reconcile`), from a pair whose halves disagree, or from a
+    transaction file still on disk (`_open_transactions`) -- is an ERROR,
+    because a caller that asked to be told cannot be told by an exit code
+    of 0.
 
     A transaction file is reported even without `--check`, but only as a
     count: a reader who did not ask to gate on one should still be told
@@ -2837,7 +2885,7 @@ def run(check, stdout, stderr):
         # handler: a journal a concurrent writer left unreadable between the
         # two reads must be reported the same way as anything else the
         # reader cannot accept.
-        unfinished = reconcile(root) if check else []
+        unfinished, disagreements = reconcile(root) if check else ([], [])
         # `_open_transactions` never raises -- an unreadable transaction file
         # is one of its own results, not a `JournalError` -- so it does not
         # need this `try`, but reading the log alongside the two journals in
@@ -2871,6 +2919,16 @@ def run(check, stdout, stderr):
             ).render(),
             file=stderr,
         )
+    for transaction, field, entry in disagreements:
+        print(
+            Finding(
+                ERROR,
+                entry["path"],
+                "journal",
+                f"records of transaction {transaction} disagree on {field}",
+            ).render(),
+            file=stderr,
+        )
     for item in transactions:
         # Classified by the one function recovery itself acts on, so what
         # `--check` promises and what the next run does cannot drift apart.
@@ -2891,7 +2949,7 @@ def run(check, stdout, stderr):
             )
         print(Finding(ERROR, location, "journal", message).render(), file=stderr)
 
-    total_errors = len(unfinished) + len(transactions)
+    total_errors = len(unfinished) + len(disagreements) + len(transactions)
     print(
         f"journal: {len(records)} record(s), {total_errors} error(s)",
         file=stdout,

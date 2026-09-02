@@ -2505,3 +2505,34 @@ def test_a_missing_preimage_blob_for_a_closed_record_is_never_an_error(
     assert "preimage" not in checked.stderr, checked.stderr
     assert again.returncode == 0, (again.stdout, again.stderr)
     assert again.stderr == "", again.stderr
+
+
+def test_two_halves_of_one_transaction_that_disagree_are_reported(
+    run_cli, tmp_path
+):
+    """Strict pairing by id, and field agreement on top of it (design §13).
+
+    The two records are the only evidence a mutation left behind, so a
+    reader that averages them is a reader inventing a third mutation. The
+    disagreement is reported and never resolved by preferring one half --
+    `journal.jsonl` is repository content, and a hand edit or a bad merge is
+    exactly how one half comes to say something the other does not.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    path = tmp_path / "journal.jsonl"
+    rewritten = []
+    for record in _records(path):
+        if record["path"] == "validated-memory.md" and record["stage"] == "committed":
+            record = dict(record, mode=0o600)
+            transaction = record["transaction"]
+        rewritten.append(json.dumps(record, sort_keys=True))
+    path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        f"records of transaction {transaction} disagree on mode" in result.stderr
+    ), result.stderr
+    assert "validated-memory.md" in result.stderr, result.stderr
+    assert "journal: 13 record(s), 1 error(s)" in result.stdout, result.stdout
