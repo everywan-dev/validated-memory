@@ -1593,6 +1593,131 @@ def test_a_path_left_by_an_open_transaction_is_never_observed_as_pre_existing(
     ], _records(tmp_path / "journal.jsonl")
 
 
+# A third party that is not this plugin and does not wait its turn: it
+# watches for the run to start parking a preimage and then replaces the file
+# under it, atomically, so the run can never read a half-written state.
+# Standard library only, and it imports nothing from the package.
+OVERWRITE_WHILE_PARKING = """
+import os
+import sys
+import time
+
+trigger, target, text = sys.argv[1], sys.argv[2], sys.argv[3]
+deadline = time.monotonic() + 60
+while not os.path.exists(trigger):
+    if time.monotonic() > deadline:
+        raise SystemExit("the run never parked a preimage")
+    time.sleep(0.0002)
+temporary = target + ".intruder"
+with open(temporary, "w", encoding="utf-8") as handle:
+    handle.write(text)
+os.replace(temporary, target)
+"""
+
+# Big enough that parking it -- write, fsync, install, read back and verify
+# -- takes long enough for the writer above to land inside the window the
+# re-read exists to close. Nothing about the guarantee depends on the size;
+# only this test's ability to reach the window does, and design §6 is
+# explicit that what the re-read buys is "a narrower window, not an atomic
+# guarantee".
+INTRUDER_WINDOW_BYTES = 8 * 1024 * 1024
+
+
+def test_the_state_is_re_read_immediately_before_publishing(run_cli, tmp_path):
+    """A file that changed after the expected-state check is not overwritten.
+
+    The check at the start of the protocol is not enough on its own: the
+    preimage is copied and fsynced and the transaction file is written and
+    fsynced after it, and an adopter's editor writing in that window would
+    be overwritten by a mutation whose record names a preimage that was
+    already gone. So the state is read again, under the same lock,
+    immediately before publication (design §6), and a mismatch closes the
+    transaction `aborted` rather than publishing.
+
+    The intruder here is a real second process racing a real run; it wins
+    the race because the file it is racing is large enough that parking it
+    takes time. What it proves is the refusal, not the width of the window:
+    §6 says plainly that a third party writing in the remaining gap between
+    the re-read and the rename is not detected at all.
+    """
+    ignore = tmp_path / ".gitignore"
+    ignore.write_text("build/\n" + "# filler\n" * (INTRUDER_WINDOW_BYTES // 9),
+                      encoding="utf-8")
+    intruder_text = "build/\ndist/\n"
+
+    intruder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            OVERWRITE_WHILE_PARKING,
+            str(tmp_path / ".validated-memory" / "preimages"),
+            str(ignore),
+            intruder_text,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        result = run_cli("init", cwd=tmp_path)
+    finally:
+        intruder.wait(timeout=90)
+    assert intruder.returncode == 0, intruder.communicate()
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert ".gitignore" in result.stderr, result.stderr
+    assert "changed while its mutation was being prepared" in result.stderr
+    # The intruder's bytes, exactly: not the original, and not the original
+    # with the ignore entry appended to it.
+    assert ignore.read_text(encoding="utf-8") == intruder_text
+    assert not [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry["path"] == ".gitignore"
+    ]
+    # The transaction was opened, so it is closed `aborted` and removed --
+    # not left open for a recovery that has nothing to recover.
+    assert not _transactions(tmp_path)
+
+
+def test_a_creation_publishes_with_o_excl_rather_than_replacing():
+    """The no-replace guarantee for a creation is the primitive, not a check.
+
+    Design §6 promises "a strong no-replace guarantee for a creation,
+    because the primitive exists: create with `O_CREAT|O_EXCL` and fail if
+    the name is taken", and says why check-then-`os.replace` is not that
+    promise: a third party creating the file between the re-read and the
+    rename would be overwritten, and the history would say `create`.
+
+    This pin is structural, and that is a statement about the guarantee, not
+    a shortcut. What separates `O_EXCL` from `os.replace` lives entirely
+    inside the gap between two adjacent syscalls -- narrower than any seam
+    this suite has, and the same gap `authorise` documents as one "this
+    project's test seam cannot demonstrate". A behavioural test could only
+    reach the expected-state check, which is a different guarantee with its
+    own test above; every mechanism that CAN be observed from outside stays
+    green when `O_EXCL` is swapped for a rename. So the flags are pinned
+    where they are written.
+    """
+    tree = ast.parse(
+        (REPO_ROOT / "validated_memory" / "journal.py").read_text(encoding="utf-8")
+    )
+    publish = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_publish"
+    )
+    flags = {
+        ast.unparse(node)
+        for node in ast.walk(publish)
+        if isinstance(node, ast.Attribute) and node.attr.startswith("O_")
+    }
+    assert {"os.O_CREAT", "os.O_EXCL"} <= flags, (
+        "a creation must be published with os.O_CREAT | os.O_EXCL, which "
+        f"fails when the name is taken; _publish names {sorted(flags)}"
+    )
+
+
 # --- the lock: who holds it, who may break it, and where it lives -------------
 
 # A lock holder that is not this plugin: it takes the lock file exactly as
