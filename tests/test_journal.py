@@ -2588,6 +2588,60 @@ def _transaction_file(tree, transaction_id, **overrides):
     return entry
 
 
+def test_a_creation_does_not_build_the_parent_the_same_run_refused_to_create(
+    run_cli, tmp_path
+):
+    """A creation's parent is an item with an intention, not a side effect.
+
+    The directory branch of publication refuses a missing parent, because
+    "creating an ancestor nobody asked for is a second mutation with no
+    intention and no record". The creation branch did it anyway, with
+    `mkdir(parents=True)`, and the two rules met in one run: an unresolved
+    transaction on `memory` gates that path, so `init` refuses to create
+    the directory and says so -- and then created it, unrecorded, as the
+    parent of `memory/MEMORY.md`, over the very transaction the refusal
+    was protecting.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / "memory" / "MEMORY.md").unlink()
+    (tmp_path / "memory").rmdir()
+    # A `prepared` transaction whose path matches neither of its states is
+    # `unknown`, which is what gates the path: recovery may not close it,
+    # and nothing may write over it until an operator does.
+    _transaction_file(
+        tmp_path,
+        "8888888888888888",
+        intention={
+            "op": "replace",
+            "purpose": "init",
+            "path": "memory",
+            "durability": "repo",
+        },
+        postimage={"kind": "directory"},
+    )
+    before = _records(tmp_path / "journal.jsonl")
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert not (tmp_path / "memory").exists(), sorted(
+        entry.name for entry in tmp_path.iterdir()
+    )
+    assert (
+        "memory/MEMORY.md: create: file could not be created: "
+        "memory/MEMORY.md could not be written: its parent directory memory "
+        "does not exist" in result.stderr
+    ), result.stderr
+    assert "created memory/MEMORY.md" not in result.stdout, result.stdout
+    # Nothing recorded, and nothing left open: the refusal happens after the
+    # transaction file exists, so it is closed `aborted` and removed, and
+    # the only transaction still on disk is the one that gated the path.
+    assert _records(tmp_path / "journal.jsonl") == before
+    assert [entry["transaction"] for entry in _transactions(tmp_path)] == [
+        "8888888888888888"
+    ], _transactions(tmp_path)
+
+
 def test_recovery_leaves_a_transaction_it_cannot_account_for_untouched(
     run_cli, tmp_path
 ):

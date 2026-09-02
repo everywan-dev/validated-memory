@@ -285,10 +285,14 @@ is expected to be there rather than by the op's name. A directory is
 `os.mkdir`, never with `parents=True` -- creating an ancestor nobody asked
 for would be a second mutation with no intention and no record, so a missing
 parent is a refusal that names it. A creation over an absent name is
-`O_CREAT | O_EXCL`, written and fsynced. A replacement is a temporary file,
-fsynced and given the target's mode, then `os.replace`. A symlink is built
-under a temporary beside the path and renamed over it, so the link is never
-absent for an instant. Every shape ends with an `fsync` of the directory
+`O_CREAT | O_EXCL`, written and fsynced, and refuses a missing parent for
+the same reason. A replacement is a temporary file, fsynced and given the
+target's mode, then `os.replace`. A symlink is built under a temporary
+beside the path and renamed over it, so the link is never absent for an
+instant; it is the one shape that still creates its parent, because the
+only link this plugin publishes is the harness one, whose path is absolute
+and outside the adopter root by construction, so the directory it goes in
+is the harness's rather than a mutation of this project. Every shape ends with an `fsync` of the directory
 that now carries the name, and a failure anywhere leaves the target as it
 was: the temporary is removed, a partial creation is unlinked, and the
 aborted transaction is the only trace.
@@ -709,9 +713,15 @@ its states, and nothing there says the mutation ever ran.
   current state away, but a regular file at the path is bytes somebody
   wrote, and no command here destroys bytes without leaving a copy: they go
   into the same content-addressed store, and the success line names the
-  blob. A symlink at the path is not parked -- its target is a fact the
-  transaction file already holds, and the bytes it points at are not this
-  path's -- and a non-empty directory is refused rather than removed.
+  blob. A symlink at the path is not parked and its target is **not kept**
+  -- a link is a name and a target rather than bytes, there is nothing for
+  a content store to hold, and the bytes it resolved to belong to the path
+  it named, which `--restore` does not touch. The transaction file does not
+  hold that target either: what it records is the preimage's, and a link
+  something else put there afterwards is the case being resolved. The
+  target is in the finding that reported the divergence -- `journal
+  --check` and `init` describe a symlink by where it points -- and nowhere
+  after that. A non-empty directory is refused rather than removed.
 - It restores through the executor's own publication, so it is as atomic and
   as durable as the mutation it reverses, and it takes the mode from the
   transaction file rather than from whatever is at the path now. The

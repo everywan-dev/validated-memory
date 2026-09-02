@@ -2391,7 +2391,24 @@ class Run:
         # through `satisfies`: the transaction file has already committed to
         # `actual` as this mutation's preimage and `_publish` is about to
         # carry its mode over, so anything but `actual` invalidates both.
-        again = current_state(self.root, location)
+        try:
+            again = current_state(self.root, location)
+        except OSError as error:
+            # The one read in this protocol that had no guard. Every read
+            # above it answers an unreadable path with a refusal; this one
+            # raised out of `execute` and reached `init.run`'s outer
+            # handler, which reports a whole-run journal failure over one
+            # item -- and left the transaction file open on a path nothing
+            # had published to. There IS a transaction now, so it closes
+            # the way the state mismatch below closes: `aborted` with the
+            # reason, and then removed.
+            return self._aborted(
+                transaction,
+                intention,
+                actual,
+                f"{location} could not be read while its mutation was being "
+                f"prepared: {error}. Nothing has been published.",
+            )
         if again != actual:
             return self._aborted(
                 transaction,
@@ -2524,7 +2541,12 @@ class Run:
           guarantee for a creation, because the primitive exists", and
           check-then-`os.replace` is not that primitive: a third party
           creating the file between the re-read and here would be
-          overwritten by a record that says `create`.
+          overwritten by a record that says `create`. Its parent is
+          refused when it is missing, for the reason the directory branch
+          gives: this branch used to `mkdir(parents=True)`, so an `init`
+          whose `memory` directory was gated by an unresolved transaction
+          -- refusing to create it, and saying so -- went on to create it
+          anyway, unrecorded, as the parent of `memory/MEMORY.md`.
         - **A replacement** -- a temporary, fsynced, given the TARGET's mode
           (§7: the install copies the mode onto the temporary before the
           rename, or the adopter's 0640 comes back 0644), then
@@ -2533,7 +2555,14 @@ class Run:
           over the path, so the link is never absent for an instant. An
           `unlink` then `symlink_to` leaves a session with no memory at all
           if it dies in between. It is the one shape that reports no mode:
-          a symlink's is 0777 and means nothing (see below).
+          a symlink's is 0777 and means nothing (see below). It is also the
+          one shape that still builds its parent: the only link this
+          plugin publishes is the harness one, whose path is absolute and
+          outside the adopter root by construction (ADR 0008), so the
+          directory it goes in belongs to the harness rather than to the
+          project and is not a mutation of this tree for a record to
+          describe. Inside the root, a parent is an item with an intention
+          and a record of its own.
 
         A failure anywhere raises `OSError` and leaves the target as it was:
         the temporary is removed, and a partial `O_EXCL` creation is
@@ -2560,7 +2589,11 @@ class Run:
                 raise
             fsync_directory(target.parent)
         elif actual["kind"] == ABSENT:
-            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.parent.is_dir():
+                raise FileNotFoundError(
+                    f"its parent directory "
+                    f"{Path(location).parent.as_posix()} does not exist"
+                )
             descriptor = os.open(
                 target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666
             )
@@ -3050,11 +3083,18 @@ class Run:
         store the executor parks into, and the success line names the blob.
         That covers both directions symmetrically -- putting a file back
         over them, and taking the path away because the preimage says it
-        was never there. A symlink is unlinked with nothing parked: its
-        `readlink` is a fact the transaction file already records, and the
-        bytes it pointed at are not this path's. A directory has no bytes
-        of its own, and `_unpublish` refuses a non-empty one rather than
-        parking anything.
+        was never there. A symlink is unlinked with nothing parked and its
+        target is NOT kept anywhere: a link is a name and a target rather
+        than bytes, there is nothing for a content-addressed store to hold,
+        and the bytes it resolved to belong to the path it named, which
+        this does not touch. The transaction file does not hold that target
+        either -- what it records is the PREIMAGE's, and a link a third
+        party put there afterwards is exactly the case `--restore` is being
+        asked about. Where the target is written down is the finding that
+        reported the divergence: `journal --check` and `init` both describe
+        the state they found, symlinks by their target. A directory has no
+        bytes of its own, and `_unpublish` refuses a non-empty one rather
+        than parking anything.
 
         Nothing is recorded. A path returned to the state a record would
         have described the departure from is not a fact about the project.
