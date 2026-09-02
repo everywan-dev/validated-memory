@@ -3492,3 +3492,145 @@ def test_the_executor_refuses_a_path_whose_state_it_cannot_read(run_cli, tmp_pat
         ], "and records nothing"
     finally:
         (tmp_path / "knowledge").chmod(0o644)
+
+
+# --- an id-carrying record is a half of exactly one act -----------------------
+
+
+def _rewrite(path, lines):
+    """Replace a journal with `lines` (records), in file order."""
+    path.write_text(
+        "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in lines),
+        encoding="utf-8",
+    )
+
+
+def test_journal_check_reports_a_committed_half_with_no_prepared_half(
+    run_cli, tmp_path
+):
+    """A mutation whose write-ahead half is gone is not a closed mutation.
+
+    Nothing in this package writes a `committed` record without the
+    `prepared` one before it -- the executor appends both in one call, and
+    recovery rebuilds both -- so a lone one is a hand edit or a torn merge.
+    It paired with nothing, and pairing with nothing was silence: exit 0,
+    zero errors, a history claiming a mutation whose preparation no line
+    describes.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    records = _records(journal)
+    orphaned = next(
+        entry
+        for entry in records
+        if entry.get("transaction") and entry["stage"] == "committed"
+    )
+    _rewrite(
+        journal,
+        [
+            entry
+            for entry in records
+            if not (
+                entry.get("transaction") == orphaned["transaction"]
+                and entry["stage"] == "prepared"
+            )
+        ],
+    )
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        f"records of transaction {orphaned['transaction']}: committed "
+        "without a prepared half" in result.stderr
+    ), result.stderr
+
+
+def test_journal_check_reports_a_transaction_recorded_more_than_twice(
+    run_cli, tmp_path
+):
+    """The id is minted per mutation, so a third line under it counts one twice.
+
+    This is the exact residue recovery's idempotency rule exists to avoid
+    appending, and a history that already holds it -- a merge that took
+    both sides, a hand edit -- said nothing at all.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    records = _records(journal)
+    doubled = next(
+        entry["transaction"] for entry in records if entry.get("transaction")
+    )
+    _rewrite(
+        journal,
+        records + [entry for entry in records if entry.get("transaction") == doubled],
+    )
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        f"transaction {doubled} is recorded 4 times" in result.stderr
+    ), result.stderr
+
+
+def test_journal_check_reports_two_halves_that_disagree_on_purpose(
+    run_cli, tmp_path
+):
+    """`purpose` is what the mutation was for, and both halves state it.
+
+    It is taken from the intention for both records, exactly as `op` and
+    `path` are, so two halves disagreeing on it describe a mutation nobody
+    performed -- and it was the one such field the pair check did not look
+    at, so a forged `purpose` on the `committed` half passed.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    records = _records(journal)
+    forged = next(
+        entry
+        for entry in records
+        if entry.get("transaction") and entry["stage"] == "committed"
+    )
+    _rewrite(
+        journal,
+        [
+            {**entry, "purpose": "forged"} if entry is forged else entry
+            for entry in records
+        ],
+    )
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        f"records of transaction {forged['transaction']} disagree on purpose"
+        in result.stderr
+    ), result.stderr
+
+
+def test_recovery_still_appends_exactly_one_pair_over_a_history_that_has_it(
+    run_cli, tmp_path, monkeypatch
+):
+    """Strict pairing and recovery's idempotency say the same thing.
+
+    A kill between the history append and the transaction's removal leaves
+    a `published` file whose two records are already there. Recovery adds
+    none, so the id stays recorded exactly twice -- which is now also what
+    `--check` insists on.
+    """
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-history")
+    assert run_cli("init", cwd=tmp_path).returncode == 70
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT")
+    transaction = _transactions(tmp_path)[0]["transaction"]
+
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+
+    checked = run_cli("journal", "--check", cwd=tmp_path)
+    assert checked.returncode == 0, (checked.stdout, checked.stderr)
+    written = [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry.get("transaction") == transaction
+    ]
+    assert len(written) == 2, written
