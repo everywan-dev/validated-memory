@@ -395,8 +395,9 @@ no longer describes it.
 The completeness pin (`tests/test_journal.py`) holds the line in the
 meantime: a write path in the package that does not reach the journal fails
 it unless it is named -- with its reason -- in one of the two sets above,
-and a module outside `journal.py` that so much as names the stage-writing
-surface fails it too.
+and a module outside the `journal` package that so much as names the
+stage-writing surface -- or imports one of that package's own modules,
+or a name its facade does not export -- fails it too.
 
 ## Common fields
 
