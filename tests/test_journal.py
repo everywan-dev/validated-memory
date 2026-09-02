@@ -3189,3 +3189,214 @@ def test_a_symlinked_preimage_store_parks_nothing_outside_the_tree(
     assert ".validated-memory/preimages" in result.stderr, result.stderr
     assert not list(outside.iterdir()), sorted(p.name for p in outside.iterdir())
     assert (tree / ".gitignore").read_text(encoding="utf-8") == "build/\n"
+
+
+# --- a transaction file is damaged unless it is this project's ----------------
+
+
+def test_a_transaction_file_that_is_not_text_is_damaged_and_not_a_traceback(
+    run_cli, tmp_path
+):
+    """`read_text` raises `UnicodeDecodeError`, which is not an `OSError`.
+
+    The reader promises every unreadable transaction file becomes a
+    `damaged` finding rather than an exception, and a byte sequence that is
+    not UTF-8 walked straight past the one handler that promise was built
+    on.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    residue = tmp_path / ".validated-memory" / "transactions" / "5555555555555555.json"
+    residue.parent.mkdir(parents=True, exist_ok=True)
+    residue.write_bytes(b"\xff\xfe not text at all")
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "damaged transaction 5555555555555555:" in result.stderr, result.stderr
+    assert "not valid UTF-8" in result.stderr, result.stderr
+    assert residue.exists(), "a damaged file is left where it is"
+
+
+def test_a_transaction_whose_schema_this_reader_does_not_know_is_damaged(
+    run_cli, tmp_path
+):
+    """A higher schema is refused, not executed with the fields it happens to have.
+
+    The rule the record reader has always applied (`read`): a reader that
+    meets a number it does not know refuses rather than guessing. The
+    write-ahead log had no such rule at all -- a `schema` of 999 was
+    reported `recoverable` and the next `init` completed it -- and a
+    `schema` that is not a number, or absent, was never looked at either.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    _transaction_file(tmp_path, "6666666666666666", schema=999)
+    _transaction_file(tmp_path, "7777777777777777", schema="one")
+    entry = _transaction_file(tmp_path, "8888888888888888")
+    del entry["schema"]
+    (
+        tmp_path / ".validated-memory" / "transactions" / "8888888888888888.json"
+    ).write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert "Traceback" not in result.stderr, result.stderr
+    assert (
+        "damaged transaction 6666666666666666: its schema is 999 and this "
+        "plugin reads up to 1" in result.stderr
+    ), result.stderr
+    for damaged in ("7777777777777777", "8888888888888888"):
+        assert (
+            f"damaged transaction {damaged}: it names no schema" in result.stderr
+        ), result.stderr
+    assert len(_transactions(tmp_path)) == 3, _transactions(tmp_path)
+
+
+def test_a_transaction_that_is_not_the_id_its_file_is_named_is_damaged(
+    run_cli, tmp_path
+):
+    """One id, in two places, and nothing here chooses between them.
+
+    The id in the file is what both history records carry; the filename
+    stem is what `--resolve` and every message name. A file where they
+    disagree would be recovered under one id and reported under the other.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    _transaction_file(tmp_path, "9999999999999999", transaction="aaaabbbbccccdddd")
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        "damaged transaction 9999999999999999: it calls itself transaction "
+        "aaaabbbbccccdddd and its file is named 9999999999999999"
+        in result.stderr
+    ), result.stderr
+
+
+def test_a_transaction_filed_under_another_adoption_is_damaged(run_cli, tmp_path):
+    """A mutation of somebody else's tree is not one this history may record."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    mine = _records(tmp_path / "journal.jsonl")[0]["adoption"]
+    foreign = "f" * 16
+    _transaction_file(tmp_path, "abababababababab", adoption=foreign)
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        f"damaged transaction abababababababab: it belongs to adoption "
+        f"{foreign}, this project is {mine}" in result.stderr
+    ), result.stderr
+
+
+def test_another_trees_transaction_is_never_completed_into_this_history(
+    run_cli, tmp_path, monkeypatch
+):
+    """The residue of one adoption, dropped into another, records nothing here.
+
+    A vault copied between clones, a backup restored into the wrong tree:
+    the transaction file names its own adoption and its own run, and
+    recovery used neither. It rebuilt the pair under THIS project's
+    adoption id and the OTHER project's run id, so the receiving history
+    claimed a mutation of a path this run had never touched.
+    """
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-published")
+    assert run_cli("init", cwd=first).returncode == 70
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT")
+    assert run_cli("init", cwd=second).returncode == 0
+
+    residue = sorted((first / ".validated-memory" / "transactions").glob("*.json"))
+    assert len(residue) == 1, residue
+    transaction = json.loads(residue[0].read_text(encoding="utf-8"))
+    target = second / ".validated-memory" / "transactions" / residue[0].name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(residue[0].read_text(encoding="utf-8"), encoding="utf-8")
+    before = (second / "journal.jsonl").read_text(encoding="utf-8")
+
+    result = run_cli("init", cwd=second)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert (
+        f"damaged transaction {transaction['transaction']}: it belongs to "
+        f"adoption {transaction['adoption']}" in result.stderr
+    ), result.stderr
+    assert (second / "journal.jsonl").read_text(encoding="utf-8") == before
+    assert target.exists(), "a damaged transaction is left for inspection"
+
+
+def test_a_transaction_naming_an_operation_no_intention_carries_is_damaged(
+    run_cli, tmp_path
+):
+    """What may be prepared is what an `Intention` can hold, and no more.
+
+    `patch`, `rename`, `remove` and `move` are words a RECORD may carry --
+    the vocabulary of histories written before this core, and of the steps
+    design §2 plans -- and no executor of this plugin prepares one. An
+    `observe` is the other half: it publishes nothing, opens no
+    transaction and is recorded at `committed` alone, so a file claiming a
+    prepared one would be completed into a record pair nothing writes.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    for transaction_id, op in (
+        ("cdcdcdcdcdcdcdcd", "patch"),
+        ("efefefefefefefef", "observe"),
+    ):
+        _transaction_file(
+            tmp_path,
+            transaction_id,
+            intention={
+                "op": op,
+                "purpose": "init",
+                "path": "validated-memory.md",
+                "durability": "repo",
+            },
+        )
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    assert (
+        "damaged transaction cdcdcdcdcdcdcdcd: its intention names no "
+        "operation this plugin prepares" in result.stderr
+    ), result.stderr
+    assert (
+        "damaged transaction efefefefefefefef: its intention is an "
+        "observation" in result.stderr
+    ), result.stderr
+    assert len(_transactions(tmp_path)) == 2, _transactions(tmp_path)
+
+
+def test_a_transaction_whose_states_are_not_states_is_damaged(run_cli, tmp_path):
+    """A `digest` that is a number matches nothing, and diverges in silence.
+
+    The kind was checked and the fields a kind carries were not, so every
+    reader downstream -- `satisfies`, the mode `--restore` puts back, the
+    `target` it links to -- trusted types nothing had looked at.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    _transaction_file(
+        tmp_path,
+        "1212121212121212",
+        postimage={"kind": "file", "digest": 42, "mode": 420},
+    )
+    _transaction_file(
+        tmp_path,
+        "3434343434343434",
+        preimage={"kind": "symlink", "target": ["memory"], "mode": 511},
+    )
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, result.stdout
+    for transaction_id in ("1212121212121212", "3434343434343434"):
+        assert (
+            f"damaged transaction {transaction_id}: its preimage or "
+            "postimage is in no state this plugin knows" in result.stderr
+        ), result.stderr

@@ -1401,11 +1401,30 @@ def _open_transactions(root):
         except OSError as error:
             results.append({"id": transaction_id, "damaged": str(error)})
             continue
+        except ValueError as error:
+            # Bytes that are not text at all. `read_text` raises
+            # `UnicodeDecodeError` -- a `ValueError`, not an `OSError` --
+            # and it escaped this function as a traceback out of
+            # `journal --check`, which is the one thing this function
+            # promises never to do.
+            results.append(
+                {"id": transaction_id, "damaged": f"it is not valid UTF-8: {error}"}
+            )
+            continue
         try:
             entry = json.loads(text)
         except json.JSONDecodeError as error:
             results.append(
                 {"id": transaction_id, "damaged": f"not valid JSON: {error.msg}"}
+            )
+            continue
+        except ValueError as error:
+            # Everything else the decoder refuses by value rather than by
+            # syntax -- a nesting depth it will not follow, a number it
+            # will not build. The same answer: this file is not a
+            # transaction, and saying so is not a traceback.
+            results.append(
+                {"id": transaction_id, "damaged": f"it could not be decoded: {error}"}
             )
             continue
         if not isinstance(entry, dict):
@@ -1495,7 +1514,29 @@ class Recovery:
             raise ValueError(f"unknown recovery problem '{self.problem}'")
 
 
-def _classify(root, item):
+def _well_formed_state(state):
+    """Whether `state` is a state dict in `current_state`'s own vocabulary.
+
+    The kind, and the type of every field a kind carries. A transaction
+    file is data (design §7), and every reader downstream of this one --
+    `satisfies`, `_describe`, `_restore`, which puts a mode back and reads
+    a `target` -- assumes types nothing had checked: a `digest` that is a
+    number matches no state and silently diverges, a `target` that is a
+    list reaches `symlink_to`, and `"mode": true` is not a mode.
+    `bool` is excluded from `int` for the reason `FIELD_TYPES` gives.
+    """
+    if not isinstance(state, dict) or state.get("kind") not in KINDS:
+        return False
+    for field, expected in (("digest", str), ("target", str), ("mode", int)):
+        value = state.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, expected) or isinstance(value, bool):
+            return False
+    return True
+
+
+def _classify(root, item, adoption=None):
     """What recovery would do with one unresolved transaction, doing none of it.
 
     Returns `(verdict, facts)`. The verdict is `_COMPLETE`, `_DISCARD`,
@@ -1509,9 +1550,16 @@ def _classify(root, item):
     The rules, in order:
 
     - A file that could not be read at all (`_open_transactions` said so),
-      or that is readable but says nothing recovery can use -- no intention,
-      no operation, no path, no pair of states in `current_state`'s
-      vocabulary -- is `damaged`. Nothing is inferred from half a file.
+      or that is readable but is not a well-formed transaction OF THIS
+      PROJECT, is `damaged`. Nothing is inferred from half a file, and
+      nothing is completed out of a file that never described a mutation
+      of this tree: a schema this reader does not know, a `transaction`
+      that is not the file's own name, an `adoption` that is somebody
+      else's, an `op` no intention can carry, a preimage or postimage that
+      is not a state. `adoption` is checked only when the caller says what
+      this project's is -- a tree whose journals are gone has no answer to
+      compare against, and inventing one would call every transaction
+      foreign.
     - `aborted` is closed already: `_REMOVE`, and the file goes.
     - `published` means publication completed and the history had not been
       appended when the process died. The path matching the postimage is
@@ -1545,6 +1593,29 @@ def _classify(root, item):
     if "damaged" in item:
         return damaged(item["damaged"])
 
+    schema = item.get("schema")
+    if not isinstance(schema, int) or isinstance(schema, bool):
+        return damaged("it names no schema, so nothing here knows how to read it")
+    if schema > SCHEMA:
+        return damaged(
+            f"its schema is {schema} and this plugin reads up to {SCHEMA}; a "
+            "reader that meets a higher number refuses rather than guessing "
+            "at fields it does not know"
+        )
+    if item.get("transaction") != item["id"]:
+        return damaged(
+            f"it calls itself transaction {item.get('transaction')} and its "
+            f"file is named {item['id']}; the two are one id, and nothing "
+            "here can say which of them the history should carry"
+        )
+    filed = item.get("adoption")
+    if adoption is not None and filed != adoption:
+        return damaged(
+            f"it belongs to adoption {filed}, this project is {adoption}; a "
+            "mutation of somebody else's tree is not one this history may "
+            "record"
+        )
+
     intention = item.get("intention")
     if not isinstance(intention, dict):
         return damaged("it carries no intention")
@@ -1553,8 +1624,25 @@ def _classify(root, item):
     path = intention.get("path")
     durability = intention.get("durability")
     note = intention.get("note")
-    if op not in OPS:
-        return damaged("its intention names no operation this plugin knows")
+    if op not in INTENTION_OPS:
+        # `INTENTION_OPS`, not `OPS`: the wider vocabulary is what a
+        # RECORD may carry, including the ops of histories written before
+        # this core and the ones design §2 names for a later step. What
+        # may be prepared is only what an `Intention` can hold, and
+        # completing anything else would put a record in the history that
+        # no executor of this plugin could have produced.
+        return damaged("its intention names no operation this plugin prepares")
+    if op == OBSERVE:
+        # An observation is a fact about a path, not a change to one: it
+        # opens no transaction, has no postimage and is recorded at
+        # `committed` alone (§4). A file claiming one can only be a hand
+        # edit, and completing it would append a `prepared` observation --
+        # a record shape nothing in this package writes and no reader
+        # expects.
+        return damaged(
+            "its intention is an observation, which publishes nothing and "
+            "never opens a transaction"
+        )
     if not isinstance(purpose, str) or not isinstance(path, str):
         return damaged("its intention names no path and purpose")
     if durability not in DURABILITIES:
@@ -1593,7 +1681,7 @@ def _classify(root, item):
     postimage = item.get("postimage")
     if not isinstance(preimage, dict) or not isinstance(postimage, dict):
         return damaged("it records no preimage and postimage states")
-    if preimage.get("kind") not in KINDS or postimage.get("kind") not in KINDS:
+    if not _well_formed_state(preimage) or not _well_formed_state(postimage):
         return damaged("its preimage or postimage is in no state this plugin knows")
     facts["preimage"] = preimage
     facts["postimage"] = postimage
@@ -2497,7 +2585,7 @@ class Run:
         with several open transactions reads each file once.
         """
         transaction_id = item["id"]
-        verdict, facts = _classify(self.root, item)
+        verdict, facts = _classify(self.root, item, self.adoption)
         path = facts["path"]
         durability = facts["durability"]
 
@@ -2722,7 +2810,7 @@ class Run:
                 "are. Nothing has been changed.",
             )
 
-        verdict, facts = _classify(self.root, item)
+        verdict, facts = _classify(self.root, item, self.adoption)
         if verdict == PROBLEM_DAMAGED:
             return Resolution(
                 transaction_id,
@@ -3188,6 +3276,13 @@ def run(check, resolve, resolution, stdout, stderr):
         # one pass is what lets the summary below count everything actually
         # read even when one of them is later refused.
         transactions = _open_transactions(root)
+        # The id the journals themselves carry, taken in the order
+        # `_adoption_id` prefers them (the repository journal first, since
+        # `records` is filled in `DURABILITIES` order) and never minted: a
+        # tree whose journals are empty has no adoption to compare a
+        # transaction file against, and a fresh id invented here would call
+        # every one of them foreign.
+        adoption = records[0]["adoption"] if records else None
     except JournalError as error:
         where = error.artifact or JOURNAL_FILENAME
         location = where if error.lineno is None else f"{where}:{error.lineno}"
@@ -3228,7 +3323,7 @@ def run(check, resolve, resolution, stdout, stderr):
     for item in transactions:
         # Classified by the one function recovery itself acts on, so what
         # `--check` promises and what the next run does cannot drift apart.
-        verdict, facts = _classify(root, item)
+        verdict, facts = _classify(root, item, adoption)
         if verdict == PROBLEM_DAMAGED:
             location = _transaction_artifact(item["id"])
             message = f"damaged transaction {item['id']}: {facts['reason']}"
