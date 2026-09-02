@@ -397,12 +397,16 @@ def run(harness_memory, view, stdout, stderr):
 def _report_recovery(session, stdout):
     """Resolve what an earlier run left open; return the findings it raised.
 
-    A COMPLETED recovery is printed, because a mutation reaching the
-    history a session late is a thing that happened to this project and the
-    line is where the user sees it. A discarded or removed one prints
-    nothing: the transaction is gone, the path is exactly as it was, and a
-    line about a mutation that never happened is noise on every session
-    start after a crash.
+    A COMPLETED recovery is printed WHEN IT APPENDED SOMETHING, because a
+    mutation reaching the history a session late is a thing that happened
+    to this project and the line is where the user sees it. Completing a
+    transaction whose records were already there -- the residue of a crash
+    between the append and the unlink -- appends nothing and prints
+    nothing: the history is exactly what it was, and "recovered" said about
+    it announces a mutation the file already carried. A discarded or
+    removed one prints nothing either: the transaction is gone, the path is
+    exactly as it was, and a line about a mutation that never happened is
+    noise on every session start after a crash.
 
     A problem is an ERROR against the path it names, or against the
     transaction when it is too damaged to name one. The run carries on -- a
@@ -422,7 +426,7 @@ def _report_recovery(session, stdout):
                     recovery.message,
                 )
             )
-        elif recovery.action == journal.RECOVERED:
+        elif recovery.action == journal.RECOVERED and recovery.appended:
             print(
                 f"init: recovered {recovery.path} from transaction "
                 f"{recovery.transaction}",
@@ -576,15 +580,25 @@ def _refusal(outcome, prefix):
     was intended would mean the check that decided to write it read
     something else than the executor did. Reporting that as `created` or as
     a silent success is how a claim about the tree stops being true, so it
-    raises instead.
+    comes back as a refusal like any other: the run gates on that item, and
+    the message says the state is one nothing here can produce. It used to
+    raise `AssertionError`, which `run` does not catch, so the one state
+    this function exists to refuse was the one that reached the terminal as
+    a traceback.
     """
     if outcome.status == journal.OUTCOME_REFUSED:
         return f"{prefix}: {outcome.message}"
     if outcome.status == journal.OUTCOME_NOOP:
-        raise AssertionError(
-            f"{outcome.path}: the executor found nothing to do for an "
-            f"intention `init` forms only when the path needs it "
-            f"({outcome.op}); nothing was written and nothing was recorded"
+        # An impossible state is still a state this command can be left in,
+        # and `run` does not catch `AssertionError`: raising here turned a
+        # contradiction between two readings of one path into a traceback
+        # out of the CLI, which is the one shape of failure this package
+        # does not ship. It is an ERROR against the item, like every other
+        # thing that stopped it being written.
+        return (
+            f"the executor reported no-op for a {outcome.op}, which cannot "
+            "happen: every intention `init` forms names a state the path is "
+            "not in. Nothing has been written."
         )
     return None
 

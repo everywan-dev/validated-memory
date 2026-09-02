@@ -1671,6 +1671,92 @@ def _recovers_to_exactly_one_pair(run_cli, tree, path, monkeypatch):
     return records
 
 
+def test_recovery_completes_a_history_holding_only_the_prepared_half(
+    run_cli, tmp_path, monkeypatch
+):
+    """One `committed` line missing is one line to append, not a second pair.
+
+    The `after-history` residue with its last line taken away: the two
+    records were appended together, so a history holding only the
+    `prepared` half is a torn append, a truncated file or a hand edit. The
+    completion is per RECORD, checked by transaction id and stage, so what
+    it appends is the one half that is not there -- ending at exactly one
+    pair, in the order `_execute` writes them.
+    """
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-history")
+    assert run_cli("init", cwd=tmp_path).returncode == 70
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT")
+    entry = _transactions(tmp_path)[0]
+
+    journal = tmp_path / "journal.jsonl"
+    lines = journal.read_text(encoding="utf-8").splitlines(keepends=True)
+    last = json.loads(lines[-1])
+    assert (last["path"], last["stage"]) == (".gitignore", "committed"), last
+    journal.write_text("".join(lines[:-1]), encoding="utf-8")
+
+    recovered = _recovers_to_exactly_one_pair(
+        run_cli, tmp_path, ".gitignore", monkeypatch
+    )
+    rebuilt = [
+        record
+        for record in recovered
+        if record["path"] == ".gitignore" and record["op"] != "observe"
+    ]
+    # The half that survived and the half that was appended are one act,
+    # and both belong to the run that wrote the bytes.
+    assert [record["stage"] for record in rebuilt] == [
+        "prepared",
+        "committed",
+    ], rebuilt
+    assert [record["transaction"] for record in rebuilt] == [
+        entry["transaction"],
+        entry["transaction"],
+    ], rebuilt
+    assert [record["run"] for record in rebuilt] == [
+        entry["run"],
+        entry["run"],
+    ], (rebuilt, entry)
+
+
+def test_init_announces_a_recovery_only_when_the_history_gained_one(
+    run_cli, tmp_path, monkeypatch
+):
+    """`completed` has two shapes, and only one of them is news.
+
+    A kill at `after-published` leaves a mutation the history never
+    admitted to, and the run that records it a session late says so. A kill
+    at `after-history` leaves records that are already complete and a file
+    to unlink: recovery appends nothing, and `init: recovered ...` said
+    about it announces a mutation the journal already carried, on the
+    session start after a crash the user has no other trace of.
+    """
+    published = tmp_path / "published"
+    history = tmp_path / "history"
+    published.mkdir()
+    history.mkdir()
+
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-published")
+    assert run_cli("init", cwd=published).returncode == 70
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-history")
+    assert run_cli("init", cwd=history).returncode == 70
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT")
+
+    announced = run_cli("init", cwd=published)
+    silent = run_cli("init", cwd=history)
+
+    assert announced.returncode == 0, (announced.stdout, announced.stderr)
+    assert silent.returncode == 0, (silent.stdout, silent.stderr)
+    assert (
+        "init: recovered .gitignore from transaction" in announced.stdout
+    ), announced.stdout
+    assert "recovered" not in silent.stdout, silent.stdout
+    # Both are closed either way: what differs is what was said about them.
+    assert not _transactions(published), _transactions(published)
+    assert not _transactions(history), _transactions(history)
+    for tree in (published, history):
+        assert run_cli("journal", "--check", cwd=tree).returncode == 0
+
+
 def test_a_kill_at_after_published_leaves_bytes_with_no_history(
     run_cli, tmp_path, monkeypatch
 ):

@@ -1501,6 +1501,13 @@ class Recovery:
     - `problem` -- `diverged`, `unknown` or `damaged`. The transaction file
       is LEFT where it is in all three: recovery closes only what it can
       account for, and `journal --resolve` is the way out.
+    - `appended` -- whether records were actually written. `completed` has
+      two shapes and they are not the same news: a mutation reaching the
+      history a session late is a thing that happened to this project, and
+      a crash between the append and the unlink left records that were
+      already there and only a file to remove. A caller that printed both
+      announced a recovery on every session start after the second, for a
+      history that gained nothing.
     - `message` -- the sentence a caller renders. For a problem it names the
       transaction and the three flags, because a finding a user cannot act
       on is a stopped session.
@@ -1511,6 +1518,7 @@ class Recovery:
     durability: str | None
     action: str | None = None
     problem: str | None = None
+    appended: bool = False
     message: str = ""
 
     def __post_init__(self):
@@ -2752,6 +2760,7 @@ class Run:
                 path,
                 durability,
                 action=RECOVERED,
+                appended=appended,
                 message=(
                     f"transaction {transaction_id} published {path}, and its "
                     "two history records have been appended"

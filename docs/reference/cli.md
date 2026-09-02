@@ -72,6 +72,12 @@ session late, and says so:
 init: recovered .gitignore from transaction 9e368fbaf699d836
 ```
 
+That line is printed only when records were actually appended. A crash
+between the append and the transaction file's removal leaves a history
+that is already complete, so the recovery that finds it removes the file,
+gains nothing and says nothing: "recovered" about it would announce a
+mutation the journal already carried.
+
 A transaction recovery cannot account for is an ERROR that gates that one
 path -- nothing may write over it until `journal --resolve` closes it -- and
 the rest of the run proceeds.
@@ -768,10 +774,11 @@ ERROR: .validated-memory/transactions: journal: .validated-memory/transactions i
 journal: 13 record(s), 1 error(s)
 ```
 
-Exit codes: `0` without `--check`, whatever the record count; with
-`--check`, `1` if anything was found, `0` otherwise; `1` either way if a
-journal could not be parsed at all; with `--resolve`, `0` when the
-transaction was closed and `1` when it was refused; `2` a usage error --
+Exit codes: `0` clean; with `--check`, `1` if anything was found and `0`
+otherwise; with `--resolve`, `0` when the transaction was closed and `1`
+when it was refused; `1` in every mode, `--check` or not, for a journal
+that cannot be read as records at all or a vault directory the plugin owns
+that is not a directory -- both of the ERRORs above; `2` a usage error --
 a resolution flag with no `--resolve`, `--resolve` with none of the three
 or with two of them, `--resolve` alongside the read-only `--check`, or an
 empty id, which reaches no transaction and would name none in a refusal

@@ -604,7 +604,7 @@ inferred from a filesystem some later process may have changed:
 
 | Verdict | Reached when | What recovery does |
 |---|---|---|
-| `recoverable` -- *complete* | The file says `published` and the path is in the postimage state; or it says `prepared` and the path is in the postimage state and not in the preimage state | Appends whichever of the two history records is missing, removes the file, and `init` prints `init: recovered <path> from transaction <id>` |
+| `recoverable` -- *complete* | The file says `published` and the path is in the postimage state; or it says `prepared` and the path is in the postimage state and not in the preimage state | Appends whichever of the two history records is missing and removes the file. `init` prints `init: recovered <path> from transaction <id>` when a record was appended, and nothing when both were already there -- the residue of a crash between the append and the unlink |
 | `recoverable` -- *discard* | The file says `prepared` and the path is in the preimage state and not in the postimage state | Removes the file. Nothing happened and nothing is recorded, so nothing is printed |
 | `recoverable` -- *remove* | The file says `aborted` | Removes the file. It published nothing |
 | `diverged` | The file says `published` and the path is not in the postimage state -- something wrote it afterwards | Nothing. The file stays, and an ERROR names the path and the way out |
