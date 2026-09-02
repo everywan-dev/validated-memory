@@ -744,12 +744,26 @@ def _sync_symlink(
     previous = os.readlink(path) if was_symlink else None
 
     def relink():
-        """Point `path` at `target`, whatever it is now. Never deletes data."""
-        if path.is_symlink():
-            path.unlink()
-        else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-        path.symlink_to(target, target_is_directory=True)
+        """Point `path` at `target`, whatever it is now. Never deletes data.
+
+        Atomic, the way the executor publishes the same link: the new link
+        is built under a pid-named temporary beside `path` and renamed over
+        it, so the path is never absent for an instant. An `unlink`
+        followed by a `symlink_to` leaves a window in which the harness has
+        no memory at all, and a process killed inside that window leaves it
+        that way -- which is the one outcome this whole fail-open path
+        exists to prevent. Design §4 asks of the link module exactly this:
+        that it can publish that one symlink atomically and nothing else.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temporary.unlink(missing_ok=True)
+        try:
+            os.symlink(target, temporary)
+            os.replace(temporary, path)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise
 
     try:
         if was_symlink and path.resolve() == target:
@@ -764,8 +778,15 @@ def _sync_symlink(
             freed, findings = adopt.take_over(path, target, stdout)
             if not freed:
                 return findings
+        # Both ways of publishing the link need the parent to be there --
+        # the executor's own publication and `relink`'s rename -- and only
+        # this one is reached on every branch below, so the tree the two
+        # start from is made here, once, before either is chosen.
+        path.parent.mkdir(parents=True, exist_ok=True)
         findings.extend(
-            _record_symlink(session, path, previous, relink, unrecorded)
+            _record_symlink(
+                session, path, previous, target, relink, unrecorded
+            )
         )
         verb = "re-pointed" if was_symlink else "created"
         print(f"init: {verb} symlink {location} -> {target}", file=stdout)
@@ -780,79 +801,87 @@ def _previous_target(previous):
     return f"previous target: {previous}" if previous else "no previous link"
 
 
-def _record_symlink(session, path, previous, relink, unrecorded):
-    """Journal `relink()` around the mutation it performs. Returns findings.
+def _record_symlink(session, path, previous, target, relink, unrecorded):
+    """Publish the harness link through the executor, or fail open. Returns findings.
 
-    The `prepared` record is written first, as §4 requires of every
-    mutation: the `link` op's inverse is "restore the previous target", and
-    `relink()` is precisely what makes that target unreadable, so a record
-    written only afterwards has a window in which the one fact it carries
-    exists nowhere but in memory.
+    The link is the one mutation `init` performs that the executor may not
+    have the last word on. Design §4 declares it an exception and says
+    exactly why: the contract requires the link to be restored when the
+    journal cannot be read or written at all -- that is the `SessionStart`
+    hook's only job -- and an executor that requires a working journal
+    cannot serve that, while one that accepts "record nothing this time"
+    is a general bypass wearing a flag. So the record goes through
+    `execute` whenever the journal is healthy, and only the repair
+    survives when it is not.
 
-    A record that cannot be written is never a reason not to restore the
-    link -- `init` is fail-open about the harness symlink, and a failure
-    here is the record failing, not the link. So the mutation runs either
-    way and the loss is a WARNING carrying the previous target, which then
-    stands on stderr as the only place it was said. `session` is None when
-    nothing may be written to the journal at all and `unrecorded` says why;
-    the split is the same.
+    Three answers, and the link is pointing at this project's `memory/`
+    after all three:
+
+    - `applied` -- the executor published the symlink itself, atomically,
+      and both records are in the vault under one transaction. Nothing is
+      reported: the caller prints the line.
+    - `refused`, or a journal that cannot be written at all -- a WARNING
+      carrying the executor's own message and the previous target, then
+      `relink()`, which publishes the same link the same way and records
+      nothing.
+    - `session is None` -- nothing may be written to the journal at all
+      (it failed earlier in the run, or the vault holding this record is
+      not ignored, and `unrecorded` says which). The same WARNING, with
+      that reason in place of a message, and the same repair.
+
+    The previous target is what the WARNING carries, because it is what the
+    mutation destroys: the `link` op's inverse is "restore the previous
+    target", and once the link is re-pointed that fact exists nowhere else.
+    The expected state carries it too, so a link something else re-pointed
+    between the read and the write is refused rather than recorded against
+    a target it never had.
+
+    There is no window in which the path has no link: the executor renames
+    a temporary over it, `relink` does the same, and nothing here unlinks
+    anything.
     """
+    location = path.as_posix()
     note = _previous_target(previous)
-    findings = []
-    recorded = False
-    if session is None:
-        findings.append(
-            Finding(
-                WARNING,
-                path.as_posix(),
-                "journal",
-                f"the symlink could not be recorded: {unrecorded} ({note}); "
-                "restoring it anyway",
-            )
+    if session is not None:
+        expected = (
+            {"kind": journal.SYMLINK, "target": previous}
+            if previous is not None
+            else {"kind": journal.ABSENT}
         )
-    else:
         try:
-            session.prepare_op(
-                journal.LINK,
-                "init",
-                path.as_posix(),
-                note,
-                durability=journal.LOCAL,
-            )
-            recorded = True
-        except OSError as error:
-            findings.append(
-                Finding(
-                    WARNING,
-                    path.as_posix(),
-                    "journal",
-                    f"the symlink could not be recorded: {error} ({note}); "
-                    "restoring it anyway",
+            outcome = session.execute(
+                journal.Intention(
+                    op=journal.LINK,
+                    purpose="init",
+                    path=location,
+                    durability=journal.LOCAL,
+                    expected=expected,
+                    target=str(target),
+                    note=note,
                 )
             )
+        except (OSError, journal.JournalError) as error:
+            unrecorded = getattr(error, "message", None) or str(error)
+        else:
+            # `noop` cannot be reached from here -- the caller returns
+            # early when the link already resolves to `target`, and a link
+            # whose own text is `target` resolves to it -- but it means the
+            # link is already what this intention would make it, so there
+            # is nothing to repair and nothing to report either.
+            if outcome.status in (journal.OUTCOME_APPLIED, journal.OUTCOME_NOOP):
+                return []
+            unrecorded = outcome.message
 
     relink()
-
-    if recorded:
-        try:
-            session.append_op(
-                journal.LINK,
-                "init",
-                path.as_posix(),
-                note,
-                durability=journal.LOCAL,
-            )
-        except OSError as error:
-            findings.append(
-                Finding(
-                    WARNING,
-                    path.as_posix(),
-                    "journal",
-                    f"the symlink was restored but its record could not be "
-                    f"closed: {error} ({note})",
-                )
-            )
-    return findings
+    return [
+        Finding(
+            WARNING,
+            location,
+            "journal",
+            f"the symlink could not be recorded: {unrecorded} ({note}); "
+            "restoring it anyway",
+        )
+    ]
 
 
 def _ensure_views(stdout):

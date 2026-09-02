@@ -539,6 +539,21 @@ def test_a_repointed_symlink_records_its_previous_target_before_losing_it(
     that target unreadable, so a record written afterwards has a window in
     which the only copy of it is in memory -- and the same window leaves a
     re-pointed link no record mentions at all.
+
+    The link goes through the executor now, so what is written first is the
+    transaction file, fsynced with the previous target in it, and the two
+    history records are appended together afterwards under one transaction
+    id -- which is what says the two lines are one act, since the
+    transaction file itself is local and leaves the disk on the next line.
+    The stages and the note are what this pins; the id is what ties them.
+
+    The link is never absent between two runs either, by construction
+    rather than by measurement: publication builds the new link under a
+    pid-named temporary and renames it over the path (`journal.Run._publish`
+    for the recorded path, `init._sync_symlink.relink` for the fail-open
+    one), and nothing on either path unlinks anything. A test cannot
+    observe a window that does not exist; reading the two code paths is how
+    this is checked.
     """
     import json
 
@@ -563,6 +578,12 @@ def test_a_repointed_symlink_records_its_previous_target_before_losing_it(
     assert [entry["stage"] for entry in links] == ["prepared", "committed"], links
     for entry in links:
         assert entry["note"] == f"previous target: {elsewhere}", entry
+    assert len({entry["transaction"] for entry in links}) == 1, links
+    # And the transaction it names is closed: nothing is left open for the
+    # next run to gate on.
+    assert not list(
+        (adopter_dir / ".validated-memory" / "transactions").glob("*.json")
+    ), sorted((adopter_dir / ".validated-memory" / "transactions").iterdir())
 
 
 def test_a_corrupt_journal_still_restores_the_harness_symlink(
