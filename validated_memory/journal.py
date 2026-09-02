@@ -1227,7 +1227,7 @@ def _write_transaction_file(root, transaction_id, entry):
     """Write `entry` as the whole of one transaction file, fsynced in place.
 
     Temporary, fsync, `install` -- the same durability shape every other
-    atomic write in this module uses (`bootstrap`, `park_preimage`,
+    atomic write in this module uses (`bootstrap`, `_park_preimage`,
     `Run._publish`): the bytes are flushed and fsynced before the rename,
     and `install` fsyncs the directory after it, so the file this call
     leaves behind is exactly as durable whether it is the first write of a
@@ -1910,23 +1910,25 @@ class Run:
     the whole of design §4's protocol and the only thing a caller needs.
     One `Run` per invocation.
 
-    Three methods, and no fourth: `observe` for a fact about the state
+    Four methods, and no fifth: `observe` for a fact about the state
     adoption found, `execute` for every mutation, `recover` for what an
-    earlier run left open. The older two-record protocol -- a `prepared`
-    record appended to a versioned journal, the caller's own mutation, then
-    a `committed` record -- is gone with its two methods, and with it the
-    ability of any module outside this one to open a stage. A `prepared`
-    record with no `committed` twin is still what `journal --check`
-    reconciles, because every history written before this can hold one;
-    nothing here writes another.
+    earlier run left open, and `resolve_transaction` for the one an
+    operator answers for by hand. The older two-record protocol -- a
+    `prepared` record appended to a versioned journal, the caller's own
+    mutation, then a `committed` record -- is gone with its two methods,
+    and with it the ability of any module outside this one to open a stage.
+    A `prepared` record with no `committed` twin is still what
+    `journal --check` reconciles, because every history written before this
+    can hold one; nothing here writes another.
 
     `__init__` takes `Lock` itself, around the two reads and `bootstrap`:
     deciding from what was read that no adoption id exists yet and then
     installing one is a read-modify-write, and two runs interleaving there
     mint two ids for one project. `Lock` is re-entrant, so a caller already
     holding it -- `init.run` holds it for the whole run -- neither waits
-    here nor has it released early. The mutation methods below do not take
-    it: every caller of them today runs inside that run-wide lock.
+    here nor has it released early. Every public method below takes it the
+    same way, `observe` included: what serialises a write is the lock the
+    write itself holds, not one a caller might happen to be inside.
     """
 
     def __init__(self, root=Path()):
@@ -2057,22 +2059,38 @@ class Run:
         be a claim about the state before adoption written after the plugin
         had already changed it, and `observe` has no inverse, so nothing
         would ever take it back.
-        """
-        location = authorise(self.root, path, durability)
-        if (durability, location) in self._seen:
-            return
-        append(
-            [
-                self._record(
-                    OBSERVE, "init", location, durability, COMMITTED, note=note
-                )
-            ],
-            self.root,
-            durability,
-        )
-        self._seen.add((durability, location))
 
-    def park_preimage(self, path):
+        Under the lock, like every other public method here. The `_seen`
+        check and the append are a read-modify-write over a file another
+        process may be appending to, and one that runs outside the lock is
+        serialised by nothing at all: the executor's own mutations run
+        inside it, so an observation racing one could file a fact about the
+        state adoption found for a path the other was already changing.
+        `Lock` is re-entrant, so the caller that already holds it
+        (`init.run` holds one for its whole run) neither waits here nor has
+        it released early.
+        """
+        with Lock(self.root):
+            location = authorise(self.root, path, durability)
+            if (durability, location) in self._seen:
+                return
+            append(
+                [
+                    self._record(
+                        OBSERVE,
+                        "init",
+                        location,
+                        durability,
+                        COMMITTED,
+                        note=note,
+                    )
+                ],
+                self.root,
+                durability,
+            )
+            self._seen.add((durability, location))
+
+    def _park_preimage(self, path):
         """Copy the current bytes of `path` into the vault; return the reference.
 
         Returns None when `path` does not exist, which is what distinguishes
@@ -2283,7 +2301,7 @@ class Run:
         # an intention stops a future one from expecting less. Without it
         # an adopter's symlink reaches the replacement branch:
         # `os.replace` destroys the link itself, no preimage is parked for
-        # it (`park_preimage` sees a symlink, not a file), and the record
+        # it (`_park_preimage` sees a symlink, not a file), and the record
         # would say `replace` with a null preimage -- the exact trade
         # `init.BROKEN_SYMLINK` refuses everywhere else, made silently.
         if intention.content is not None and actual["kind"] not in (ABSENT, FILE):
@@ -2328,7 +2346,7 @@ class Run:
         blob = None
         if actual["kind"] == FILE:
             try:
-                blob = self.park_preimage(location)
+                blob = self._park_preimage(location)
             except OSError as error:
                 return self._refused(
                     intention,
@@ -3124,7 +3142,7 @@ class Run:
         kept = None
         if present["kind"] == FILE and "digest" in present:
             try:
-                reference = self.park_preimage(location)
+                reference = self._park_preimage(location)
             except OSError as error:
                 return refuse(
                     f"the bytes now at {location} could not be parked, and "

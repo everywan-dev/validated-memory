@@ -123,7 +123,7 @@ UNRECORDED_WRITES = {
 # the read-only check a caller must not make for itself; `bootstrap` mints
 # this project's adoption id and installs the journal, which is the one
 # write no record can describe and so the one no caller may repeat;
-# `park_preimage` is the only copy of bytes about to be overwritten, and a
+# `_park_preimage` is the only copy of bytes about to be overwritten, and a
 # caller that parks its own decides for itself what the pre-adoption state
 # was; `_publish` is the atomic publication with its durability barriers,
 # which is precisely the step the six reimplementations each got wrong.
@@ -138,7 +138,7 @@ PRIVATE_JOURNAL_NAMES = (
     "_write_transaction_file",
     "_write_denied",
     "bootstrap",
-    "park_preimage",
+    "_park_preimage",
     "_publish",
 )
 
