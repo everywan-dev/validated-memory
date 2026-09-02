@@ -70,16 +70,13 @@ WRITE_PATH = "journal.py"
 # by decision (design §4). Exactly two decisions, listed by every function
 # that implements one.
 EXECUTOR_EXCEPTIONS = {
-    ("init.py", "_sync_symlink"): (
-        "the fail-open harness link: the contract requires the link back "
-        "when the journal cannot be read or written at all, which is the "
-        "SessionStart hook's only job, and an executor that requires a "
-        "working journal cannot serve it (design §4)"
-    ),
     ("init.py", "relink"): (
-        "the repair itself, the closure `_sync_symlink` hands to "
-        "`_record_symlink`: it publishes that one symlink atomically and "
-        "nothing else"
+        "the fail-open harness link repair: the contract requires the link "
+        "back when the journal cannot be read or written at all, which is "
+        "the SessionStart hook's only job, and an executor that requires a "
+        "working journal cannot serve it (design §4). This closure is the "
+        "whole of it -- `_sync_symlink`, which builds it, mutates nothing "
+        "itself and so is not listed"
     ),
     ("adopt.py", "take_over"): (
         "the harness absorption: it recognises a tree, copies "
@@ -126,6 +123,27 @@ PRIVATE_JOURNAL_NAMES = (
     "_abort_transaction",
     "_resolve_transaction",
     "_write_transaction_file",
+    "_write_denied",
+)
+
+# The other side of the same rule: everything of the journal a module outside
+# it may name. `Intention` and the constants (`CREATE`, `REPO`, `ABSENT`, the
+# op and kind vocabularies) are how a caller states what it wants; `digest` is
+# how it states an expected state's `digest` field, which is a pure function
+# of bytes the caller has already read and touches nothing. Named here so the
+# allowlist this pin describes in its failure message is the one it enforces.
+PERMITTED_JOURNAL_SURFACE = (
+    "Run",
+    "Run.execute",
+    "Run.observe",
+    "Run.recover",
+    "Run.resolve_transaction",
+    "Lock",
+    "run",
+    "digest",
+    "Intention",
+    "JournalError",
+    "the module constants",
 )
 
 # The two primitives every one of the six reimplementations of the protocol
@@ -965,6 +983,11 @@ def test_no_module_outside_the_journal_reaches_past_the_executor():
 
     Names, not calls, and the whole source rather than its code: prose that
     tells the next reader such a surface exists is how it gets used again.
+
+    `PERMITTED_JOURNAL_SURFACE` is the other side of the rule, and the
+    failure message is built from it, so the allowlist a reader is told
+    about is the one this test enforces rather than a second copy of it
+    that can drift.
     """
     offenders = []
     for path in _package_modules():
@@ -988,9 +1011,9 @@ def test_no_module_outside_the_journal_reaches_past_the_executor():
                 offenders.append(f"{path.name}:{node.lineno}: calls `{name}(...)`")
     assert not offenders, (
         "these reach past `Run.execute` into the journal's own protocol; "
-        "the only journal surface a module outside it may touch is `Run`, "
-        "`Run.execute`, `Run.observe`, `Run.recover`, `Lock`, "
-        "`resolve_transaction`, `run`, and the constants:\n"
+        "the whole of the journal surface a module outside it may touch is "
+        + ", ".join(f"`{name}`" for name in PERMITTED_JOURNAL_SURFACE)
+        + ":\n"
         + "\n".join(offenders)
     )
 
