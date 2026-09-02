@@ -54,17 +54,39 @@ RECORDERS = {"session", "journal"}
 # `execute` for a mutation, `observe` for a fact about the state adoption
 # found, `recover` and `resolve_transaction` for what an earlier run left
 # open. There is no fifth, and nothing here opens a stage.
-RECORDING_METHODS = {"execute", "observe", "recover", "resolve_transaction"}
+#
+# Methods of `Run`, which is why they are not in `PERMITTED_JOURNAL_EXPORTS`
+# below and are checked apart from it: that list is what the journal's own
+# namespace offers a caller, and a method is reached through the object it
+# belongs to, never through the module.
+PERMITTED_RUN_METHODS = ("execute", "observe", "recover", "resolve_transaction")
+RECORDING_METHODS = set(PERMITTED_RUN_METHODS)
 
-# The module that IS the write path: the two sets below are exceptions to it,
-# so it can be neither.
-WRITE_PATH = "journal.py"
+# The journal's own source, by path relative to `validated_memory/`. Every
+# module below is identified by its WHOLE relative path and never by its
+# basename: a basename is not a module's identity once the package has
+# subdirectories, and two files that happen to share one must not share an
+# exception neither of them was granted.
+JOURNAL_SOURCE = "journal.py"
+
+# The modules that may use a raw filesystem primitive: the journal's own
+# write path. A literal set rather than "whatever the journal contains",
+# because a module added to the journal later must be a decision made here,
+# not an exemption it inherits from where its file was put.
+RAW_WRITE_MODULES = {"journal.py"}
+
+
+def _inside_journal(relative):
+    """Whether `relative` is the journal's own source, or a module of it."""
+    return relative == JOURNAL_SOURCE or relative.startswith(JOURNAL_SOURCE + "/")
 
 # --- the two exception sets, and why they are two ------------------------------
 #
 # Both name callers the pin lets past, and they are not the same kind of
 # thing, which the plan's first draft conflated. Each entry carries the
 # reason it is there; a `*` for the function name covers a whole module.
+# The key is `(module path relative to `validated_memory/`, function)`, so
+# an exception names one file and not every file that ends in that name.
 
 # Callers that mutate the adopter's tree WITHOUT going through the executor,
 # by decision (design §4). Exactly two decisions, listed by every function
@@ -116,50 +138,69 @@ UNRECORDED_WRITES = {
 # spellings occurs in English.
 #
 # `prepare_op` and `append_op` were the two-record protocol's own methods;
-# `journal.append` is the raw line-writer under every record;
 # `_open_transaction`, `_mark_published`, `_abort_transaction`,
 # `_resolve_transaction` and `_write_transaction_file` are the write-ahead
 # log's four stages and the atomic write beneath them; `_write_denied` is
-# the read-only check a caller must not make for itself; `bootstrap` mints
-# this project's adoption id and installs the journal, which is the one
-# write no record can describe and so the one no caller may repeat;
-# `_park_preimage` is the only copy of bytes about to be overwritten, and a
-# caller that parks its own decides for itself what the pre-adoption state
-# was; `_publish` is the atomic publication with its durability barriers,
-# which is precisely the step the six reimplementations each got wrong.
+# the read-only check a caller must not make for itself; `_park_preimage` is
+# the only copy of bytes about to be overwritten, and a caller that parks its
+# own decides for itself what the pre-adoption state was; `_publish` is the
+# atomic publication with its durability barriers, which is precisely the
+# step the six reimplementations each got wrong.
+#
+# `bootstrap`, `record`, `append` and `install` are NOT here. They are
+# ordinary English and ordinary Python -- `verdicts.append`, a record of a
+# probe, an install step -- and a text scan for them would fail on prose and
+# be turned off rather than obeyed. They are pinned as SYMBOLS instead, by
+# the surface test below: nothing outside the journal may import them from
+# it or reach them through it, which is the thing the text was standing in
+# for.
 PRIVATE_JOURNAL_NAMES = (
     "prepare_op",
     "append_op",
-    "journal.append",
     "_open_transaction",
     "_mark_published",
     "_abort_transaction",
     "_resolve_transaction",
     "_write_transaction_file",
     "_write_denied",
-    "bootstrap",
     "_park_preimage",
     "_publish",
 )
 
-# The other side of the same rule: everything of the journal a module outside
-# it may name. `Intention` and the constants (`CREATE`, `REPO`, `ABSENT`, the
-# op and kind vocabularies) are how a caller states what it wants; `digest` is
+# The other side of the same rule: every top-level name of the journal a
+# module outside it may reach, and the whole of what its own namespace
+# offers. `Intention` and the constants (`CREATE`, `REPO`, `ABSENT`, the op
+# and kind vocabularies) are how a caller states what it wants; `digest` is
 # how it states an expected state's `digest` field, which is a pure function
-# of bytes the caller has already read and touches nothing. Named here so the
-# allowlist this pin describes in its failure message is the one it enforces.
-PERMITTED_JOURNAL_SURFACE = (
-    "Run",
-    "Run.execute",
-    "Run.observe",
-    "Run.recover",
-    "Run.resolve_transaction",
-    "Lock",
-    "run",
-    "digest",
+# of bytes the caller has already read and touches nothing.
+#
+# Exactly what `init.py` and `cli.py` use, and nothing kept "in case": a name
+# nobody imports is a surface nobody asked for, and the failure messages
+# below are built from this list so the allowlist a reader is told about is
+# the one that is enforced. The tests drive the CLI as a subprocess and need
+# none of it.
+PERMITTED_JOURNAL_EXPORTS = (
+    "ABSENT",
+    "APPEND",
+    "CREATE",
+    "FILE",
     "Intention",
+    "JOURNAL_FILENAME",
     "JournalError",
-    "the module constants",
+    "LINK",
+    "LOCAL",
+    "Lock",
+    "OUTCOME_APPLIED",
+    "OUTCOME_NOOP",
+    "OUTCOME_REFUSED",
+    "RECOVERED",
+    "REPO",
+    "RESOLUTIONS",
+    "Run",
+    "SYMLINK",
+    "VAULT_DIRNAME",
+    "digest",
+    "run",
 )
 
 # The two primitives every one of the six reimplementations of the protocol
@@ -938,8 +979,18 @@ def test_a_corrupt_vault_journal_is_reported_against_the_vault(run_cli, tmp_path
 
 
 def _package_modules():
-    """Every module of the package, in path order."""
-    return sorted((REPO_ROOT / "validated_memory").rglob("*.py"))
+    """Every module of the package, as `(relative path, path)`, in path order.
+
+    The relative path is the module's identity everywhere below -- in the
+    two exception sets, in `RAW_WRITE_MODULES`, and in `_inside_journal` --
+    because a basename stops identifying a module the moment the package
+    has a subdirectory.
+    """
+    root = REPO_ROOT / "validated_memory"
+    return [
+        (path.relative_to(root).as_posix(), path)
+        for path in sorted(root.rglob("*.py"))
+    ]
 
 
 def test_every_write_in_the_package_goes_through_the_journal():
@@ -984,12 +1035,12 @@ def test_every_write_in_the_package_goes_through_the_journal():
     """
     exempt = {**EXECUTOR_EXCEPTIONS, **UNRECORDED_WRITES}
     offenders = []
-    for path in _package_modules():
-        if path.name == WRITE_PATH or (path.name, "*") in exempt:
+    for relative, path in _package_modules():
+        if relative in RAW_WRITE_MODULES or (relative, "*") in exempt:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for name, calls in _scopes(tree):
-            if (path.name, name) in exempt:
+            if (relative, name) in exempt:
                 continue
             mutations = [
                 (_mutating_call(call), call.lineno)
@@ -1000,7 +1051,7 @@ def test_every_write_in_the_package_goes_through_the_journal():
                 continue
             for mutation, lineno in mutations:
                 offenders.append(
-                    f"{path.name}:{lineno}: {name} calls {mutation} "
+                    f"{relative}:{lineno}: {name} calls {mutation} "
                     "and never reaches the journal"
                 )
     assert not offenders, (
@@ -1031,14 +1082,14 @@ def test_no_module_outside_the_journal_reaches_past_the_executor():
     that can drift.
     """
     offenders = []
-    for path in _package_modules():
-        if path.name == WRITE_PATH:
+    for relative, path in _package_modules():
+        if _inside_journal(relative):
             continue
         source = path.read_text(encoding="utf-8")
         for lineno, line in enumerate(source.splitlines(), start=1):
             for name in PRIVATE_JOURNAL_NAMES:
                 if re.search(r"\b" + re.escape(name) + r"\b", line):
-                    offenders.append(f"{path.name}:{lineno}: names `{name}`")
+                    offenders.append(f"{relative}:{lineno}: names `{name}`")
         for node in ast.walk(ast.parse(source)):
             if not isinstance(node, ast.Call):
                 continue
@@ -1049,12 +1100,83 @@ def test_no_module_outside_the_journal_reaches_past_the_executor():
             elif isinstance(called, ast.Attribute):
                 name = called.attr
             if name in PRIVATE_JOURNAL_CALLS:
-                offenders.append(f"{path.name}:{node.lineno}: calls `{name}(...)`")
+                offenders.append(f"{relative}:{node.lineno}: calls `{name}(...)`")
     assert not offenders, (
         "these reach past `Run.execute` into the journal's own protocol; "
         "the whole of the journal surface a module outside it may touch is "
-        + ", ".join(f"`{name}`" for name in PERMITTED_JOURNAL_SURFACE)
+        + ", ".join(f"`{name}`" for name in PERMITTED_JOURNAL_EXPORTS)
+        + ", plus "
+        + ", ".join(f"`Run.{name}`" for name in PERMITTED_RUN_METHODS)
         + ":\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_nothing_outside_the_journal_reaches_a_name_it_does_not_export():
+    """The journal has one door, and this is the list of what is behind it.
+
+    The text scan above catches the spellings that never occur in English.
+    It cannot catch the ones that do -- `bootstrap`, `record`, `append`,
+    `install` -- and a scan that failed on the word "record" would be turned
+    off rather than obeyed. So those are pinned here instead, as symbols: a
+    module outside the journal may name `journal.X` and may import `X` from
+    it only for the X in `PERMITTED_JOURNAL_EXPORTS`, and the four are not
+    among them.
+
+    The same check closes the other way past the door. A caller that imports
+    a MODULE of the journal -- `from .journal import records`,
+    `from .journal.executor import Run` -- is reaching around the facade
+    into a namespace nobody promised, which is how a split into modules
+    turns a single surface back into several. The journal is imported whole
+    (`from . import journal`) and reached by attribute, or not at all.
+
+    Read with `ast`, over the whole package but the journal itself, which is
+    the one thing allowed to name its own machinery.
+    """
+    exports = set(PERMITTED_JOURNAL_EXPORTS)
+    offenders = []
+    for relative, path in _package_modules():
+        if _inside_journal(relative):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("validated_memory.journal."):
+                        offenders.append(
+                            f"{relative}:{node.lineno}: imports the journal "
+                            f"module `{alias.name}`"
+                        )
+            elif isinstance(node, ast.ImportFrom):
+                module = (node.module or "").removeprefix("validated_memory.")
+                if module.startswith("journal."):
+                    offenders.append(
+                        f"{relative}:{node.lineno}: imports from the journal "
+                        f"module `{module}`"
+                    )
+                elif module == "journal":
+                    for alias in node.names:
+                        if alias.name not in exports:
+                            offenders.append(
+                                f"{relative}:{node.lineno}: imports "
+                                f"`{alias.name}` from the journal"
+                            )
+            elif (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "journal"
+                and node.attr not in exports
+            ):
+                offenders.append(
+                    f"{relative}:{node.lineno}: names `journal.{node.attr}`"
+                )
+    assert not offenders, (
+        "the whole of the journal a module outside it may reach is "
+        + ", ".join(f"`{name}`" for name in PERMITTED_JOURNAL_EXPORTS)
+        + ", plus "
+        + ", ".join(f"`Run.{name}`" for name in PERMITTED_RUN_METHODS)
+        + " on a `Run`; the journal is imported whole and reached by "
+        "attribute, never by one of its own modules:\n"
         + "\n".join(offenders)
     )
 
@@ -2224,14 +2346,25 @@ def test_a_creation_publishes_with_o_excl_rather_than_replacing():
     green when `O_EXCL` is swapped for a rename. So the flags are pinned
     where they are written.
     """
-    tree = ast.parse(
-        (REPO_ROOT / "validated_memory" / "journal.py").read_text(encoding="utf-8")
-    )
-    publish = next(
-        node
-        for node in ast.walk(tree)
+    # Found across the write path rather than opened by name, and asserted to
+    # be exactly one: the guarantee below is a property of THE function that
+    # publishes, and a second definition of it -- in another module of the
+    # journal, added later -- would be a second answer to the same question,
+    # with this pin green against whichever of the two it happened to read.
+    publishers = [
+        (relative, node)
+        for relative in sorted(RAW_WRITE_MODULES)
+        for node in ast.walk(
+            ast.parse(
+                (REPO_ROOT / "validated_memory" / relative).read_text(
+                    encoding="utf-8"
+                )
+            )
+        )
         if isinstance(node, ast.FunctionDef) and node.name == "_publish"
-    )
+    ]
+    assert len(publishers) == 1, [relative for relative, _ in publishers]
+    publish = publishers[0][1]
     # The call that publishes, identified by what it opens: `_publish` opens
     # a temporary as well, and pinning "somewhere in this function" would go
     # green on the temporary's flags while the publication replaced whatever
