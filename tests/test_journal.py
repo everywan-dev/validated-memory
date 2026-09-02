@@ -41,7 +41,7 @@ SHUTIL_MUTATORS = {
     "rmtree", "make_archive", "unpack_archive",
 }
 # The journal's own atomic install (rename plus the durability barrier). It
-# is a mutation like any other when called from outside `journal.py`.
+# is a mutation like any other when called from outside the journal package.
 JOURNAL_MUTATORS = {"install"}
 
 # A call reaches the journal when it is made ON the journal --
@@ -67,13 +67,23 @@ RECORDING_METHODS = set(PERMITTED_RUN_METHODS)
 # basename: a basename is not a module's identity once the package has
 # subdirectories, and two files that happen to share one must not share an
 # exception neither of them was granted.
-JOURNAL_SOURCE = "journal.py"
+JOURNAL_SOURCE = "journal"
 
 # The modules that may use a raw filesystem primitive: the journal's own
 # write path. A literal set rather than "whatever the journal contains",
 # because a module added to the journal later must be a decision made here,
-# not an exemption it inherits from where its file was put.
-RAW_WRITE_MODULES = {"journal.py"}
+# not an exemption it inherits from where its file was put. Four of the
+# package's nine modules: the two histories and the durable append
+# (`records`), the lock file, the write-ahead log, and the executor with the
+# preimage store. The other five -- the state vocabulary, the intention, the
+# fault seam, the reconciler and the subcommand -- write nothing, and this
+# pin says so of them every time it runs.
+RAW_WRITE_MODULES = {
+    "journal/executor.py",
+    "journal/lock.py",
+    "journal/records.py",
+    "journal/transactions.py",
+}
 
 
 def _inside_journal(relative):
@@ -131,7 +141,8 @@ UNRECORDED_WRITES = {
 
 # Names the journal keeps to itself: the two halves of the older two-record
 # protocol, the raw append, and the transaction file's own machinery. A
-# module outside `journal.py` naming any of them is reaching past `execute`,
+# module outside the journal package naming any of them is reaching past
+# `execute`,
 # which is the thing design §4 removed the public surface for. Matched as
 # text, because prose that tells the next reader such a surface exists is
 # how it gets used again -- which is safe here only because none of these
@@ -1065,7 +1076,8 @@ def test_no_module_outside_the_journal_reaches_past_the_executor():
     """The stage-writing surface is the journal's own, and nothing else may name it.
 
     Design §4 takes `prepare_op` and `append_op` off the public surface
-    precisely so that no module outside `journal.py` can reimplement the
+    precisely so that no module outside the journal package can reimplement
+    the
     protocol the way `init.py` did -- six spellings of it, each getting a
     different step wrong. Deleting the two methods is what makes that true
     today; this is what keeps it true, and it covers the rest of the
@@ -1178,6 +1190,49 @@ def test_nothing_outside_the_journal_reaches_a_name_it_does_not_export():
         + " on a `Run`; the journal is imported whole and reached by "
         "attribute, never by one of its own modules:\n"
         + "\n".join(offenders)
+    )
+
+
+def test_the_facade_exports_exactly_the_surface_the_pin_permits():
+    """Two lists of one thing drift, so this is the one place they meet.
+
+    `PERMITTED_JOURNAL_EXPORTS` is what the pins above tell a reader they
+    may reach; `journal/__init__.py`'s `__all__` is what the package
+    actually offers. A name added to the facade and not to the list would be
+    a surface no pin describes; a name dropped from the facade and left in
+    the list would send a reader to a door that is not there. They are
+    asserted equal, in order, so `__all__` stays sorted as well.
+
+    Read as text, never imported: like every test in this suite, this one
+    does not import the package's internals, so the declaration is taken
+    from the source with `ast`.
+
+    The four methods of `Run` are `PERMITTED_RUN_METHODS` and are not
+    checked here: a method is not a module-level name and cannot appear in
+    an `__all__`.
+    """
+    source = (
+        REPO_ROOT / "validated_memory" / JOURNAL_SOURCE / "__init__.py"
+    ).read_text(encoding="utf-8")
+    exports = None
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
+        ):
+            # A literal list of literal strings, so this reads it without
+            # importing anything: an `__all__` built by concatenating other
+            # modules' would be unreadable here, and is refused by the
+            # `element.value` access below rather than silently skipped.
+            exports = [element.value for element in node.value.elts]
+    assert exports is not None, "journal/__init__.py declares no `__all__`"
+    assert exports == sorted(exports), "`__all__` is not sorted"
+    assert exports == list(PERMITTED_JOURNAL_EXPORTS), (
+        "the facade and the surface this suite pins have drifted:\n"
+        "  only in `__all__`: "
+        f"{sorted(set(exports) - set(PERMITTED_JOURNAL_EXPORTS))}\n"
+        "  only in PERMITTED_JOURNAL_EXPORTS: "
+        f"{sorted(set(PERMITTED_JOURNAL_EXPORTS) - set(exports))}"
     )
 
 
@@ -1538,7 +1593,8 @@ def test_journal_check_reports_a_readable_open_transaction(run_cli, tmp_path):
     No caller opens a transaction until Task 4's executor exists, so this is
     the contract the reader (`_open_transactions`, exercised through
     `journal --check`) and Task 4's writer have to agree on. The exact
-    shape is `_open_transaction`'s docstring, in `validated_memory/journal.py`.
+    shape is `_open_transaction`'s docstring, in
+    `validated_memory/journal/transactions.py`.
     """
     assert run_cli("init", cwd=tmp_path).returncode == 0
     journal = tmp_path / "journal.jsonl"
