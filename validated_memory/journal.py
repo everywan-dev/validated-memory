@@ -156,6 +156,21 @@ def digest(data):
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def _blob_matches(path, reference):
+    """Whether the bytes at `path` digest to `reference`, without raising.
+
+    A preimage blob is named after its own digest, so this is the one
+    question that can be asked of it. Bytes that cannot be read at all
+    answer it the same way bytes that disagree do: this blob is not the
+    preimage it claims to be, and the caller replaces it rather than
+    trusting it.
+    """
+    try:
+        return digest(path.read_bytes()) == reference
+    except OSError:
+        return False
+
+
 def now():
     """The current UTC time, ISO-8601 with a trailing 'Z'.
 
@@ -309,13 +324,19 @@ class Intention:
     - `note` -- the same free-text annotation `prepare_op`/`append_op`
       already carry; `None` when there is nothing to say.
 
-    `__post_init__` refuses six combinations, each a way the payload could
+    `__post_init__` refuses seven combinations, each a way the payload could
     silently disagree with `op`: a `LINK` carrying `content`, a directory
     `CREATE` carrying `content`, a file `CREATE`/`REPLACE`/`APPEND` carrying
     no `content`, a `LINK` carrying no `target`, an `OBSERVE` carrying any
-    payload (`content`, `target` or `directory=True`), and an unknown `op`
-    or `durability`. Every refusal is `ValueError`: nothing has been
-    touched yet to reach it.
+    payload (`content`, `target` or `directory=True`), a `CREATE` expecting
+    anything but `{"kind": ABSENT}`, and an unknown `op` or `durability`.
+    Every refusal is `ValueError`: nothing has been touched yet to reach it.
+
+    The `CREATE` rule is what makes "a creation is never a no-op" true by
+    construction rather than by inspection of each caller. A create over
+    something already there is not a creation -- it is a replacement, and it
+    has to say so, because the record is what a reversal reads and the
+    inverse of a create is removal.
     """
 
     op: str
@@ -349,6 +370,11 @@ class Intention:
             self.content is not None or self.target is not None or self.directory
         ):
             raise ValueError("an observe intention carries no payload")
+        if self.op == CREATE and self.expected != {"kind": ABSENT}:
+            raise ValueError(
+                "a create intention must expect the path to be absent; "
+                f"this one expects {self.expected}"
+            )
 
 
 OUTCOME_APPLIED = "applied"
@@ -473,8 +499,8 @@ def _write_denied(root, location, actual):
     if stat.S_IMODE(info.st_mode) & bit:
         return None
     return (
-        f"{location} is mode 0{stat.S_IMODE(info.st_mode):o}, which denies "
-        "writing to this user; nothing has been written"
+        f"{location} is mode {stat.S_IMODE(info.st_mode):04o}, which denies "
+        "writing to this user. Nothing has been written."
     )
 
 
@@ -1582,20 +1608,28 @@ class Run:
         pre-adoption state -- a second copy would record an intermediate
         state as if it were the original.
 
-        The blob is VERIFIED before the reference is returned: it is read
-        back and its digest compared with the name it is filed under. A
-        preimage is the only copy of bytes this plugin is about to
+        The blob is VERIFIED, and verified BEFORE it is installed: the
+        temporary is read back and its digest compared with the name it is
+        about to be filed under, and a mismatch removes the temporary and
+        raises. A preimage is the only copy of bytes this plugin is about to
         overwrite, and nothing else ever checks it -- a reversal years later
-        would restore whatever is in the file the record names. So a blob
-        whose bytes disagree with its own name is an `OSError` here, before
-        the mutation it was taken for, rather than a silent lie in the one
-        store the whole reversal plan rests on.
+        would restore whatever is in the file the record names -- so bad
+        bytes must never reach the name a later reader trusts. Verifying
+        after the install would leave them there, and the dedup below would
+        then skip re-parking for ever: one bad write would refuse the same
+        mutation on every run until someone deleted the file by hand.
+
+        A blob ALREADY there whose bytes do not digest to its own name is
+        removed and re-parked, once. It is worthless to every reader -- the
+        name is the digest, so bytes that disagree with it can only be a
+        corrupt earlier park or a hand edit -- and the bytes to replace it
+        with are in hand right now. Refusing instead would wedge the
+        adoption on a file nothing else will ever repair.
 
         The check is read-back, not a proof about the platter: a filesystem
         that lies about what it stored will lie to this read too. What it
         does catch is the reachable half -- a short or torn write, and a
-        blob some earlier run or a hand edit left corrupt, which is
-        precisely the case the dedup below would otherwise trust for ever.
+        blob left corrupt by an earlier run or an edit.
         """
         target = self.root / path
         if not target.exists() or target.is_dir():
@@ -1608,24 +1642,36 @@ class Run:
             / PREIMAGE_DIRNAME
             / reference.replace("sha256:", "")
         )
+        if blob.exists() and not _blob_matches(blob, reference):
+            blob.unlink(missing_ok=True)
         if not blob.exists():
             blob.parent.mkdir(parents=True, exist_ok=True)
             temporary = blob.with_name(f"{blob.name}.{os.getpid()}.tmp")
-            # The blob is named after its own digest, so a torn write would
-            # leave bytes that silently disagree with the name every later
-            # reader trusts. Every other atomic write in this module fsyncs
-            # before the rename; this one has to as well.
-            with temporary.open("wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            install(temporary, blob)
-        if digest(blob.read_bytes()) != reference:
-            raise OSError(
-                f"the preimage parked for {path} does not match the digest "
-                f"it is filed under ({reference}); the vault's copy of the "
-                "bytes about to be overwritten cannot be trusted"
-            )
+            try:
+                # The blob is named after its own digest, so a torn write
+                # would leave bytes that silently disagree with the name
+                # every later reader trusts. Every other atomic write in
+                # this module fsyncs before the rename; this one has to as
+                # well, and then prove what it wrote before publishing it.
+                with temporary.open("wb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                if not _blob_matches(temporary, reference):
+                    raise OSError(
+                        f"the preimage of {path} written to "
+                        f"{temporary.as_posix()} does not digest to "
+                        f"{reference}, the name it would be filed under; the "
+                        "vault's copy of the bytes about to be overwritten "
+                        "cannot be trusted"
+                    )
+                install(temporary, blob)
+            except OSError:
+                # Nothing else ever removes it: the name carries this
+                # process's pid, so no later run would recognise it as
+                # abandoned, and it would sit in the vault for ever.
+                temporary.unlink(missing_ok=True)
+                raise
         return reference
 
     # --- the executor: one intention, one path, one outcome -------------------
@@ -1727,6 +1773,24 @@ class Run:
                 f"{_describe(intention.expected)}. Nothing has been written.",
             )
 
+        # A byte-publishing op may only ever land on nothing or on a
+        # regular file. `write` and `append_text` are public shims that
+        # build their own expectation from whatever they find, so without
+        # this an adopter's symlink would be handed to the replacement
+        # branch: `os.replace` destroys the link itself, no preimage is
+        # parked for it (`park_preimage` sees a symlink, not a file), and
+        # the record would say `replace` with a null preimage -- the exact
+        # trade `init.BROKEN_SYMLINK` refuses everywhere else, made
+        # silently. The expected-state check does not cover it, because a
+        # shim's expectation IS the symlink it just read.
+        if intention.content is not None and actual["kind"] not in (ABSENT, FILE):
+            return self._refused(
+                intention,
+                actual,
+                f"{location} is {_describe(actual)}; refusing to replace it. "
+                "Nothing has been written.",
+            )
+
         try:
             data, prior_bytes = self._payload(intention, location, actual)
         except OSError as error:
@@ -1771,13 +1835,20 @@ class Run:
                     "been written.",
                 )
 
+        # Only a regular file's mode is a mode this protocol carries: it is
+        # what the replacement copies onto its temporary and what a reversal
+        # would restore. A symlink's `lstat` mode is 0777 on every platform
+        # this runs on and means nothing, and recording it would invite a
+        # reversal to restore a number nobody chose.
+        preimage_mode = actual["mode"] if actual["kind"] == FILE else None
+
         transaction = _open_transaction(
             self.root,
             intention,
             actual,
             postimage,
             preimage_blob=blob,
-            mode=actual.get("mode"),
+            mode=preimage_mode,
             adoption=self.adoption,
             run=self.run,
         )
@@ -1974,7 +2045,19 @@ class Run:
         else:
             temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
             try:
-                with temporary.open("wb") as handle:
+                # Created 0600 and only then given the target's mode, both
+                # before the rename. A temporary made under the umask would
+                # carry the adopter's bytes at 0644 for the length of the
+                # write, so publishing a 0600 file would put its contents
+                # where anyone could read them for that window. The unlink
+                # first is what keeps `O_EXCL` usable: a temporary left by a
+                # run that died here carries this pid and nothing else would
+                # ever clear it.
+                temporary.unlink(missing_ok=True)
+                descriptor = os.open(
+                    temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+                )
+                with open(descriptor, "wb", closefd=True) as handle:
                     handle.write(data)
                     handle.flush()
                     os.fsync(handle.fileno())

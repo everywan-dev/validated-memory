@@ -1444,7 +1444,16 @@ def test_a_read_only_file_is_refused_and_left_exactly_as_it_was(run_cli, tmp_pat
 
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert ".gitignore" in result.stderr, result.stderr
-    assert "mode 0444" in result.stderr, result.stderr
+    # The whole sentence, because a refusal that does not say what was left
+    # alone is a refusal the reader cannot act on. The mode is printed with
+    # four digits so that a mode below 0o100 reads as `0040` and not `040`;
+    # no path `init` can reach produces one, since a file the process cannot
+    # read never gets this far, so the width is a guard rather than a
+    # behaviour this test can drive.
+    assert (
+        ".gitignore is mode 0444, which denies writing to this user. "
+        "Nothing has been written." in result.stderr
+    ), result.stderr
     assert ignore.read_text(encoding="utf-8") == before
     assert oct(ignore.stat().st_mode & 0o777) == "0o444"
     # A refusal before anything was prepared writes nothing anywhere
@@ -1593,6 +1602,75 @@ def test_a_path_left_by_an_open_transaction_is_never_observed_as_pre_existing(
     ], _records(tmp_path / "journal.jsonl")
 
 
+def test_a_corrupt_preimage_blob_is_replaced_rather_than_wedging_the_run(
+    run_cli, tmp_path
+):
+    """A blob whose bytes disagree with its own name is worthless, not fatal.
+
+    The store is content-addressed: the filename IS the digest, so bytes
+    that do not hash to it can only be a corrupt earlier park or an edit,
+    and no reader anywhere can ever want them. Refusing on sight would wedge
+    the adoption -- the dedup skips re-parking a name that exists, so every
+    later run would read the same bad bytes and refuse again, for ever, over
+    a file nothing else will repair. The bytes to replace it with are in
+    hand at exactly that moment, so it is replaced.
+    """
+    import hashlib
+
+    before = "build/\n"
+    ignore = tmp_path / ".gitignore"
+    ignore.write_text(before, encoding="utf-8")
+    reference = hashlib.sha256(before.encode("utf-8")).hexdigest()
+    preimages = tmp_path / ".validated-memory" / "preimages"
+    preimages.mkdir(parents=True)
+    blob = preimages / reference
+    blob.write_text("not the preimage at all\n", encoding="utf-8")
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert blob.read_text(encoding="utf-8") == before
+    # The mutation the preimage was taken for went through and is recorded
+    # against the blob that now holds the true bytes.
+    committed = next(
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry["path"] == ".gitignore" and entry["stage"] == "committed"
+    )
+    assert committed["preimage"] == f"sha256:{reference}", committed
+    # No pid-named temporary is left in the store either.
+    assert sorted(p.name for p in preimages.iterdir()) == [reference]
+
+
+def test_a_symlink_where_a_directory_goes_is_refused_not_kept(run_cli, tmp_path):
+    """The same family as the plain file above: `is_dir()` is the question.
+
+    A symlink to a file at `memory/` resolves, so `exists()` was true and
+    1.5.2 reported it `kept` and journalled "directory already present". It
+    is not a directory, every command that reads the layout fails on it, and
+    the observation would be a permanent claim about the pre-adoption state
+    that is simply false. It is now the same ERROR, and nothing is recorded
+    -- above all, `init` does not replace the adopter's link.
+    """
+    (tmp_path / "elsewhere.md").write_text("notes\n", encoding="utf-8")
+    (tmp_path / "memory").symlink_to(tmp_path / "elsewhere.md")
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "memory: create" in result.stderr, result.stderr
+    assert "expects it to be absent" in result.stderr, result.stderr
+    assert "init: kept memory" not in result.stdout, result.stdout
+    assert (tmp_path / "memory").is_symlink()
+    assert (tmp_path / "elsewhere.md").read_text(encoding="utf-8") == "notes\n"
+    assert not [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry["path"] == "memory"
+    ]
+    assert not _transactions(tmp_path)
+
+
 # A third party that is not this plugin and does not wait its turn: it
 # watches for the run to start parking a preimage and then replaces the file
 # under it, atomically, so the run can never read a half-written state.
@@ -1707,15 +1785,32 @@ def test_a_creation_publishes_with_o_excl_rather_than_replacing():
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_publish"
     )
-    flags = {
-        ast.unparse(node)
+    # The call that publishes, identified by what it opens: `_publish` opens
+    # a temporary as well, and pinning "somewhere in this function" would go
+    # green on the temporary's flags while the publication replaced whatever
+    # it found.
+    opens = [
+        node
         for node in ast.walk(publish)
-        if isinstance(node, ast.Attribute) and node.attr.startswith("O_")
-    }
-    assert {"os.O_CREAT", "os.O_EXCL"} <= flags, (
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "os.open"
+        and node.args
+    ]
+    published = [node for node in opens if ast.unparse(node.args[0]) == "target"]
+    assert len(published) == 1, [ast.unparse(node) for node in opens]
+    flags = ast.unparse(published[0].args[1])
+    assert "os.O_CREAT" in flags and "os.O_EXCL" in flags, (
         "a creation must be published with os.O_CREAT | os.O_EXCL, which "
-        f"fails when the name is taken; _publish names {sorted(flags)}"
+        f"fails when the name is taken; this one opens with {flags}"
     )
+
+    # And the temporary a replacement is built in is created 0600, so an
+    # adopter's bytes are never briefly readable by anyone the target's own
+    # mode excludes. Same kind of guarantee, same reason it is pinned here:
+    # the window is the length of one write.
+    staged = [node for node in opens if ast.unparse(node.args[0]) == "temporary"]
+    assert len(staged) == 1, [ast.unparse(node) for node in opens]
+    assert ast.literal_eval(staged[0].args[2]) == 0o600, ast.unparse(staged[0])
 
 
 # --- the lock: who holds it, who may break it, and where it lives -------------
