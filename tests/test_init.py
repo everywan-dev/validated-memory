@@ -324,7 +324,7 @@ def test_a_symlink_to_a_file_where_a_scaffold_file_goes_is_refused_not_kept(
 
 
 def test_an_observation_that_cannot_be_recorded_gates_only_its_own_item(
-    adopter_dir, tmp_path, run_cli
+    tmp_path, run_cli
 ):
     """One item's record refuses; the other items are still created.
 
@@ -584,6 +584,69 @@ def test_a_repointed_symlink_records_its_previous_target_before_losing_it(
     assert not list(
         (adopter_dir / ".validated-memory" / "transactions").glob("*.json")
     ), sorted((adopter_dir / ".validated-memory" / "transactions").iterdir())
+
+
+def test_a_recorded_symlink_carries_no_mode(
+    adopter_dir, tmp_path, run_cli, monkeypatch
+):
+    """A symlink's `lstat` mode is 0777, and 0777 is not a fact about anything.
+
+    Nobody chooses it, no platform this runs on varies it, and the node it
+    describes is a pointer rather than bytes. A record carrying `mode: 511`
+    would be read back by a reversal as the mode to restore -- and the only
+    thing a `chmod` on that path can reach is the DIRECTORY the link points
+    at, this project's `memory/`. The executor already refuses to record it
+    as a link's PREIMAGE mode for exactly that reason; the postimage is the
+    same fact and gets the same answer, in the records `execute` writes and
+    in the ones recovery rebuilds.
+    """
+    import json
+
+    harness_memory = tmp_path / "harness" / "memory"
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+
+    assert result.returncode == 0, result.stderr
+    vault = adopter_dir / ".validated-memory" / "local.jsonl"
+    links = [
+        json.loads(line)
+        for line in vault.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["op"] == "link"
+    ]
+    assert [entry["stage"] for entry in links] == ["prepared", "committed"], links
+    for entry in links:
+        assert "mode" not in entry, entry
+    # And the directory the link points at is still a directory: nothing
+    # here ever asked for a mode on it.
+    assert (adopter_dir / "memory").is_dir()
+
+    # The records recovery rebuilds are the records `execute` would have
+    # written, and that includes the field it would have left out. The
+    # ignore entry and every item are already there, so the link is this
+    # run's first and only mutation and the kill lands on it.
+    harness_memory.unlink()
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-published")
+    killed = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+    assert killed.returncode == 70, (killed.stdout, killed.stderr)
+    monkeypatch.delenv("VALIDATED_MEMORY_FAULT")
+
+    recovered = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+
+    assert recovered.returncode == 0, recovered.stderr
+    rebuilt = [
+        json.loads(line)
+        for line in vault.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["op"] == "link"
+    ][len(links):]
+    assert [entry["stage"] for entry in rebuilt] == ["prepared", "committed"], rebuilt
+    for entry in rebuilt:
+        assert "mode" not in entry, entry
 
 
 def test_a_corrupt_journal_still_restores_the_harness_symlink(

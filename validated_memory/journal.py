@@ -408,7 +408,9 @@ class Outcome:
       refusal a user cannot act on is a stopped session.
     - `mode` -- the target's mode after publication for an `applied`
       outcome, the mode it has now for a `noop` or a refusal that found a
-      node there, and None where there is none to report.
+      node there, and None where there is none to report -- which includes
+      every published symlink, whose `lstat` mode is 0777 and means
+      nothing.
     """
 
     status: str
@@ -2308,7 +2310,8 @@ class Run:
         - **A symlink** -- built under a pid-named temporary and `os.replace`d
           over the path, so the link is never absent for an instant. An
           `unlink` then `symlink_to` leaves a session with no memory at all
-          if it dies in between.
+          if it dies in between. It is the one shape that reports no mode:
+          a symlink's is 0777 and means nothing (see below).
 
         A failure anywhere raises `OSError` and leaves the target as it was:
         the temporary is removed, and a partial `O_EXCL` creation is
@@ -2374,6 +2377,14 @@ class Run:
             except OSError:
                 temporary.unlink(missing_ok=True)
                 raise
+        if intention.op == LINK:
+            # A symlink has no mode this protocol may carry, for the same
+            # reason its preimage mode is dropped above: `lstat` reports
+            # 0777 on every platform this runs on, nobody chose it, and a
+            # record carrying it would tell a reversal to `chmod` the
+            # DIRECTORY the link points at. None, and the records omit the
+            # field entirely.
+            return None
         try:
             return stat.S_IMODE(os.lstat(target).st_mode)
         except OSError:
@@ -2526,7 +2537,8 @@ class Run:
         and `note` come from the intention; `preimage` (the parked blob's
         reference) and `prior_bytes` from the file; `postimage` from the
         postimage STATE's own digest, which is the same value `_execute`
-        wrote; `mode` from the published node. Both halves carry the
+        wrote; `mode` from the published node, unless that node is a
+        symlink, whose mode is 0777 and means nothing. Both halves carry the
         `transaction`, exactly as `_execute` writes them, because that id is
         the only thing that survives the file to say the two lines are one
         act. `run` is the crashed run's: it is the run that wrote the bytes.
@@ -2563,7 +2575,12 @@ class Run:
 
         fields = {"transaction": transaction_id}
         mode = facts["actual"].get("mode")
-        if mode is not None:
+        # A symlink's mode is 0777 on every platform this runs on and means
+        # nothing, so it is not a fact these records may carry -- the same
+        # rule `_execute` applies to a link's preimage mode and to the mode
+        # `_publish` reports. Recovery rebuilds the records `_execute` would
+        # have written, and that includes the field it would have omitted.
+        if mode is not None and facts["actual"].get("kind") != SYMLINK:
             fields["mode"] = mode
         if intention.get("note") is not None:
             fields["note"] = intention["note"]
