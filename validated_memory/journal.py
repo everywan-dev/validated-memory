@@ -1153,14 +1153,74 @@ class Lock:
             self.path.unlink(missing_ok=True)
 
 
+def _own_directory(root, name):
+    """The vault directory `name`, refused unless it is a real directory.
+
+    `lstat`, and asked BEFORE anything is created, written, replaced or
+    unlinked through the name. The two directories this plugin owns under
+    the vault -- the write-ahead log and the preimage store -- are written
+    to by name, and `mkdir(exist_ok=True)`, `open` and `os.replace` all
+    follow a symlink standing where one of them should be without a word:
+    the transaction file, or the only copy of the bytes about to be
+    overwritten, lands wherever the link points, outside the adopter root
+    and outside everything this project promises. A plain file there is the
+    other half of the same question, and it reached `iterdir` as a
+    traceback.
+
+    A name that is not there at all is fine: the directory is created on
+    first use, by the caller this has just told the name is free.
+
+    `.validated-memory/` itself is not checked here. It is the vault, whose
+    own name an adopter may legitimately have made a link into a shared
+    store -- the same freedom `journal.jsonl` has (`lock_path`) -- and what
+    this refuses is a name inside it that the plugin alone writes.
+    """
+    path = Path(root) / VAULT_DIRNAME / name
+    artifact = f"{VAULT_DIRNAME}/{name}"
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return path
+    except OSError as error:
+        raise JournalError(None, f"{artifact} could not be read: {error}", artifact)
+    if not stat.S_ISDIR(info.st_mode):
+        found = "a symlink" if stat.S_ISLNK(info.st_mode) else "not a directory"
+        raise JournalError(
+            None,
+            f"{artifact} is {found}, and this plugin writes what it owns "
+            "only into a real directory of its own: everything under that "
+            "name is created, written and removed by name, and a name that "
+            "is somebody else's carries all of it somewhere this project "
+            "promises nothing about. Move it aside.",
+            artifact,
+        )
+    return path
+
+
 def _transactions_dir(root):
     """Where transaction files live: under the vault, never versioned."""
-    return Path(root) / VAULT_DIRNAME / TRANSACTIONS_DIRNAME
+    return _own_directory(root, TRANSACTIONS_DIRNAME)
+
+
+def _preimages_dir(root):
+    """Where parked preimages live: under the vault, one file per digest."""
+    return _own_directory(root, PREIMAGE_DIRNAME)
 
 
 def _transaction_path(root, transaction_id):
     """The file one transaction lives in."""
     return _transactions_dir(root) / f"{transaction_id}.json"
+
+
+def _transaction_artifact(transaction_id):
+    """What a `Finding` calls a transaction's file: a name, not a path.
+
+    Rendering must not be the step that refuses a run. `_transactions_dir`
+    checks the directory it resolves, which is exactly right for a caller
+    about to write through it and exactly wrong for a message naming the
+    file a caller has already read.
+    """
+    return f"{VAULT_DIRNAME}/{TRANSACTIONS_DIRNAME}/{transaction_id}.json"
 
 
 def _write_transaction_file(root, transaction_id, entry):
@@ -1927,12 +1987,7 @@ class Run:
             return None
         data = target.read_bytes()
         reference = digest(data)
-        blob = (
-            self.root
-            / VAULT_DIRNAME
-            / PREIMAGE_DIRNAME
-            / reference.replace("sha256:", "")
-        )
+        blob = _preimages_dir(self.root) / reference.replace("sha256:", "")
         if blob.exists() and not _blob_matches(blob, reference):
             blob.unlink(missing_ok=True)
         if not blob.exists():
@@ -2455,7 +2510,7 @@ class Run:
                 message=(
                     f"damaged transaction {transaction_id}: {facts['reason']}; "
                     f"nothing here can say what it did, so "
-                    f"{_transaction_path(Path(), transaction_id).as_posix()} "
+                    f"{_transaction_artifact(transaction_id)} "
                     "is left for inspection"
                 ),
             )
@@ -2648,7 +2703,7 @@ class Run:
 
     def _resolve_one(self, transaction_id, resolution):
         """`resolve_transaction`'s body, with the lock already held."""
-        artifact = _transaction_path(Path(), transaction_id).as_posix()
+        artifact = _transaction_artifact(transaction_id)
         item = next(
             (
                 entry
@@ -2819,12 +2874,7 @@ class Run:
                     "about to overwrite were never parked; this log is "
                     "damaged. Nothing has been restored."
                 )
-            blob = (
-                self.root
-                / VAULT_DIRNAME
-                / PREIMAGE_DIRNAME
-                / reference.replace("sha256:", "")
-            )
+            blob = _preimages_dir(self.root) / reference.replace("sha256:", "")
             if not blob.exists():
                 return refuse(
                     f"the preimage of {location}, {reference}, is not in "
@@ -3180,7 +3230,7 @@ def run(check, resolve, resolution, stdout, stderr):
         # `--check` promises and what the next run does cannot drift apart.
         verdict, facts = _classify(root, item)
         if verdict == PROBLEM_DAMAGED:
-            location = _transaction_path(Path(), item["id"]).as_posix()
+            location = _transaction_artifact(item["id"])
             message = f"damaged transaction {item['id']}: {facts['reason']}"
         else:
             location = facts["path"]

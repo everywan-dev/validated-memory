@@ -3107,3 +3107,85 @@ def test_a_transaction_the_next_run_resolves_is_not_an_operator_s_to_close(
     # And the run that IS its resolution finishes it.
     assert run_cli("init", cwd=tmp_path).returncode == 0
     assert not _transactions(tmp_path), _transactions(tmp_path)
+
+
+# --- the two directories the plugin owns are real directories -----------------
+
+
+def test_a_symlinked_transactions_directory_writes_nothing_outside_the_tree(
+    run_cli, tmp_path, monkeypatch
+):
+    """The write-ahead log is never written through a name somebody else owns.
+
+    `.validated-memory/transactions` is created, written and unlinked BY
+    NAME, and `mkdir(exist_ok=True)`, `open` and `os.replace` all follow a
+    symlink standing there without a word. A link pointing out of the
+    adopter root therefore put the transaction file -- which names the
+    path, the preimage reference and the mode of a mutation about to
+    happen -- somewhere outside everything this project promises, and the
+    run carried on. The fault seam is set so that a run reaching the write
+    would leave its transaction file behind: the point is that it never
+    reaches it.
+    """
+    tree = tmp_path / "tree"
+    outside = tmp_path / "outside"
+    tree.mkdir()
+    outside.mkdir()
+    (tree / ".validated-memory").mkdir()
+    (tree / ".validated-memory" / "transactions").symlink_to(outside)
+
+    monkeypatch.setenv("VALIDATED_MEMORY_FAULT", "after-transaction")
+    result = run_cli("init", cwd=tree)
+
+    assert result.returncode == 1, (result.returncode, result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert ".validated-memory/transactions" in result.stderr, result.stderr
+    assert "is a symlink" in result.stderr, result.stderr
+    assert not list(outside.iterdir()), sorted(p.name for p in outside.iterdir())
+
+
+def test_a_plain_file_where_the_transactions_directory_goes_is_a_finding(
+    run_cli, tmp_path
+):
+    """`--check` reports it, and does not raise `NotADirectoryError` at `iterdir`."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    transactions = tmp_path / ".validated-memory" / "transactions"
+    for leftover in transactions.iterdir():
+        leftover.unlink()
+    transactions.rmdir()
+    transactions.write_text("not a directory\n", encoding="utf-8")
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.stderr.startswith("ERROR: .validated-memory/transactions:"), (
+        result.stderr
+    )
+    assert "not a directory" in result.stderr, result.stderr
+
+
+def test_a_symlinked_preimage_store_parks_nothing_outside_the_tree(
+    run_cli, tmp_path
+):
+    """The only copy of the bytes about to be overwritten stays in this vault.
+
+    A preimage is parked whenever `init` writes over a file that is already
+    there, and the store is reached by name exactly as the log is. An
+    adopter's own `.gitignore` is what makes this run park one.
+    """
+    tree = tmp_path / "tree"
+    outside = tmp_path / "outside"
+    tree.mkdir()
+    outside.mkdir()
+    (tree / ".gitignore").write_text("build/\n", encoding="utf-8")
+    (tree / ".validated-memory").mkdir()
+    (tree / ".validated-memory" / "preimages").symlink_to(outside)
+
+    result = run_cli("init", cwd=tree)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert ".validated-memory/preimages" in result.stderr, result.stderr
+    assert not list(outside.iterdir()), sorted(p.name for p in outside.iterdir())
+    assert (tree / ".gitignore").read_text(encoding="utf-8") == "build/\n"
