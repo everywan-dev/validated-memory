@@ -42,11 +42,21 @@ A finding on axis B has three possible destinations, in this order:
    platform quirk, an ordering that matters, a rejected alternative that
    would look correct to the next reader.
 
-**The rule for axis B is [ADR
-0010](../adr/0010-code-prose-is-a-contract-or-a-constraint-never-a-history.md)**,
-and its two questions are what a finding cites: would a caller be surprised
-if this docstring sentence were false, and would a competent modifier break
-something if this comment were missing. A sentence that fails both goes.
+**The rule for axis B is [ADR 0010](../adr/0010-code-prose-is-a-contract-a-constraint-or-a-verification-argument.md)**, and a finding cites the class it
+assigns and the question that decided it:
+
+- **contract** — would a caller be surprised if this were false?
+- **constraint** — would a competent modifier break something if this were
+  missing?
+- **verification argument** — would its absence force someone to reconstruct
+  non-local information to verify this correctly?
+
+A sentence that answers none of the three is deleted. History is what no
+longer binds a change someone could make today: what still binds stays as a
+constraint, a decision goes to an ADR, an incident goes to the commit
+message. A claim about behaviour is pinned by assertions, never by a
+docstring, and the ladder for a claim that the CLI seam cannot observe is in
+the ADR.
 
 ## The units
 
@@ -99,14 +109,19 @@ log when it does.
    entire.
 5. Review along axis A, then axis B. Write the findings into
    `docs/plans/reviews/<unit>.md` — one file per unit, so this plan stays
-   small enough to read at every session start.
+   small enough to read at every session start. **Every prose finding names
+   the class it assigned** (contract, constraint, verification argument) and
+   **every claim about behaviour names the test and the assertions that pin
+   it**, or the coverage gap it opened. That classification is the review
+   half of ADR 0010's enforcement; the mechanical half is already a test.
 6. Apply what is decided. Defer what needs a decision, and say where it went.
 7. Run `python3 -m pytest`. **644 tests, all green, before any claim.** A
    comment whose deletion breaks a test was a pin in the wrong place — record
    that; it is an axis-B finding of the best kind.
 8. Commit, merge to `main` when green, push to **both** remotes.
-9. Tick the checkbox below with the commit, add a dated `SESSION.md` entry,
-   and update `TODO.md` if anything was deferred.
+9. Tick the checkbox below with the commit, fill the unit's row in
+   `reviews/ledger.md` — the semantic counts first, bytes second — add a
+   dated `SESSION.md` entry, and update `TODO.md` if anything was deferred.
 
 ## Guardrails
 
@@ -136,7 +151,7 @@ log when it does.
 ## Progress
 
 - [x] **ADR: what a comment is for in this repository** (precondition for
-      axis B from J2 onwards) — [ADR 0010](../adr/0010-code-prose-is-a-contract-or-a-constraint-never-a-history.md),
+      axis B from J2 onwards) — [ADR 0010](../adr/0010-code-prose-is-a-contract-a-constraint-or-a-verification-argument.md),
       written 2026-09-03 from J1's worked example.
 - [ ] **ADR: what `_` means inside a package** (from J1/A2). Ten names cross
       module lines in `journal/`; either they lose the underscore or the
@@ -164,10 +179,18 @@ One line per session, most recent last: date, unit, commit, outcome.
   Correcting the tool moved the headline number from 16 % prose to **43 %**
   (60 % in the journal package): the first version matched docstrings on the
   token stream and saw only module docstrings.
-- 2026-09-03 — ADR 0010 written: code prose is a contract or a constraint,
-  never a history. Two questions decide a sentence; no length budget and no
-  lexical gate, and the effect is measured in the ledger rather than gated.
-  The project `CLAUDE.md` now names it.
+- 2026-09-03 — ADR 0010 written, then rewritten the same day after an
+  eight-question interview and an adversarial challenge (Codex SOL) that
+  found its pivot sentence false: a test name and docstring do not execute.
+  Two classes became three (contract, constraint, verification argument),
+  the destination rule now asks whether a sentence still binds rather than
+  whether it is about the past, tests came into scope with the docstring as
+  the chosen syntax, and enforcement gained two halves — classification in
+  the finding, and a test pinning every documentary reference inside Python.
+- 2026-09-03 — the reference pins (`ba3d461`, merged `de744a7`): 23 ambiguous
+  `design §N` citations given a versioned path and section, three pointers
+  into a plan archived out of the repository repaired, and four new tests in
+  `test_docs_links.py` over the Python surface. 648 tests green.
 - 2026-09-03 — J1 reviewed (`db5700b`), `reviews/j1.md`. Applied: the reporting module
   stopped reimplementing the unknown-id refusal and the recoverable word
   (both now `transactions.missing_resolution` / `report_word`), two

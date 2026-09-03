@@ -7,11 +7,14 @@
 - This repo is self-contained: no references to internal company projects.
 - Exit code convention: `0` = clean or WARNING-only findings; `1` = ERROR
   (gates); `2` = usage error.
-- Code prose follows **ADR 0010**: a docstring states the contract a caller
-  needs, a comment states the constraint a modifier needs, and history --
-  what the code used to do, which bug a change answered -- goes to the commit
-  message, never to the file. A sentence that asserts behaviour belongs in a
-  test.
+- Code prose follows **ADR 0010**: every sentence in a file is a contract
+  (what a caller must expect), a constraint (what a modifier must not break)
+  or a verification argument (what the evidence is worth), and one that is
+  none of the three is deleted. History is what no longer binds: what still
+  binds stays, a decision goes to an ADR, an incident goes to the commit
+  message. A claim about behaviour is pinned by assertions -- a test name and
+  docstring do not execute -- and a documentary reference inside a `.py` is a
+  versioned path or an `ADR NNNN`, pinned by `test_docs_links.py`.
 - Testing seam: the CLI invoked as a subprocess over fixture adopter trees,
   asserting on exit codes, output, and produced files. Tests never import the
   package's internals.
