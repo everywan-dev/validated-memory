@@ -4,24 +4,19 @@ The only module of the package that renders findings, and the only one an
 argument parser reaches.
 """
 
-import os
 from pathlib import Path
 
+from ..findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
 from .executor import Run
 from .reconcile import reconcile
 from .records import DURABILITIES, JOURNAL_FILENAME, JournalError, read
 from .transactions import (
     PROBLEM_DAMAGED,
-    RECOVERABLE,
-    Resolution,
     _classify,
-    _COMPLETE,
-    _DISCARD,
-    _no_such_transaction,
     _open_transactions,
-    _REMOVE,
     _transaction_artifact,
-    _transaction_path,
+    missing_resolution,
+    report_word,
 )
 
 
@@ -35,8 +30,8 @@ def run(check, resolve, resolution, stdout, stderr):
     gating on it; with `--check` an unfinished transaction -- from the two
     journals' own pairing (`reconcile`), from a pair whose halves disagree,
     from an id that is not a pair at all, or from a transaction file still
-    on disk (`_open_transactions`) -- is an ERROR, because a caller that asked to be told cannot be told by an exit
-    code of 0.
+    on disk (`_open_transactions`) -- is an ERROR, because a caller that
+    asked to be told cannot be told by an exit code of 0.
 
     `--resolve` is the third mode and the only one that writes: an
     operator's answer to a transaction recovery would not touch, which is
@@ -48,15 +43,11 @@ def run(check, resolve, resolution, stdout, stderr):
     something is open, on a second line, only when there is something to
     say.
     """
-    from ..findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
-
     root = Path()
     if resolve is not None:
         return _run_resolve(root, resolve, resolution, stdout, stderr)
-    # Accumulated one artifact at a time so the summary below can say how
-    # many records were actually read when a later one is refused. Printing
-    # a hardcoded 0 there described a project with no history at all, which
-    # is a different and much worse fault than the one that happened.
+    # Accumulated one artifact at a time so the summary below says how many
+    # records were actually read when a later one is refused.
     records = []
     try:
         for durability in DURABILITIES:
@@ -132,14 +123,9 @@ def run(check, resolve, resolution, stdout, stderr):
             message = f"damaged transaction {item['id']}: {facts['reason']}"
         else:
             location = facts["path"]
-            word = (
-                RECOVERABLE
-                if verdict in (_COMPLETE, _DISCARD, _REMOVE)
-                else verdict
-            )
             message = (
                 f"open transaction {item['id']} ({facts['stage']}) on "
-                f"{location}: {word}"
+                f"{location}: {report_word(verdict)}"
             )
         print(Finding(ERROR, location, "journal", message).render(), file=stderr)
 
@@ -171,24 +157,13 @@ def _run_resolve(root, transaction_id, resolution, stdout, stderr):
     resolution is a decision someone made and the record of the session
     should show which one.
     """
-    from ..findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
-
     try:
-        # Asked BEFORE a `Run` is built. `Run.__init__` bootstraps the
-        # journal -- it mints an adoption id and installs `journal.jsonl`
-        # with its opening record -- so an id nothing carries used to leave
-        # a virgin tree adopted, under a refusal whose own last sentence
-        # said nothing had been changed. `lexists`, so a transaction file
-        # that is there but unreadable still reaches the resolver, which
-        # has a `damaged` answer for it.
-        if not os.path.lexists(_transaction_path(root, transaction_id)):
-            outcome = Resolution(
-                transaction_id,
-                resolution,
-                _transaction_artifact(transaction_id),
-                _no_such_transaction(transaction_id),
-            )
-        else:
+        # Asked before a `Run` is built, which is why it is not the
+        # resolver's own answer: `Run.__init__` bootstraps the journal, so
+        # an unknown id would adopt a virgin tree on its way to being
+        # refused.
+        outcome = missing_resolution(root, transaction_id, resolution)
+        if outcome is None:
             outcome = Run(root).resolve_transaction(transaction_id, resolution)
     except JournalError as error:
         where = error.artifact or JOURNAL_FILENAME

@@ -1,0 +1,101 @@
+{
+  "C1": {
+    "bytes": 44629,
+    "comment": 1784,
+    "doc": 7844,
+    "files": 5,
+    "loc": 1295,
+    "private": 35,
+    "public": 14
+  },
+  "F1": {
+    "bytes": 39319,
+    "comment": 1473,
+    "doc": 14125,
+    "files": 5,
+    "loc": 1048,
+    "private": 20,
+    "public": 18
+  },
+  "J1": {
+    "bytes": 24567,
+    "comment": 4891,
+    "doc": 9798,
+    "files": 4,
+    "loc": 572,
+    "private": 3,
+    "public": 2
+  },
+  "J2": {
+    "bytes": 32986,
+    "comment": 2427,
+    "doc": 17245,
+    "files": 3,
+    "loc": 802,
+    "private": 7,
+    "public": 16
+  },
+  "J3": {
+    "bytes": 44637,
+    "comment": 5722,
+    "doc": 21157,
+    "files": 2,
+    "loc": 1010,
+    "private": 15,
+    "public": 4
+  },
+  "J4": {
+    "bytes": 73423,
+    "comment": 8797,
+    "doc": 30047,
+    "files": 1,
+    "loc": 1572,
+    "private": 3,
+    "public": 2
+  },
+  "M1": {
+    "bytes": 40884,
+    "comment": 4178,
+    "doc": 16727,
+    "files": 3,
+    "loc": 1031,
+    "private": 15,
+    "public": 19
+  },
+  "S1": {
+    "bytes": 55363,
+    "comment": 5621,
+    "doc": 26754,
+    "files": 2,
+    "loc": 1236,
+    "private": 23,
+    "public": 2
+  },
+  "T1": {
+    "bytes": 281019,
+    "comment": 41195,
+    "doc": 56153,
+    "files": 2,
+    "loc": 6760,
+    "private": 28,
+    "public": 180
+  },
+  "V1": {
+    "bytes": 63286,
+    "comment": 7192,
+    "doc": 23637,
+    "files": 7,
+    "loc": 1415,
+    "private": 23,
+    "public": 12
+  },
+  "X1": {
+    "bytes": 11983,
+    "comment": 1159,
+    "doc": 615,
+    "files": 4,
+    "loc": 318,
+    "private": 0,
+    "public": 2
+  }
+}
