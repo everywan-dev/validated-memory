@@ -42,9 +42,10 @@ TRANSACTIONS_DIRNAME = "transactions"
 
 
 # A transaction file's own stage word, not a journal record's: the two
-# artifacts are different files with different lifetimes (design §3), and
-# `PREPARED` is shared between them on purpose -- both name the same moment,
-# a write-ahead entry fsynced with nothing published yet.
+# artifacts are different files with different lifetimes
+# (docs/design/2026-09-01-the-journal-core.md §3), and `PREPARED` is
+# shared between them on purpose -- both name the same moment, a
+# write-ahead entry fsynced with nothing published yet.
 PUBLISHED = "published"
 ABORTED = "aborted"
 TRANSACTION_STAGES = (PREPARED, PUBLISHED, ABORTED)
@@ -183,7 +184,7 @@ def _open_transaction(
     describes have already been appended to by the time recovery runs.
 
     `postimage` is not derived here: an `APPEND`'s digest needs the bytes
-    already on disk, which only the caller (the executor, Task 4) has read.
+    already on disk, which only the caller (`Run.execute`) has read.
     `intention.expected` is the caller's precondition, not this file's
     `preimage` -- the two usually agree, but the transaction records what
     the state actually was, not what the caller hoped to find.
@@ -232,7 +233,8 @@ def _mark_published(root, transaction_id):
     directory, `link`) satisfy the preimage and postimage states at once,
     so recovery cannot always tell from the filesystem alone whether the
     mutation happened. This marker, fsynced after publication, is what
-    turns that inference into a fact (design §3).
+    turns that inference into a fact
+    (docs/design/2026-09-01-the-journal-core.md §3).
     """
     path = _transaction_path(root, transaction_id)
     entry = json.loads(path.read_text(encoding="utf-8"))
@@ -333,10 +335,11 @@ def _open_transactions(root):
 
 # --- recovery: what a run does with what an earlier run left open -------------
 #
-# A crash leaves a transaction file, and design §3 makes the residue
-# decidable rather than inferable: the file records a FACT -- what stage the
-# mutation reached -- so the next run reads it instead of guessing from a
-# filesystem some later process may have changed.
+# A crash leaves a transaction file, and
+# docs/design/2026-09-01-the-journal-core.md §3 makes the residue
+# decidable rather than inferable: the file records a FACT -- what stage
+# the mutation reached -- so the next run reads it instead of guessing
+# from a filesystem some later process may have changed.
 
 # What recovery did with one unresolved transaction.
 RECOVERED = "completed"
@@ -432,10 +435,10 @@ def _classify(root, item, adoption=None):
     Returns `(verdict, facts)`. The verdict is `_COMPLETE`, `_DISCARD`,
     `_REMOVE` or one of the three `RECOVERY_PROBLEMS`; `facts` carries what
     the file and the filesystem said, so the caller neither re-reads nor
-    re-decides. This function writes nothing and is the ONE place the table
-    in the step's brief is expressed -- `Run.recover` acts on it and
-    `journal --check` reports it, and a reader who has to compare two copies
-    of a decision table is a reader who will find them disagreeing.
+    re-decides. This function writes nothing and is the ONE place the
+    decision table below is expressed -- `Run.recover` acts on it and
+    `journal --check` reports it, and a reader who has to compare two
+    copies of a decision table is a reader who will find them disagreeing.
 
     The rules, in order:
 
@@ -523,10 +526,12 @@ def _classify(root, item, adoption=None):
     if op not in INTENTION_OPS:
         # `INTENTION_OPS`, not `OPS`: the wider vocabulary is what a
         # RECORD may carry, including the ops of histories written before
-        # this core and the ones design §2 names for a later step. What
-        # may be prepared is only what an `Intention` can hold, and
-        # completing anything else would put a record in the history that
-        # no executor of this plugin could have produced.
+        # this core and the ones
+        # docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md
+        # §2 names for a later step. What may be prepared is only what an
+        # `Intention` can hold, and completing anything else would put a
+        # record in the history that no executor of this plugin could
+        # have produced.
         return damaged("its intention names no operation this plugin prepares")
     if op == OBSERVE:
         # An observation is a fact about a path, not a change to one: it
@@ -643,7 +648,8 @@ def _resolution_advice(transaction_id):
 
 # The operator's three ways out of a transaction recovery will not touch.
 # They are flags on `journal`, not a subcommand of their own: the pinned
-# subcommand set moves once, with the public write interface (design §13).
+# subcommand set moves once, with the public write interface
+# (docs/design/2026-09-01-the-journal-core.md §13).
 ACCEPT = "accept"
 RESTORE = "restore"
 ABANDON = "abandon"

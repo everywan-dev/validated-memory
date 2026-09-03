@@ -17,7 +17,7 @@ INTENTION_OPS = (OBSERVE, CREATE, REPLACE, APPEND, LINK)
 
 @dataclass(frozen=True)
 class Intention:
-    """One validated, tagged mutation the executor (Task 4) will consume.
+    """One validated, tagged mutation `Run.execute` will consume.
 
     A frozen dataclass rather than a dict, so a caller building one gets
     the invalid combinations below refused at construction, not discovered
@@ -112,11 +112,13 @@ OUTCOME_STATUSES = (OUTCOME_APPLIED, OUTCOME_NOOP, OUTCOME_REFUSED)
 class Outcome:
     """What `Run.execute` did with one intention, and what it did not.
 
-    A refusal is a RESULT here, not an exception. Design §5: a precondition
-    that fails before anything is prepared "writes nothing anywhere -- it is
-    a result the caller renders, not a transaction", and `init` renders one
-    ERROR per item and carries on. `execute` raises only for what it cannot
-    express in this shape: a journal that cannot be written at all.
+    A refusal is a RESULT here, not an exception.
+    docs/design/2026-09-01-the-journal-core.md §5: a precondition that
+    fails before anything is prepared "writes nothing anywhere -- it is a
+    result the caller renders, not a transaction", and `init` renders one
+    ERROR per item and carries on. `execute` raises only for what it
+    cannot express in this shape: a journal that cannot be written at
+    all.
 
     - `status` -- `applied` (the mutation happened and both records are in
       the history), `noop` (the path is already in the state the intention

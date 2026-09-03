@@ -61,11 +61,13 @@ COMMON_FIELDS = (
 )
 
 # What each field must hold. A journal is repository content, which this
-# project's rule makes data and never instructions (design §7): checking that
-# a field is present says nothing about what is in it, and every later reader
-# -- the schema comparison here, the path the reconciler builds -- assumes a
-# type nothing had checked. `bool` is excluded from `int` deliberately:
-# `isinstance(True, int)` is true, and `"schema": true` is not a schema.
+# project's rule makes data and never instructions
+# (docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md §7):
+# checking that a field is present says nothing about what is in it, and
+# every later reader -- the schema comparison here, the path the
+# reconciler builds -- assumes a type nothing had checked. `bool` is
+# excluded from `int` deliberately: `isinstance(True, int)` is true, and
+# `"schema": true` is not a schema.
 FIELD_TYPES = {
     "schema": int,
     "at": str,
@@ -88,7 +90,8 @@ OPTIONAL_FIELD_TYPES = {
     # Written by the executor on both halves of one mutation: the
     # transaction that carried it (so the two records can be recognised as
     # one act long after the transaction file is gone) and the mode the
-    # path ended up with (so a reversal can put it back -- design §7).
+    # path ended up with (so a reversal can put it back --
+    # docs/design/2026-09-01-the-journal-core.md §7).
     "transaction": (str,),
     "mode": (int,),
 }
@@ -192,9 +195,10 @@ def install(temporary, target):
     directory entry carrying that name is itself buffered. Without the
     directory fsync, a `committed` record that was flushed to disk can
     outlive the rename it describes -- "a record describes a state that
-    never existed", one power cut down -- so design §4's claim that a
-    `committed` record means the bytes are on disk would hold for a process
-    crash and not for a power loss.
+    never existed", one power cut down -- so
+    docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md
+    §4's claim that a `committed` record means the bytes are on disk
+    would hold for a process crash and not for a power loss.
     """
     os.replace(temporary, target)
     fsync_directory(Path(target).parent)
@@ -232,11 +236,13 @@ def read(root=Path(), durability=REPO):
     cannot be parsed raises: see the package docstring for why a partial
     answer is not offered.
 
-    "Cannot be parsed" is the whole of design §7, not just JSON: a record
-    whose field holds the wrong type, whose `durability` disagrees with the
-    file it is in, or whose repository-durability path leaves the adopter
-    root, is refused here -- before any reader acts on it -- rather than
-    crashing one layer down or being read as an instruction.
+    "Cannot be parsed" is the whole of
+    docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md §7,
+    not just JSON: a record whose field holds the wrong type, whose
+    `durability` disagrees with the file it is in, or whose
+    repository-durability path leaves the adopter root, is refused here --
+    before any reader acts on it -- rather than crashing one layer down or
+    being read as an instruction.
 
     "Missing" is exactly one thing: nothing that can be opened at that
     name. `Path.exists()` answers a wider question and answers it wrongly

@@ -330,9 +330,11 @@ def test_an_observation_that_cannot_be_recorded_gates_only_its_own_item(
 
     `memory/` is a symlink to a directory outside the project, so the fact
     that adoption found it there may not be filed in the versioned journal
-    (`journal.authorise`, design §7). `authorise` raises `OSError` for
-    exactly that reason -- so a caller can gate the one item that named it
-    -- and `_ensure_dir` let it reach `init.run`'s outer handler instead:
+    (`journal.authorise`,
+    docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md §7).
+    `authorise` raises `OSError` for exactly that reason -- so a caller
+    can gate the one item that named it -- and `_ensure_dir` let it
+    reach `init.run`'s outer handler instead:
     the run was reported as "the journal could not be opened" against
     `journal.jsonl`, a file that is perfectly valid, and every other item
     was abandoned with it. `journal.authorise`'s own docstring says `init`
