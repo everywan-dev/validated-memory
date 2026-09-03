@@ -148,32 +148,22 @@ def reconcile(root=Path()):
 def _state_of(root, entry):
     target = root / entry["path"]
     if not _resolves_below(root, target):
-        # `read()` already refused a repository record naming a path outside
-        # the root, and `authorise` refuses to write one. What is left is the
-        # filesystem's half of the same question: a lexically fine path that
-        # resolves out of the root through a symlink, and a vault record,
-        # whose path may legitimately leave the root -- design §7 is explicit
-        # that such a path "can never be authorised by the file itself" and
-        # that acting on it needs a fresh CLI argument naming it. Reading the
-        # bytes is acting on it.
-        #
-        # So it is not read -- and that is precisely what `unknown` says.
-        # Raising here ended the whole pass instead, hiding every other
-        # unfinished transaction in the project behind one line, and the
-        # `local` record of the harness symlink, whose path is absolute BY
-        # DESIGN, reached it on any ordinary crash between its two records.
+        # A path that resolves out of the root -- through a symlink, or by
+        # being a vault record's absolute path, which design §7 allows --
+        # may not be read: acting on such a path needs a fresh CLI argument
+        # naming it, and reading its bytes is acting on it. Not reading them
+        # is exactly what `unknown` says, so this is an answer and not an
+        # error: one such record must not end a pass that has every other
+        # unfinished transaction in the project still to report.
         return UNKNOWN
     if "postimage" not in entry:
         # A mutation with no bytes to digest -- a directory, a symlink.
-        # `create` (a `mkdir`, from `_ensure_dir`) is checked against
-        # `directory`, not mere existence: a broken symlink resolves to
-        # nothing and used to read as `applied` under `exists() or
-        # is_symlink()`, since `is_symlink()` is true whether or not the
-        # link resolves -- exactly the false `applied` design §6 names.
-        # Every other no-postimage op (`link`, from `_record_symlink`) has
-        # no state word richer than existence yet: the record's own subject
-        # IS the symlink, so a symlink being there, resolvable or not, is
-        # what its `link` record describes as applied.
+        # `create` (a `mkdir`) is checked against `directory`, not mere
+        # existence: `is_symlink()` is true whether or not the link
+        # resolves, so a broken symlink would read as `applied` -- the false
+        # `applied` design §6 names. `link` has no state word richer than
+        # existence: the record's own subject IS the symlink, so a symlink
+        # being there, resolvable or not, is what it describes as applied.
         if entry["op"] == CREATE:
             return (
                 APPLIED

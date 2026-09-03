@@ -134,8 +134,13 @@ log when it does.
 ## Progress
 
 - [ ] **ADR: what a comment is for in this repository** (precondition for
-      axis B from J2 onwards). Owner: user, via `/grill-with-docs`.
-- [ ] J1 — journal reporting and fault seams
+      axis B from J2 onwards). Owner: user, via `/grill-with-docs`. J1 is the
+      worked example to take into it: four files, 59 % prose after the history
+      came out, and two docstrings that are accurate and still too long.
+- [ ] **ADR: what `_` means inside a package** (from J1/A2). Ten names cross
+      module lines in `journal/`; either they lose the underscore or the
+      convention is written down.
+- [x] J1 — journal reporting and fault seams ([findings](reviews/j1.md))
 - [ ] J2 — journal vocabulary
 - [ ] J3 — write-ahead log and lock
 - [ ] J4 — the executor
@@ -154,3 +159,14 @@ log when it does.
 One line per session, most recent last: date, unit, commit, outcome.
 
 - 2026-09-03 — plan written, no unit reviewed yet.
+- 2026-09-03 — the counter: `reviews/measure.py` and `reviews/ledger.md`.
+  Correcting the tool moved the headline number from 16 % prose to **43 %**
+  (60 % in the journal package): the first version matched docstrings on the
+  token stream and saw only module docstrings.
+- 2026-09-03 — J1 reviewed (`db5700b`), `reviews/j1.md`. Applied: the reporting module
+  stopped reimplementing the unknown-id refusal and the recoverable word
+  (both now `transactions.missing_resolution` / `report_word`), two
+  function-local imports hoisted, and history removed from four comments.
+  −42 LOC and −1 487 prose bytes in J1 against +35 and +929 in J3, which is
+  what the fix cost. Deferred to an ADR: ten underscore names cross module
+  lines inside `journal/`, so `_` marks nothing there. 644 tests green.

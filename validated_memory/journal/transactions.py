@@ -361,7 +361,19 @@ RECOVERY_PROBLEMS = (PROBLEM_DIVERGED, PROBLEM_UNKNOWN, PROBLEM_DAMAGED)
 _COMPLETE = "complete"
 _DISCARD = "discard"
 _REMOVE = "remove"
+_RECOVERABLE_VERDICTS = (_COMPLETE, _DISCARD, _REMOVE)
 RECOVERABLE = "recoverable"
+
+
+def report_word(verdict):
+    """The word a report gives one `_classify` verdict.
+
+    Which of the three ways a run would resolve a transaction is a decision
+    this module owns; a reader of `journal --check` asked one question --
+    would a later run clear this away by itself -- so the three collapse to
+    `RECOVERABLE` and the problems keep their own names.
+    """
+    return RECOVERABLE if verdict in _RECOVERABLE_VERDICTS else verdict
 
 
 @dataclass(frozen=True)
@@ -661,3 +673,26 @@ class Resolution:
     location: str
     message: str | None = None
     kept: str | None = None
+
+
+def missing_resolution(root, transaction_id, resolution):
+    """The refusal for an id no transaction file carries, or None to proceed.
+
+    Asked before a `Run` exists, because `Run.__init__` bootstraps the
+    journal: an unknown id must not adopt a tree under a refusal whose own
+    last sentence says nothing has been changed. `lexists`, so a transaction
+    file that is there but unreadable still reaches the resolver, which has
+    a `damaged` answer for it.
+
+    Where the file lives, and what the refusal says, stay inside this
+    module: the caller asks whether there is anything to resolve, not how a
+    transaction is stored.
+    """
+    if os.path.lexists(_transaction_path(root, transaction_id)):
+        return None
+    return Resolution(
+        transaction_id,
+        resolution,
+        _transaction_artifact(transaction_id),
+        _no_such_transaction(transaction_id),
+    )
