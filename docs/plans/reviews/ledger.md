@@ -51,7 +51,7 @@ all rather than a "before" typed from memory.
 
 | Unit | Commit | LOC | ~tok | prose bytes | pub / priv | Tests |
 |---|---|---:|---:|---:|---:|---|
-| J1 | `TBD` | −42 | −530 | −1,487 | ±0 | 644 green |
+| J1 | `db5700b` | −42 | −530 | −1,487 | ±0 | 644 green |
 | J1 → J3 (cost of the fix) | same | +35 | +351 | +929 | +2 / ±0 | — |
 | **running total** | | **−7** | **−179** | **−558** | **+2 / ±0** | |
 

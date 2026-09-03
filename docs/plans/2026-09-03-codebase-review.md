@@ -163,7 +163,7 @@ One line per session, most recent last: date, unit, commit, outcome.
   Correcting the tool moved the headline number from 16 % prose to **43 %**
   (60 % in the journal package): the first version matched docstrings on the
   token stream and saw only module docstrings.
-- 2026-09-03 — J1 reviewed, `reviews/j1.md`. Applied: the reporting module
+- 2026-09-03 — J1 reviewed (`db5700b`), `reviews/j1.md`. Applied: the reporting module
   stopped reimplementing the unknown-id refusal and the recoverable word
   (both now `transactions.missing_resolution` / `report_word`), two
   function-local imports hoisted, and history removed from four comments.
