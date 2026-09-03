@@ -16,10 +16,22 @@ Pinned here:
   fallback with `alt` text, and every image path it names exists;
 - the light/dark SVG pairs under `docs/assets/` stay textually identical, so
   the two themes can never drift apart in what they say;
-- no SVG asset references an external resource.
+- no SVG asset references an external resource;
+- inside `validated_memory/` and `tests/`, every documentary reference in
+  a docstring or a comment resolves: a path under `docs/` ending in `.md`
+  is versioned and exists, a section or fragment mark it carries names a
+  real heading, and `ADR NNNN` matches exactly one file under
+  `docs/adr/`; a section is never cited by number alone, ambiguous
+  between the two design documents this project has; and none of it
+  points outside the repository -- into the gitignored session log, or
+  by naming a step of a plan rather than the thing the plan produced.
 """
 
+import ast
+import io
 import re
+import subprocess
+import tokenize
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -178,3 +190,200 @@ def test_svg_assets_reference_nothing_external():
         assert "http" not in stripped, (
             f"{svg.name} references an external resource"
         )
+
+
+# --- documentary references inside Python source ---------------------------
+#
+# Same shape as the Markdown checks above, over a different surface: a
+# docstring or a comment under `validated_memory/` or `tests/` that cites a
+# design document, an ADR, or a section of one. A comment or a docstring is
+# this surface's "prose" -- the analogue of `_without_code` above -- so an
+# ordinary string literal (YAML fixture content, an error message) is never
+# scanned: it is not documentation, and treating it as such would flag
+# `test_validate.py`'s deliberately fake Markdown-path fixture values as
+# broken references they were never meant to be.
+#
+# This exists because three references once named a step of an archived,
+# gitignored plan that a fresh clone had nothing to resolve against, and
+# twenty-three more named a section number with no document at all,
+# ambiguous between the two design documents that both have a "§4".
+
+PY_DOC_PATH_PATTERN = re.compile(r"docs/[\w./-]+\.md")
+# The gap this project's own wrapped citations use between the path and its
+# section mark: a closing paren, backtick, quote, comma, colon, hyphen, a
+# comment's own `#` marker, or a line break into the next comment line --
+# never more than this, so an unrelated `§N` appearing later in the same
+# docstring is never mistaken for the citation's own section.
+SECTION_GAP = r"[\s)`\"',:#-]{0,20}"
+PY_SECTION_PATTERN = re.compile(SECTION_GAP + r"§(\d+)")
+PY_FRAGMENT_PATTERN = re.compile(r"#([\w-]+)")
+ADR_PATTERN = re.compile(r"\bADR (\d{4})\b")
+# The exact shape of the other original defect: a section cited by number
+# alone, naming no document. `design §N` never appears in a resolved
+# citation -- that reads `docs/<file>.md §N` instead -- so any surviving
+# match is the ambiguity this project's two design documents created,
+# back again.
+BARE_DESIGN_SECTION_PATTERN = re.compile(r"\bdesign §\d", re.IGNORECASE)
+# A pointer into a plan that never shipped as repository content: the
+# shape the three original broken references took, naming a step of an
+# executed plan instead of the thing the plan produced.
+FORBIDDEN_POINTER_PATTERN = re.compile(r"\bTask \d+\b|the step's brief", re.IGNORECASE)
+SESSIONS_PATTERN = re.compile(r"\bsessions/")
+SECTION_HEADING_TEMPLATE = r"^## {}\.\s"
+
+
+def _python_files():
+    files = sorted((REPO_ROOT / "validated_memory").rglob("*.py"))
+    files += sorted((REPO_ROOT / "tests").glob("*.py"))
+    return files
+
+
+def _docstrings(tree):
+    for node in ast.walk(tree):
+        if isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            doc = ast.get_docstring(node)
+            if doc:
+                yield doc
+
+
+def _comment_blocks(source):
+    # Consecutive same-column comment lines are one logical paragraph, the
+    # way this project wraps a citation across a `#`-prefixed line break;
+    # anything else -- code, a blank line, a dedented comment -- starts a
+    # new one, so a reference never bleeds into an unrelated block.
+    blocks = []
+    current = []
+    prev_line = prev_col = None
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type == tokenize.COMMENT:
+            line, col = tok.start
+            if current and line == prev_line + 1 and col == prev_col:
+                current.append(tok.string)
+            else:
+                if current:
+                    blocks.append("\n".join(current))
+                current = [tok.string]
+            prev_line, prev_col = line, col
+        elif tok.type in (
+            tokenize.NL,
+            tokenize.NEWLINE,
+            tokenize.INDENT,
+            tokenize.DEDENT,
+            tokenize.ENCODING,
+        ):
+            continue
+        else:
+            if current:
+                blocks.append("\n".join(current))
+                current = []
+            prev_line = prev_col = None
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def _documentary_chunks(path):
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+    chunks = list(_docstrings(tree))
+    chunks.extend(_comment_blocks(source))
+    return chunks
+
+
+def _tracked_files():
+    # A versioned path is one that survives to a fresh clone: tracked by
+    # git, not merely present on the machine that wrote the reference --
+    # exactly the distinction the three original broken references
+    # crossed. `None` means git could not answer (no `.git`, no git on
+    # PATH); callers fall back to a plain existence check.
+    try:
+        result = subprocess.run(
+            ["git", "ls-files"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return {
+        (REPO_ROOT / line).resolve()
+        for line in result.stdout.splitlines()
+        if line
+    }
+
+
+def _section_exists(markdown_path, number):
+    text = markdown_path.read_text(encoding="utf-8")
+    pattern = SECTION_HEADING_TEMPLATE.format(re.escape(number))
+    return re.search(pattern, text, re.MULTILINE) is not None
+
+
+def test_every_python_doc_path_reference_is_versioned_and_resolves():
+    tracked = _tracked_files()
+    for path in _python_files():
+        for chunk in _documentary_chunks(path):
+            for match in PY_DOC_PATH_PATTERN.finditer(chunk):
+                target = match.group(0)
+                resolved = (REPO_ROOT / target).resolve()
+                label = f"{path.relative_to(REPO_ROOT)} cites '{target}'"
+                if tracked is not None:
+                    assert resolved in tracked, (
+                        f"{label}, which is not a versioned path"
+                    )
+                else:
+                    assert resolved.is_file(), f"{label}, which does not exist"
+                rest = chunk[match.end() : match.end() + 60]
+                fragment = PY_FRAGMENT_PATTERN.match(rest)
+                section = None if fragment else PY_SECTION_PATTERN.match(rest)
+                if fragment:
+                    slug = fragment.group(1)
+                    assert slug in _slugs(resolved), (
+                        f"{label} with fragment '#{slug}', but '{target}' "
+                        f"has no heading with slug '{slug}'"
+                    )
+                elif section:
+                    number = section.group(1)
+                    assert _section_exists(resolved, number), (
+                        f"{label} §{number}, but '{target}' has no "
+                        f"'## {number}.' heading"
+                    )
+
+
+def test_every_python_adr_reference_matches_exactly_one_file():
+    adr_dir = REPO_ROOT / "docs" / "adr"
+    for path in _python_files():
+        for chunk in _documentary_chunks(path):
+            for match in ADR_PATTERN.finditer(chunk):
+                number = match.group(1)
+                matches = sorted(adr_dir.glob(f"{number}-*.md"))
+                assert len(matches) == 1, (
+                    f"{path.relative_to(REPO_ROOT)} cites 'ADR {number}', "
+                    f"which matches {len(matches)} files under "
+                    "'docs/adr/', not exactly one"
+                )
+
+
+def test_every_design_section_citation_names_its_document():
+    for path in _python_files():
+        for chunk in _documentary_chunks(path):
+            match = BARE_DESIGN_SECTION_PATTERN.search(chunk)
+            assert not match, (
+                f"{path.relative_to(REPO_ROOT)} cites {match.group(0)!r} "
+                "without a versioned path -- ambiguous between the two "
+                "design documents this project has"
+            )
+
+
+def test_no_python_documentary_reference_points_outside_the_repository():
+    for path in _python_files():
+        for chunk in _documentary_chunks(path):
+            for pattern in (FORBIDDEN_POINTER_PATTERN, SESSIONS_PATTERN):
+                match = pattern.search(chunk)
+                assert not match, (
+                    f"{path.relative_to(REPO_ROOT)} names "
+                    f"{match.group(0)!r}, which points at a plan step or "
+                    "a gitignored path that is not part of this repository"
+                )

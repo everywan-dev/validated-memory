@@ -770,10 +770,12 @@ def _sync_symlink(
     startup hook built on `init` must never break the session over a symlink.
 
     `raw_path` is outside the repository root, so its record can only ever
-    live in the vault (`durability=journal.LOCAL`) -- a repository record may
-    never carry an absolute path (ADR 0008, design §7). The previous target
-    is read before the link is touched: once it is re-pointed, its former
-    target is gone, which is the preimage problem in miniature.
+    live in the vault (`durability=journal.LOCAL`) -- a repository record
+    may never carry an absolute path (ADR 0008,
+    docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md
+    §7). The previous target is read before the link is touched: once it
+    is re-pointed, its former target is gone, which is the preimage
+    problem in miniature.
 
     `session` is None when nothing may be written to the journal -- it
     failed earlier in the run, or the vault holding this record is not
@@ -801,8 +803,10 @@ def _sync_symlink(
         followed by a `symlink_to` leaves a window in which the harness has
         no memory at all, and a process killed inside that window leaves it
         that way -- which is the one outcome this whole fail-open path
-        exists to prevent. Design §4 asks of the link module exactly this:
-        that it can publish that one symlink atomically and nothing else.
+        exists to prevent.
+        docs/design/2026-09-01-the-journal-core.md §4 asks of the link
+        module exactly this: that it can publish that one symlink
+        atomically and nothing else.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
@@ -849,11 +853,13 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
     """Publish the harness link through the executor, or fail open. Returns findings.
 
     The link is the one mutation `init` performs that the executor may not
-    have the last word on. Design §4 declares it an exception and says
-    exactly why: the contract requires the link to be restored when the
-    journal cannot be read or written at all -- that is the `SessionStart`
-    hook's only job -- and an executor that requires a working journal
-    cannot serve that, while one that accepts "record nothing this time"
+    have the last word on.
+    docs/design/2026-09-01-the-journal-core.md §4 declares it an
+    exception and says exactly why: the contract requires the link to be
+    restored when the journal cannot be read or written at all -- that
+    is the `SessionStart` hook's only job -- and an executor that
+    requires a working journal cannot serve that, while one that accepts
+    "record nothing this time"
     is a general bypass wearing a flag. So the record goes through
     `execute` whenever the journal is healthy, and only the repair
     survives when it is not.

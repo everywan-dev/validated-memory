@@ -149,21 +149,24 @@ def _state_of(root, entry):
     target = root / entry["path"]
     if not _resolves_below(root, target):
         # A path that resolves out of the root -- through a symlink, or by
-        # being a vault record's absolute path, which design §7 allows --
-        # may not be read: acting on such a path needs a fresh CLI argument
-        # naming it, and reading its bytes is acting on it. Not reading them
-        # is exactly what `unknown` says, so this is an answer and not an
-        # error: one such record must not end a pass that has every other
-        # unfinished transaction in the project still to report.
+        # being a vault record's absolute path, which
+        # docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md
+        # §7 allows -- may not be read: acting on such a path needs a
+        # fresh CLI argument naming it, and reading its bytes is acting on
+        # it. Not reading them is exactly what `unknown` says, so this is
+        # an answer and not an error: one such record must not end a pass
+        # that has every other unfinished transaction in the project
+        # still to report.
         return UNKNOWN
     if "postimage" not in entry:
         # A mutation with no bytes to digest -- a directory, a symlink.
         # `create` (a `mkdir`) is checked against `directory`, not mere
         # existence: `is_symlink()` is true whether or not the link
-        # resolves, so a broken symlink would read as `applied` -- the false
-        # `applied` design §6 names. `link` has no state word richer than
-        # existence: the record's own subject IS the symlink, so a symlink
-        # being there, resolvable or not, is what it describes as applied.
+        # resolves, so a broken symlink would read as `applied` -- the
+        # false `applied` docs/design/2026-09-01-the-journal-core.md §6
+        # names. `link` has no state word richer than existence: the
+        # record's own subject IS the symlink, so a symlink being there,
+        # resolvable or not, is what it describes as applied.
         if entry["op"] == CREATE:
             return (
                 APPLIED

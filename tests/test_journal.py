@@ -99,22 +99,24 @@ def _inside_journal(relative):
 # an exception names one file and not every file that ends in that name.
 
 # Callers that mutate the adopter's tree WITHOUT going through the executor,
-# by decision (design §4). Exactly two decisions, listed by every function
-# that implements one.
+# by decision (docs/design/2026-09-01-the-journal-core.md §4). Exactly two
+# decisions, listed by every function that implements one.
 EXECUTOR_EXCEPTIONS = {
     ("init.py", "relink"): (
         "the fail-open harness link repair: the contract requires the link "
         "back when the journal cannot be read or written at all, which is "
         "the SessionStart hook's only job, and an executor that requires a "
-        "working journal cannot serve it (design §4). This closure is the "
-        "whole of it -- `_sync_symlink`, which builds it, mutates nothing "
-        "itself and so is not listed"
+        "working journal cannot serve it "
+        "(docs/design/2026-09-01-the-journal-core.md §4). This closure is "
+        "the whole of it -- `_sync_symlink`, which builds it, mutates "
+        "nothing itself and so is not listed"
     ),
     ("adopt.py", "take_over"): (
         "the harness absorption: it recognises a tree, copies "
         "conditionally, reconciles an index and renames the source, and "
         "tolerates a per-file conflict -- which needs its own planner "
-        "before the executor can apply it (design §4)"
+        "before the executor can apply it "
+        "(docs/design/2026-09-01-the-journal-core.md §4)"
     ),
     ("adopt.py", "_absorb"): "the same absorption, one function of it",
     ("adopt.py", "_reconcile_index"): "the same absorption, one function of it",
@@ -142,11 +144,11 @@ UNRECORDED_WRITES = {
 # Names the journal keeps to itself: the two halves of the older two-record
 # protocol, the raw append, and the transaction file's own machinery. A
 # module outside the journal package naming any of them is reaching past
-# `execute`,
-# which is the thing design §4 removed the public surface for. Matched as
-# text, because prose that tells the next reader such a surface exists is
-# how it gets used again -- which is safe here only because none of these
-# spellings occurs in English.
+# `execute`, which is the thing
+# docs/design/2026-09-01-the-journal-core.md §4 removed the public
+# surface for. Matched as text, because prose that tells the next reader
+# such a surface exists is how it gets used again -- which is safe here
+# only because none of these spellings occurs in English.
 #
 # `prepare_op` and `append_op` were the two-record protocol's own methods;
 # `_open_transaction`, `_mark_published`, `_abort_transaction`,
@@ -516,12 +518,14 @@ def test_a_pre_existing_path_is_observed_once_and_only_once(run_cli, tmp_path):
 def test_a_directory_is_recorded_before_it_is_created(run_cli, tmp_path):
     """A `mkdir` is a mutation, so it is two records like every other one.
 
-    Design §4 rejects both one-record protocols, and "mutate first, record
-    after" is one of them: a crash in between leaves a directory nothing
-    knows about. What closes that window is the transaction file, fsynced
-    with the intention and both states in it BEFORE the `mkdir` runs -- the
+    docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md §4
+    rejects both one-record protocols, and "mutate first, record after"
+    is one of them: a crash in between leaves a directory nothing knows
+    about. What closes that window is the transaction file, fsynced with
+    the intention and both states in it BEFORE the `mkdir` runs -- the
     write-ahead half of the protocol lives there, not in a versioned
-    journal a later run could never close (design §3). The two records here
+    journal a later run could never close
+    (docs/design/2026-09-01-the-journal-core.md §3). The two records here
     are appended together afterwards, once the directory exists, and what
     they are is the consummated fact: both halves of one act, in order,
     under one transaction. Their presence and their order is what this
@@ -696,9 +700,10 @@ def test_a_broken_symlink_where_a_directory_was_expected_is_not_applied(
     A `create` record with no postimage describes a `mkdir` (`_ensure_dir`
     is the only writer of that shape today). Reading `exists() or
     is_symlink()` for that case read a broken symlink as `applied`, since
-    `is_symlink()` is true whether or not the link resolves -- design §6's
-    false `applied`, reachable this time through the reconciler rather than
-    through `write`. `current_state`'s `directory` check reads the node
+    `is_symlink()` is true whether or not the link resolves --
+    docs/design/2026-09-01-the-journal-core.md §6's false `applied`,
+    reachable this time through the reconciler rather than through
+    `write`. `current_state`'s `directory` check reads the node
     itself, so a broken symlink left where a directory was expected is
     `unapplied`: the `mkdir` never happened, and nothing here pretends
     otherwise.
@@ -810,7 +815,8 @@ def test_journal_check_catches_a_second_write_to_one_path_in_one_run(
     assert "unfinished" in result.stderr, result.stderr
 
 
-# --- a journal is data, never instructions (design §7) -------------------------
+# --- a journal is data, never instructions -------------------------------
+# (docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md §7)
 
 
 def _append_record(path, entry):
@@ -911,9 +917,10 @@ def test_a_repository_record_may_not_send_the_reader_outside_the_root(
 
     A repository record carrying `/etc/passwd` made the reconciler read that
     file and print its state -- a content oracle driven by a versioned,
-    adopter-editable file. Design §7: a repository record may only carry a
-    relative path that stays below the root, and one that does not is
-    refused rather than read.
+    adopter-editable file.
+    docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md
+    §7: a repository record may only carry a relative path that stays
+    below the root, and one that does not is refused rather than read.
     """
     assert run_cli("init", cwd=tmp_path).returncode == 0
     journal = tmp_path / "journal.jsonl"
@@ -1016,8 +1023,9 @@ def test_every_write_in_the_package_goes_through_the_journal():
     The two sets are two different claims, and the plan's first draft
     conflated them. `EXECUTOR_EXCEPTIONS` names the callers that mutate the
     adopter's tree without the executor BY DECISION -- the fail-open
-    harness link and the harness absorption, the two design §4 declares --
-    listed by every function that implements one, so a third of that kind
+    harness link and the harness absorption, the two
+    docs/design/2026-09-01-the-journal-core.md §4 declares -- listed by
+    every function that implements one, so a third of that kind
     fails here rather than passing unnoticed. `UNRECORDED_WRITES` names
     writes that reach no journal because what they write is not adopter
     data: a derived artifact its own command regenerates, or another
@@ -1075,9 +1083,9 @@ def test_every_write_in_the_package_goes_through_the_journal():
 def test_no_module_outside_the_journal_reaches_past_the_executor():
     """The stage-writing surface is the journal's own, and nothing else may name it.
 
-    Design §4 takes `prepare_op` and `append_op` off the public surface
-    precisely so that no module outside the journal package can reimplement
-    the
+    docs/design/2026-09-01-the-journal-core.md §4 takes `prepare_op` and
+    `append_op` off the public surface precisely so that no module
+    outside the journal package can reimplement the
     protocol the way `init.py` did -- six spellings of it, each getting a
     different step wrong. Deleting the two methods is what makes that true
     today; this is what keeps it true, and it covers the rest of the
@@ -1285,9 +1293,11 @@ def test_an_observation_that_escapes_the_root_through_a_symlink_is_refused(
     `memory/` is a symlink to a directory outside the adopter root, so
     `_ensure_dir` finds it already there and observes it -- lexically the
     path is fine, and the record would claim a repository-relative fact
-    about bytes that are not in the repository at all. Design §7 requires a
-    repository-relative record to resolve below the resolved root without
-    following a symlink out of it, and `authorise` now asks that question
+    about bytes that are not in the repository at all.
+    docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md §7
+    requires a repository-relative record to resolve below the resolved
+    root without following a symlink out of it, and `authorise` now asks
+    that question
     for `observe`, not only for a write: before this, only the file `init`
     tried to write beneath `memory/` was refused, and `memory` itself was
     filed into the versioned journal as a fact about the tree that was
@@ -1590,10 +1600,10 @@ def test_a_journal_that_is_a_broken_symlink_is_never_replaced(
 def test_journal_check_reports_a_readable_open_transaction(run_cli, tmp_path):
     """A hand-written transaction file, in `_open_transaction`'s own field shape.
 
-    No caller opens a transaction until Task 4's executor exists, so this is
-    the contract the reader (`_open_transactions`, exercised through
-    `journal --check`) and Task 4's writer have to agree on. The exact
-    shape is `_open_transaction`'s docstring, in
+    No caller opens a transaction except through `Run.execute`, so this
+    is the contract the reader (`_open_transactions`, exercised through
+    `journal --check`) and the writer, `_open_transaction`, have to
+    agree on. The exact shape is `_open_transaction`'s docstring, in
     `validated_memory/journal/transactions.py`.
     """
     assert run_cli("init", cwd=tmp_path).returncode == 0
@@ -1710,8 +1720,10 @@ def test_a_kill_at_after_transaction_leaves_the_path_untouched(
     entry only to a file that is already there, whose inverse is a
     truncation rather than the removal of a file `init` made.
 
-    What the kill leaves is the shape design §3 asks for and §5 explains:
-    the write-ahead log knows what was intended, and the permanent history
+    What the kill leaves is the shape
+    docs/design/2026-09-01-the-journal-core.md §3 asks for and §5
+    explains: the write-ahead log knows what was intended, and the
+    permanent history
     -- which is versioned, and holds consummated facts only -- says nothing
     at all. Nothing was published, so there is nothing on disk for the
     history to have described.
@@ -2049,8 +2061,9 @@ def test_the_fault_variable_is_inert_when_unset_or_unreached(
 def test_a_read_only_file_is_refused_and_left_exactly_as_it_was(run_cli, tmp_path):
     """The read-only bit is how an adopter says do not write here.
 
-    Measured on shipped 1.5.2 (design §1): a `.gitignore` at mode 0444
-    holding `build/` came back at 0644 and 276 bytes, with
+    Measured on shipped 1.5.2
+    (docs/design/2026-09-01-the-journal-core.md §1): a `.gitignore` at
+    mode 0444 holding `build/` came back at 0644 and 276 bytes, with
     `0 error(s), 0 warning(s)` and exit 0. `os.replace` needs write
     permission on the DIRECTORY, not on the file, so nothing in the install
     path ever consulted the bit, and the temporary carried a fresh mode over
@@ -2082,7 +2095,8 @@ def test_a_read_only_file_is_refused_and_left_exactly_as_it_was(run_cli, tmp_pat
     assert ignore.read_text(encoding="utf-8") == before
     assert oct(ignore.stat().st_mode & 0o777) == "0o444"
     # A refusal before anything was prepared writes nothing anywhere
-    # (design §5): not a record, not a transaction file, not a preimage.
+    # (docs/design/2026-09-01-the-journal-core.md §5): not a record, not
+    # a transaction file, not a preimage.
     assert not [
         entry
         for entry in _records(tmp_path / "journal.jsonl")
@@ -2320,9 +2334,9 @@ os.replace(temporary, target)
 # Big enough that parking it -- write, fsync, install, read back and verify
 # -- takes long enough for the writer above to land inside the window the
 # re-read exists to close. Nothing about the guarantee depends on the size;
-# only this test's ability to reach the window does, and design §6 is
-# explicit that what the re-read buys is "a narrower window, not an atomic
-# guarantee".
+# only this test's ability to reach the window does, and
+# docs/design/2026-09-01-the-journal-core.md §6 is explicit that what the
+# re-read buys is "a narrower window, not an atomic guarantee".
 INTRUDER_WINDOW_BYTES = 8 * 1024 * 1024
 
 
@@ -2334,8 +2348,9 @@ def test_the_state_is_re_read_immediately_before_publishing(run_cli, tmp_path):
     fsynced after it, and an adopter's editor writing in that window would
     be overwritten by a mutation whose record names a preimage that was
     already gone. So the state is read again, under the same lock,
-    immediately before publication (design §6), and a mismatch closes the
-    transaction `aborted` rather than publishing.
+    immediately before publication
+    (docs/design/2026-09-01-the-journal-core.md §6), and a mismatch
+    closes the transaction `aborted` rather than publishing.
 
     The intruder here is a real second process racing a real run; it wins
     the race because the file it is racing is large enough that parking it
@@ -2386,9 +2401,10 @@ def test_the_state_is_re_read_immediately_before_publishing(run_cli, tmp_path):
 def test_a_creation_publishes_with_o_excl_rather_than_replacing():
     """The no-replace guarantee for a creation is the primitive, not a check.
 
-    Design §6 promises "a strong no-replace guarantee for a creation,
-    because the primitive exists: create with `O_CREAT|O_EXCL` and fail if
-    the name is taken", and says why check-then-`os.replace` is not that
+    docs/design/2026-09-01-the-journal-core.md §6 promises "a strong
+    no-replace guarantee for a creation, because the primitive exists:
+    create with `O_CREAT|O_EXCL` and fail if the name is taken", and
+    says why check-then-`os.replace` is not that
     promise: a third party creating the file between the re-read and the
     rename would be overwritten, and the history would say `create`.
 
@@ -2926,7 +2942,8 @@ def test_recovery_leaves_a_transaction_it_cannot_account_for_untouched(
     file is what keeps the path gated and the evidence available until
     someone decides. So two runs over it produce the same ERROR, the same
     file, and the same history -- a recovery that appended a line per
-    session would be the versioned refusal design §3 refuses, one per
+    session would be the versioned refusal
+    docs/design/2026-09-01-the-journal-core.md §3 refuses, one per
     session start, for ever.
     """
     transaction = _diverged(tmp_path)
@@ -2951,7 +2968,8 @@ def test_recovery_leaves_a_transaction_it_cannot_account_for_untouched(
 def test_only_the_path_a_transaction_names_is_gated(
     run_cli, tmp_path, monkeypatch
 ):
-    """The rest of the run proceeds, which is narrower than design §8.
+    """The rest of the run proceeds, which is narrower than
+    docs/design/2026-09-01-the-journal-core.md §8.
 
     A group spans paths and cannot be reasoned about piecewise, so §8 blocks
     every mutating command while one is open. A single-path transaction can,
@@ -3062,9 +3080,10 @@ def test_journal_check_says_what_recovery_would_do_with_each_transaction(
 def test_an_aborted_transaction_is_reported_and_removed(run_cli, tmp_path):
     """`aborted` is closed already: recovery unlinks it and records nothing.
 
-    Design §5: an `aborted` entry "is never inverted by a reversal, and
-    disappears with the log once resolved". It is not a problem the operator
-    has to answer for -- the decision was made and nothing was published --
+    docs/design/2026-09-01-the-journal-core.md §5: an `aborted` entry "is
+    never inverted by a reversal, and disappears with the log once
+    resolved". It is not a problem the operator has to answer for -- the
+    decision was made and nothing was published --
     so the run that finds it clears it and carries on clean.
     """
     assert run_cli("init", cwd=tmp_path).returncode == 0
@@ -3257,9 +3276,10 @@ def test_journal_resolve_restore_refuses_a_blob_that_is_not_the_preimage(
 ):
     """An OPEN transaction's blob is the only copy: a bad one is a damaged log.
 
-    Design §10 keeps the two cases apart, and so must this. For a CLOSED
-    history record a missing blob is normal -- the journal travels and the
-    vault does not -- and means only that this clone cannot reverse that
+    docs/design/2026-09-01-the-journal-core.md §10 keeps the two cases
+    apart, and so must this. For a CLOSED history record a missing blob
+    is normal -- the journal travels and the vault does not -- and means
+    only that this clone cannot reverse that
     mutation. Here the transaction is open, the blob was parked and verified
     moments before the crash, and bytes that disagree with the name they are
     filed under are not the preimage: `--restore` refuses rather than
@@ -3375,8 +3395,9 @@ def test_a_missing_preimage_blob_for_a_closed_record_is_never_an_error(
 ):
     """The vault does not travel, and a clone without one is not damaged.
 
-    Design §10: "a missing preimage blob in a clone is normal, not
-    corruption". This is exactly what a fresh clone looks like -- the
+    docs/design/2026-09-01-the-journal-core.md §10: "a missing preimage
+    blob in a clone is normal, not corruption". This is exactly what a
+    fresh clone looks like -- the
     versioned journal carries a `replace` record naming a preimage, and the
     ignored vault that held the bytes is not there -- and nothing recovery
     or resolution added may report it. The refusal in
@@ -3406,7 +3427,8 @@ def test_a_missing_preimage_blob_for_a_closed_record_is_never_an_error(
 def test_two_halves_of_one_transaction_that_disagree_are_reported(
     run_cli, tmp_path
 ):
-    """Strict pairing by id, and field agreement on top of it (design §13).
+    """Strict pairing by id, and field agreement on top of it
+    (docs/design/2026-09-01-the-journal-core.md §13).
 
     The two records are the only evidence a mutation left behind, so a
     reader that averages them is a reader inventing a third mutation. The
@@ -3780,8 +3802,10 @@ def test_a_transaction_naming_an_operation_no_intention_carries_is_damaged(
     """What may be prepared is what an `Intention` can hold, and no more.
 
     `patch`, `rename`, `remove` and `move` are words a RECORD may carry --
-    the vocabulary of histories written before this core, and of the steps
-    design §2 plans -- and no executor of this plugin prepares one. An
+    the vocabulary of histories written before this core, and of the
+    steps
+    docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md §2
+    plans -- and no executor of this plugin prepares one. An
     `observe` is the other half: it publishes nothing, opens no
     transaction and is recorded at `committed` alone, so a file claiming a
     prepared one would be completed into a record pair nothing writes.

@@ -7,8 +7,8 @@ package's internals.
 
 import pytest
 
-# The set moved deliberately: task 5 adds "journal", the read side of the
-# append-only record init already writes to.
+# The set moved deliberately: `journal` was added later, the read side of
+# the append-only record init already writes to.
 SUBCOMMANDS = [
     "init",
     "lint",

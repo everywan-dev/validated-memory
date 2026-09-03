@@ -1,11 +1,11 @@
 """The executor: the preimage store, the opening write, and `Run`.
 
-`bootstrap` is the one write that cannot journal itself. `Run` is the whole
-of design §4's protocol -- the lock, path authorisation, the expected-state
-check, the preimage, the transaction file, the publication and its
-durability barriers, the mode, and both history records -- and it is one
-class because recovery and resolution share every one of those steps with
-execution.
+`bootstrap` is the one write that cannot journal itself. `Run` is the
+whole of docs/design/2026-09-01-the-journal-core.md §4's protocol -- the
+lock, path authorisation, the expected-state check, the preimage, the
+transaction file, the publication and its durability barriers, the mode,
+and both history records -- and it is one class because recovery and
+resolution share every one of those steps with execution.
 """
 
 import json
@@ -233,9 +233,9 @@ class Run:
     """One invocation's journalling context.
 
     Holds the adoption id, this run's id and the paths either journal
-    already knows about, and performs mutations through `execute`, which is
-    the whole of design §4's protocol and the only thing a caller needs.
-    One `Run` per invocation.
+    already knows about, and performs mutations through `execute`, which
+    is the whole of docs/design/2026-09-01-the-journal-core.md §4's
+    protocol and the only thing a caller needs. One `Run` per invocation.
 
     Four methods, and no fifth: `observe` for a fact about the state
     adoption found, `execute` for every mutation, `recover` for what an
@@ -301,10 +301,10 @@ class Run:
         `_open_paths` -- the transaction id still open on each of those
         paths, which is what `_execute` refuses to write over. Only the
         affected path gates: the rest of the run proceeds, which is
-        narrower than design §8's "no mutating command proceeds", because a
-        single-path transaction can be reasoned about piecewise and
-        blocking everything would brick the session hook over one stale
-        file.
+        narrower than docs/design/2026-09-01-the-journal-core.md §8's "no
+        mutating command proceeds", because a single-path transaction can
+        be reasoned about piecewise and blocking everything would brick
+        the session hook over one stale file.
 
         A damaged transaction file carries no intention and so names no
         path; it is skipped here and reported by `journal --check`.
@@ -493,13 +493,14 @@ class Run:
     def execute(self, intention):
         """Perform one `Intention`, wholly, and return an `Outcome`.
 
-        This is the mutating surface design §4 asks for: the executor owns
-        the lock, path authorisation, the expected-state check, the
-        preimage, the transaction file, the publication and its durability
-        barriers, the mode, and both history records. No caller may do any
-        of it for itself, because every caller that did got one of the steps
-        wrong -- the six defects §1 measured are six spellings of the same
-        protocol, reimplemented per call site.
+        This is the mutating surface
+        docs/design/2026-09-01-the-journal-core.md §4 asks for: the
+        executor owns the lock, path authorisation, the expected-state
+        check, the preimage, the transaction file, the publication and its
+        durability barriers, the mode, and both history records. No caller
+        may do any of it for itself, because every caller that did got one
+        of the steps wrong -- the six defects §1 measured are six
+        spellings of the same protocol, reimplemented per call site.
 
         The order, and why each step is where it is:
 
@@ -513,11 +514,11 @@ class Run:
            comes back as an `Outcome`, carrying `authorise`'s own message.
         3. **Compare the current state with the expected one.** A mismatch
            writes NOTHING ANYWHERE: there is no transaction to abort yet,
-           and design §5 is explicit that a precondition failing before
-           anything is prepared is a result the caller renders, never a line
-           in a versioned file. `init` runs at every session start, so a
-           refusal recorded in the history would be recorded for ever, once
-           per session.
+           and docs/design/2026-09-01-the-journal-core.md §5 is explicit
+           that a precondition failing before anything is prepared is a
+           result the caller renders, never a line in a versioned file.
+           `init` runs at every session start, so a refusal recorded in
+           the history would be recorded for ever, once per session.
         4. **Return `noop` if the path is already in the state the intention
            would produce.** Not an optimisation: a transaction whose
            preimage and postimage are the same state cannot be recovered --
@@ -848,8 +849,9 @@ class Run:
         """Put the new state on disk, atomically and durably; return its mode.
 
         Publication is not one primitive, and treating it as one is what
-        design §6 refuses. Four shapes, chosen by what is expected to be
-        there rather than by the op's name:
+        docs/design/2026-09-01-the-journal-core.md §6 refuses. Four
+        shapes, chosen by what is expected to be there rather than by the
+        op's name:
 
         - **A directory** -- `os.mkdir`, never `parents=True`. Creating an
           ancestor nobody asked for is a second mutation with no intention
@@ -1215,10 +1217,10 @@ class Run:
         """Close ONE transaction the way an operator says; return a `Resolution`.
 
         `journal --resolve <id>` with `--accept`, `--restore` or
-        `--abandon`. Design §8 is explicit that recovery needs its own
-        interface or the project deadlocks: "refuse" is not a terminal
-        state, and a diverged transaction gates its path for ever without a
-        way out.
+        `--abandon`. docs/design/2026-09-01-the-journal-core.md §8 is
+        explicit that recovery needs its own interface or the project
+        deadlocks: "refuse" is not a terminal state, and a diverged
+        transaction gates its path for ever without a way out.
 
         Under the lock, because two of the three write to a journal and one
         of them publishes bytes. It recovers nothing else on the way: an
@@ -1375,11 +1377,12 @@ class Run:
         append-only. `--accept` or `--abandon` is the answer.
 
         A preimage blob that is missing, or whose bytes do not digest to the
-        name it is filed under, refuses. This is the case design §10 says
-        must never be confused with the other one: for a CLOSED history
-        record a missing blob is normal, because the journal travels and the
-        vault does not, and it means only that this clone cannot reverse
-        that mutation. For an OPEN transaction the blob is the sole copy of
+        name it is filed under, refuses. This is the case
+        docs/design/2026-09-01-the-journal-core.md §10 says must never be
+        confused with the other one: for a CLOSED history record a
+        missing blob is normal, because the journal travels and the vault
+        does not, and it means only that this clone cannot reverse that
+        mutation. For an OPEN transaction the blob is the sole copy of
         the bytes the plugin was about to overwrite, parked and verified
         moments before -- its absence is a damaged log, and writing
         something else over the path would be writing wrong bytes.

@@ -34,8 +34,9 @@ def current_state(root, path):
     is `symlink` whether or not it resolves -- a broken one is `symlink`,
     never `absent` or `directory`. `directory` exists because a `create`
     record with no bytes to digest needs a check richer than "the name
-    resolves to something", which a broken symlink also satisfies; that is
-    today's false `applied` (design §6).
+    resolves to something", which a broken symlink also satisfies; that
+    is today's false `applied`
+    (docs/design/2026-09-01-the-journal-core.md §6).
 
     Anything `lstat` cannot see at all -- nothing there, a missing parent, a
     parent that denies traversal -- reads as `absent`; this function asks
@@ -111,10 +112,12 @@ def _postimage_state(intention, actual, data):
     bytes publication will write, or None for a mutation that has none.
 
     `mode` is carried only where publication preserves one. A replacement
-    keeps the target's mode (design §7), so the postimage can name it and
-    recovery can check it; a creation's mode is the umask's answer and is
-    not known until the node exists, so the field is omitted and `satisfies`
-    then matches whatever mode it turns out to have.
+    keeps the target's mode
+    (docs/design/2026-09-01-the-journal-core.md §7), so the postimage can
+    name it and recovery can check it; a creation's mode is the umask's
+    answer and is not known until the node exists, so the field is
+    omitted and `satisfies` then matches whatever mode it turns out to
+    have.
     """
     if intention.op == LINK:
         return {"kind": SYMLINK, "target": intention.target}
@@ -132,7 +135,8 @@ def _write_denied(root, location, actual):
     The read-only bit is how an adopter says do not write here, and nothing
     in the install path consulted it: `os.replace` needs write permission on
     the DIRECTORY, not on the file, so a `.gitignore` at mode 0444 was
-    replaced in silence and handed back at 0644 (design §1, measured).
+    replaced in silence and handed back at 0644
+    (docs/design/2026-09-01-the-journal-core.md §1, measured).
 
     The question is asked of the file's own mode bits and the POSIX class
     this process falls in -- owner, else group, else other -- and of nothing
@@ -236,11 +240,13 @@ def _well_formed_state(state):
     """Whether `state` is a state dict in `current_state`'s own vocabulary.
 
     The kind, and the type of every field a kind carries. A transaction
-    file is data (design §7), and every reader downstream of this one --
-    `satisfies`, `_describe`, `_restore`, which puts a mode back and reads
-    a `target` -- assumes types nothing had checked: a `digest` that is a
-    number matches no state and silently diverges, a `target` that is a
-    list reaches `symlink_to`, and `"mode": true` is not a mode.
+    file is data
+    (docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md
+    §7), and every reader downstream of this one -- `satisfies`,
+    `_describe`, `_restore`, which puts a mode back and reads a `target`
+    -- assumes types nothing had checked: a `digest` that is a number
+    matches no state and silently diverges, a `target` that is a list
+    reaches `symlink_to`, and `"mode": true` is not a mode.
     `bool` is excluded from `int` for the reason `FIELD_TYPES` gives.
     """
     if not isinstance(state, dict) or state.get("kind") not in KINDS:
