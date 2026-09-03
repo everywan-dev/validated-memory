@@ -42,9 +42,11 @@ A finding on axis B has three possible destinations, in this order:
    platform quirk, an ordering that matters, a rejected alternative that
    would look correct to the next reader.
 
-**Precondition for axis B:** the comment rule must be an ADR before the
-second unit is reviewed. Without it, every session re-argues taste. Axis A
-does not wait for it.
+**The rule for axis B is [ADR
+0010](../adr/0010-code-prose-is-a-contract-or-a-constraint-never-a-history.md)**,
+and its two questions are what a finding cites: would a caller be surprised
+if this docstring sentence were false, and would a competent modifier break
+something if this comment were missing. A sentence that fails both goes.
 
 ## The units
 
@@ -133,10 +135,9 @@ log when it does.
 
 ## Progress
 
-- [ ] **ADR: what a comment is for in this repository** (precondition for
-      axis B from J2 onwards). Owner: user, via `/grill-with-docs`. J1 is the
-      worked example to take into it: four files, 59 % prose after the history
-      came out, and two docstrings that are accurate and still too long.
+- [x] **ADR: what a comment is for in this repository** (precondition for
+      axis B from J2 onwards) — [ADR 0010](../adr/0010-code-prose-is-a-contract-or-a-constraint-never-a-history.md),
+      written 2026-09-03 from J1's worked example.
 - [ ] **ADR: what `_` means inside a package** (from J1/A2). Ten names cross
       module lines in `journal/`; either they lose the underscore or the
       convention is written down.
@@ -163,6 +164,10 @@ One line per session, most recent last: date, unit, commit, outcome.
   Correcting the tool moved the headline number from 16 % prose to **43 %**
   (60 % in the journal package): the first version matched docstrings on the
   token stream and saw only module docstrings.
+- 2026-09-03 — ADR 0010 written: code prose is a contract or a constraint,
+  never a history. Two questions decide a sentence; no length budget and no
+  lexical gate, and the effect is measured in the ledger rather than gated.
+  The project `CLAUDE.md` now names it.
 - 2026-09-03 — J1 reviewed (`db5700b`), `reviews/j1.md`. Applied: the reporting module
   stopped reimplementing the unknown-id refusal and the recoverable word
   (both now `transactions.missing_resolution` / `report_word`), two
