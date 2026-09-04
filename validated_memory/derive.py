@@ -16,8 +16,7 @@ from pathlib import Path
 
 from . import validate
 from . import verdicts as verdicts_module
-from .contract import ERROR
-from .findings import EXIT_ERROR, EXIT_OK, Finding
+from .findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
 from .frontmatter import parse as parse_frontmatter
 
 INDEX_FILENAME = "knowledge-index.md"
