@@ -29,8 +29,10 @@ STALE_LOCK_SECONDS = 300
 # How long a run waits for a lock somebody else legitimately holds before it
 # refuses. Bounded because the caller is a session hook: a command that
 # blocks for as long as the holder wants is a session that never starts.
-# Ten seconds is longer than any mutation this plugin performs and short
-# enough that a user sees a message rather than a hang.
+# Ten seconds is not a promise that no holder is slower -- `init` holds this
+# lock across `adopt.take_over`, which copies as many files as the harness
+# memory has -- it is the point at which waiting stops being useful and the
+# message below, which says what to do, is better than a hang.
 LOCK_WAIT_SECONDS = 10
 
 

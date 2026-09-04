@@ -7,7 +7,7 @@ argument this ADR was going to be written on.
 
 ## The state that forced the question
 
-`validated_memory/journal/` is nine modules behind one facade. Twenty-one
+`validated_memory/journal/` is ten modules behind one facade. Twenty-one
 underscore-prefixed names cross module lines inside it: `transactions` is
 imported for twelve of them, `paths` for six, `records` for one, `fault` for
 one, `operations` for one. Each is used by one to three other modules of the
@@ -32,11 +32,15 @@ Two rules, and they answer two different questions:
   leading underscore. `_park_preimage` is the executor's own; `classify` is
   the write-ahead log's interface to the executor.
 
-Two pins already enforce the first rule and are unaffected by the second:
-`test_no_module_outside_the_journal_reaches_past_the_executor` scans the
-text of every module outside the package for a fixed list of names, and
-`test_nothing_outside_the_journal_reaches_a_name_it_does_not_export` reads
-imports and attribute access with `ast`.
+Three pins already hold the first rule, and none of them is affected by the
+second. `test_nothing_outside_the_journal_reaches_a_name_it_does_not_export`
+reads imports and attribute access with `ast` and permits only the facade's
+exports; `test_the_facade_exports_exactly_the_surface_the_pin_permits` holds
+that list and `journal.__all__` equal; and
+`test_no_module_outside_the_journal_reaches_past_the_executor` scans the text
+of every module outside the package for a fixed list of names the journal
+keeps to itself, which is a narrower question than the export rule and the
+reason the list is written by hand.
 
 ## The argument this ADR was going to be written on, and why it is wrong
 
@@ -88,7 +92,11 @@ argument was defending a property fifteen of them never had.
 - The three verdicts `_COMPLETE`, `_DISCARD` and `_REMOVE` become
   **`VERDICT_COMPLETE`**, `VERDICT_DISCARD` and `VERDICT_REMOVE`:
   `records.REMOVE` is an op of the record vocabulary with the same spelling
-  and a different meaning, and both are imported into the executor.
+  and a different meaning. No module imports both today — `executor` takes
+  the verdicts from `transactions` and does not name `records.REMOVE` — and
+  the collision this avoids is the next reader's, not the interpreter's:
+  `REMOVE` would mean "the inverse of a create" in one file and "recovery
+  will delete this transaction file" in the one beside it.
 
 ## Consequences
 
