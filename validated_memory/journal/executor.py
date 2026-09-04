@@ -701,12 +701,13 @@ class Run:
         # reversal to restore a number nobody chose.
         preimage_mode = actual["mode"] if actual["kind"] == FILE else None
 
-        # The line this method turns on. Every return above it is a
-        # refusal that left nothing behind, which is why they are
-        # `_refused`; every return below it has a transaction file on disk
-        # to close first, which is why they are `_aborted`. A refusal added
-        # below this line that does not close its transaction leaves the
-        # path gated for ever against a mutation that never happened.
+        # The line this method turns on. Above it are ten returns that
+        # left nothing behind -- seven `_refused`, two refusals built
+        # before there is an `actual` to report, and the no-op -- and
+        # below it three that have a transaction file on disk to close
+        # first, which is why they are `_aborted`. A refusal added below
+        # this line that does not close its transaction leaves the path
+        # gated for ever against a mutation that never happened.
         transaction = open_transaction(
             self.root,
             intention,

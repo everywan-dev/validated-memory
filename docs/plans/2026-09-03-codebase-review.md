@@ -161,7 +161,7 @@ log when it does.
 - [x] J1 — journal reporting and fault seams ([findings](reviews/j1.md))
 - [x] J2 — journal vocabulary ([findings](reviews/j2.md))
 - [x] J3 — write-ahead log and lock ([findings](reviews/j3.md))
-- [ ] J4 — the executor
+- [x] J4 — the executor ([findings](reviews/j4.md))
 - [ ] S1 — the scaffolder
 - [ ] C1 — the contract
 - [ ] F1 — freshness
@@ -223,3 +223,14 @@ One line per session, most recent last: date, unit, commit, outcome.
   −42 LOC and −1 487 prose bytes in J1 against +35 and +929 in J3, which is
   what the fix cost. Deferred to an ADR: ten underscore names cross module
   lines inside `journal/`, so `_` marks nothing there. 644 tests green.
+- 2026-09-04 — J4, the executor, `f3d1def` … `e078864`. J3's inherited
+  question answered in a different shape: not the `(root, id)` pair but two
+  dicts, since every caller of `classify` re-read the raw transaction file
+  for six more fields. `facts` now carries all of them and `_complete` and
+  `_restore` take no file. `bootstrap` became `_bootstrap` under ADR 0011.
+  Six sentences of history out, one unpinned claim turned into a test seen
+  red first (651). One finding recorded and not fixed, and it goes to S1:
+  building a `Run` adopts the tree, and `journal --resolve` carries a
+  preflight to work around it — the preflight defends against `Lock`
+  creating the vault as much as against the bootstrap, which is what makes
+  the obvious fix unavailable.

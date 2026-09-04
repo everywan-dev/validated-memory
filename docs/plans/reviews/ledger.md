@@ -59,7 +59,8 @@ findings file; bytes are the secondary table below.
 | references | `ba3d461` | 0 | — | 0 | 4 pins | **26** | 0 |
 | J2 | `74e02e1` … `a664597` | 5 | 5 | 3 | 2 | **4** | 3 |
 | J3 | `db9edc6` … `7bbf8d8` | 3 | 3 | 0 | 0 | 0 | 3 |
-| **total** | | **12** | **8** | **3** | **6** | **30** | **8** |
+| J4 | `f3d1def` … `e078864` | 6 | 3 | 0 | 1 | **5** | 4 |
+| **total** | | **18** | **11** | **3** | **7** | **35** | **12** |
 
 "claims already pinned" counts prose deleted because a test was found that
 fails when the claim stops being true; J1 predates that step, so it was not
@@ -79,6 +80,8 @@ into a plan archived out of the repository.
 | J2 | `74e02e1` … `a664597` | +94 | +540 | +1,496 | +4 / +1 | 650 green |
 | J2 → J3, S1 (cost of the fix) | same | +8 | +116 | +406 | ±0 | — |
 | J3 | `db9edc6` … `7bbf8d8` | +8 | +109 | +751 | +11 / −10 | 650 green |
+| J4 | `f3d1def` … `e078864` | +20 | +180 | +812 | −1 / +1 | 651 green |
+| J4 → J3, J1 (cost of the fix) | same | +29 | +372 | +983 | ±0 | — |
 | **running total** | | | | | | |
 
 The reference work adds prose and is a gain: a citation that resolves is
@@ -112,6 +115,29 @@ The +8 LOC in J3 and S1 are the cost of the fixes: a comment in
 `transactions` explaining an order that now matters, and the four call
 sites in `init.py` that name their mutation instead of assembling one.
 
+
+## J4, the second unit that grew, and the largest cost-of-the-fix so far
+
+J4 is +20 LOC in its own file and +29 in two others, and the second number
+is the interesting one. `classify` promised its callers "what the file and
+the filesystem said, so the caller neither re-reads nor re-decides", and all
+three of them re-read the raw transaction file for six more fields — two of
+which they then type-checked a second time, against states `classify`
+already refuses. Making the promise true is +26 LOC in `transactions.py`,
+and it takes the raw file out of `_complete` and `_restore` entirely.
+
+Its five false claims are the widest of any unit: one contract claim in the
+module docstring measurably false ("recovery and resolution share every one
+of those steps"), one promise in `classify`'s docstring that its own callers
+disproved, and three copies of one constraint that named half its cause —
+the `journal --resolve` preflight, which defends against `Lock` creating the
+vault as well as against `_bootstrap` creating the journal. That third one
+was found by measuring rather than reading, and it refuted the fix a
+challenge had proposed for it.
+
+The one test added is the best kind this axis produces: a comment that
+described a traceback it had replaced, and nothing asserted the guard was
+still there. It was seen red first.
 
 ## J3, and what the `pub / priv` column stopped meaning
 
