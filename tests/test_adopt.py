@@ -243,6 +243,14 @@ def test_a_conflicting_file_is_kept_warned_about_and_preserved_in_the_bak(
 def test_a_file_that_is_already_identical_is_absorbed_without_a_warning(
     adopter_dir, tmp_path, run_cli, write_index
 ):
+    """No warning, and the take-over still happens.
+
+    The sibling above warns because the two copies differ. Identical bytes
+    are not a conflict, so nothing is reported -- but the directory is still
+    taken over: the path becomes the symlink, the original is parked, and
+    the index gains no second entry for a file it already lists. Asserting
+    only the silence would pass over a run that absorbed nothing at all.
+    """
     native = tmp_path / "harness" / "memory"
     source = write_native(native, "coffee-preference", "Prefers oat milk.")
     write_native_index(native, "- [Coffee preference](coffee-preference.md) — oat milk")
@@ -255,6 +263,12 @@ def test_a_file_that_is_already_identical_is_absorbed_without_a_warning(
 
     assert result.returncode == 0, result.stderr
     assert "WARNING" not in result.stderr
+    assert native.is_symlink(), sorted((tmp_path / "harness").iterdir())
+    assert native.resolve() == (adopter_dir / "memory").resolve()
+    parked = tmp_path / "harness" / "memory.bak" / "coffee-preference.md"
+    assert "Prefers oat milk." in parked.read_text(encoding="utf-8")
+    index = (adopter_dir / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert index.count("(coffee-preference.md)") == 1, index
 
 
 # --- parking never overwrites --------------------------------------------------

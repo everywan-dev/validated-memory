@@ -588,6 +588,40 @@ def test_a_repointed_symlink_records_its_previous_target_before_losing_it(
     ), sorted((adopter_dir / ".validated-memory" / "transactions").iterdir())
 
 
+def test_a_first_link_records_that_there_was_no_previous_target(
+    adopter_dir, tmp_path, run_cli
+):
+    """The other half of the note, and the one every first adoption writes.
+
+    `init._previous_target` has two answers, and the sibling test above
+    pins only the one a re-pointing writes. This is the one a fresh
+    `--harness-memory` writes, which is every project's first run: there is
+    no previous target, and the note says so rather than being absent or
+    empty. A `link` record's inverse is "restore the previous target", so
+    "there was none" is the fact that tells a reversal to remove the link
+    instead of re-pointing it.
+    """
+    import json
+
+    harness_memory = tmp_path / "harness" / "memory"
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert harness_memory.is_symlink(), sorted(tmp_path.iterdir())
+    vault = adopter_dir / ".validated-memory" / "local.jsonl"
+    links = [
+        json.loads(line)
+        for line in vault.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["op"] == "link"
+    ]
+    assert [entry["stage"] for entry in links] == ["prepared", "committed"], links
+    for entry in links:
+        assert entry["note"] == "no previous link", entry
+
+
 def test_a_recorded_symlink_carries_no_mode(
     adopter_dir, tmp_path, run_cli, monkeypatch
 ):

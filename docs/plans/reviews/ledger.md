@@ -60,7 +60,8 @@ findings file; bytes are the secondary table below.
 | J2 | `74e02e1` … `a664597` | 5 | 5 | 3 | 2 | **4** | 3 |
 | J3 | `db9edc6` … `7bbf8d8` | 3 | 3 | 0 | 0 | 0 | 3 |
 | J4 | `f3d1def` … `e078864` | 6 | 3 | 0 | 1 | **5** | 4 |
-| **total** | | **18** | **11** | **3** | **7** | **35** | **12** |
+| S1 | `d6d9d70` … `6fc9968` | 4 | 4 | 0 | 1 (+1 strengthened) | 2 | 2 |
+| **total** | | **22** | **15** | **3** | **8** | **37** | **14** |
 
 "claims already pinned" counts prose deleted because a test was found that
 fails when the claim stops being true; J1 predates that step, so it was not
@@ -82,6 +83,7 @@ into a plan archived out of the repository.
 | J3 | `db9edc6` … `7bbf8d8` | +8 | +109 | +751 | +11 / −10 | 650 green |
 | J4 | `f3d1def` … `e078864` | +20 | +180 | +812 | −1 / +1 | 651 green |
 | J4 → J3, J1 (cost of the fix) | same | +29 | +372 | +983 | ±0 | — |
+| S1 | `d6d9d70` … `6fc9968` | +3 | **−130** | **−524** | +3 / −2 | 652 green |
 | **running total** | | | | | | |
 
 The reference work adds prose and is a gain: a citation that resolves is
@@ -115,6 +117,26 @@ The +8 LOC in J3 and S1 are the cost of the fixes: a comment in
 `transactions` explaining an order that now matters, and the four call
 sites in `init.py` that name their mutation instead of assembling one.
 
+
+## S1, the first unit since J1 to come out smaller
+
+S1 is +3 LOC, −130 tokens and −524 prose bytes, and it is the only unit so
+far where an extraction *deleted* prose instead of adding it. `ignore.py`
+took about 175 lines of "does git ignore the vault, and how do I make it"
+out of a module whose docstring says it scaffolds the adopter layout — and
+the same contract had been written twice, once in `init.py`'s module
+docstring and once in `_ensure_ignored`. Explaining it once is where the
+bytes went.
+
+The `pub / priv` column moves +3 / −2 and nothing new is reachable from
+outside the package: `ignore.py` exports three names against the five
+private ones it took out of `init.py`.
+
+Its most serious finding is not in either column, because it is a behaviour
+question and the unit did not answer it: on the journal-failure path the
+harness take-over runs after the run-wide lock has been released and still
+moves the adopter's data, where the other gate refuses the same act. See
+`s1.md` A4 for the reproduction.
 
 ## J4, the second unit that grew, and the largest cost-of-the-fix so far
 
