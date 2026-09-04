@@ -73,14 +73,10 @@ def anchor_key(unit_id, system, kind, payload):
     """The key one anchor's verdicts are recorded and read under.
 
     An anchor is identified by what it points at -- its system, its kind and
-    its payload. `captured_at` dates a capture, it does not identify one.
-
-    Keyed on `(system, kind)` alone, two legitimately distinct anchors of one
-    unit -- two refs of the same repository, both `git_ref` on the same system
-    -- collapsed into one entry, so the later verdict overwrote the earlier and
-    a `drifted` could disappear behind a `current`. The index then reported a
-    unit as current while one of its anchors had drifted, and which one won
-    depended on the order the anchors happened to be written in.
+    its payload. `captured_at` dates a capture, it does not identify one, and
+    the payload is part of the key because one unit may declare distinct
+    anchors sharing a `(system, kind)`: two refs of the same repository, both
+    `git_ref` on the same system.
     """
     return (unit_id, system, kind, _canonical(payload))
 
