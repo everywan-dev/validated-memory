@@ -14,14 +14,17 @@ import stat
 from dataclasses import replace as _replace
 from pathlib import Path
 
+from .durable import fsync_directory, install
 from .fault import _fault
 from .lock import Lock
 from .operations import (
     OUTCOME_APPLIED,
     OUTCOME_NOOP,
     OUTCOME_REFUSED,
-    Intention,
     Outcome,
+    _Intention,
+    link_to,
+    replace_file,
 )
 from .paths import (
     ABSENT,
@@ -43,7 +46,6 @@ from .records import (
     LOCAL,
     OBSERVE,
     PREPARED,
-    REPLACE,
     REPO,
     STAGES,
     VAULT_DIRNAME,
@@ -52,8 +54,6 @@ from .records import (
     append,
     artifact_name,
     digest,
-    fsync_directory,
-    install,
     journal_path,
     new_id,
     read,
@@ -491,7 +491,7 @@ class Run:
     # --- the executor: one intention, one path, one outcome -------------------
 
     def execute(self, intention):
-        """Perform one `Intention`, wholly, and return an `Outcome`.
+        """Perform one intention, wholly, and return an `Outcome`.
 
         This is the mutating surface
         docs/design/2026-09-01-the-journal-core.md §4 asks for: the
@@ -551,21 +551,26 @@ class Run:
         The four `_fault` points are the seams between those steps, so a
         test can kill the process at each and assert what is left.
         """
+        if not isinstance(intention, _Intention):
+            # A type gate, not a vocabulary one, and it is load-bearing:
+            # this method reads fields off whatever it is given, so any
+            # object shaped like an intention reaches publication. One
+            # carrying `op="observe"` was measured doing exactly that --
+            # a published file and a `prepared`/`committed` observation,
+            # a record pair nothing in this package writes and no reader
+            # expects. Unreachable from the CLI seam, which is why no test
+            # here covers it: only Python code holding a `Run` can do it,
+            # and this refuses it.
+            raise TypeError(
+                "an intention is built by journal.create_file, "
+                "create_directory, append_to_file or link_to; this is a "
+                f"{type(intention).__name__}"
+            )
         with Lock(self.root):
             return self._execute(intention)
 
     def _execute(self, intention):
         """`execute`'s body, with the lock already held."""
-        if intention.op == OBSERVE:
-            # An observation publishes nothing, opens no transaction and
-            # has no postimage, so every step below would be a no-op with a
-            # record at the end of it. It is `observe`'s, and the two must
-            # not be confused: §4 turns exactly that confusion into a
-            # permanent lie about the pre-adoption state.
-            raise ValueError(
-                "an observation is not a mutation and does not go through "
-                "the executor; use Run.observe"
-            )
         try:
             location = authorise(self.root, intention.path, intention.durability)
         except (ValueError, OSError) as error:
@@ -1494,8 +1499,7 @@ class Run:
                 )
             data = blob.read_bytes()
             actual = {"kind": FILE, "mode": mode}
-            intention = Intention(
-                op=REPLACE,
+            intention = replace_file(
                 purpose=facts["intention"]["purpose"],
                 path=location,
                 durability=durability,
@@ -1510,8 +1514,7 @@ class Run:
                     "symlink and does not say where it pointed; this log is "
                     "damaged. Nothing has been restored."
                 )
-            intention = Intention(
-                op=LINK,
+            intention = link_to(
                 purpose=facts["intention"]["purpose"],
                 path=location,
                 durability=durability,

@@ -57,11 +57,14 @@ findings file; bytes are the secondary table below.
 |---|---|---:|---:|---:|---:|---:|---:|
 | J1 | `db5700b` | 4 | 0 checked | 0 | 0 | 0 (1 claim verified true) | 2 |
 | references | `ba3d461` | 0 | — | 0 | 4 pins | **26** | 0 |
-| **total** | | **4** | **0** | **0** | **4** | **26** | **2** |
+| J2 | `74e02e1` … `a664597` | 5 | 5 | 3 | 2 | **4** | 3 |
+| **total** | | **9** | **5** | **3** | **6** | **30** | **5** |
 
 "claims already pinned" counts prose deleted because a test was found that
 fails when the claim stops being true; J1 predates that step, so it was not
-asked. "false claims corrected" for the reference work counts 23 `design §N`
+asked; J2's five are the five sentences it deleted, each against the test
+named in `j2.md`. "false claims corrected" for the reference work counts 23
+`design §N`
 citations that named no document out of two candidates, and three pointers
 into a plan archived out of the repository.
 
@@ -72,6 +75,8 @@ into a plan archived out of the repository.
 | J1 | `db5700b` | −42 | −530 | −1,487 | ±0 | 644 green |
 | J1 → J3 (cost of the fix) | same | +35 | +351 | +929 | +2 / ±0 | — |
 | references | `ba3d461` | +~50 | +~500 | +~1,400 | ±0 | 648 green |
+| J2 | `74e02e1` … `a664597` | +94 | +540 | +1,496 | +4 / +1 | 650 green |
+| J2 → J3, S1 (cost of the fix) | same | +8 | +116 | +406 | ±0 | — |
 | **running total** | | | | | | |
 
 The reference work adds prose and is a gain: a citation that resolves is
@@ -82,3 +87,25 @@ semantic table is the one above.
 J1 left 9 310 prose bytes standing in its own four files, 59 % of them. What
 came out was history. What stays is contract, and it is measured against the
 three classes from J2 onward.
+
+## J2, the first unit that grew
+
+J2 is +94 LOC and +1 496 prose bytes, and it is the clearest case yet for
+why the semantic table is the primary one. Five sentences of history came
+out. What went in: five factory docstrings and a module docstring for
+`journal/durable.py`, which between them replaced enforcement-by-paragraph
+with enforcement-by-signature — three combinations `Intention`'s docstring
+called impossible were constructible, and now have no spelling — and two
+new tests, whose docstrings are prose that runs.
+
+The four false claims are the three `Intention` combinations plus "step
+1b", a pointer that survived the reference pass in two files because it is
+neither a path nor an `ADR NNNN` and `test_docs_links` looks for those. The
+five "claims already pinned" are those same deleted sentences, each
+against a test that fails when its claim stops being true; the three coverage gaps are the facade's layering,
+the schema refusal (both closed here, each seen red first) and the ordering
+inside `install`, which stays open and now says so in its own docstring.
+
+The +8 LOC in J3 and S1 are the cost of the fixes: a comment in
+`transactions` explaining an order that now matters, and the four call
+sites in `init.py` that name their mutation instead of assembling one.

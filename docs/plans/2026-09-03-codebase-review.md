@@ -68,7 +68,7 @@ for how not to load them whole.
 | # | Unit | Files | LOC | ~tok | Why it is one unit |
 |---|---|---|---|---|---|
 | J1 | Journal: reporting and fault seams | `journal/reconcile.py`, `journal/command.py`, `journal/fault.py`, `journal/__init__.py` | 572 | 6.1 K | The pilot. Smallest journal unit and the prose-heaviest code in the repository (27 %, 20 %, 22 % comment bytes). Calibrates both axes cheaply. |
-| J2 | Journal: the vocabulary | `journal/records.py`, `journal/paths.py`, `journal/operations.py` | 802 | 8.2 K | What a record, a path and an operation *are*. `records.py` has 11 public names — the widest interface in the package, and the first depth question. |
+| J2 | Journal: the vocabulary | `journal/records.py`, `journal/paths.py`, `journal/operations.py`, plus `journal/durable.py`, which the unit split out of the first | 802 | 8.2 K | What a record, a path and an operation *are*. `records.py` has 11 public names — the widest interface in the package, and the first depth question. |
 | J3 | Journal: the write-ahead log and the lock | `journal/transactions.py`, `journal/lock.py` | 1 010 | 11.2 K | Both own crash behaviour; both were fixed repeatedly in the 2026-09-01/02 waves. |
 | J4 | Journal: the executor | `journal/executor.py` | 1 572 | 18.4 K | The one path every mutation takes. Two public names over 1 572 lines: either the deepest module here or a bag with a narrow door. Depends on J1–J3 being settled. |
 | S1 | The scaffolder | `init.py`, `adopt.py` | 1 236 | 13.8 K | `init.py` is 1 016 lines behind one public function and fifteen private ones, and it is the only command that mutates an adopter tree. |
@@ -115,9 +115,11 @@ log when it does.
    it**, or the coverage gap it opened. That classification is the review
    half of ADR 0010's enforcement; the mechanical half is already a test.
 6. Apply what is decided. Defer what needs a decision, and say where it went.
-7. Run `python3 -m pytest`. **644 tests, all green, before any claim.** A
-   comment whose deletion breaks a test was a pin in the wrong place — record
-   that; it is an axis-B finding of the best kind.
+7. Run `python3 -m pytest`. **The whole suite green before any claim**
+   — 650 tests at the end of J2, and the number moves as units add
+   pins. A unit that lowers it has deleted a test, and says which one
+   and why. A comment whose deletion breaks a test was a pin in the
+   wrong place — record that; it is an axis-B finding of the best kind.
 8. Commit, merge to `main` when green, push to **both** remotes.
 9. Tick the checkbox below with the commit, fill the unit's row in
    `reviews/ledger.md` — the semantic counts first, bytes second — add a
@@ -153,11 +155,13 @@ log when it does.
 - [x] **ADR: what a comment is for in this repository** (precondition for
       axis B from J2 onwards) — [ADR 0010](../adr/0010-code-prose-is-a-contract-a-constraint-or-a-verification-argument.md),
       written 2026-09-03 from J1's worked example.
-- [ ] **ADR: what `_` means inside a package** (from J1/A2). Ten names cross
-      module lines in `journal/`; either they lose the underscore or the
-      convention is written down.
+- [ ] **ADR: what `_` means inside a package** (from J1/A2, recounted
+      in J2/A4). **Twenty** names cross module lines in `journal/`,
+      not the ten J1 saw from its own four files: `transactions` owns
+      13, `paths` 5, `records` 1 and `fault` 1. Either they lose the
+      underscore or the convention is written down.
 - [x] J1 — journal reporting and fault seams ([findings](reviews/j1.md))
-- [ ] J2 — journal vocabulary
+- [x] J2 — journal vocabulary ([findings](reviews/j2.md))
 - [ ] J3 — write-ahead log and lock
 - [ ] J4 — the executor
 - [ ] S1 — the scaffolder
@@ -191,6 +195,18 @@ One line per session, most recent last: date, unit, commit, outcome.
   `design §N` citations given a versioned path and section, three pointers
   into a plan archived out of the repository repaired, and four new tests in
   `test_docs_links.py` over the Python surface. 648 tests green.
+- 2026-09-04 — J2 reviewed, `reviews/j2.md`: three structural fixes, two
+  new pins, and two rounds of review corrections on top of them. `Intention` was asked ADR 0010's interface question, and the
+  docstring turned out to be stronger than the code: three combinations
+  it called impossible were constructible. Construction became five
+  named factories over a private dataclass (`a664597`); `OBSERVE` left
+  `INTENTION_OPS`, taking a refusal and an executor guard with it
+  (`ebc474e`); `install` and `fsync_directory` left the record format
+  for `journal/durable.py` (`7a286ee`). Two unpinned claims became
+  tests, each seen red against the contrary behaviour first: the
+  facade's layering and the schema refusal (`74e02e1`). The unit is
+  +94 LOC and +1 496 prose bytes, the first to grow, and the ledger
+  says why. 650 tests green.
 - 2026-09-03 — J1 reviewed (`db5700b`), `reviews/j1.md`. Applied: the reporting module
   stopped reimplementing the unknown-id refusal and the recoverable word
   (both now `transactions.missing_resolution` / `report_word`), two

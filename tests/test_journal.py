@@ -72,13 +72,15 @@ JOURNAL_SOURCE = "journal"
 # The modules that may use a raw filesystem primitive: the journal's own
 # write path. A literal set rather than "whatever the journal contains",
 # because a module added to the journal later must be a decision made here,
-# not an exemption it inherits from where its file was put. Four of the
-# package's nine modules: the two histories and the durable append
-# (`records`), the lock file, the write-ahead log, and the executor with the
-# preimage store. The other five -- the state vocabulary, the intention, the
-# fault seam, the reconciler and the subcommand -- write nothing, and this
-# pin says so of them every time it runs.
+# not an exemption it inherits from where its file was put. Five of the
+# package's ten modules: the two histories and the durable append
+# (`records`), the atomic publication (`durable`), the lock file, the
+# write-ahead log, and the executor with the preimage store. The other five
+# -- the state vocabulary, the intention, the fault seam, the reconciler and
+# the subcommand -- write nothing, and this pin says so of them every time
+# it runs.
 RAW_WRITE_MODULES = {
+    "journal/durable.py",
     "journal/executor.py",
     "journal/lock.py",
     "journal/records.py",
@@ -194,13 +196,9 @@ PRIVATE_JOURNAL_NAMES = (
 # none of it.
 PERMITTED_JOURNAL_EXPORTS = (
     "ABSENT",
-    "APPEND",
-    "CREATE",
     "FILE",
-    "Intention",
     "JOURNAL_FILENAME",
     "JournalError",
-    "LINK",
     "LOCAL",
     "Lock",
     "OUTCOME_APPLIED",
@@ -212,7 +210,11 @@ PERMITTED_JOURNAL_EXPORTS = (
     "Run",
     "SYMLINK",
     "VAULT_DIRNAME",
+    "append_to_file",
+    "create_directory",
+    "create_file",
     "digest",
+    "link_to",
     "run",
 )
 
@@ -897,6 +899,42 @@ def test_a_boolean_where_a_number_goes_is_refused_in_an_optional_field_too(
     ), result.stderr
 
 
+def test_a_record_from_a_newer_schema_is_refused_rather_than_read_in_part(
+    run_cli, tmp_path
+):
+    """The forward half of the format: a higher `schema` refuses, and says so.
+
+    `records.SCHEMA` is what this reader understands, and a record written
+    by a later plugin may carry fields that change what the ones here mean.
+    Reading it for the fields this version recognises would file it as
+    understood, which is the failure a version number exists to prevent. So
+    the refusal names the number it met, the number it knows and the action
+    that resolves it, and serves no partial answer: the count it reports is
+    zero, never the good records standing before the bad line.
+
+    What it does NOT pin: the refusal happening before those good lines are
+    parsed. The bad record is the last in the file, so a reader that acted
+    on every line until it reached this one would satisfy these assertions.
+    What the seam does see is the count, and a reader that served what it
+    had understood would print it.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    _append_record(journal, _record(journal, schema=2))
+
+    for arguments in (("journal",), ("journal", "--check"), ("init",)):
+        result = run_cli(*arguments, cwd=tmp_path)
+
+        assert result.returncode == 1, (arguments, result.stdout)
+        assert "Traceback" not in result.stderr, (arguments, result.stderr)
+        assert "newer than this plugin understands" in result.stderr, (
+            arguments,
+            result.stderr,
+        )
+        assert "upgrade the plugin" in result.stderr, (arguments, result.stderr)
+    assert "journal: 0 record(s)" in run_cli("journal", cwd=tmp_path).stdout
+
+
 def test_a_path_that_is_not_a_string_is_a_finding_not_a_traceback(run_cli, tmp_path):
     """The reconciler builds a path out of the record, so its type is load-bearing."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
@@ -1241,6 +1279,101 @@ def test_the_facade_exports_exactly_the_surface_the_pin_permits():
         f"{sorted(set(exports) - set(PERMITTED_JOURNAL_EXPORTS))}\n"
         "  only in PERMITTED_JOURNAL_EXPORTS: "
         f"{sorted(set(PERMITTED_JOURNAL_EXPORTS) - set(exports))}"
+    )
+
+
+# The journal's modules in the order `journal/__init__.py` lists them, which
+# is also the order they may import in. The facade itself is not here: it is
+# the one file that reaches every module, which is what makes it the door.
+JOURNAL_LAYERS = (
+    "durable",
+    "records",
+    "paths",
+    "operations",
+    "fault",
+    "lock",
+    "transactions",
+    "executor",
+    "reconcile",
+    "command",
+)
+
+
+def test_the_journal_package_imports_only_downhill():
+    """The package's layering is a claim in its own facade; this is what holds it.
+
+    `journal/__init__.py` says the package is "one module per seam, each
+    importing only from the ones before it", and lists the seams in that
+    order. Nothing checked it: an import added the other way leaves the
+    sentence standing and the order gone, and the interpreter only complains
+    once the pair is imported in the losing order -- a cycle found by a user,
+    not by this suite.
+
+    `JOURNAL_LAYERS` is also the list of the package's modules, so a module
+    added without a place in the order fails here. Where it sits is the
+    decision this pin exists to force.
+
+    Every spelling of an import is matched -- relative (`from .x import y`,
+    `from . import x`) and absolute (`import validated_memory.journal.x`,
+    `from validated_memory.journal.x import y`) -- wherever it appears,
+    including inside a function. Importing the package itself is an
+    offender from any module: the facade imports every module, so a module
+    that imports the facade closes the loop.
+
+    What it does NOT see, stated because a pin trusted beyond its reach is
+    worse than none: a module reached by `importlib.import_module`, or
+    through an attribute of one already imported, is invisible to it.
+    """
+    root = REPO_ROOT / "validated_memory" / JOURNAL_SOURCE
+    present = {
+        path.stem for path in sorted(root.glob("*.py")) if path.stem != "__init__"
+    }
+    assert present == set(JOURNAL_LAYERS), (
+        "the package and the order it is pinned in have drifted:\n"
+        f"  no place in the order: {sorted(present - set(JOURNAL_LAYERS))}\n"
+        f"  in the order, not in the package: "
+        f"{sorted(set(JOURNAL_LAYERS) - present)}"
+    )
+    package = f"validated_memory.{JOURNAL_SOURCE}."
+    facade = package.rstrip(".")
+    offenders = []
+    for rank, name in enumerate(JOURNAL_LAYERS):
+        tree = ast.parse((root / f"{name}.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            reached = []
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == facade:
+                        offenders.append(
+                            f"journal/{name}.py:{node.lineno}: imports the "
+                            "package itself, which imports every module"
+                        )
+                    elif alias.name.startswith(package):
+                        reached.append(alias.name.removeprefix(package))
+            elif isinstance(node, ast.ImportFrom) and node.level == 1:
+                reached = (
+                    [alias.name for alias in node.names]
+                    if node.module is None
+                    else [node.module]
+                )
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                module = node.module or ""
+                if module.startswith(package):
+                    reached = [module.removeprefix(package)]
+                elif module == facade:
+                    reached = [alias.name for alias in node.names]
+            for module in reached:
+                if module in JOURNAL_LAYERS and JOURNAL_LAYERS.index(module) >= rank:
+                    offenders.append(
+                        f"journal/{name}.py:{node.lineno}: imports "
+                        f"`{module}`, which comes after it"
+                    )
+    assert not offenders, (
+        "these import uphill or sideways, and the facade says the package "
+        "does not; the order is "
+        + " -> ".join(JOURNAL_LAYERS)
+        + ":\n"
+        + "\n".join(offenders)
     )
 
 

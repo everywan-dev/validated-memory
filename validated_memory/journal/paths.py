@@ -34,8 +34,7 @@ def current_state(root, path):
     is `symlink` whether or not it resolves -- a broken one is `symlink`,
     never `absent` or `directory`. `directory` exists because a `create`
     record with no bytes to digest needs a check richer than "the name
-    resolves to something", which a broken symlink also satisfies; that
-    is today's false `applied`
+    resolves to something", which a broken symlink also satisfies
     (docs/design/2026-09-01-the-journal-core.md §6).
 
     Anything `lstat` cannot see at all -- nothing there, a missing parent, a
@@ -132,11 +131,13 @@ def _postimage_state(intention, actual, data):
 def _write_denied(root, location, actual):
     """Why this user may not write over `location`, or None when it may.
 
-    The read-only bit is how an adopter says do not write here, and nothing
-    in the install path consulted it: `os.replace` needs write permission on
-    the DIRECTORY, not on the file, so a `.gitignore` at mode 0444 was
-    replaced in silence and handed back at 0644
-    (docs/design/2026-09-01-the-journal-core.md §1, measured).
+    The read-only bit is how an adopter says do not write here, and no
+    other check in the install path sees it: `os.replace` needs write
+    permission on the DIRECTORY, not on the file, so a file at mode 0444 is
+    replaceable without anything noticing, and this is the one place that
+    notices (docs/design/2026-09-01-the-journal-core.md §1, measured -- the
+    mode came back 0644 too, which the mode-preserving install has since
+    fixed).
 
     The question is asked of the file's own mode bits and the POSIX class
     this process falls in -- owner, else group, else other -- and of nothing
@@ -198,11 +199,10 @@ def authorise(root, path, durability):
     Called once, at the very start of each of the two public `Run` methods
     that can reach the journal -- `observe` and `execute` -- before anything
     is parked, appended or written, so the resolved question is asked for an
-    observation as well as for a write. Before this, only a write asked it:
-    a `memory/` symlinked to a directory outside the project was lexically
-    fine, so `observe` filed it into the versioned journal as a fact about
-    the tree, even though the bytes it named were never inside the tree at
-    all.
+    observation as well as for a write: a `memory/` symlinked to a directory
+    outside the project is lexically fine, and an `observe` that skipped this
+    would file it into the versioned journal as a fact about a tree whose
+    bytes were never inside it.
 
     Deliberately NOT called from `_record`: that helper builds both halves
     of a mutation, and `execute` appends the two together AFTER publication.
@@ -216,7 +216,9 @@ def authorise(root, path, durability):
     returning and the action that follows it acting on the same name --
     that window is real, this project's test seam cannot demonstrate it,
     and closing it needs the executor's own descriptor-relative operations
-    rather than a second `resolve()` here. It belongs to step 1b.
+    rather than a second `resolve()` here; it is the one precondition
+    docs/design/2026-09-01-the-journal-core.md §6 names and this step does
+    not build.
     """
     if durability != REPO:
         return path

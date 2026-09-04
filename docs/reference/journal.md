@@ -278,7 +278,9 @@ same class of defect this core exists to remove:
   resolved authorisation check work on the name, and nothing stops another
   process from swapping an ancestor directory for a symlink between the
   check and the action on that same name. That window is real; closing it
-  needs descriptor-relative operations, which belong to step 1b.
+  needs descriptor-relative operations, the one precondition [the design
+  names and this step does not
+  build](../design/2026-09-01-the-journal-core.md#6-preconditions-what-they-can-and-cannot-promise).
 
 **Publication is atomic and durable**, in one of four shapes chosen by what
 is expected to be there rather than by the op's name. A directory is

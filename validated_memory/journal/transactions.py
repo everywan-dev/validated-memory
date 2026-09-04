@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import __version__
+from .durable import fsync_directory, install
 from .operations import INTENTION_OPS
 from .paths import _well_formed_state, current_state, satisfies
 from .records import (
@@ -31,8 +32,6 @@ from .records import (
     VAULT_DIRNAME,
     JournalError,
     _is_inside_path,
-    fsync_directory,
-    install,
     new_id,
     now,
 )
@@ -523,6 +522,20 @@ def _classify(root, item, adoption=None):
     path = intention.get("path")
     durability = intention.get("durability")
     note = intention.get("note")
+    if op == OBSERVE:
+        # Asked before the membership test below, and not by it: `OBSERVE`
+        # is not in `INTENTION_OPS`, so the generic refusal would answer
+        # first and a hand-edited observation would be reported as an
+        # unknown operation. An observation is a fact about a path, not a
+        # change to one: it opens no transaction, has no postimage and is
+        # recorded at `committed` alone
+        # (docs/design/2026-09-01-the-journal-core.md §4). Completing one
+        # would append a `prepared` observation -- a record shape nothing
+        # in this package writes and no reader expects.
+        return damaged(
+            "its intention is an observation, which publishes nothing and "
+            "never opens a transaction"
+        )
     if op not in INTENTION_OPS:
         # `INTENTION_OPS`, not `OPS`: the wider vocabulary is what a
         # RECORD may carry, including the ops of histories written before
@@ -533,17 +546,6 @@ def _classify(root, item, adoption=None):
         # record in the history that no executor of this plugin could
         # have produced.
         return damaged("its intention names no operation this plugin prepares")
-    if op == OBSERVE:
-        # An observation is a fact about a path, not a change to one: it
-        # opens no transaction, has no postimage and is recorded at
-        # `committed` alone (§4). A file claiming one can only be a hand
-        # edit, and completing it would append a `prepared` observation --
-        # a record shape nothing in this package writes and no reader
-        # expects.
-        return damaged(
-            "its intention is an observation, which publishes nothing and "
-            "never opens a transaction"
-        )
     if not isinstance(purpose, str) or not isinstance(path, str):
         return damaged("its intention names no path and purpose")
     if durability not in DURABILITIES:

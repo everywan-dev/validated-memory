@@ -546,21 +546,21 @@ def _write_entry(session, path, stdout):
         return None
     addition = _ignore_addition(existing)
     if path.exists():
-        op = journal.APPEND
-        expected = {"kind": journal.FILE, "digest": journal.digest(raw)}
-    else:
-        op = journal.CREATE
-        expected = {"kind": journal.ABSENT}
-    outcome = session.execute(
-        journal.Intention(
-            op=op,
+        intention = journal.append_to_file(
             purpose="ignore-rule",
             path=IGNORE_FILENAME,
             durability=journal.REPO,
-            expected=expected,
+            expected={"kind": journal.FILE, "digest": journal.digest(raw)},
             content=addition.encode("utf-8"),
         )
-    )
+    else:
+        intention = journal.create_file(
+            purpose="ignore-rule",
+            path=IGNORE_FILENAME,
+            durability=journal.REPO,
+            content=addition.encode("utf-8"),
+        )
+    outcome = session.execute(intention)
     refusal = _refusal(
         outcome,
         f"the vault's ignore entry ({IGNORE_ENTRY}) could not be written",
@@ -669,13 +669,10 @@ def _ensure_dir(path, session):
     # transaction file, the mkdir and both records -- so this states what it
     # wants and renders what came back.
     outcome = session.execute(
-        journal.Intention(
-            op=journal.CREATE,
+        journal.create_directory(
             purpose="init",
             path=location,
             durability=journal.REPO,
-            expected={"kind": journal.ABSENT},
-            directory=True,
             note="directory created",
         )
     )
@@ -713,12 +710,10 @@ def _ensure_file(path, content, session):
             return location, None, finding
         return location, "kept", None
     outcome = session.execute(
-        journal.Intention(
-            op=journal.CREATE,
+        journal.create_file(
             purpose="init",
             path=location,
             durability=journal.REPO,
-            expected={"kind": journal.ABSENT},
             content=content.encode("utf-8"),
         )
     )
@@ -906,8 +901,7 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
         )
         try:
             outcome = session.execute(
-                journal.Intention(
-                    op=journal.LINK,
+                journal.link_to(
                     purpose="init",
                     path=location,
                     durability=journal.LOCAL,
