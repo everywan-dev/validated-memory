@@ -36,7 +36,7 @@ def run(path, check, stdout, stderr):
 
     basis = validate.basis_location(path)
     try:
-        table = _rows(documents)
+        view = verdicts_module.read().view
     except verdicts_module.VerdictLogError as error:
         # The log is the reader's source of verdicts: one it cannot parse is
         # reported like any other unreadable document, never served around.
@@ -49,7 +49,7 @@ def run(path, check, stdout, stderr):
         )
         print(finding.render(), file=stderr)
         return EXIT_ERROR
-    content = render_index(table, basis)
+    content = render_index(index_rows(effective_states(documents), view), basis)
 
     index_path = Path(INDEX_FILENAME)
     if check:
@@ -91,22 +91,11 @@ def effective_states(documents):
     return states
 
 
-def _rows(documents):
-    """Compute one row per unit, sorted by id: state, evidence and verdict.
-
-    Reads the log itself, once: the private path `run` uses, where nothing
-    else needs `states` or the service view beforehand.
-    """
-    states = effective_states(documents)
-    view = verdicts_module.service_view()
-    return rows(states, view)
-
-
-def rows(states, view):
+def index_rows(states, view):
     """One row per unit, sorted by id: state, evidence and verdict.
 
-    Takes `effective_states(documents)` and a service view already computed,
-    so a caller that also needs either of them for something else -- `status`
+    Takes `effective_states(documents)` and a verdict view already read, so a
+    caller that also needs either of them for something else -- `status`
     grades freshness from the same `states` and `view` -- builds them once
     and shares them, rather than this function reading the log again.
     """
@@ -126,9 +115,7 @@ def unit_verdict(unit_id, anchors, view):
     With anchors, one absent from the service view (never probed) is
     `unknown`, fail-explicit.
 
-    Each anchor reads its own verdict, keyed on what it points at, so two
-    anchors of one unit that share a `(system, kind)` -- two refs of the same
-    repository -- no longer collapse into one entry.
+    `view` is keyed by `verdicts.anchor_key`.
 
     Returns a `UnitVerdict`: the grade, the systems behind an `unknown` anchor
     (sorted), and the per-anchor detail. Computation only -- how the grade is
@@ -188,19 +175,19 @@ def _verdict_cell(unit_id, anchors, view):
     return graded.verdict
 
 
-def render_index(rows, basis):
+def render_index(table, basis):
     derived_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     derived_at = derived_at.replace("+00:00", "Z")
     lines = [
         "# Knowledge index",
         "",
         f"Derived: {derived_at}",
-        f"Basis: {len(rows)} unit(s) under {basis}",
+        f"Basis: {len(table)} unit(s) under {basis}",
         "",
         "| id | state | evidence | verdict |",
         "|----|-------|----------|---------|",
     ]
-    for unit_id, state, evidence, verdict in rows:
+    for unit_id, state, evidence, verdict in table:
         lines.append(f"| {unit_id} | {state} | {evidence} | {verdict} |")
     return "\n".join(lines) + "\n"
 

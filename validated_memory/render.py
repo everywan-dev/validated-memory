@@ -121,18 +121,14 @@ def build_artifacts(downgrade=False):
         return {}, findings, False
 
     try:
-        # Both reads of the log happen here, together, before either is
-        # handed to `corpus.build`: `service_view` is the one that
-        # validates (it raises on a record such as an explicit
-        # `payload: null`), and it must run before `build` groups `history`'s
-        # records by key -- keeping both calls at this one site, rather than
-        # one of them inside `build`, is what keeps that order from being an
-        # accident of which line comes first in a function body.
-        records = verdicts_module.history()
-        view = verdicts_module.service_view()
+        log = verdicts_module.read()
         knowledge_content = knowledge_view.build(
             corpus.build(
-                documents, validate.basis_location(None), extension, records, view
+                documents,
+                validate.basis_location(None),
+                extension,
+                log.records,
+                log.view,
             )
         )
     except verdicts_module.VerdictLogError as error:

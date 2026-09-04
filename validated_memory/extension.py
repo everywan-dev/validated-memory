@@ -77,12 +77,13 @@ def probes(root):
     """The adopter's probe registry: `kind` -> command, or `{}` when unconfigured.
 
     Validates the whole configuration, the way `load` does: the rule belongs
-    to reading this file, not to the caller that happens to read it. No
-    caller reaches here first, though -- `probe` validates the source before
-    asking for the registry, so `load` has already read and accepted this
-    same file in the same run, and this second read can refuse nothing the
-    first did not. `probe.run` has no handler either, so a refusal here
-    would be a traceback where every other configuration error is a finding.
+    to reading this file, not to the caller that happens to read it. That
+    makes this the second full read of one file in a `probe` run, which is
+    accepted. What is not free is the refusal: `probe.run` has no handler
+    for `ExtensionError`, so one raised here would surface as a traceback
+    where every other configuration error is a finding. It stays unreachable
+    only while `probe` validates the source first, which is what already
+    read and accepted this file.
     """
     config_path = Path(root) / CONFIG_FILENAME
     if not config_path.exists():

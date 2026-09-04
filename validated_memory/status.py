@@ -7,7 +7,7 @@ the agent-memory layer, the derived index and the verdict log -- reusing
 `validate`, `lint` and `derive`'s own building blocks -- rather than shelling
 out to those subcommands: `validate.collect_and_validate` runs once, its
 `documents` feed both the index check and the freshness/age sections, and
-`verdicts.latest_records` reads the log once for both the verdict view and
+`verdicts.read` reads the log once for both the verdict view and
 `recorded_at`. `status` never runs `probe`.
 """
 
@@ -113,7 +113,7 @@ def _check_derived_state(
     `summaries` in place; nothing here runs when validation gates.
     """
     try:
-        latest = verdicts_module.latest_records()
+        log = verdicts_module.read()
     except verdicts_module.VerdictLogError as error:
         findings.append(
             Finding(
@@ -126,13 +126,13 @@ def _check_derived_state(
         )
         return
 
-    view = {key: record["verdict"] for key, record in latest.items()}
+    view = log.view
     states = derive_module.effective_states(documents)
 
     if skip_index:
         summaries.append("status: index: skipped (--skip-index)")
     else:
-        table = derive_module.rows(states, view)
+        table = derive_module.index_rows(states, view)
         basis = validate.basis_location(None)
         content = derive_module.render_index(table, basis)
         index_result = derive_module.index_findings(content, Path(derive_module.INDEX_FILENAME))
@@ -167,7 +167,7 @@ def _check_derived_state(
 
     if max_verdict_age is not None:
         age_findings, aged_count, unknown_count = _age_findings(
-            states, active_units, latest, as_of, max_verdict_age, fail_on_aged
+            states, active_units, log.latest, as_of, max_verdict_age, fail_on_aged
         )
         findings.extend(age_findings)
         summaries.append(
