@@ -58,7 +58,8 @@ findings file; bytes are the secondary table below.
 | J1 | `db5700b` | 4 | 0 checked | 0 | 0 | 0 (1 claim verified true) | 2 |
 | references | `ba3d461` | 0 | — | 0 | 4 pins | **26** | 0 |
 | J2 | `74e02e1` … `a664597` | 5 | 5 | 3 | 2 | **4** | 3 |
-| **total** | | **9** | **5** | **3** | **6** | **30** | **5** |
+| J3 | `db9edc6` … `7bbf8d8` | 3 | 3 | 0 | 0 | 0 | 3 |
+| **total** | | **12** | **8** | **3** | **6** | **30** | **8** |
 
 "claims already pinned" counts prose deleted because a test was found that
 fails when the claim stops being true; J1 predates that step, so it was not
@@ -77,6 +78,7 @@ into a plan archived out of the repository.
 | references | `ba3d461` | +~50 | +~500 | +~1,400 | ±0 | 648 green |
 | J2 | `74e02e1` … `a664597` | +94 | +540 | +1,496 | +4 / +1 | 650 green |
 | J2 → J3, S1 (cost of the fix) | same | +8 | +116 | +406 | ±0 | — |
+| J3 | `db9edc6` … `7bbf8d8` | +8 | +109 | +751 | +11 / −10 | 650 green |
 | **running total** | | | | | | |
 
 The reference work adds prose and is a gain: a citation that resolves is
@@ -109,3 +111,20 @@ inside `install`, which stays open and now says so in its own docstring.
 The +8 LOC in J3 and S1 are the cost of the fixes: a comment in
 `transactions` explaining an order that now matters, and the four call
 sites in `init.py` that name their mutation instead of assembling one.
+
+
+## J3, and what the `pub / priv` column stopped meaning
+
+J3's row reads +11 public and −10 private, and nothing became reachable from
+outside the package. [ADR 0011](../../adr/0011-inside-the-journal-package-an-underscore-means-no-other-module-may-depend-on-it.md)
+took the leading underscore off the twenty-one names that other modules of
+the journal already depended on, so `measure.py`'s split — which counts a
+name as private when it starts with `_` — now measures what a module keeps
+to itself rather than what the package keeps to itself. What the package
+publishes is `journal.__all__`, twenty-one names, unchanged by J3 and pinned
+by `test_the_facade_exports_exactly_the_surface_the_pin_permits`.
+
+J3 removed three sentences and added none of its own beyond two docstrings
+that state a refusal five callers were not told about. The +751 prose bytes
+are those two, the ADR pointer in the test constant, and the paragraph that
+turned a magic ten into `LOCK_WAIT_SECONDS`.
