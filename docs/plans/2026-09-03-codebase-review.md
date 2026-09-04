@@ -164,7 +164,7 @@ log when it does.
 - [x] J4 — the executor ([findings](reviews/j4.md))
 - [x] S1 — the scaffolder ([findings](reviews/s1.md))
 - [x] C1 — the contract ([findings](reviews/c1.md))
-- [ ] F1 — freshness
+- [x] F1 — freshness ([findings](reviews/f1.md))
 - [ ] M1 — agent memory and corpus
 - [ ] V1 — the view stack
 - [ ] X1 — the entry point
@@ -263,3 +263,18 @@ One line per session, most recent last: date, unit, commit, outcome.
   not behaviour-preserving on a malformed document. One test added, seen red
   first -- and its first version passed against the very implementation it
   names, which the finding records. 653 tests green.
+- 2026-09-04 — F1, freshness, `049bc09` … `0361f55`. The first unit whose
+  fix made other units smaller: −558 prose bytes of its own, −436 in
+  `render.py` and −298 in `corpus.py`. `verdicts` published three readers of
+  one log, each opening it separately and only two of them validating, so
+  `render` read the file twice on adjacent lines, `status` reimplemented
+  `service_view`'s projection inline to avoid doing the same, and the
+  ordering that split created was written down in four places. One
+  `verdicts.read` returning a `LogSnapshot` leaves that prose with nothing
+  to say. Codex SOL approved the shape, corrected the name (`LogSnapshot`,
+  not `Log`: a validated reading, not the live log), refused the inherited
+  C1 question outright — the configuration read twice in a `probe` run is
+  accepted duplication, and that entry is **closed** rather than handed on
+  — and found a sentence C1 had written the same day to be false, since two
+  reads are two opens and nothing holds the tree still between them. Five
+  sentences of history out, three false claims corrected. 653 tests green.

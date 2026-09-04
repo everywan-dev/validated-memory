@@ -62,7 +62,8 @@ findings file; bytes are the secondary table below.
 | J4 | `f3d1def` … `e078864` | 6 | 3 | 0 | 1 | **5** | 4 |
 | S1 | `d6d9d70` … `6fc9968` | 4 | 4 | 0 | 1 (+1 strengthened) | 2 | 2 |
 | C1 | `84a0dec` … `2625351` | 0 | 4 | 0 | 1 | 1 | 2 |
-| **total** | | **22** | **19** | **3** | **9** | **38** | **16** |
+| F1 | `049bc09` … `0361f55` | 5 | 3 | 0 | 0 | 3 | 2 |
+| **total** | | **27** | **22** | **3** | **9** | **41** | **18** |
 
 "claims already pinned" counts prose deleted because a test was found that
 fails when the claim stops being true; J1 predates that step, so it was not
@@ -87,6 +88,8 @@ into a plan archived out of the repository.
 | S1 | `d6d9d70` … `6fc9968` | +3 | **−130** | **−524** | +3 / −2 | 652 green |
 | C1 | `84a0dec` … `2625351` | +12 | +101 | +248 | +1 / ±0 | 653 green |
 | C1 → F1, V1 (cost of the fix) | same | −2 | −12 | ±0 | ±0 | — |
+| F1 | `049bc09` … `0361f55` | **−10** | **−146** | **−558** | −2 / ±0 | 653 green |
+| F1 → V1, M1, C1, X1 (**gain** of the fix) | same | −7 | −187 | **−701** | ±0 | — |
 | **running total** | | | | | | |
 
 The reference work adds prose and is a gain: a citation that resolves is
@@ -208,3 +211,35 @@ recursive implementation** because a supersession chain written the obvious
 way round is walked in ascending id order and never nests. A pin that goes
 green against the defect it names is worth less than no pin at all, since it
 reports a guarantee nobody has.
+
+
+## F1, the first unit whose fix made other units smaller
+
+Every "cost of the fix" row before this one is positive: J1 gave J3 two
+functions it should have had, J2 gave J3 and S1 the call sites to name their
+mutations, J4 gave `transactions.py` twenty-six lines to make a promise true.
+F1's row is negative in every column — −436 prose bytes in `render.py` (V1)
+and −298 in `corpus.py` (M1) — and the reason is the shape of what it fixed.
+
+`verdicts` published three readers of one file, each opening it separately
+and only two of them validating. Nothing was wrong with any single call; what
+was wrong was that a caller needing two projections had to read the log twice
+**and know which call was the one that validated**. That constraint could not
+be stated in either module alone, so it was written down four times: eight
+lines of comment in `render`, nine in `corpus.build`'s docstring, and a
+paragraph each in `history` and `latest_records`. `status` did not write it
+down at all — it reimplemented `service_view`'s projection inline instead.
+
+One `read` returning a `LogSnapshot` leaves that prose with nothing to say,
+which is why the deletions land in four files at once. It is the clearest
+case in this ledger of prose as a **symptom**: 1 258 bytes of it were the
+interface's ordering problem, described rather than removed.
+
+The three "false claims corrected" are `records`' promise that every reader
+"accepts and rejects exactly the same files" (measured false, and removed
+with the function rather than corrected), the two bundled probes citing a
+README section that does not exist, and — the one worth remembering — a
+sentence **C1 wrote the same day**, that a second read of the configuration
+"can refuse nothing the first did not". Codex found it while answering a
+different question. Two reads are two opens; nothing holds the tree still
+between them.
