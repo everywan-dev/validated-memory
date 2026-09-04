@@ -556,16 +556,6 @@ class Run:
 
     def _execute(self, intention):
         """`execute`'s body, with the lock already held."""
-        if intention.op == OBSERVE:
-            # An observation publishes nothing, opens no transaction and
-            # has no postimage, so every step below would be a no-op with a
-            # record at the end of it. It is `observe`'s, and the two must
-            # not be confused: §4 turns exactly that confusion into a
-            # permanent lie about the pre-adoption state.
-            raise ValueError(
-                "an observation is not a mutation and does not go through "
-                "the executor; use Run.observe"
-            )
         try:
             location = authorise(self.root, intention.path, intention.durability)
         except (ValueError, OSError) as error:

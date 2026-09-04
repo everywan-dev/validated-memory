@@ -8,11 +8,18 @@ Neither touches the filesystem.
 
 from dataclasses import dataclass
 
-from .records import APPEND, CREATE, DURABILITIES, LINK, OBSERVE, REPLACE
+from .records import APPEND, CREATE, DURABILITIES, LINK, REPLACE
 from .paths import ABSENT
 
 
-INTENTION_OPS = (OBSERVE, CREATE, REPLACE, APPEND, LINK)
+# What an executable mutation may be. `OBSERVE` is not one of them: an
+# observation is a fact about a path, not a change to it, it opens no
+# transaction and is recorded at `committed` alone
+# (docs/design/2026-09-01-the-journal-core.md §4), and `Run.observe` owns
+# it end to end. Keeping it here made a shape the executor had to refuse
+# at the far end of the call; a vocabulary that cannot say it needs no
+# refusal.
+INTENTION_OPS = (CREATE, REPLACE, APPEND, LINK)
 
 
 @dataclass(frozen=True)
@@ -23,10 +30,10 @@ class Intention:
     the invalid combinations below refused at construction, not discovered
     by the executor three calls later. Field by field:
 
-    - `op` -- one of `INTENTION_OPS`: `OBSERVE`, `CREATE`, `REPLACE`,
-      `APPEND` or `LINK`. `PATCH`, `RENAME`, `REMOVE` and `MOVE` are in
-      `OPS` for the journal record vocabulary but have no intention shape
-      yet; they are not accepted here.
+    - `op` -- one of `INTENTION_OPS`: `CREATE`, `REPLACE`, `APPEND` or
+      `LINK`. `OBSERVE`, `PATCH`, `RENAME`, `REMOVE` and `MOVE` are in
+      `OPS` for the journal record vocabulary; none of them is a mutation
+      this executes, and they are not accepted here.
     - `purpose` -- the same free-text word every record already carries
       (`"init"`, `"ignore-rule"`, ...).
     - `path` -- relative to the adopter root for `REPO`, unrestricted for
@@ -37,7 +44,7 @@ class Intention:
       ...): what the executor's expected-state check compares against.
     - `content` -- `bytes`, or `None`. The full new bytes for `CREATE` of a
       file and `REPLACE`; the bytes to add for `APPEND`. Always `None` for
-      `OBSERVE`, `LINK` and `CREATE` of a directory -- this is never a
+      `LINK` and `CREATE` of a directory -- this is never a
       diff or a patch, and it is never persisted: `_open_transaction`
       writes the transaction file's `preimage`/`postimage` STATE, never
       these bytes, so payload content never touches the local disk twice.
@@ -49,11 +56,10 @@ class Intention:
       of a `LINK`, whose inverse is "restore the previous target" and
       whose note is the only place that target survives.
 
-    `__post_init__` refuses seven combinations, each a way the payload could
+    `__post_init__` refuses six combinations, each a way the payload could
     silently disagree with `op`: a `LINK` carrying `content`, a directory
     `CREATE` carrying `content`, a file `CREATE`/`REPLACE`/`APPEND` carrying
-    no `content`, a `LINK` carrying no `target`, an `OBSERVE` carrying any
-    payload (`content`, `target` or `directory=True`), a `CREATE` expecting
+    no `content`, a `LINK` carrying no `target`, a `CREATE` expecting
     anything but `{"kind": ABSENT}`, and an unknown `op` or `durability`.
     Every refusal is `ValueError`: nothing has been touched yet to reach it.
 
@@ -91,10 +97,6 @@ class Intention:
             raise ValueError(f"a {self.op} intention of a file must carry content")
         if self.op == LINK and self.target is None:
             raise ValueError("a link intention must carry its target")
-        if self.op == OBSERVE and (
-            self.content is not None or self.target is not None or self.directory
-        ):
-            raise ValueError("an observe intention carries no payload")
         if self.op == CREATE and self.expected != {"kind": ABSENT}:
             raise ValueError(
                 "a create intention must expect the path to be absent; "
