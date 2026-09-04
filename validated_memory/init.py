@@ -56,10 +56,8 @@ next run picks up from a tree `init` has not touched.
 An ignore file the adopter marked read-only is one of those: mode 0444
 denies writing to this user, so the entry is refused before anything is
 prepared and the ERROR names the file and its mode. That is a gated
-adoption on every session start until one `chmod` fixes it. Writing to a
-file the adopter marked read-only is not an option this method takes --
-through 1.5.2 it did exactly that, silently, and handed the file back at
-0644.
+adoption on every session start until one `chmod` fixes it: writing to a
+file the adopter marked read-only is not an option this method takes.
 
 The harness symlink is the one act that outlives that gate, because
 restoring it moves no data and it is the whole job of the `SessionStart`
@@ -581,20 +579,18 @@ def _refusal(outcome, prefix):
     something else than the executor did. Reporting that as `created` or as
     a silent success is how a claim about the tree stops being true, so it
     comes back as a refusal like any other: the run gates on that item, and
-    the message says the state is one nothing here can produce. It used to
-    raise `AssertionError`, which `run` does not catch, so the one state
-    this function exists to refuse was the one that reached the terminal as
-    a traceback.
+    the message says the state is one nothing here can produce.
+
+    It is a returned ERROR rather than a raise because `run` does not catch
+    `AssertionError`: raising here would turn a contradiction between two
+    readings of one path into a traceback out of the CLI, which is the one
+    shape of failure this package does not ship. Nothing covers it -- from
+    the CLI seam it takes a third party writing between the check and the
+    execute -- which is why the rule is stated here and not in a test.
     """
     if outcome.status == journal.OUTCOME_REFUSED:
         return f"{prefix}: {outcome.message}"
     if outcome.status == journal.OUTCOME_NOOP:
-        # An impossible state is still a state this command can be left in,
-        # and `run` does not catch `AssertionError`: raising here turned a
-        # contradiction between two readings of one path into a traceback
-        # out of the CLI, which is the one shape of failure this package
-        # does not ship. It is an ERROR against the item, like every other
-        # thing that stopped it being written.
         return (
             f"the executor reported no-op for a {outcome.op}, which cannot "
             "happen: every intention `init` forms names a state the path is "
@@ -647,12 +643,12 @@ def _ensure_dir(path, session):
     the adopter's own link.
 
     Anything else that is not a directory -- a plain file where `memory/`
-    goes -- is an ERROR, not a `kept`. It was reported `kept` and journalled
-    as "directory already present" through 1.5.2: a permanent, uninvertible
-    claim that adoption found a directory, written about a file, after which
-    every command that reads the layout fails on the file it was told was a
-    directory. Saying so is now the executor's: the intention expects the
-    name to be absent, and the state it finds is what the message names.
+    goes -- is an ERROR, not a `kept`. Calling it `kept` would journal
+    "directory already present" about a file: a permanent, uninvertible
+    claim, after which every command that reads the layout fails on the
+    name it was told was a directory. Saying so is the executor's: the
+    intention expects the name to be absent, and the state it finds is what
+    the message names.
     """
     location = path.as_posix()
     if path.is_symlink() and not path.exists():
@@ -692,14 +688,14 @@ def _ensure_file(path, content, session):
     nothing happened.
 
     A REGULAR file is what `kept` means, and nothing else. A directory
-    where a file goes, or a symlink pointing at one, used to be reported
-    `kept` and observed as "file already present" -- a permanent,
-    uninvertible claim that adoption found a file, written about something
-    that is not one, after which every command that reads the layout works
-    on a name the journal describes wrongly. It is the mirror of the plain
-    file where `memory/` goes, and it gets the same answer: the intention
-    expects the name to be absent, and the executor's refusal names what is
-    really there.
+    where a file goes, or a symlink pointing at one, would otherwise be
+    observed as "file already present" -- a permanent, uninvertible claim
+    that adoption found a file, written about something that is not one,
+    after which every command that reads the layout works on a name the
+    journal describes wrongly. It is the mirror of the plain file where
+    `memory/` goes, and it gets the same answer: the intention expects the
+    name to be absent, and the executor's refusal names what is really
+    there.
     """
     location = path.as_posix()
     if path.is_symlink() and not path.exists():
@@ -730,9 +726,9 @@ def _observe(session, location, note):
     root through a symlink, and it is about this ONE item: `authorise` gives
     it as an `OSError` precisely so a caller can gate the item that named it
     and carry on with the rest (`journal.authorise`). Left to reach
-    `init.run`'s outer handler it became "the journal could not be opened",
-    reported against `journal.jsonl` -- a whole-run failure naming a file
-    that is perfectly valid, and the other items never attempted.
+    `init.run`'s outer handler it would be reported as "the journal could
+    not be opened" against `journal.jsonl` -- a whole-run failure naming a
+    file that is perfectly valid, with the other items never attempted.
     """
     try:
         session.observe(location, note)
@@ -937,11 +933,11 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
 def _ensure_views(stdout):
     """Create `knowledge.html` and `memory.html` once each.
 
-    Returns `(created, kept, findings)`, mirroring `_sync_symlink`'s shape
-    so `run` folds it into the same counters and prints every finding
-    exactly once, from its own central loop -- `build_artifacts` returns
-    findings rather than printing them, precisely so a caller like this one
-    is never in the position of also having something to print itself.
+    Returns `(created, kept, findings)`: the counters `run` adds to its own,
+    and the findings it prints from its one central loop. Nothing here
+    prints a finding, and `build_artifacts` returns them rather than
+    printing them for the same reason -- a finding printed by whoever
+    produced it is a finding printed twice, or in the wrong order.
 
     Same contract as every other item `init` manages: an artifact that
     already exists is reported `kept` and never touched, hand-edited or not.
