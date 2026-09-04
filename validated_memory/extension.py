@@ -76,10 +76,13 @@ def load(root):
 def probes(root):
     """The adopter's probe registry: `kind` -> command, or `{}` when unconfigured.
 
-    Consumed by the `probe` subcommand. Reuses the same whole-configuration
-    validation as `load`, so a malformed `validated-memory.md` raises
-    `ExtensionError` the same way regardless of which subcommand reads it
-    first.
+    Validates the whole configuration, the way `load` does: the rule belongs
+    to reading this file, not to the caller that happens to read it. No
+    caller reaches here first, though -- `probe` validates the source before
+    asking for the registry, so `load` has already read and accepted this
+    same file in the same run, and this second read can refuse nothing the
+    first did not. `probe.run` has no handler either, so a refusal here
+    would be a traceback where every other configuration error is a finding.
     """
     config_path = Path(root) / CONFIG_FILENAME
     if not config_path.exists():
