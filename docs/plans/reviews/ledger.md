@@ -61,7 +61,8 @@ findings file; bytes are the secondary table below.
 | J3 | `db9edc6` … `7bbf8d8` | 3 | 3 | 0 | 0 | 0 | 3 |
 | J4 | `f3d1def` … `e078864` | 6 | 3 | 0 | 1 | **5** | 4 |
 | S1 | `d6d9d70` … `6fc9968` | 4 | 4 | 0 | 1 (+1 strengthened) | 2 | 2 |
-| **total** | | **22** | **15** | **3** | **8** | **37** | **14** |
+| C1 | `84a0dec` … `2625351` | 0 | 4 | 0 | 1 | 1 | 2 |
+| **total** | | **22** | **19** | **3** | **9** | **38** | **16** |
 
 "claims already pinned" counts prose deleted because a test was found that
 fails when the claim stops being true; J1 predates that step, so it was not
@@ -84,6 +85,8 @@ into a plan archived out of the repository.
 | J4 | `f3d1def` … `e078864` | +20 | +180 | +812 | −1 / +1 | 651 green |
 | J4 → J3, J1 (cost of the fix) | same | +29 | +372 | +983 | ±0 | — |
 | S1 | `d6d9d70` … `6fc9968` | +3 | **−130** | **−524** | +3 / −2 | 652 green |
+| C1 | `84a0dec` … `2625351` | +12 | +101 | +248 | +1 / ±0 | 653 green |
+| C1 → F1, V1 (cost of the fix) | same | −2 | −12 | ±0 | ±0 | — |
 | **running total** | | | | | | |
 
 The reference work adds prose and is a gain: a citation that resolves is
@@ -176,3 +179,32 @@ J3 removed three sentences and added none of its own beyond two docstrings
 that state a refusal five callers were not told about. The +751 prose bytes
 are those two, the ADR pointer in the test constant, and the paragraph that
 turned a magic ten into `LOCK_WAIT_SECONDS`.
+
+
+## C1, the first unit with no history to remove
+
+C1's "history removed" column is **0**, and it is the only unit so far. At
+22 % prose it is the least written-in code in the repository, and what is
+there is contract: the enumerations, the anchor envelope, the rationale rule.
+The defects were of a different kind — a sentence whose scenario nothing
+reaches, and a claim about the walk that nothing checked.
+
+Its "cost of the fix" row is negative for once: A1 took one import line out
+of `derive.py` (F1) and one out of `render.py` (V1), because each was
+importing one name from `contract` and the rest from `findings` on the next
+line.
+
+The +248 prose bytes are the price of the extraction and of B1. The move of
+the quoting grammar into `frontmatter` explains the rule in one place instead
+of two, but the new function has to state what `parse` cannot answer and why,
+which the two deleted regex comments said more briefly by pointing at another
+module's private functions — a shorter sentence that was a dependency the
+language says does not exist.
+
+The one test added is the second-best kind this axis produces, and it earned
+its place twice: the claim it pins ("iterative rather than recursive") had
+never been exercised, and **the first version of the test passed against a
+recursive implementation** because a supersession chain written the obvious
+way round is walked in ascending id order and never nests. A pin that goes
+green against the defect it names is worth less than no pin at all, since it
+reports a guarantee nobody has.
