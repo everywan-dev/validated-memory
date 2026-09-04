@@ -1,8 +1,8 @@
 """The record format, and the two permanent artifacts it is written to.
 
 What a record is made of, what names its bytes, where the two journals
-live, how a line is appended durably, and the reader that refuses a journal
-it cannot account for. Nothing here knows about the vault's own machinery:
+live, how bytes reach the disk durably -- a line appended, a temporary
+published -- and the reader that refuses a journal it cannot account for. Nothing here knows about the vault's own machinery:
 the lock, the preimage store and the write-ahead log are their own modules.
 """
 
@@ -62,10 +62,9 @@ COMMON_FIELDS = (
 
 # What each field must hold. A journal is repository content, which this
 # project's rule makes data and never instructions
-# (docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md §7):
-# checking that a field is present says nothing about what is in it, and
-# every later reader -- the schema comparison here, the path the
-# reconciler builds -- assumes a type nothing had checked. `bool` is
+# (docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md §7),
+# and every later reader -- the schema comparison here, the path the
+# reconciler builds -- assumes a type only this table checks. `bool` is
 # excluded from `int` deliberately: `isinstance(True, int)` is true, and
 # `"schema": true` is not a schema.
 FIELD_TYPES = {
@@ -240,9 +239,9 @@ def read(root=Path(), durability=REPO):
     docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md §7,
     not just JSON: a record whose field holds the wrong type, whose
     `durability` disagrees with the file it is in, or whose
-    repository-durability path leaves the adopter root, is refused here --
-    before any reader acts on it -- rather than crashing one layer down or
-    being read as an instruction.
+    repository-durability path leaves the adopter root, is refused here,
+    before any reader acts on it and before anything can read it as an
+    instruction.
 
     "Missing" is exactly one thing: nothing that can be opened at that
     name. `Path.exists()` answers a wider question and answers it wrongly
@@ -372,10 +371,8 @@ def _check_types(lineno, entry, where):
             continue
         value = entry[field]
         # The same exclusion the loop above makes, for the same reason:
-        # `isinstance(True, int)` is true, and `"mode": true` is not a mode.
-        # `_well_formed_state` already refuses it inside a transaction
-        # file's states; a record carrying it reached `_restore`, which
-        # `chmod`s what the field holds.
+        # `mode` is what a reversal `chmod`s, and `"mode": true` is not a
+        # mode.
         if int in expected and isinstance(value, bool):
             value = None
         if not isinstance(value, expected):

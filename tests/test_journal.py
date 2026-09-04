@@ -897,6 +897,36 @@ def test_a_boolean_where_a_number_goes_is_refused_in_an_optional_field_too(
     ), result.stderr
 
 
+def test_a_record_from_a_newer_schema_is_refused_rather_than_read_in_part(
+    run_cli, tmp_path
+):
+    """The forward half of the format: a higher `schema` refuses, and says so.
+
+    `records.SCHEMA` is what this reader understands, and a record written
+    by a later plugin may carry fields that change what the ones here mean.
+    Reading it for the fields this version recognises would file it as
+    understood, which is the failure a version number exists to prevent. So
+    the refusal names the number it met, the number it knows and the action
+    that resolves it -- and it refuses the whole journal, not that line: a
+    history read in part is the partial answer the package docstring says
+    is never offered.
+    """
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    _append_record(journal, _record(journal, schema=2))
+
+    for arguments in (("journal",), ("journal", "--check"), ("init",)):
+        result = run_cli(*arguments, cwd=tmp_path)
+
+        assert result.returncode == 1, (arguments, result.stdout)
+        assert "Traceback" not in result.stderr, (arguments, result.stderr)
+        assert "newer than this plugin understands" in result.stderr, (
+            arguments,
+            result.stderr,
+        )
+        assert "upgrade the plugin" in result.stderr, (arguments, result.stderr)
+
+
 def test_a_path_that_is_not_a_string_is_a_finding_not_a_traceback(run_cli, tmp_path):
     """The reconciler builds a path out of the record, so its type is load-bearing."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
@@ -1241,6 +1271,77 @@ def test_the_facade_exports_exactly_the_surface_the_pin_permits():
         f"{sorted(set(exports) - set(PERMITTED_JOURNAL_EXPORTS))}\n"
         "  only in PERMITTED_JOURNAL_EXPORTS: "
         f"{sorted(set(PERMITTED_JOURNAL_EXPORTS) - set(exports))}"
+    )
+
+
+# The journal's modules in the order `journal/__init__.py` lists them, which
+# is also the order they may import in. The facade itself is not here: it is
+# the one file that reaches every module, which is what makes it the door.
+JOURNAL_LAYERS = (
+    "records",
+    "paths",
+    "operations",
+    "fault",
+    "lock",
+    "transactions",
+    "executor",
+    "reconcile",
+    "command",
+)
+
+
+def test_the_journal_package_imports_only_downhill():
+    """The package's layering is a claim in its own facade; this is what holds it.
+
+    `journal/__init__.py` says the package is "one module per seam, each
+    importing only from the ones before it", and lists the seams in that
+    order. Nothing checked it: an import added the other way leaves the
+    sentence standing and the order gone, and the interpreter only complains
+    once the pair is imported in the losing order -- a cycle found by a user,
+    not by this suite.
+
+    `JOURNAL_LAYERS` is also the list of the package's modules, so a module
+    added without a place in the order fails here. Where it sits is the
+    decision this pin exists to force.
+
+    What it does NOT see, stated because a pin trusted beyond its reach is
+    worse than none: it matches `from .x import y` and `from . import x` by
+    `ast`, wherever they appear, including inside a function. A module
+    reached by `importlib.import_module` or through an attribute of an
+    already-imported one is invisible to it.
+    """
+    root = REPO_ROOT / "validated_memory" / JOURNAL_SOURCE
+    present = {
+        path.stem for path in sorted(root.glob("*.py")) if path.stem != "__init__"
+    }
+    assert present == set(JOURNAL_LAYERS), (
+        "the package and the order it is pinned in have drifted:\n"
+        f"  no place in the order: {sorted(present - set(JOURNAL_LAYERS))}\n"
+        f"  in the order, not in the package: "
+        f"{sorted(set(JOURNAL_LAYERS) - present)}"
+    )
+    offenders = []
+    for rank, name in enumerate(JOURNAL_LAYERS):
+        tree = ast.parse((root / f"{name}.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.level != 1:
+                continue
+            if node.module is None:
+                reached = [alias.name for alias in node.names]
+            else:
+                reached = [node.module]
+            for module in reached:
+                if module in JOURNAL_LAYERS and JOURNAL_LAYERS.index(module) >= rank:
+                    offenders.append(
+                        f"journal/{name}.py:{node.lineno}: imports "
+                        f"`{module}`, which comes after it"
+                    )
+    assert not offenders, (
+        "these import uphill or sideways, and the facade says the package "
+        "does not; the order is "
+        + " -> ".join(JOURNAL_LAYERS)
+        + ":\n"
+        + "\n".join(offenders)
     )
 
 
