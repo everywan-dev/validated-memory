@@ -36,8 +36,9 @@ DRIFTED = "drifted"
 UNKNOWN = "unknown"
 VERDICTS = (CURRENT, DRIFTED, UNKNOWN)
 
-# Worst-first severity for aggregation: drifted outranks unknown outranks
-# current.
+# The order a unit is graded by, published in `docs/reference/cli.md#derive`:
+# reordering it changes what the index and `status` say about every unit
+# whose anchors disagree.
 _SEVERITY = {DRIFTED: 2, UNKNOWN: 1, CURRENT: 0}
 
 
