@@ -155,14 +155,12 @@ log when it does.
 - [x] **ADR: what a comment is for in this repository** (precondition for
       axis B from J2 onwards) — [ADR 0010](../adr/0010-code-prose-is-a-contract-a-constraint-or-a-verification-argument.md),
       written 2026-09-03 from J1's worked example.
-- [ ] **ADR: what `_` means inside a package** (from J1/A2, recounted
-      in J2/A4). **Twenty** names cross module lines in `journal/`,
-      not the ten J1 saw from its own four files: `transactions` owns
-      13, `paths` 5, `records` 1 and `fault` 1. Either they lose the
-      underscore or the convention is written down.
+- [x] **ADR: what `_` means inside a package** — [ADR 0011](../adr/0011-inside-the-journal-package-an-underscore-means-no-other-module-may-depend-on-it.md), decided in J3 with twenty-one names. It drops the
+      underscore from every name another module depends on; the argument
+      this review was going to write it on was refuted first.
 - [x] J1 — journal reporting and fault seams ([findings](reviews/j1.md))
 - [x] J2 — journal vocabulary ([findings](reviews/j2.md))
-- [ ] J3 — write-ahead log and lock
+- [x] J3 — write-ahead log and lock ([findings](reviews/j3.md))
 - [ ] J4 — the executor
 - [ ] S1 — the scaffolder
 - [ ] C1 — the contract
@@ -195,6 +193,17 @@ One line per session, most recent last: date, unit, commit, outcome.
   `design §N` citations given a versioned path and section, three pointers
   into a plan archived out of the repository repaired, and four new tests in
   `test_docs_links.py` over the Python surface. 648 tests green.
+- 2026-09-04 — J3 reviewed, `reviews/j3.md`. It took the deferral J1
+  opened and J2 recounted: ADR 0011 drops the underscore from the
+  twenty-one names other modules of the package depend on, and the
+  argument this review had for the opposite was refuted by the
+  challenge before it was written down. `own_directory` moved to
+  `paths.py` for the reason `install` did in J2. Two questions leave
+  the unit open on purpose: the publish marker is the one write in
+  the protocol with no guard (`TODO.md`), and whether a transaction
+  should be an object is a question **J4 inherits**, because the
+  executor is the only caller that would gain and its review is next.
+  650 tests green.
 - 2026-09-04 — J2 reviewed, `reviews/j2.md`: three structural fixes, two
   new pins, and two rounds of review corrections on top of them. `Intention` was asked ADR 0010's interface question, and the
   docstring turned out to be stronger than the code: three combinations

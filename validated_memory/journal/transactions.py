@@ -15,14 +15,13 @@ leak is a design change, not a move.
 
 import json
 import os
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from .. import __version__
 from .durable import fsync_directory, install
 from .operations import INTENTION_OPS
-from .paths import _well_formed_state, current_state, satisfies
+from .paths import own_directory, well_formed_state, current_state, satisfies
 from .records import (
     DURABILITIES,
     OBSERVE,
@@ -30,8 +29,7 @@ from .records import (
     REPO,
     SCHEMA,
     VAULT_DIRNAME,
-    JournalError,
-    _is_inside_path,
+    is_inside_path,
     new_id,
     now,
 )
@@ -50,61 +48,25 @@ ABORTED = "aborted"
 TRANSACTION_STAGES = (PREPARED, PUBLISHED, ABORTED)
 
 
-def _own_directory(root, name):
-    """The vault directory `name`, refused unless it is a real directory.
-
-    `lstat`, and asked BEFORE anything is created, written, replaced or
-    unlinked through the name. The two directories this plugin owns under
-    the vault -- the write-ahead log and the preimage store -- are written
-    to by name, and `mkdir(exist_ok=True)`, `open` and `os.replace` all
-    follow a symlink standing where one of them should be without a word:
-    the transaction file, or the only copy of the bytes about to be
-    overwritten, lands wherever the link points, outside the adopter root
-    and outside everything this project promises. A plain file there is the
-    other half of the same question, and it reached `iterdir` as a
-    traceback.
-
-    A name that is not there at all is fine: the directory is created on
-    first use, by the caller this has just told the name is free.
-
-    `.validated-memory/` itself is not checked here. It is the vault, whose
-    own name an adopter may legitimately have made a link into a shared
-    store -- the same freedom `journal.jsonl` has (`lock_path`) -- and what
-    this refuses is a name inside it that the plugin alone writes.
-    """
-    path = Path(root) / VAULT_DIRNAME / name
-    artifact = f"{VAULT_DIRNAME}/{name}"
-    try:
-        info = os.lstat(path)
-    except FileNotFoundError:
-        return path
-    except OSError as error:
-        raise JournalError(None, f"{artifact} could not be read: {error}", artifact)
-    if not stat.S_ISDIR(info.st_mode):
-        found = "a symlink" if stat.S_ISLNK(info.st_mode) else "not a directory"
-        raise JournalError(
-            None,
-            f"{artifact} is {found}, and this plugin writes what it owns "
-            "only into a real directory of its own: everything under that "
-            "name is created, written and removed by name, and a name that "
-            "is somebody else's carries all of it somewhere this project "
-            "promises nothing about. Move it aside.",
-            artifact,
-        )
-    return path
-
-
 def _transactions_dir(root):
-    """Where transaction files live: under the vault, never versioned."""
-    return _own_directory(root, TRANSACTIONS_DIRNAME)
+    """Where transaction files live: under the vault, never versioned.
+
+    Not a path join: `own_directory` `lstat`s the name and raises
+    `JournalError` when something that is not a directory stands there, so
+    every caller that asks where a transaction lives has asked that
+    question too. That is the point -- the name is where the write is about
+    to happen -- and it is why `transaction_artifact` exists for the
+    callers that only need to NAME the file.
+    """
+    return own_directory(root, TRANSACTIONS_DIRNAME)
 
 
 def _transaction_path(root, transaction_id):
-    """The file one transaction lives in."""
+    """The file one transaction lives in; raises what `_transactions_dir` does."""
     return _transactions_dir(root) / f"{transaction_id}.json"
 
 
-def _transaction_artifact(transaction_id):
+def transaction_artifact(transaction_id):
     """What a `Finding` calls a transaction's file: a name, not a path.
 
     Rendering must not be the step that refuses a run. `_transactions_dir`
@@ -140,7 +102,7 @@ def _write_transaction_file(root, transaction_id, entry):
         raise
 
 
-def _open_transaction(
+def open_transaction(
     root,
     intention,
     preimage,
@@ -224,7 +186,7 @@ def _open_transaction(
     return transaction_id
 
 
-def _mark_published(root, transaction_id):
+def mark_published(root, transaction_id):
     """Record, fsynced, that publication completed.
 
     Not decoration: a `replace` whose new bytes equal the old, an `append`
@@ -241,7 +203,7 @@ def _mark_published(root, transaction_id):
     _write_transaction_file(root, transaction_id, entry)
 
 
-def _abort_transaction(root, transaction_id, reason):
+def abort_transaction(root, transaction_id, reason):
     """Close a transaction that will never publish, recording why."""
     path = _transaction_path(root, transaction_id)
     entry = json.loads(path.read_text(encoding="utf-8"))
@@ -250,7 +212,7 @@ def _abort_transaction(root, transaction_id, reason):
     _write_transaction_file(root, transaction_id, entry)
 
 
-def _resolve_transaction(root, transaction_id):
+def remove_transaction_file(root, transaction_id):
     """Unlink a transaction's file and fsync the directory that held it.
 
     A resolved transaction leaves the directory: this is the only function
@@ -262,7 +224,7 @@ def _resolve_transaction(root, transaction_id):
     fsync_directory(path.parent)
 
 
-def _open_transactions(root):
+def open_transactions(root):
     """Every unresolved transaction, ordered by `at` with `id` as tiebreaker.
 
     A transaction FILE present is "unresolved"; among those, `prepared` and
@@ -296,10 +258,8 @@ def _open_transactions(root):
             continue
         except ValueError as error:
             # Bytes that are not text at all. `read_text` raises
-            # `UnicodeDecodeError` -- a `ValueError`, not an `OSError` --
-            # and it escaped this function as a traceback out of
-            # `journal --check`, which is the one thing this function
-            # promises never to do.
+            # `UnicodeDecodeError`, which is a `ValueError` and not an
+            # `OSError`, so the handler above does not see it.
             results.append(
                 {"id": transaction_id, "damaged": f"it is not valid UTF-8: {error}"}
             )
@@ -356,19 +316,19 @@ PROBLEM_UNKNOWN = "unknown"
 PROBLEM_DAMAGED = "damaged"
 RECOVERY_PROBLEMS = (PROBLEM_DIVERGED, PROBLEM_UNKNOWN, PROBLEM_DAMAGED)
 
-# What `_classify` says when recovery would resolve the transaction on its
+# What `classify` says when recovery would resolve the transaction on its
 # own, and what `journal --check` calls all three: it reports, so the three
 # ways of resolving one are one answer to the only question it asks --
 # would a run clear this away by itself?
-_COMPLETE = "complete"
-_DISCARD = "discard"
-_REMOVE = "remove"
-_RECOVERABLE_VERDICTS = (_COMPLETE, _DISCARD, _REMOVE)
+VERDICT_COMPLETE = "complete"
+VERDICT_DISCARD = "discard"
+VERDICT_REMOVE = "remove"
+_RECOVERABLE_VERDICTS = (VERDICT_COMPLETE, VERDICT_DISCARD, VERDICT_REMOVE)
 RECOVERABLE = "recoverable"
 
 
 def report_word(verdict):
-    """The word a report gives one `_classify` verdict.
+    """The word a report gives one `classify` verdict.
 
     Which of the three ways a run would resolve a transaction is a decision
     this module owns; a reader of `journal --check` asked one question --
@@ -399,11 +359,10 @@ class Recovery:
       account for, and `journal --resolve` is the way out.
     - `appended` -- whether records were actually written. `completed` has
       two shapes and they are not the same news: a mutation reaching the
-      history a session late is a thing that happened to this project, and
-      a crash between the append and the unlink left records that were
-      already there and only a file to remove. A caller that printed both
-      announced a recovery on every session start after the second, for a
-      history that gained nothing.
+      history a session late is a thing that happened to this project,
+      while a crash between the append and the unlink left records that
+      were already there and only a file to remove. A caller that announces
+      both announces a recovery on every session start after the second.
     - `message` -- the sentence a caller renders. For a problem it names the
       transaction and the three flags, because a finding a user cannot act
       on is a stopped session.
@@ -428,11 +387,11 @@ class Recovery:
             raise ValueError(f"unknown recovery problem '{self.problem}'")
 
 
-def _classify(root, item, adoption=None):
+def classify(root, item, adoption=None):
     """What recovery would do with one unresolved transaction, doing none of it.
 
-    Returns `(verdict, facts)`. The verdict is `_COMPLETE`, `_DISCARD`,
-    `_REMOVE` or one of the three `RECOVERY_PROBLEMS`; `facts` carries what
+    Returns `(verdict, facts)`. The verdict is `VERDICT_COMPLETE`, `VERDICT_DISCARD`,
+    `VERDICT_REMOVE` or one of the three `RECOVERY_PROBLEMS`; `facts` carries what
     the file and the filesystem said, so the caller neither re-reads nor
     re-decides. This function writes nothing and is the ONE place the
     decision table below is expressed -- `Run.recover` acts on it and
@@ -441,7 +400,7 @@ def _classify(root, item, adoption=None):
 
     The rules, in order:
 
-    - A file that could not be read at all (`_open_transactions` said so),
+    - A file that could not be read at all (`open_transactions` said so),
       or that is readable but is not a well-formed transaction OF THIS
       PROJECT, is `damaged`. Nothing is inferred from half a file, and
       nothing is completed out of a file that never described a mutation
@@ -452,15 +411,15 @@ def _classify(root, item, adoption=None):
       this project's is -- a tree whose journals are gone has no answer to
       compare against, and inventing one would call every transaction
       foreign.
-    - `aborted` is closed already: `_REMOVE`, and the file goes.
+    - `aborted` is closed already: `VERDICT_REMOVE`, and the file goes.
     - `published` means publication completed and the history had not been
       appended when the process died. The path matching the postimage is
-      the mutation: `_COMPLETE`. Anything else means something wrote the
+      the mutation: `VERDICT_COMPLETE`. Anything else means something wrote the
       path afterwards: `diverged`.
     - `prepared` means the write-ahead entry was fsynced and nothing more is
       known from the file. The path matching the preimage says the mutation
-      never happened: `_DISCARD`. Matching the postimage says it did, and
-      only the marker was lost: `_COMPLETE`. Neither, or BOTH -- which the
+      never happened: `VERDICT_DISCARD`. Matching the postimage says it did, and
+      only the marker was lost: `VERDICT_COMPLETE`. Neither, or BOTH -- which the
       executor's no-op rule makes unreachable for a transaction it opened,
       but not for a hand-written one -- is `unknown`.
     - A path whose bytes cannot be READ at all -- a file this user may not
@@ -552,7 +511,7 @@ def _classify(root, item, adoption=None):
         return damaged(f"its intention claims durability '{durability}'")
     if note is not None and not isinstance(note, str):
         return damaged("its intention's note is not text")
-    if durability == REPO and not _is_inside_path(path):
+    if durability == REPO and not is_inside_path(path):
         return damaged(
             f"its intention names '{path}', which is not a path inside the "
             "adopter root"
@@ -573,7 +532,7 @@ def _classify(root, item, adoption=None):
 
     stage = item.get("stage")
     if stage == ABORTED:
-        return _REMOVE, facts
+        return VERDICT_REMOVE, facts
     if stage not in (PREPARED, PUBLISHED):
         return damaged(
             f"its stage is '{stage}', and a transaction is one of "
@@ -584,7 +543,7 @@ def _classify(root, item, adoption=None):
     postimage = item.get("postimage")
     if not isinstance(preimage, dict) or not isinstance(postimage, dict):
         return damaged("it records no preimage and postimage states")
-    if not _well_formed_state(preimage) or not _well_formed_state(postimage):
+    if not well_formed_state(preimage) or not well_formed_state(postimage):
         return damaged("its preimage or postimage is in no state this plugin knows")
     facts["preimage"] = preimage
     facts["postimage"] = postimage
@@ -594,18 +553,17 @@ def _classify(root, item, adoption=None):
     except OSError as error:
         # `current_state` swallows every `lstat` failure -- what it cannot
         # see at all is `absent` -- but a regular file it CAN see is read
-        # for its digest, and that read raises: a file the adopter set to
-        # mode 000 came out of `journal --check` as a `PermissionError`
-        # traceback. What is at the path cannot be established, which is
-        # what `unknown` says; `actual` is None because there is no state
-        # to report, and every caller reads `reason` instead.
+        # for its digest, and that read raises. What is at the path cannot
+        # be established, which is what `unknown` says; `actual` is None
+        # because there is no state to report, and every caller reads
+        # `reason` instead.
         facts["actual"] = None
         facts["reason"] = str(error)
         return PROBLEM_UNKNOWN, facts
     facts["actual"] = actual
     matches_post = satisfies(actual, postimage)
     if stage == PUBLISHED:
-        return (_COMPLETE if matches_post else PROBLEM_DIVERGED), facts
+        return (VERDICT_COMPLETE if matches_post else PROBLEM_DIVERGED), facts
     if matches_post and satisfies(actual, preimage):
         # The two states this transaction names cannot be told apart on
         # disk, so nothing here can say whether the mutation ran. The
@@ -613,13 +571,13 @@ def _classify(root, item, adoption=None):
         # returns `noop` for exactly this -- so it can only be hand-written.
         return PROBLEM_UNKNOWN, facts
     if matches_post:
-        return _COMPLETE, facts
+        return VERDICT_COMPLETE, facts
     if satisfies(actual, preimage):
-        return _DISCARD, facts
+        return VERDICT_DISCARD, facts
     return PROBLEM_UNKNOWN, facts
 
 
-def _no_such_transaction(transaction_id):
+def no_such_transaction(transaction_id):
     """The refusal for an id nothing in the log carries.
 
     One sentence, in two places: `_run_resolve` asks the question before it
@@ -635,7 +593,7 @@ def _no_such_transaction(transaction_id):
     )
 
 
-def _resolution_advice(transaction_id):
+def resolution_advice(transaction_id):
     """How an operator closes a transaction recovery would not touch.
 
     Every problem message ends with this: a path that gates and a
@@ -701,6 +659,6 @@ def missing_resolution(root, transaction_id, resolution):
     return Resolution(
         transaction_id,
         resolution,
-        _transaction_artifact(transaction_id),
-        _no_such_transaction(transaction_id),
+        transaction_artifact(transaction_id),
+        no_such_transaction(transaction_id),
     )

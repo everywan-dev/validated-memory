@@ -8,7 +8,7 @@ the write-ahead log rather than from here.
 
 from pathlib import Path
 
-from .paths import DIRECTORY, _resolves_below, current_state
+from .paths import DIRECTORY, resolves_below, current_state
 from .records import COMMITTED, CREATE, DURABILITIES, PREPARED, STAGES, digest, read
 
 
@@ -147,7 +147,7 @@ def reconcile(root=Path()):
 
 def _state_of(root, entry):
     target = root / entry["path"]
-    if not _resolves_below(root, target):
+    if not resolves_below(root, target):
         # A path that resolves out of the root -- through a symlink, or by
         # being a vault record's absolute path, which
         # docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md

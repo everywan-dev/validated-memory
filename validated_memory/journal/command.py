@@ -12,9 +12,9 @@ from .reconcile import reconcile
 from .records import DURABILITIES, JOURNAL_FILENAME, JournalError, read
 from .transactions import (
     PROBLEM_DAMAGED,
-    _classify,
-    _open_transactions,
-    _transaction_artifact,
+    classify,
+    open_transactions,
+    transaction_artifact,
     missing_resolution,
     report_word,
 )
@@ -30,7 +30,7 @@ def run(check, resolve, resolution, stdout, stderr):
     gating on it; with `--check` an unfinished transaction -- from the two
     journals' own pairing (`reconcile`), from a pair whose halves disagree,
     from an id that is not a pair at all, or from a transaction file still
-    on disk (`_open_transactions`) -- is an ERROR, because a caller that
+    on disk (`open_transactions`) -- is an ERROR, because a caller that
     asked to be told cannot be told by an exit code of 0.
 
     `--resolve` is the third mode and the only one that writes: an
@@ -59,12 +59,12 @@ def run(check, resolve, resolution, stdout, stderr):
         unfinished, disagreements, anomalies = (
             reconcile(root) if check else ([], [], [])
         )
-        # `_open_transactions` never raises -- an unreadable transaction file
+        # `open_transactions` never raises -- an unreadable transaction file
         # is one of its own results, not a `JournalError` -- so it does not
         # need this `try`, but reading the log alongside the two journals in
         # one pass is what lets the summary below count everything actually
         # read even when one of them is later refused.
-        transactions = _open_transactions(root)
+        transactions = open_transactions(root)
         # The id the journals themselves carry, taken in the order
         # `_adoption_id` prefers them (the repository journal first, since
         # `records` is filled in `DURABILITIES` order) and never minted: a
@@ -117,9 +117,9 @@ def run(check, resolve, resolution, stdout, stderr):
     for item in transactions:
         # Classified by the one function recovery itself acts on, so what
         # `--check` promises and what the next run does cannot drift apart.
-        verdict, facts = _classify(root, item, adoption)
+        verdict, facts = classify(root, item, adoption)
         if verdict == PROBLEM_DAMAGED:
-            location = _transaction_artifact(item["id"])
+            location = transaction_artifact(item["id"])
             message = f"damaged transaction {item['id']}: {facts['reason']}"
         else:
             location = facts["path"]

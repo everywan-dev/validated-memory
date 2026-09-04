@@ -26,6 +26,15 @@ LOCK_FILENAME = "lock"
 # holds today because the lock is held for the length of one `init`.
 STALE_LOCK_SECONDS = 300
 
+# How long a run waits for a lock somebody else legitimately holds before it
+# refuses. Bounded because the caller is a session hook: a command that
+# blocks for as long as the holder wants is a session that never starts.
+# Ten seconds is not a promise that no holder is slower -- `init` holds this
+# lock across `adopt.take_over`, which copies as many files as the harness
+# memory has -- it is the point at which waiting stops being useful and the
+# message below, which says what to do, is better than a hang.
+LOCK_WAIT_SECONDS = 10
+
 
 def lock_path(root=Path()):
     """Where `root`'s lock file lives: beside the journal it protects.
@@ -38,8 +47,7 @@ def lock_path(root=Path()):
     artifact: the lock is `.validated-memory/lock` under the directory the
     journal really lives in. For an adopter whose journal is a plain file
     -- every adopter until someone links one -- that directory is the
-    adopter root, and this names the same file as before, spelled
-    absolutely.
+    adopter root, and the lock is the one inside it, named absolutely.
 
     A `journal.jsonl` symlink that resolves to anything but a regular file
     -- broken, or a directory -- keeps the local lock. There is no shared
@@ -121,7 +129,8 @@ class Lock:
     Within one process the lock is RE-ENTRANT, counted per resolved lock
     path and not per object (`_HELD`): `init.run` holds it for a whole run
     and `Run.__init__` takes it again underneath, and a second `O_EXCL`
-    create would wait out the whole ten seconds and then refuse the run.
+    create would wait out the whole `LOCK_WAIT_SECONDS` and then refuse the
+    run.
     The file is created by the outermost `__enter__` and removed by the
     `__exit__` that brings the depth back to zero. Between processes it
     excludes exactly as before. The registry is module state, so a `Lock`
@@ -149,9 +158,9 @@ class Lock:
     makes breaking atomic: between that check and the `unlink` the file can
     still be replaced, and a break landing in that window can leave two
     processes holding the lock. What the checks buy is the width of the
-    window -- two adjacent syscalls, rather than the read, the probe and
-    the unlink that spanned it before -- and the certainty that a release
-    never removes a file this process did not create.
+    window -- the two adjacent syscalls that check and unlink, and nothing
+    in between -- and the certainty that a release never removes a file
+    this process did not create.
     """
 
     def __init__(self, root=Path()):
@@ -180,7 +189,7 @@ class Lock:
             self._entries += 1
             return self
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
         while True:
             try:
                 descriptor = os.open(
