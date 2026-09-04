@@ -110,14 +110,10 @@ def headline(body_text, unit_id):
 def build(documents, basis, extension, records, view):
     """Return the whole normalized reading of one corpus.
 
-    `records` is the verdict log's full history (`verdicts.history()`) and
-    `view` its graded view (`verdicts.service_view()`) -- both read by
-    `render.build_artifacts`, in that order, before this is called:
-    `service_view` is what validates the log (it raises on a malformed
-    record, such as an explicit `payload: null`), so by the time
-    `_group_history` sees `records` below, every record in it has already
-    passed that check. Reading either here instead would let a future edit
-    reorder the two calls and silently lose that guarantee.
+    `records` and `view` are two projections of one `verdicts.read()`
+    snapshot, which validates every record it returns -- so `_group_history`
+    below never sees a record that would have been refused, such as one
+    carrying an explicit `payload: null`.
     """
     states = derive.effective_states(documents)
     bodies = {}

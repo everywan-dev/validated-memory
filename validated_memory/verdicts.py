@@ -7,6 +7,9 @@ rewritten: the log only grows. The service view a reader wants is the latest
 record per anchor -- an anchor being what its `(system, kind, payload)` names,
 see `anchor_key` -- computed here rather than stored, since storing it would
 mean rewriting the log on every probe.
+
+A reader calls `read` once and takes the projections it needs off the
+`LogSnapshot` it gets back.
 """
 
 import json
@@ -94,14 +97,13 @@ def _canonical(payload):
     return json.dumps(payload, sort_keys=True)
 
 
-def records(root=Path()):
-    """Yield `(lineno, record)` for every record in the log, fail-loud.
+def _records(root):
+    """Yield `(lineno, record)` for every line of the log, fail-loud.
 
-    The single place the log is turned into records, so every reader of it
-    accepts and rejects exactly the same files. Reading the file is part of
-    that: a log that cannot be opened or decoded is a log that cannot be read,
-    and letting an `OSError` or a `UnicodeDecodeError` past here would surface
-    as a traceback rather than as the finding this promises.
+    Reading the file is part of the promise: a log that cannot be opened or
+    decoded is a log that cannot be read, and letting an `OSError` or a
+    `UnicodeDecodeError` past here would surface as a traceback rather than
+    as the finding `read` promises.
     """
     path = Path(root) / LOG_FILENAME
     if not path.exists():
@@ -123,18 +125,6 @@ def records(root=Path()):
         if not isinstance(record, dict):
             raise VerdictLogError(lineno, "record is not a JSON object")
         yield lineno, record
-
-
-def history(root=Path()):
-    """Every record, in file order, uncollapsed.
-
-    Windowing is the renderer's business, not the reader's: a reader that
-    truncated would decide for every consumer at once. Unlike `service_view`,
-    this does not validate the key fields or the verdict -- it hands back
-    exactly what `records` yields, and a caller that also needs the graded
-    view calls `service_view` too, which is where that validation lives.
-    """
-    return [record for _lineno, record in records(root)]
 
 
 def _keyed(lineno, record):
@@ -166,27 +156,43 @@ def _keyed(lineno, record):
     return anchor_key(*fields, payload), verdict
 
 
-def latest_records(root=Path()):
-    """The latest full record per anchor -- `(unit, system, kind, payload)` -- or `{}`.
+class LogSnapshot:
+    """One validated reading of the log, and every projection of it.
 
-    Reads the log once. `service_view` is the plain verdict-only projection
-    of this; a caller that also needs a field the verdict cell does not
-    carry -- `status`'s age check needs `recorded_at` -- calls this instead,
-    so the log is still read only once even when both are wanted from the
-    same run.
+    The three projections come from the same bytes and the same pass, so a
+    reader that needs more than one of them neither reads the file twice nor
+    has to know which call is the one that validates.
+
+    - `records`: every record, in file order, uncollapsed. Windowing is the
+      renderer's business, not this module's: truncating here would decide
+      for every consumer at once.
+    - `latest`: the latest full record per anchor. A caller needing a field
+      the verdict alone does not carry -- `status`'s age check needs
+      `recorded_at` -- reads this.
+    - `view`: the latest verdict per anchor, which is what grades a unit.
+    """
+
+    __slots__ = ("latest", "records", "view")
+
+    def __init__(self, records, latest):
+        self.records = records
+        self.latest = latest
+        self.view = {key: record["verdict"] for key, record in latest.items()}
+
+
+def read(root=Path()):
+    """Read and validate the whole log once. Returns a `LogSnapshot`.
+
+    Every record is checked, whichever projection the caller goes on to use:
+    a malformed one is refused here rather than by whichever call happened to
+    be made first. Never probed, or no log at all, is an empty snapshot.
 
     Raises `VerdictLogError` on a log that cannot be read as records.
     """
+    collected = []
     latest = {}
-    for lineno, record in records(root):
+    for lineno, record in _records(root):
         key, _verdict = _keyed(lineno, record)
         latest[key] = record
-    return latest
-
-
-def service_view(root=Path()):
-    """The latest verdict per anchor -- `(unit, system, kind, payload)` -- or `{}` if never probed.
-
-    Raises `VerdictLogError` on a log that cannot be read as records.
-    """
-    return {key: record["verdict"] for key, record in latest_records(root).items()}
+        collected.append(record)
+    return LogSnapshot(tuple(collected), latest)
