@@ -163,7 +163,7 @@ log when it does.
 - [x] J3 — write-ahead log and lock ([findings](reviews/j3.md))
 - [x] J4 — the executor ([findings](reviews/j4.md))
 - [x] S1 — the scaffolder ([findings](reviews/s1.md))
-- [ ] C1 — the contract
+- [x] C1 — the contract ([findings](reviews/c1.md))
 - [ ] F1 — freshness
 - [ ] M1 — agent memory and corpus
 - [ ] V1 — the view stack
@@ -245,3 +245,21 @@ One line per session, most recent last: date, unit, commit, outcome.
   `TODO.md`: on the journal-failure path the harness take-over runs outside
   the run-wide lock and still moves the adopter's data, where the unignored
   gate refuses the same act.
+- 2026-09-04 — C1, the contract, `84a0dec` … `2625351`. The first unit with
+  no history to remove: at 22 % prose it is the least written-in code here,
+  and its defects were of another kind. Two structural fixes -- the finding
+  vocabulary stopped being imported through `contract`, which only
+  re-exported it by accident, and the quoting rule stopped carrying a second
+  tokenizer that mirrored `frontmatter`'s and cited two of its private
+  functions by name. Codex SOL refuted two of the four design questions
+  outright: one `_is_non_empty_string` for the three that exist (three local
+  copies of a two-line idiom are a local idiom, and one of them is in a
+  probe, the shape an adopter copies), and the pin I proposed for those
+  private cross-references (existence does not make the sentence true, and
+  the honest rule is the opposite one -- prose does not cite another
+  module's privates -- which is an ADR question in `TODO.md`). Its better
+  shape for the quoting cut, `parse_with_source`, is recorded and not taken:
+  it gives the parser an addressing vocabulary it does not have, and it is
+  not behaviour-preserving on a malformed document. One test added, seen red
+  first -- and its first version passed against the very implementation it
+  names, which the finding records. 653 tests green.

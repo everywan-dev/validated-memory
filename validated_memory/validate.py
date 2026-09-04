@@ -3,8 +3,8 @@
 from pathlib import Path
 
 from . import extension as extension_module
-from .contract import ERROR, WARNING, Finding, validate_documents
-from .findings import report
+from .contract import validate_documents
+from .findings import ERROR, WARNING, Finding, report
 
 DEFAULT_KNOWLEDGE_DIR = "knowledge"
 UNIT_SUFFIX = ".md"

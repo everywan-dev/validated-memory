@@ -26,8 +26,7 @@ from pathlib import Path
 from . import corpus, knowledge_view, memory_view, validate
 from . import memory as memory_module
 from . import verdicts as verdicts_module
-from .contract import ERROR
-from .findings import EXIT_ERROR, EXIT_OK, WARNING, Finding
+from .findings import ERROR, EXIT_ERROR, EXIT_OK, WARNING, Finding
 from .frontmatter import FrontmatterError
 from .frontmatter import parse as parse_frontmatter
 
