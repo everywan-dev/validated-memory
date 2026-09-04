@@ -223,7 +223,7 @@ def read(root=Path(), durability=REPO):
     by name, and an adopter who keeps the file in a store outside the
     project has a working adoption. A BROKEN symlink reads as absent, which
     is honest -- there is nothing to read through it -- and it is
-    `bootstrap` that must not then install over the link, where the
+    `_bootstrap` that must not then install over the link, where the
     replacement it would destroy actually happens.
     """
     path = journal_path(root, durability)

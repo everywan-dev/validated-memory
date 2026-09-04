@@ -81,7 +81,7 @@ def _write_transaction_file(root, transaction_id, entry):
     """Write `entry` as the whole of one transaction file, fsynced in place.
 
     Temporary, fsync, `install` -- the same durability shape every other
-    atomic write in this package uses (`bootstrap`, `_park_preimage`,
+    atomic write in this package uses (`_bootstrap`, `_park_preimage`,
     `Run._publish`): the bytes are flushed and fsynced before the rename,
     and `install` fsyncs the directory after it, so the file this call
     leaves behind is exactly as durable whether it is the first write of a
@@ -391,9 +391,17 @@ def classify(root, item, adoption=None):
     """What recovery would do with one unresolved transaction, doing none of it.
 
     Returns `(verdict, facts)`. The verdict is `VERDICT_COMPLETE`, `VERDICT_DISCARD`,
-    `VERDICT_REMOVE` or one of the three `RECOVERY_PROBLEMS`; `facts` carries what
-    the file and the filesystem said, so the caller neither re-reads nor
-    re-decides. This function writes nothing and is the ONE place the
+    `VERDICT_REMOVE` or one of the three `RECOVERY_PROBLEMS`; `facts` carries
+    the whole of what the file and the filesystem said, so no caller reads
+    the file again. Every field a caller could want is in it, validated and
+    with a settled type, which is why nothing outside this module needs the
+    transaction file's own key names.
+
+    The two reasons are two fields, because they answer different questions
+    and never both apply: `problem_reason` says why a transaction is
+    `damaged` or its path `unknown`, and `abort_reason` is what the run that
+    closed it `aborted` said. One key called `reason` was read as each in
+    branches of `Run._recover_one` four lines apart. This function writes nothing and is the ONE place the
     decision table below is expressed -- `Run.recover` acts on it and
     `journal --check` reports it, and a reader who has to compare two
     copies of a decision table is a reader who will find them disagreeing.
@@ -424,7 +432,8 @@ def classify(root, item, adoption=None):
       but not for a hand-written one -- is `unknown`.
     - A path whose bytes cannot be READ at all -- a file this user may not
       open, an I/O error -- is `unknown` too, whatever the stage, and
-      `facts["actual"]` is None with the reason in `facts["reason"]`.
+      `facts["actual"]` is None with the reason in
+      `facts["problem_reason"]`.
       Nothing is known about the path, which is exactly what the word
       says; asserting `absent` or `diverged` out of a failed read would be
       the guess this function exists to remove.
@@ -437,14 +446,20 @@ def classify(root, item, adoption=None):
     happened.
     """
     facts = {
+        "id": item["id"],
         "path": None,
         "durability": None,
         "stage": item.get("stage"),
-        "reason": None,
+        "problem_reason": None,
+        "abort_reason": None,
+        "run": None,
+        "preimage_blob": None,
+        "prior_bytes": None,
+        "mode": None,
     }
 
     def damaged(reason):
-        facts["reason"] = reason
+        facts["problem_reason"] = reason
         return PROBLEM_DAMAGED, facts
 
     if "damaged" in item:
@@ -526,9 +541,19 @@ def classify(root, item, adoption=None):
             not isinstance(value, int) or isinstance(value, bool)
         ):
             return damaged(f"its {field} is not a number")
+        facts[field] = value
     blob = item.get("preimage_blob")
     if blob is not None and not isinstance(blob, str):
         return damaged("its preimage reference is not a digest")
+    facts["preimage_blob"] = blob
+    # Neither is worth refusing a transaction over, and both are dropped
+    # rather than passed on: the run id is what recovery files the rebuilt
+    # records under, and a non-string there would reach `record`; the abort
+    # reason is only ever quoted back to the operator.
+    run = item.get("run")
+    facts["run"] = run if isinstance(run, str) else None
+    reason = item.get("reason")
+    facts["abort_reason"] = reason if isinstance(reason, str) else None
 
     stage = item.get("stage")
     if stage == ABORTED:
@@ -558,7 +583,7 @@ def classify(root, item, adoption=None):
         # because there is no state to report, and every caller reads
         # `reason` instead.
         facts["actual"] = None
-        facts["reason"] = str(error)
+        facts["problem_reason"] = str(error)
         return PROBLEM_UNKNOWN, facts
     facts["actual"] = actual
     matches_post = satisfies(actual, postimage)
@@ -644,11 +669,12 @@ class Resolution:
 def missing_resolution(root, transaction_id, resolution):
     """The refusal for an id no transaction file carries, or None to proceed.
 
-    Asked before a `Run` exists, because `Run.__init__` bootstraps the
-    journal: an unknown id must not adopt a tree under a refusal whose own
-    last sentence says nothing has been changed. `lexists`, so a transaction
-    file that is there but unreadable still reaches the resolver, which has
-    a `damaged` answer for it.
+    Asked before a `Run` exists, because building one adopts the tree: its
+    lock creates `.validated-memory/` and its bootstrap installs
+    `journal.jsonl`. An unknown id must not adopt a project under a refusal
+    whose own last sentence says nothing has been changed. `lexists`, so a
+    transaction file that is there but unreadable still reaches the
+    resolver, which has a `damaged` answer for it.
 
     Where the file lives, and what the refusal says, stay inside this
     module: the caller asks whether there is anything to resolve, not how a

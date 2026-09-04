@@ -2535,6 +2535,81 @@ def test_the_state_is_re_read_immediately_before_publishing(run_cli, tmp_path):
     assert not _transactions(tmp_path)
 
 
+# The same window as `OVERWRITE_WHILE_PARKING`, reached the same way, but the
+# intruder takes the path away from the reader instead of changing it. The
+# preimage is already in hand when this lands, so the run reaches the re-read
+# with a path it can no longer `lstat` for a digest.
+DENY_READS_WHILE_PARKING = """
+import os
+import sys
+import time
+
+trigger, target = sys.argv[1], sys.argv[2]
+deadline = time.monotonic() + 60
+while not os.path.exists(trigger):
+    if time.monotonic() > deadline:
+        raise SystemExit("the run never parked a preimage")
+    time.sleep(0.0002)
+os.chmod(target, 0o000)
+"""
+
+
+def test_a_path_that_stops_being_readable_before_publication_aborts(
+    run_cli, tmp_path
+):
+    """The re-read that cannot read at all closes its transaction too.
+
+    The re-read immediately before publication has two ways to refuse. A
+    state that changed is
+    `test_the_state_is_re_read_immediately_before_publishing`; a path that
+    can no longer be read is this one, and it is the later of the two
+    because it happens after the preimage is parked and the transaction file
+    is fsynced. There IS a transaction by then, so the refusal closes it
+    `aborted` and removes it, exactly as the mismatch does -- rather than
+    raising out of `execute` and reaching `init`'s outer handler, which
+    would report a whole-run journal failure over one item and leave the
+    transaction open on a path nothing had published to.
+    """
+    ignore = tmp_path / ".gitignore"
+    ignore.write_text("build/\n" + "# filler\n" * (INTRUDER_WINDOW_BYTES // 9),
+                      encoding="utf-8")
+
+    intruder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            DENY_READS_WHILE_PARKING,
+            str(tmp_path / ".validated-memory" / "preimages"),
+            str(ignore),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        result = run_cli("init", cwd=tmp_path)
+    finally:
+        intruder.wait(timeout=90)
+        ignore.chmod(0o644)
+    assert intruder.returncode == 0, intruder.communicate()
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert ".gitignore" in result.stderr, result.stderr
+    assert (
+        "could not be read while its mutation was being prepared"
+        in result.stderr
+    ), result.stderr
+    assert not [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry["path"] == ".gitignore"
+    ]
+    # Opened, so closed `aborted` and removed -- never left for a recovery
+    # that has nothing to recover.
+    assert not _transactions(tmp_path)
+
+
 def test_a_creation_publishes_with_o_excl_rather_than_replacing():
     """The no-replace guarantee for a creation is the primitive, not a check.
 
@@ -4306,11 +4381,11 @@ def test_resolving_an_id_nothing_carries_leaves_a_virgin_tree_virgin(
 ):
     """`--resolve` on an unknown id adopts no project.
 
-    The refusal's last sentence is "Nothing has been changed", and it was
-    not true: `Run.__init__` bootstraps the journal before anything looks
-    for the id, so a tree that had never been adopted came out of the
-    refusal with a `.validated-memory/` and a `journal.jsonl` carrying a
-    freshly minted adoption id. The question is now asked first.
+    The refusal's last sentence is "Nothing has been changed", so the
+    question is asked before a `Run` exists. Building one adopts the tree
+    twice over: `Lock` creates `.validated-memory/` to put its lock file in,
+    and `_bootstrap` installs a `journal.jsonl` carrying a freshly minted
+    adoption id. Both are asserted below, because each has its own cause.
     """
     result = run_cli(
         "journal", "--resolve", "deadbeefdeadbeef", "--accept", cwd=tmp_path

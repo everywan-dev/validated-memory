@@ -119,12 +119,14 @@ def run(check, resolve, resolution, stdout, stderr):
         # `--check` promises and what the next run does cannot drift apart.
         verdict, facts = classify(root, item, adoption)
         if verdict == PROBLEM_DAMAGED:
-            location = transaction_artifact(item["id"])
-            message = f"damaged transaction {item['id']}: {facts['reason']}"
+            location = transaction_artifact(facts["id"])
+            message = (
+                f"damaged transaction {facts['id']}: {facts['problem_reason']}"
+            )
         else:
             location = facts["path"]
             message = (
-                f"open transaction {item['id']} ({facts['stage']}) on "
+                f"open transaction {facts['id']} ({facts['stage']}) on "
                 f"{location}: {report_word(verdict)}"
             )
         print(Finding(ERROR, location, "journal", message).render(), file=stderr)
@@ -159,9 +161,10 @@ def _run_resolve(root, transaction_id, resolution, stdout, stderr):
     """
     try:
         # Asked before a `Run` is built, which is why it is not the
-        # resolver's own answer: `Run.__init__` bootstraps the journal, so
-        # an unknown id would adopt a virgin tree on its way to being
-        # refused.
+        # resolver's own answer: building one adopts the tree. Two writes,
+        # not one -- `Lock` creates `.validated-memory/` for its lock file
+        # and `_bootstrap` installs `journal.jsonl` -- so a lazier
+        # `_bootstrap` would not make this question removable.
         outcome = missing_resolution(root, transaction_id, resolution)
         if outcome is None:
             outcome = Run(root).resolve_transaction(transaction_id, resolution)
