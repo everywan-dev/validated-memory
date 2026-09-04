@@ -4381,11 +4381,11 @@ def test_resolving_an_id_nothing_carries_leaves_a_virgin_tree_virgin(
 ):
     """`--resolve` on an unknown id adopts no project.
 
-    The refusal's last sentence is "Nothing has been changed", and it was
-    not true: `Run.__init__` bootstraps the journal before anything looks
-    for the id, so a tree that had never been adopted came out of the
-    refusal with a `.validated-memory/` and a `journal.jsonl` carrying a
-    freshly minted adoption id. The question is now asked first.
+    The refusal's last sentence is "Nothing has been changed", so the
+    question is asked before a `Run` exists. Building one adopts the tree
+    twice over: `Lock` creates `.validated-memory/` to put its lock file in,
+    and `_bootstrap` installs a `journal.jsonl` carrying a freshly minted
+    adoption id. Both are asserted below, because each has its own cause.
     """
     result = run_cli(
         "journal", "--resolve", "deadbeefdeadbeef", "--accept", cwd=tmp_path

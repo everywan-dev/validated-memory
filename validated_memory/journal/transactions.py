@@ -644,11 +644,12 @@ class Resolution:
 def missing_resolution(root, transaction_id, resolution):
     """The refusal for an id no transaction file carries, or None to proceed.
 
-    Asked before a `Run` exists, because `Run.__init__` bootstraps the
-    journal: an unknown id must not adopt a tree under a refusal whose own
-    last sentence says nothing has been changed. `lexists`, so a transaction
-    file that is there but unreadable still reaches the resolver, which has
-    a `damaged` answer for it.
+    Asked before a `Run` exists, because building one adopts the tree: its
+    lock creates `.validated-memory/` and its bootstrap installs
+    `journal.jsonl`. An unknown id must not adopt a project under a refusal
+    whose own last sentence says nothing has been changed. `lexists`, so a
+    transaction file that is there but unreadable still reaches the
+    resolver, which has a `damaged` answer for it.
 
     Where the file lives, and what the refusal says, stay inside this
     module: the caller asks whether there is anything to resolve, not how a
