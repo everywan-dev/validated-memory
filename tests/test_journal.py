@@ -72,13 +72,15 @@ JOURNAL_SOURCE = "journal"
 # The modules that may use a raw filesystem primitive: the journal's own
 # write path. A literal set rather than "whatever the journal contains",
 # because a module added to the journal later must be a decision made here,
-# not an exemption it inherits from where its file was put. Four of the
-# package's nine modules: the two histories and the durable append
-# (`records`), the lock file, the write-ahead log, and the executor with the
-# preimage store. The other five -- the state vocabulary, the intention, the
-# fault seam, the reconciler and the subcommand -- write nothing, and this
-# pin says so of them every time it runs.
+# not an exemption it inherits from where its file was put. Five of the
+# package's ten modules: the two histories and the durable append
+# (`records`), the atomic publication (`durable`), the lock file, the
+# write-ahead log, and the executor with the preimage store. The other five
+# -- the state vocabulary, the intention, the fault seam, the reconciler and
+# the subcommand -- write nothing, and this pin says so of them every time
+# it runs.
 RAW_WRITE_MODULES = {
+    "journal/durable.py",
     "journal/executor.py",
     "journal/lock.py",
     "journal/records.py",
@@ -1278,6 +1280,7 @@ def test_the_facade_exports_exactly_the_surface_the_pin_permits():
 # is also the order they may import in. The facade itself is not here: it is
 # the one file that reaches every module, which is what makes it the door.
 JOURNAL_LAYERS = (
+    "durable",
     "records",
     "paths",
     "operations",

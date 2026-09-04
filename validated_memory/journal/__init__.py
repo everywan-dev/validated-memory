@@ -26,6 +26,8 @@ answer computed from the lines it happened to understand.
 This package is the write path, one module per seam, each importing only
 from the ones before it:
 
+- `durable` -- the atomic publication of a file, and the barrier that makes
+  the directory entry carrying its name survive a power cut.
 - `records` -- the record format, the digest, the two journals' paths, and
   the reader that refuses a journal it cannot account for.
 - `paths` -- what is at one path, whether that is what a caller expected,

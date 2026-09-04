@@ -14,6 +14,7 @@ import stat
 from dataclasses import replace as _replace
 from pathlib import Path
 
+from .durable import fsync_directory, install
 from .fault import _fault
 from .lock import Lock
 from .operations import (
@@ -52,8 +53,6 @@ from .records import (
     append,
     artifact_name,
     digest,
-    fsync_directory,
-    install,
     journal_path,
     new_id,
     read,

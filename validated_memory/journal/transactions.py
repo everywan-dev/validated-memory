@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import __version__
+from .durable import fsync_directory, install
 from .operations import INTENTION_OPS
 from .paths import _well_formed_state, current_state, satisfies
 from .records import (
@@ -31,8 +32,6 @@ from .records import (
     VAULT_DIRNAME,
     JournalError,
     _is_inside_path,
-    fsync_directory,
-    install,
     new_id,
     now,
 )

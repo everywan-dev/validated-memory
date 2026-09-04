@@ -1,9 +1,10 @@
 """The record format, and the two permanent artifacts it is written to.
 
 What a record is made of, what names its bytes, where the two journals
-live, how bytes reach the disk durably -- a line appended, a temporary
-published -- and the reader that refuses a journal it cannot account for. Nothing here knows about the vault's own machinery:
-the lock, the preimage store and the write-ahead log are their own modules.
+live, how a line is appended durably, and the reader that refuses a journal
+it cannot account for. Publishing a file is `durable`, the module below
+this one. Nothing here knows about the vault's own machinery: the lock, the
+preimage store and the write-ahead log are their own modules.
 """
 
 import hashlib
@@ -185,42 +186,6 @@ def append(records, root=Path(), durability=REPO):
             handle.write(json.dumps(entry, sort_keys=True) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
-
-
-def install(temporary, target):
-    """Atomically move `temporary` onto `target`, durably.
-
-    `os.replace` publishes the new bytes under the old name, but the
-    directory entry carrying that name is itself buffered. Without the
-    directory fsync, a `committed` record that was flushed to disk can
-    outlive the rename it describes -- "a record describes a state that
-    never existed", one power cut down -- so
-    docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md
-    §4's claim that a `committed` record means the bytes are on disk
-    would hold for a process crash and not for a power loss.
-    """
-    os.replace(temporary, target)
-    fsync_directory(Path(target).parent)
-
-
-def fsync_directory(path):
-    """Flush a directory's own entries to disk.
-
-    A platform where a directory cannot be opened for reading skips the
-    barrier rather than failing the write it was protecting: the bytes are
-    already fsynced and renamed at this point, and refusing here would turn
-    a durability improvement into a lost mutation.
-    """
-    try:
-        handle = os.open(path, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(handle)
-    except OSError:
-        pass
-    finally:
-        os.close(handle)
 
 
 def artifact_name(durability):
