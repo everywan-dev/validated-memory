@@ -3,7 +3,7 @@
 Ships with the plugin and is invocable as
 `python3 -m validated_memory.probes.git_ref` -- exactly the command `init`
 registers for it in the adopter's `validated-memory.md` (see `init`). It
-implements the probe contract documented in the README's `probe` section:
+implements the probe contract documented in `docs/reference/cli.md#probe`:
 read the anchor's envelope as JSON on stdin, answer `{"verdict": ...,
 "detail": ...}` as JSON on stdout, and exit 0. This probe holds itself to
 that contract directly, not just via the framework's fallback: every
