@@ -195,8 +195,8 @@ One line per session, most recent last: date, unit, commit, outcome.
   `design §N` citations given a versioned path and section, three pointers
   into a plan archived out of the repository repaired, and four new tests in
   `test_docs_links.py` over the Python surface. 648 tests green.
-- 2026-09-04 — J2 reviewed, `reviews/j2.md`, three commits and a pin
-  commit. `Intention` was asked ADR 0010's interface question, and the
+- 2026-09-04 — J2 reviewed, `reviews/j2.md`: three structural fixes, two
+  new pins, and two rounds of review corrections on top of them. `Intention` was asked ADR 0010's interface question, and the
   docstring turned out to be stronger than the code: three combinations
   it called impossible were constructible. Construction became five
   named factories over a private dataclass (`a664597`); `OBSERVE` left

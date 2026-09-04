@@ -30,11 +30,14 @@ class _Intention:
     a mutation and fixes the fields the other four would need, and that --
     not this class -- is what leaves a payload disagreeing with its op
     unspellable: `_Intention(op=LINK, ..., content=b"x")` still constructs,
-    and no door leads to it. A frozen record rather than a dict, so what
-    the executor reads three calls later is what the caller stated.
+    and so does `dataclasses.replace` over a valid one -- both are inside
+    this package, and neither is a door a caller reaches. A frozen record
+    rather than a dict, so what the executor reads three calls later is
+    what the caller stated.
 
-    The executor is the only reader of the fields, and three of them do not
-    say themselves what they are:
+    Three modules read the fields -- the executor, `_open_transaction`,
+    which copies them into the transaction file, and `_postimage_state` --
+    and three of the fields do not say themselves what they are:
 
     - `expected` -- the preimage state, in `current_state`'s vocabulary
       (`{"kind": ABSENT}`, `{"kind": FILE, "digest": ..., "mode": ...}`,

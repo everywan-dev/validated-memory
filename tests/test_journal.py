@@ -1316,7 +1316,9 @@ def test_the_journal_package_imports_only_downhill():
     Every spelling of an import is matched -- relative (`from .x import y`,
     `from . import x`) and absolute (`import validated_memory.journal.x`,
     `from validated_memory.journal.x import y`) -- wherever it appears,
-    including inside a function.
+    including inside a function. Importing the package itself is an
+    offender from any module: the facade imports every module, so a module
+    that imports the facade closes the loop.
 
     What it does NOT see, stated because a pin trusted beyond its reach is
     worse than none: a module reached by `importlib.import_module`, or
@@ -1333,17 +1335,21 @@ def test_the_journal_package_imports_only_downhill():
         f"{sorted(set(JOURNAL_LAYERS) - present)}"
     )
     package = f"validated_memory.{JOURNAL_SOURCE}."
+    facade = package.rstrip(".")
     offenders = []
     for rank, name in enumerate(JOURNAL_LAYERS):
         tree = ast.parse((root / f"{name}.py").read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             reached = []
             if isinstance(node, ast.Import):
-                reached = [
-                    alias.name.removeprefix(package)
-                    for alias in node.names
-                    if alias.name.startswith(package)
-                ]
+                for alias in node.names:
+                    if alias.name == facade:
+                        offenders.append(
+                            f"journal/{name}.py:{node.lineno}: imports the "
+                            "package itself, which imports every module"
+                        )
+                    elif alias.name.startswith(package):
+                        reached.append(alias.name.removeprefix(package))
             elif isinstance(node, ast.ImportFrom) and node.level == 1:
                 reached = (
                     [alias.name for alias in node.names]
@@ -1354,7 +1360,7 @@ def test_the_journal_package_imports_only_downhill():
                 module = node.module or ""
                 if module.startswith(package):
                     reached = [module.removeprefix(package)]
-                elif module == package.rstrip("."):
+                elif module == facade:
                     reached = [alias.name for alias in node.names]
             for module in reached:
                 if module in JOURNAL_LAYERS and JOURNAL_LAYERS.index(module) >= rank:

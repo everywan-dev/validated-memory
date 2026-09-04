@@ -101,8 +101,8 @@ new tests, whose docstrings are prose that runs.
 The four false claims are the three `Intention` combinations plus "step
 1b", a pointer that survived the reference pass in two files because it is
 neither a path nor an `ADR NNNN` and `test_docs_links` looks for those. The
-six "claims already pinned" are the sentences deleted because a test
-asserts the same thing; the three coverage gaps are the facade's layering,
+five "claims already pinned" are those same deleted sentences, each
+against a test that fails when its claim stops being true; the three coverage gaps are the facade's layering,
 the schema refusal (both closed here, each seen red first) and the ordering
 inside `install`, which stays open and now says so in its own docstring.
 

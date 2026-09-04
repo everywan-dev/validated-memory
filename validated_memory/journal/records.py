@@ -1,9 +1,9 @@
 """The record format, and the two permanent artifacts it is written to.
 
 What a record is made of, what names its bytes, where the two journals
-live, how a line is appended durably, and the reader that refuses a journal
-it cannot account for. Publishing a file is `durable`, the module below
-this one. Nothing here knows about the vault's own machinery: the lock, the
+live, how a line is appended and fsynced, and the reader that refuses a
+journal it cannot account for. Publishing a file over a name is `durable`,
+the layer beneath this one. Nothing here knows about the vault's own machinery: the lock, the
 preimage store and the write-ahead log are their own modules.
 """
 

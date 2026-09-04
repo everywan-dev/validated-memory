@@ -32,7 +32,8 @@ from the ones before it:
   the reader that refuses a journal it cannot account for.
 - `paths` -- what is at one path, whether that is what a caller expected,
   whether a record may name it, and whether this user may write over it.
-- `operations` -- the `Intention` a caller states and the `Outcome` it gets.
+- `operations` -- the five functions a caller states a mutation with, and
+  the `Outcome` it gets back.
 - `fault` -- the four crash seams, and the one reader of the variable that
   names them.
 - `lock` -- the per-adopter exclusive lock, and where it lives.

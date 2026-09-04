@@ -2,10 +2,12 @@
 
 Two primitives and the order between them: the atomic publication of a
 temporary file over a name, and the barrier that makes the directory entry
-carrying that name durable. Nothing here knows what the bytes are -- a
-journal line, a transaction file, a parked preimage and an adopter's own
-file all reach the disk through the same two calls, and none of them is
-this module's to interpret.
+carrying that name durable. Nothing here knows what the bytes are: a
+transaction file, a parked preimage and an adopter's own file are published
+by the same two calls, and none of them is this module's to interpret. A
+journal line is not among them -- `records.append` opens the journal for
+append and fsyncs the handle, which is a different question and is answered
+where it is asked.
 """
 
 import os
@@ -13,7 +15,13 @@ from pathlib import Path
 
 
 def install(temporary, target):
-    """Atomically move `temporary` onto `target`, durably.
+    """Atomically move `temporary` onto `target`, and ask for the barrier.
+
+    The rename is atomic on every platform this runs on. The durability is
+    conditional: `fsync_directory` skips the barrier on a platform that
+    cannot open a directory for reading, for the reason its own docstring
+    gives, so what this promises unconditionally is the atomicity and not
+    the survival of the directory entry.
 
     `os.replace` publishes the new bytes under the old name, but the
     directory entry carrying that name is itself buffered. Without the

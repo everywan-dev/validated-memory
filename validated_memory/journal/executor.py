@@ -22,6 +22,7 @@ from .operations import (
     OUTCOME_NOOP,
     OUTCOME_REFUSED,
     Outcome,
+    _Intention,
     link_to,
     replace_file,
 )
@@ -550,6 +551,21 @@ class Run:
         The four `_fault` points are the seams between those steps, so a
         test can kill the process at each and assert what is left.
         """
+        if not isinstance(intention, _Intention):
+            # A type gate, not a vocabulary one, and it is load-bearing:
+            # this method reads fields off whatever it is given, so any
+            # object shaped like an intention reaches publication. One
+            # carrying `op="observe"` was measured doing exactly that --
+            # a published file and a `prepared`/`committed` observation,
+            # a record pair nothing in this package writes and no reader
+            # expects. Unreachable from the CLI seam, which is why no test
+            # here covers it: only Python code holding a `Run` can do it,
+            # and this refuses it.
+            raise TypeError(
+                "an intention is built by journal.create_file, "
+                "create_directory, append_to_file or link_to; this is a "
+                f"{type(intention).__name__}"
+            )
         with Lock(self.root):
             return self._execute(intention)
 

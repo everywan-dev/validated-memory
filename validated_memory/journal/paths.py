@@ -133,9 +133,11 @@ def _write_denied(root, location, actual):
 
     The read-only bit is how an adopter says do not write here, and no
     other check in the install path sees it: `os.replace` needs write
-    permission on the DIRECTORY, not on the file, so without this a file at
-    mode 0444 is replaced in silence and handed back at 0644
-    (docs/design/2026-09-01-the-journal-core.md §1, measured).
+    permission on the DIRECTORY, not on the file, so a file at mode 0444 is
+    replaceable without anything noticing, and this is the one place that
+    notices (docs/design/2026-09-01-the-journal-core.md §1, measured -- the
+    mode came back 0644 too, which the mode-preserving install has since
+    fixed).
 
     The question is asked of the file's own mode bits and the POSIX class
     this process falls in -- owner, else group, else other -- and of nothing
