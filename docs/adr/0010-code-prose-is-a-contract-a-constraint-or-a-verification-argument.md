@@ -196,6 +196,10 @@ pointing into a plan that had been archived out of the repository.
   enumerates a protocol or a set of illegal states is a signal about the
   interface — a case for a narrower constructor, a named result, a deeper
   module — and the review asks that question before it edits the sentence.
+  Asked of `Intention` in review unit J2, it found the docstring stronger
+  than the code — three of the combinations it presented as impossible were
+  constructible — and the answer was five named constructors, not a shorter
+  paragraph. `reconcile.reconcile` has not been asked yet.
 - **The ledger counts destinations, not only bytes.** History removed,
   claims found already pinned, coverage gaps opened, tests added, false
   claims corrected. Bytes stay as the secondary figure they are.
