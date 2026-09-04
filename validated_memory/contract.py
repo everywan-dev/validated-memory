@@ -9,13 +9,14 @@ import datetime
 import re
 
 from .findings import ERROR, WARNING, Finding
-from .frontmatter import FrontmatterError, parse
+from .frontmatter import FrontmatterError, parse, unquoted_values
 
 EVIDENCE_STATES = ("measured", "verifiable", "hypothesis")
 BASE_FIELDS = ("id", "evidence", "supersedes", "anchors", "provenance", "rationale")
 ANCHOR_FIELDS = ("system", "kind", "captured_at", "payload")
 RATIONALE_FIELDS = ("question", "options")
 OPTION_FIELDS = ("label", "disposition", "reason")
+RATIONALE_TEXT_KEYS = ("question", "label", "reason")
 DISPOSITIONS = ("chosen", "rejected")
 # The bidirectional embeddings, overrides, pop and isolates: they reorder
 # what a reader sees without changing the string. The bidirectional MARKS --
@@ -27,18 +28,6 @@ ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ISO_PATTERN = re.compile(
     r"^(\d{4}-\d{2}-\d{2})"
     r"(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$"
-)
-# The rationale block's own top-level key line, e.g. `rationale:`,
-# `rationale :` or `rationale:#comment` -- the parser's own rule for where a
-# key ends and a comment or block begins (`frontmatter._cut_comment`).
-RATIONALE_BLOCK_START = re.compile(r"^rationale\s*:(\s|$|#)")
-# A key line inside the rationale block, with or without the list dash that
-# introduces an option: `      reason: "..."` and `    - label: "..."`. The
-# whitespace around the colon matches whatever the parser accepts: a space
-# before it, and any whitespace after it -- including a non-breaking space,
-# since the parser's own `value.strip()` treats it the same as an ASCII space.
-RATIONALE_TEXT_LINE = re.compile(
-    r"^\s*(?:-\s+)?(question|label|reason)\s*:\s*(\S.*)$"
 )
 
 
@@ -555,52 +544,27 @@ def _check_rationale_quoting(location, text):
 
     The parser returns the same Python string for `reason: "x"` and
     `reason: x`, so nothing downstream of it can tell them apart -- and in a
-    plain scalar everything from ' #' onward is already gone. This scan reads
-    the raw text instead, bounded to the `rationale` block: from its
-    top-level key line to the next line at indent zero. Outside that region
-    nothing is examined, so an anchor payload with a key named `reason` is
-    untouched -- which a scan over the whole document would have flagged.
-    Inside it, those three names can belong to nothing else: the envelope is
-    closed, so any other key is already an ERROR from `_check_rationale`.
+    plain scalar everything from ' #' onward is already gone, which is what
+    the finding says. Asking the source is `unquoted_values`; the rule is
+    here.
 
-    Indentation rules are the tokenizer's own (`frontmatter._tokenize`):
-    spaces only, tabs rejected outright, blank and comment-only lines
-    skipped. Lines are numbered from `text.split("\\n")`, matching how the
-    parser numbers them.
+    Bounding the question to the `rationale` block is this rule's own
+    decision: an anchor payload with a key named `reason` is untouched, which
+    a scan over the whole document would have flagged. Inside the block those
+    three names can belong to nothing else, because the envelope is closed --
+    any other key is already an ERROR from `_check_rationale`.
     """
-    findings = []
-    delimiters = 0
-    inside = False
-    for number, line in enumerate(text.split("\n"), start=1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        if indent == 0 and stripped == "---":
-            delimiters += 1
-            if delimiters == 2:
-                break
-            continue
-        if indent == 0:
-            inside = bool(RATIONALE_BLOCK_START.match(stripped))
-            continue
-        if not inside:
-            continue
-        match = RATIONALE_TEXT_LINE.match(line)
-        if match is None:
-            continue
-        if match.group(2)[0] not in "\"'":
-            findings.append(
-                Finding(
-                    ERROR,
-                    location,
-                    f"rationale.{match.group(1)}",
-                    "value is not quoted; an unquoted scalar loses everything "
-                    "from ' #' onward, before validation can see it",
-                    line=number,
-                )
-            )
-    return findings
+    return [
+        Finding(
+            ERROR,
+            location,
+            f"rationale.{key}",
+            "value is not quoted; an unquoted scalar loses everything "
+            "from ' #' onward, before validation can see it",
+            line=number,
+        )
+        for key, number in unquoted_values(text, "rationale", RATIONALE_TEXT_KEYS)
+    ]
 
 
 def _is_valid_id(value):

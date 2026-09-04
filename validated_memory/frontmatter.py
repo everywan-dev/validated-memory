@@ -37,6 +37,51 @@ class _Line:
         self.lineno = lineno
 
 
+def unquoted_values(text, block, keys):
+    """Which of `keys` carry an unquoted scalar inside the top-level `block`.
+
+    Returns `[(key, lineno)]`, in document order. `parse` cannot answer this:
+    it returns the same string for `reason: "x"` and `reason: x`, so a rule
+    that requires the quoted form has to read the source -- and reading the
+    source is this module's job. The two grammars below are the parser's own:
+    where a key ends and a comment or block begins is `_cut_comment`'s rule,
+    and spaces-only indentation with blank and comment-only lines skipped is
+    `_tokenize`'s.
+
+    Only lines indented under the block are examined, and the scan stops at
+    the closing fence, so nothing in the document body is read. Lines are
+    numbered from `text.split("\\n")`, the way `parse` numbers them.
+    """
+    block_start = re.compile(r"^" + re.escape(block) + r"\s*:(\s|$|#)")
+    key_line = re.compile(
+        r"^\s*(?:-\s+)?(" + "|".join(re.escape(key) for key in keys) + r")\s*:\s*(\S.*)$"
+    )
+    found = []
+    delimiters = 0
+    inside = False
+    for number, line in enumerate(text.split("\n"), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 0 and stripped == FENCE:
+            delimiters += 1
+            if delimiters == 2:
+                break
+            continue
+        if indent == 0:
+            inside = bool(block_start.match(stripped))
+            continue
+        if not inside:
+            continue
+        match = key_line.match(line)
+        if match is None:
+            continue
+        if match.group(2)[0] not in "\"'":
+            found.append((match.group(1), number))
+    return found
+
+
 def parse(text):
     """Parse the frontmatter of a document and return it as a mapping."""
     lines = text.split("\n")
