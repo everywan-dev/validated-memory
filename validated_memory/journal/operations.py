@@ -1,9 +1,9 @@
 """What a caller asks the executor for, and what it gets back.
 
 Two frozen dataclasses and the vocabularies that bound them: the intention,
-which is built by naming the mutation and so cannot be given a payload that
-disagrees with it, and the outcome, which reports a refusal as a result
-rather than as an exception. Neither touches the filesystem.
+which is stated by naming the mutation, so that no caller can spell a
+payload disagreeing with its op, and the outcome, which reports a refusal
+as a result rather than as an exception. Neither touches the filesystem.
 """
 
 from dataclasses import dataclass
@@ -26,11 +26,12 @@ INTENTION_OPS = (CREATE, REPLACE, APPEND, LINK)
 class _Intention:
     """One validated, tagged mutation `Run.execute` will consume.
 
-    Built by one of the five functions below and never directly: each names
-    a mutation and fixes the fields the other four would need, so a payload
-    that disagrees with its op has no spelling here. A frozen record rather
-    than a dict, so what the executor reads three calls later is what the
-    caller stated.
+    Built by one of the five functions below and never directly. Each names
+    a mutation and fixes the fields the other four would need, and that --
+    not this class -- is what leaves a payload disagreeing with its op
+    unspellable: `_Intention(op=LINK, ..., content=b"x")` still constructs,
+    and no door leads to it. A frozen record rather than a dict, so what
+    the executor reads three calls later is what the caller stated.
 
     The executor is the only reader of the fields, and three of them do not
     say themselves what they are:
@@ -49,9 +50,11 @@ class _Intention:
       of a link, whose inverse is "restore the previous target" and whose
       note is the only place that target survives.
 
-    `__post_init__` refuses what naming the mutation cannot fix: an op
-    outside `INTENTION_OPS`, an unknown `durability`, a file mutation whose
-    `content` is None and a link whose `target` is None. Every refusal is
+    `__post_init__` refuses only what naming the mutation cannot fix, which
+    is what a factory takes from its caller and passes on: an unknown
+    `durability`, a file mutation whose `content` is None, a link whose
+    `target` is None -- and an op outside `INTENTION_OPS`, which is this
+    module's own invariant rather than a caller's. Every refusal is
     `ValueError`: nothing has been touched yet to reach it.
     """
 

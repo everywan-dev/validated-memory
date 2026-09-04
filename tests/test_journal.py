@@ -909,9 +909,14 @@ def test_a_record_from_a_newer_schema_is_refused_rather_than_read_in_part(
     Reading it for the fields this version recognises would file it as
     understood, which is the failure a version number exists to prevent. So
     the refusal names the number it met, the number it knows and the action
-    that resolves it -- and it refuses the whole journal, not that line: a
-    history read in part is the partial answer the package docstring says
-    is never offered.
+    that resolves it, and serves no partial answer: the count it reports is
+    zero, never the good records standing before the bad line.
+
+    What it does NOT pin: the refusal happening before those good lines are
+    parsed. The bad record is the last in the file, so a reader that acted
+    on every line until it reached this one would satisfy these assertions.
+    What the seam does see is the count, and a reader that served what it
+    had understood would print it.
     """
     assert run_cli("init", cwd=tmp_path).returncode == 0
     journal = tmp_path / "journal.jsonl"
@@ -927,6 +932,7 @@ def test_a_record_from_a_newer_schema_is_refused_rather_than_read_in_part(
             result.stderr,
         )
         assert "upgrade the plugin" in result.stderr, (arguments, result.stderr)
+    assert "journal: 0 record(s)" in run_cli("journal", cwd=tmp_path).stdout
 
 
 def test_a_path_that_is_not_a_string_is_a_finding_not_a_traceback(run_cli, tmp_path):
@@ -1307,11 +1313,14 @@ def test_the_journal_package_imports_only_downhill():
     added without a place in the order fails here. Where it sits is the
     decision this pin exists to force.
 
+    Every spelling of an import is matched -- relative (`from .x import y`,
+    `from . import x`) and absolute (`import validated_memory.journal.x`,
+    `from validated_memory.journal.x import y`) -- wherever it appears,
+    including inside a function.
+
     What it does NOT see, stated because a pin trusted beyond its reach is
-    worse than none: it matches `from .x import y` and `from . import x` by
-    `ast`, wherever they appear, including inside a function. A module
-    reached by `importlib.import_module` or through an attribute of an
-    already-imported one is invisible to it.
+    worse than none: a module reached by `importlib.import_module`, or
+    through an attribute of one already imported, is invisible to it.
     """
     root = REPO_ROOT / "validated_memory" / JOURNAL_SOURCE
     present = {
@@ -1323,16 +1332,30 @@ def test_the_journal_package_imports_only_downhill():
         f"  in the order, not in the package: "
         f"{sorted(set(JOURNAL_LAYERS) - present)}"
     )
+    package = f"validated_memory.{JOURNAL_SOURCE}."
     offenders = []
     for rank, name in enumerate(JOURNAL_LAYERS):
         tree = ast.parse((root / f"{name}.py").read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.ImportFrom) or node.level != 1:
-                continue
-            if node.module is None:
-                reached = [alias.name for alias in node.names]
-            else:
-                reached = [node.module]
+            reached = []
+            if isinstance(node, ast.Import):
+                reached = [
+                    alias.name.removeprefix(package)
+                    for alias in node.names
+                    if alias.name.startswith(package)
+                ]
+            elif isinstance(node, ast.ImportFrom) and node.level == 1:
+                reached = (
+                    [alias.name for alias in node.names]
+                    if node.module is None
+                    else [node.module]
+                )
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                module = node.module or ""
+                if module.startswith(package):
+                    reached = [module.removeprefix(package)]
+                elif module == package.rstrip("."):
+                    reached = [alias.name for alias in node.names]
             for module in reached:
                 if module in JOURNAL_LAYERS and JOURNAL_LAYERS.index(module) >= rank:
                     offenders.append(
