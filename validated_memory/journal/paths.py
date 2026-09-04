@@ -3,16 +3,17 @@
 The state vocabulary and everything that reads or rules on a single path:
 what `lstat` says is there, whether that satisfies what a caller expected,
 whether a record may name it at all, whether this user may write over it,
-and the words a refusal uses for it. Three of these do I/O -- `current_state`,
-`authorise` and `_write_denied` all touch the filesystem -- so none of them
-is a pure helper.
+whether a directory under the vault is really this plugin's own, and the
+words a refusal uses for it. Four of these do I/O -- `current_state`,
+`authorise`, `_write_denied` and `_own_directory` all touch the filesystem
+-- so none of them is a pure helper. None of them writes.
 """
 
 import os
 import stat
 from pathlib import Path
 
-from .records import LINK, REPO, _is_inside_path, digest
+from .records import LINK, REPO, VAULT_DIRNAME, JournalError, _is_inside_path, digest
 
 
 # The state a path is expected to be in, or found to be in -- lstat
@@ -236,6 +237,50 @@ def authorise(root, path, durability):
             "been written and nothing has been recorded."
         )
     return location
+
+
+def _own_directory(root, name):
+    """The vault directory `name`, refused unless it is a real directory.
+
+    `lstat`, and asked BEFORE anything is created, written, replaced or
+    unlinked through the name. The two directories this plugin owns under
+    the vault -- the write-ahead log and the preimage store -- are written
+    to by name, and `mkdir(exist_ok=True)`, `open` and `os.replace` all
+    follow a symlink standing where one of them should be without a word:
+    the transaction file, or the only copy of the bytes about to be
+    overwritten, lands wherever the link points, outside the adopter root
+    and outside everything this project promises. A plain file there is the
+    other half of the same question, and it reached `iterdir` as a
+    traceback.
+
+    A name that is not there at all is fine: the directory is created on
+    first use, by the caller this has just told the name is free.
+
+    `.validated-memory/` itself is not checked here. It is the vault, whose
+    own name an adopter may legitimately have made a link into a shared
+    store -- the same freedom `journal.jsonl` has (`lock_path`) -- and what
+    this refuses is a name inside it that the plugin alone writes.
+    """
+    path = Path(root) / VAULT_DIRNAME / name
+    artifact = f"{VAULT_DIRNAME}/{name}"
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return path
+    except OSError as error:
+        raise JournalError(None, f"{artifact} could not be read: {error}", artifact)
+    if not stat.S_ISDIR(info.st_mode):
+        found = "a symlink" if stat.S_ISLNK(info.st_mode) else "not a directory"
+        raise JournalError(
+            None,
+            f"{artifact} is {found}, and this plugin writes what it owns "
+            "only into a real directory of its own: everything under that "
+            "name is created, written and removed by name, and a name that "
+            "is somebody else's carries all of it somewhere this project "
+            "promises nothing about. Move it aside.",
+            artifact,
+        )
+    return path
 
 
 def _well_formed_state(state):

@@ -15,14 +15,13 @@ leak is a design change, not a move.
 
 import json
 import os
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from .. import __version__
 from .durable import fsync_directory, install
 from .operations import INTENTION_OPS
-from .paths import _well_formed_state, current_state, satisfies
+from .paths import _own_directory, _well_formed_state, current_state, satisfies
 from .records import (
     DURABILITIES,
     OBSERVE,
@@ -30,7 +29,6 @@ from .records import (
     REPO,
     SCHEMA,
     VAULT_DIRNAME,
-    JournalError,
     _is_inside_path,
     new_id,
     now,
@@ -50,57 +48,21 @@ ABORTED = "aborted"
 TRANSACTION_STAGES = (PREPARED, PUBLISHED, ABORTED)
 
 
-def _own_directory(root, name):
-    """The vault directory `name`, refused unless it is a real directory.
-
-    `lstat`, and asked BEFORE anything is created, written, replaced or
-    unlinked through the name. The two directories this plugin owns under
-    the vault -- the write-ahead log and the preimage store -- are written
-    to by name, and `mkdir(exist_ok=True)`, `open` and `os.replace` all
-    follow a symlink standing where one of them should be without a word:
-    the transaction file, or the only copy of the bytes about to be
-    overwritten, lands wherever the link points, outside the adopter root
-    and outside everything this project promises. A plain file there is the
-    other half of the same question, and it reached `iterdir` as a
-    traceback.
-
-    A name that is not there at all is fine: the directory is created on
-    first use, by the caller this has just told the name is free.
-
-    `.validated-memory/` itself is not checked here. It is the vault, whose
-    own name an adopter may legitimately have made a link into a shared
-    store -- the same freedom `journal.jsonl` has (`lock_path`) -- and what
-    this refuses is a name inside it that the plugin alone writes.
-    """
-    path = Path(root) / VAULT_DIRNAME / name
-    artifact = f"{VAULT_DIRNAME}/{name}"
-    try:
-        info = os.lstat(path)
-    except FileNotFoundError:
-        return path
-    except OSError as error:
-        raise JournalError(None, f"{artifact} could not be read: {error}", artifact)
-    if not stat.S_ISDIR(info.st_mode):
-        found = "a symlink" if stat.S_ISLNK(info.st_mode) else "not a directory"
-        raise JournalError(
-            None,
-            f"{artifact} is {found}, and this plugin writes what it owns "
-            "only into a real directory of its own: everything under that "
-            "name is created, written and removed by name, and a name that "
-            "is somebody else's carries all of it somewhere this project "
-            "promises nothing about. Move it aside.",
-            artifact,
-        )
-    return path
-
-
 def _transactions_dir(root):
-    """Where transaction files live: under the vault, never versioned."""
+    """Where transaction files live: under the vault, never versioned.
+
+    Not a path join: `_own_directory` `lstat`s the name and raises
+    `JournalError` when something that is not a directory stands there, so
+    every caller that asks where a transaction lives has asked that
+    question too. That is the point -- the name is where the write is about
+    to happen -- and it is why `_transaction_artifact` exists for the
+    callers that only need to NAME the file.
+    """
     return _own_directory(root, TRANSACTIONS_DIRNAME)
 
 
 def _transaction_path(root, transaction_id):
-    """The file one transaction lives in."""
+    """The file one transaction lives in; raises what `_transactions_dir` does."""
     return _transactions_dir(root) / f"{transaction_id}.json"
 
 
@@ -296,10 +258,8 @@ def _open_transactions(root):
             continue
         except ValueError as error:
             # Bytes that are not text at all. `read_text` raises
-            # `UnicodeDecodeError` -- a `ValueError`, not an `OSError` --
-            # and it escaped this function as a traceback out of
-            # `journal --check`, which is the one thing this function
-            # promises never to do.
+            # `UnicodeDecodeError`, which is a `ValueError` and not an
+            # `OSError`, so the handler above does not see it.
             results.append(
                 {"id": transaction_id, "damaged": f"it is not valid UTF-8: {error}"}
             )
@@ -399,11 +359,10 @@ class Recovery:
       account for, and `journal --resolve` is the way out.
     - `appended` -- whether records were actually written. `completed` has
       two shapes and they are not the same news: a mutation reaching the
-      history a session late is a thing that happened to this project, and
-      a crash between the append and the unlink left records that were
-      already there and only a file to remove. A caller that printed both
-      announced a recovery on every session start after the second, for a
-      history that gained nothing.
+      history a session late is a thing that happened to this project,
+      while a crash between the append and the unlink left records that
+      were already there and only a file to remove. A caller that announces
+      both announces a recovery on every session start after the second.
     - `message` -- the sentence a caller renders. For a problem it names the
       transaction and the three flags, because a finding a user cannot act
       on is a stopped session.
@@ -594,11 +553,10 @@ def _classify(root, item, adoption=None):
     except OSError as error:
         # `current_state` swallows every `lstat` failure -- what it cannot
         # see at all is `absent` -- but a regular file it CAN see is read
-        # for its digest, and that read raises: a file the adopter set to
-        # mode 000 came out of `journal --check` as a `PermissionError`
-        # traceback. What is at the path cannot be established, which is
-        # what `unknown` says; `actual` is None because there is no state
-        # to report, and every caller reads `reason` instead.
+        # for its digest, and that read raises. What is at the path cannot
+        # be established, which is what `unknown` says; `actual` is None
+        # because there is no state to report, and every caller reads
+        # `reason` instead.
         facts["actual"] = None
         facts["reason"] = str(error)
         return PROBLEM_UNKNOWN, facts
