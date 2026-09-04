@@ -4,8 +4,15 @@
 whole of docs/design/2026-09-01-the-journal-core.md §4's protocol -- the
 lock, path authorisation, the expected-state check, the preimage, the
 transaction file, the publication and its durability barriers, the mode,
-and both history records -- and it is one class because recovery and
-resolution share every one of those steps with execution.
+and both history records.
+
+It is one class because the three ways a mutation is closed share the
+protocol's later steps, not because they share all of them. Recovery
+rebuilds the same record pair through `_record`, under the same lock and
+by the same rule about a symlink's mode; resolution does that and also
+puts bytes back through the same `_park_preimage`, `_publish` and
+`_unpublish`. Neither authorises a path, checks an expected state or opens
+a transaction file: those belong to execution alone.
 """
 
 import json
@@ -235,14 +242,10 @@ class Run:
     Four methods, and no fifth: `observe` for a fact about the state
     adoption found, `execute` for every mutation, `recover` for what an
     earlier run left open, and `resolve_transaction` for the one an
-    operator answers for by hand. The older two-record protocol -- a
-    `prepared` record appended to a versioned journal, the caller's own
-    mutation, then a `committed` record -- is gone with its two methods,
-    and with it the ability of any module outside this package to open a
-    stage.
-    A `prepared` record with no `committed` twin is still what
-    `journal --check` reconciles, because every history written before this
-    can hold one; nothing here writes another.
+    operator answers for by hand. No module outside this package can open a
+    stage: a `prepared` record with no `committed` twin is still what
+    `journal --check` reconciles, because a history written before this
+    protocol can hold one, but nothing here writes another.
 
     `__init__` takes `Lock` itself, around the two reads and `_bootstrap`:
     deciding from what was read that no adoption id exists yet and then
@@ -287,9 +290,9 @@ class Run:
         the two histories cannot know about. The executor appends its
         records after publication, so a run killed in between leaves a path
         the plugin created on disk with nothing in either journal naming it.
-        Reading only the histories would then observe it as a fact about the
-        state adoption found -- the permanent, uninvertible lie commit
-        `4ce59a9` removed. Recovery normally puts the records back first,
+        Reading only the histories would then observe it as a fact about
+        the state adoption found, which is permanent and has no inverse.
+        Recovery normally puts the records back first,
         but a transaction it cannot resolve stays open, and this is what
         makes that state safe to run over.
 
@@ -692,6 +695,12 @@ class Run:
         # reversal to restore a number nobody chose.
         preimage_mode = actual["mode"] if actual["kind"] == FILE else None
 
+        # The line this method turns on. Every return above it is a
+        # refusal that left nothing behind, which is why they are
+        # `_refused`; every return below it has a transaction file on disk
+        # to close first, which is why they are `_aborted`. A refusal added
+        # below this line that does not close its transaction leaves the
+        # path gated for ever against a mutation that never happened.
         transaction = open_transaction(
             self.root,
             intention,
@@ -713,13 +722,9 @@ class Run:
         try:
             again = current_state(self.root, location)
         except OSError as error:
-            # The one read in this protocol that had no guard. Every read
-            # above it answers an unreadable path with a refusal; this one
-            # raised out of `execute` and reached `init.run`'s outer
-            # handler, which reports a whole-run journal failure over one
-            # item -- and left the transaction file open on a path nothing
-            # had published to. There IS a transaction now, so it closes
-            # the way the state mismatch below closes: `aborted` with the
+            # An unreadable path is a refusal here as it is everywhere
+            # above, but there is a transaction by now, so it closes the
+            # way the state mismatch below closes: `aborted` with the
             # reason, and then removed.
             return self._aborted(
                 transaction,
@@ -874,12 +879,10 @@ class Run:
           guarantee for a creation, because the primitive exists", and
           check-then-`os.replace` is not that primitive: a third party
           creating the file between the re-read and here would be
-          overwritten by a record that says `create`. Its parent is
-          refused when it is missing, for the reason the directory branch
-          gives: this branch used to `mkdir(parents=True)`, so an `init`
-          whose `memory` directory was gated by an unresolved transaction
-          -- refusing to create it, and saying so -- went on to create it
-          anyway, unrecorded, as the parent of `memory/MEMORY.md`.
+          overwritten by a record that says `create`. A missing
+          parent is refused rather than built, for the reason the directory
+          branch gives: a run that has already refused to create a
+          directory must not go on to create it as somebody else's parent.
         - **A replacement** -- a temporary, fsynced, given the TARGET's mode
           (§7: the install copies the mode onto the temporary before the
           rename, or the adopter's 0640 comes back 0644), then
@@ -1026,8 +1029,9 @@ class Run:
     def _recover_one(self, item, histories):
         """Act on `classify`'s verdict for one transaction; return a `Recovery`.
 
-        `histories` caches each journal's records across the pass, so a tree
-        with several open transactions reads each file once.
+        `histories` caches each journal's records across a recovery pass, so
+        a tree with several open transactions reads each file once. A
+        caller completing a single transaction passes none.
         """
         transaction_id = item["id"]
         verdict, facts = classify(self.root, item, self.adoption)
@@ -1107,8 +1111,8 @@ class Run:
             # path cannot be read, and the two stages are not the same
             # trouble: a `prepared` one may never have run, where a
             # `published` one certainly did and only its records were lost.
-            # One sentence for both said `prepared` whichever it was, which
-            # is the milder story told about the graver state.
+            # One sentence for both would tell the milder story about the
+            # graver state, so there are two.
             message = (
                 f"transaction {transaction_id} published {path}, and {path} "
                 f"cannot be read: {facts['reason']}; nothing here can say "
@@ -1134,7 +1138,7 @@ class Run:
             transaction_id, path, durability, problem=verdict, message=message
         )
 
-    def _complete(self, transaction_id, item, facts, histories, published=None):
+    def _complete(self, transaction_id, item, facts, histories=None, published=None):
         """Append whichever of the mutation's two records is not there yet.
 
         Returns whether anything was appended, so the caller can say which
@@ -1175,6 +1179,8 @@ class Run:
         location = facts["path"]
         intention = facts["intention"]
         postimage = facts["postimage"]
+        if histories is None:
+            histories = {}
         if durability not in histories:
             histories[durability] = read(self.root, durability)
         records = histories[durability]
@@ -1337,9 +1343,9 @@ class Run:
         # way the operator closes it, and its own pair goes into the
         # history FIRST -- the same pair recovery would have appended, the
         # crashed run's id and all -- with the resolution's `observe` after
-        # it. Closing with the observe alone left published bytes with no
-        # record at all, in an append-only history where nothing puts them
-        # back: exactly the lie the executor exists to stop manufacturing.
+        # it. Closing with the observe alone would leave published bytes
+        # with no record at all, in an append-only history where nothing
+        # puts them back: the lie the executor exists to stop manufacturing.
         # Idempotent per record, as recovery is -- `_complete` appends only
         # the halves that are not already there -- and the postimage is
         # passed because the mode of whatever wrote the path afterwards is
@@ -1348,7 +1354,7 @@ class Run:
         # and nothing there says the mutation ever ran.
         if verdict == PROBLEM_DIVERGED:
             self._complete(
-                transaction_id, item, facts, {}, published=facts["postimage"]
+                transaction_id, item, facts, published=facts["postimage"]
             )
 
         # `classify` read the path under this same lock, so this is the
