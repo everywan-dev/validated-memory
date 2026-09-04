@@ -739,7 +739,12 @@ class Run:
             )
 
         try:
-            mode = self._publish(intention, location, actual, data)
+            mode = self._publish(
+                intention,
+                location,
+                None if actual["kind"] == ABSENT else actual["mode"],
+                data,
+            )
         except OSError as error:
             return self._aborted(
                 transaction,
@@ -845,8 +850,15 @@ class Run:
             existing = (self.root / location).read_bytes()
         return existing + intention.content, len(existing)
 
-    def _publish(self, intention, location, actual, data):
+    def _publish(self, intention, location, replacing_mode, data):
         """Put the new state on disk, atomically and durably; return its mode.
+
+        `replacing_mode` is the mode of the node this is about to write
+        over, and `None` says there is nothing there. It is the whole of
+        what publication needs to know about the current state, which is
+        why it is not the state itself: `_restore` publishes the
+        PREIMAGE's mode over whatever a third party left at the path, and
+        a state dict passed there would have to be invented.
 
         Publication is not one primitive, and treating it as one is what
         docs/design/2026-09-01-the-journal-core.md §6 refuses. Four
@@ -856,7 +868,8 @@ class Run:
         - **A directory** -- `os.mkdir`, never `parents=True`. Creating an
           ancestor nobody asked for is a second mutation with no intention
           and no record, so a missing parent is a refusal that names it.
-        - **A creation over an absent name** -- `O_CREAT | O_EXCL`, which
+        - **A creation over nothing** (`replacing_mode is None`) --
+          `O_CREAT | O_EXCL`, which
           fails if the name is taken. §6 promises "a strong no-replace
           guarantee for a creation, because the primitive exists", and
           check-then-`os.replace` is not that primitive: a third party
@@ -908,7 +921,7 @@ class Run:
                 temporary.unlink(missing_ok=True)
                 raise
             fsync_directory(target.parent)
-        elif actual["kind"] == ABSENT:
+        elif replacing_mode is None:
             if not target.parent.is_dir():
                 raise FileNotFoundError(
                     f"its parent directory "
@@ -947,7 +960,7 @@ class Run:
                     handle.write(data)
                     handle.flush()
                     os.fsync(handle.fileno())
-                os.chmod(temporary, actual["mode"])
+                os.chmod(temporary, replacing_mode)
                 install(temporary, target)
             except OSError:
                 temporary.unlink(missing_ok=True)
@@ -1455,7 +1468,7 @@ class Run:
 
         intention = None
         data = None
-        actual = present
+        replacing_mode = None
         if kind == FILE:
             reference = item.get("preimage_blob")
             if not isinstance(reference, str):
@@ -1493,7 +1506,7 @@ class Run:
                     "under a mode nobody chose. Nothing has been restored."
                 )
             data = blob.read_bytes()
-            actual = {"kind": FILE, "mode": mode}
+            replacing_mode = mode
             intention = replace_file(
                 purpose=facts["intention"]["purpose"],
                 path=location,
@@ -1540,9 +1553,9 @@ class Run:
 
         try:
             if intention is not None:
-                self._publish(intention, location, actual, data)
+                self._publish(intention, location, replacing_mode, data)
             else:
-                self._unpublish(location, actual)
+                self._unpublish(location, present)
         except OSError as error:
             return refuse(
                 f"{location} could not be put back: {error}. Nothing has "
