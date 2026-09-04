@@ -81,7 +81,7 @@ def _write_transaction_file(root, transaction_id, entry):
     """Write `entry` as the whole of one transaction file, fsynced in place.
 
     Temporary, fsync, `install` -- the same durability shape every other
-    atomic write in this package uses (`bootstrap`, `_park_preimage`,
+    atomic write in this package uses (`_bootstrap`, `_park_preimage`,
     `Run._publish`): the bytes are flushed and fsynced before the rename,
     and `install` fsyncs the directory after it, so the file this call
     leaves behind is exactly as durable whether it is the first write of a

@@ -39,7 +39,7 @@ from the ones before it:
 - `lock` -- the per-adopter exclusive lock, and where it lives.
 - `transactions` -- the local write-ahead log: its four stages, its reader,
   and the classification a recovery acts on.
-- `executor` -- the preimage store, `bootstrap`, and `Run`.
+- `executor` -- the preimage store, `_bootstrap`, and `Run`.
 - `reconcile` -- the two histories read against each other and the tree.
 - `command` -- the `journal` subcommand.
 

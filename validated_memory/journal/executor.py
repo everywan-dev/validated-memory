@@ -1,6 +1,6 @@
 """The executor: the preimage store, the opening write, and `Run`.
 
-`bootstrap` is the one write that cannot journal itself. `Run` is the
+`_bootstrap` is the one write that cannot journal itself. `Run` is the
 whole of docs/design/2026-09-01-the-journal-core.md §4's protocol -- the
 lock, path authorisation, the expected-state check, the preimage, the
 transaction file, the publication and its durability barriers, the mode,
@@ -112,7 +112,7 @@ def _preimages_dir(root):
     return own_directory(root, PREIMAGE_DIRNAME)
 
 
-def bootstrap(root=Path(), run=None, records=None, local=None):
+def _bootstrap(root, run, records, local):
     """Ensure the journal exists, and return this adoption's id.
 
     This is the one write that cannot journal itself: a record describing
@@ -126,8 +126,6 @@ def bootstrap(root=Path(), run=None, records=None, local=None):
     `run` is the invocation's run id, so the opening record -- minted only
     the first time a project ever bootstraps -- carries the same run id as
     every other record that invocation writes, rather than a run of its own.
-    A caller that does not have one yet (there is none besides `Run`) gets
-    one minted here, so the record is always complete.
 
     `Run.__init__` holds the lock across this call, so a caller does not
     have to: `Lock` is re-entrant within a process, and the run-wide lock
@@ -135,11 +133,10 @@ def bootstrap(root=Path(), run=None, records=None, local=None):
     processes bootstrapping the same new adopter without it would mint two
     adoption ids, and the second install would win in silence.
 
-    `records` and `local` are the two journals the caller has already read,
-    so a caller that needs the records for something else does not read the
-    files twice. Each must be exactly what `read(root, ...)` returned for
-    its durability; anything else would mint a second adoption id over a
-    journal that already has one.
+    `records` and `local` are the two journals `Run.__init__` has already
+    read, so the files are not read twice. Each must be exactly what
+    `read(root, ...)` returned for its durability; anything else would mint
+    a second adoption id over a journal that already has one.
 
     Both artifacts are consulted, because only one of them is versioned.
     `journal.jsonl` is tracked and the vault is ignored, so an ordinary
@@ -150,10 +147,8 @@ def bootstrap(root=Path(), run=None, records=None, local=None):
     missing or malformed.
     """
     path = journal_path(root, REPO)
-    existing = read(root, REPO) if records is None else records
-    kept = read(root, LOCAL) if local is None else local
-    adoption = _adoption_id(existing, kept)
-    if existing:
+    adoption = _adoption_id(records, local)
+    if records:
         return adoption
 
     # Nothing was read, so the install below is about to publish the opening
@@ -180,7 +175,7 @@ def bootstrap(root=Path(), run=None, records=None, local=None):
         durability=REPO,
         stage=COMMITTED,
         adoption=adoption,
-        run=run if run is not None else new_id(),
+        run=run,
         note="journal opened",
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -249,7 +244,7 @@ class Run:
     `journal --check` reconciles, because every history written before this
     can hold one; nothing here writes another.
 
-    `__init__` takes `Lock` itself, around the two reads and `bootstrap`:
+    `__init__` takes `Lock` itself, around the two reads and `_bootstrap`:
     deciding from what was read that no adoption id exists yet and then
     installing one is a read-modify-write, and two runs interleaving there
     mint two ids for one project. `Lock` is re-entrant, so a caller already
@@ -265,7 +260,7 @@ class Run:
         with Lock(self.root):
             records = read(self.root, REPO)
             local = read(self.root, LOCAL)
-            self.adoption = bootstrap(self.root, self.run, records, local)
+            self.adoption = _bootstrap(self.root, self.run, records, local)
             self._survey(records, local)
 
     def _survey(self, records, local):
