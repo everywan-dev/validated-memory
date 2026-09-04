@@ -490,7 +490,7 @@ def _ensure_ignored(session, stdout):
     to be one race short about.
     """
     path = Path(IGNORE_FILENAME)
-    missing = _write_entry(session, path, stdout)
+    missing = _try_write_entry(session, path, stdout)
     if missing is None:
         return []
     if _carries_entry(_read_text(EXCLUDE_PATH)):
@@ -503,12 +503,14 @@ def _ensure_ignored(session, stdout):
     return [Finding(ERROR, IGNORE_FILENAME, "ignore-rule", missing)]
 
 
-def _write_entry(session, path, stdout):
-    """Put the vault's entry in `path`. Returns why it is not there, or None.
+def _try_write_entry(session, path, stdout):
+    """Try to put the vault's entry in `path`. Returns why it is not there, or None.
 
     None means the rule is in the file -- appended just now, or already
-    there when `init` looked. Everything else is a reason, which is the
-    ERROR's message when the caller finds nothing else ignoring the vault.
+    there when `init` looked. Everything else is a reason and NOT a finding,
+    which is why this returns a string and why its name says it tried: a
+    failure here is not yet an error, because `.git/info/exclude` may ignore
+    the vault anyway and the caller asks that next.
 
     The two shapes the entry can be added to get two different intentions,
     because their inverses differ and only the record says which was done:
