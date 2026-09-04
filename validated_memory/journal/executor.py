@@ -306,6 +306,12 @@ class Run:
 
         A damaged transaction file carries no intention and so names no
         path; it is skipped here and reported by `journal --check`.
+
+        The one reader of a transaction file that does not go through
+        `classify`, and deliberately: this runs at every `Run`, and
+        classifying would `lstat` and digest each open transaction's path
+        to answer a question nothing here asks. What is wanted is the path
+        and the id, which are in the file.
         """
         self._seen = {
             (entry["durability"], entry["path"])
@@ -1033,8 +1039,8 @@ class Run:
         a tree with several open transactions reads each file once. A
         caller completing a single transaction passes none.
         """
-        transaction_id = item["id"]
         verdict, facts = classify(self.root, item, self.adoption)
+        transaction_id = facts["id"]
         path = facts["path"]
         durability = facts["durability"]
 
@@ -1045,7 +1051,7 @@ class Run:
                 durability,
                 problem=PROBLEM_DAMAGED,
                 message=(
-                    f"damaged transaction {transaction_id}: {facts['reason']}; "
+                    f"damaged transaction {transaction_id}: {facts['problem_reason']}; "
                     f"nothing here can say what it did, so "
                     f"{transaction_artifact(transaction_id)} "
                     "is left for inspection"
@@ -1053,9 +1059,9 @@ class Run:
             )
 
         if verdict == VERDICT_REMOVE:
-            reason = item.get("reason")
+            reason = facts["abort_reason"]
             remove_transaction_file(self.root, transaction_id)
-            said = f" ({reason})" if isinstance(reason, str) else ""
+            said = f" ({reason})" if reason is not None else ""
             return Recovery(
                 transaction_id,
                 path,
@@ -1082,7 +1088,7 @@ class Run:
             )
 
         if verdict == VERDICT_COMPLETE:
-            appended = self._complete(transaction_id, item, facts, histories)
+            appended = self._complete(facts, histories)
             remove_transaction_file(self.root, transaction_id)
             return Recovery(
                 transaction_id,
@@ -1115,14 +1121,14 @@ class Run:
             # graver state, so there are two.
             message = (
                 f"transaction {transaction_id} published {path}, and {path} "
-                f"cannot be read: {facts['reason']}; nothing here can say "
+                f"cannot be read: {facts['problem_reason']}; nothing here can say "
                 "whether what it published is still there -- "
                 f"{resolution_advice(transaction_id)}"
             )
         elif facts["actual"] is None:
             message = (
                 f"transaction {transaction_id} prepared a mutation of {path}, "
-                f"and {path} cannot be read: {facts['reason']}; nothing here "
+                f"and {path} cannot be read: {facts['problem_reason']}; nothing here "
                 "can say whether it ran -- "
                 f"{resolution_advice(transaction_id)}"
             )
@@ -1138,13 +1144,13 @@ class Run:
             transaction_id, path, durability, problem=verdict, message=message
         )
 
-    def _complete(self, transaction_id, item, facts, histories=None, published=None):
+    def _complete(self, facts, histories=None, published=None):
         """Append whichever of the mutation's two records is not there yet.
 
         Returns whether anything was appended, so the caller can say which
         of the two shapes of `completed` this was.
 
-        The records are rebuilt from the transaction file and the state the
+        The records are rebuilt from `classify`'s facts and the state the
         mutation PUBLISHED. Recovery passes nothing for `published` and the
         state is the one the path is in now, which `classify` has just
         proven is that postimage; `_resolve_one` passes the transaction's
@@ -1152,7 +1158,8 @@ class Run:
         something wrote over it afterwards, and the mode of that later
         write is not a fact about the mutation. `op`, `purpose`, `path`,
         `durability` and `note` come from the intention; `preimage` (the
-        parked blob's reference) and `prior_bytes` from the file;
+        parked blob's reference) and `prior_bytes` from the facts, already
+        type-checked there;
         `postimage` from the postimage STATE's own digest, which is the
         same value `_execute` wrote; `mode` from the published node, unless
         that node is a symlink, whose mode is 0777 and means nothing. Both
@@ -1175,6 +1182,7 @@ class Run:
         unfinished. That is the honest outcome: the file order of an
         append-only journal is not something recovery may rearrange.
         """
+        transaction_id = facts["id"]
         durability = facts["durability"]
         location = facts["path"]
         intention = facts["intention"]
@@ -1211,11 +1219,10 @@ class Run:
             # path that did not exist -- the same null `_execute` writes,
             # and the same one that distinguishes "undo by truncating" from
             # "undo by removing".
-            fields["preimage"] = item.get("preimage_blob")
+            fields["preimage"] = facts["preimage_blob"]
             fields["postimage"] = postimage["digest"]
-            if item.get("prior_bytes") is not None:
-                fields["prior_bytes"] = item["prior_bytes"]
-        run = item.get("run")
+            if facts["prior_bytes"] is not None:
+                fields["prior_bytes"] = facts["prior_bytes"]
         built = [
             self._record(
                 intention["op"],
@@ -1223,7 +1230,7 @@ class Run:
                 location,
                 durability,
                 stage,
-                run=run if isinstance(run, str) else None,
+                run=facts["run"],
                 **fields,
             )
             for stage in missing
@@ -1294,7 +1301,7 @@ class Run:
                 resolution,
                 artifact,
                 f"transaction {transaction_id} is damaged "
-                f"({facts['reason']}), so nothing here can say what it did "
+                f"({facts['problem_reason']}), so nothing here can say what it did "
                 f"or what to record about it; inspect {artifact} and remove "
                 "it by hand. Nothing has been changed.",
             )
@@ -1328,13 +1335,13 @@ class Run:
                 transaction_id,
                 resolution,
                 facts["path"],
-                f"{facts['path']} could not be read ({facts['reason']}), so "
+                f"{facts['path']} could not be read ({facts['problem_reason']}), so "
                 "nothing here can say what state is being closed over. "
                 "Nothing has been changed.",
             )
 
         if resolution == RESTORE:
-            return self._restore(transaction_id, item, facts)
+            return self._restore(facts)
 
         # `diverged` is a `published` transaction: its bytes reached the
         # disk and only the two history records were lost, and what the
@@ -1353,9 +1360,7 @@ class Run:
         # `prepared` transaction whose path matches neither of its states,
         # and nothing there says the mutation ever ran.
         if verdict == PROBLEM_DIVERGED:
-            self._complete(
-                transaction_id, item, facts, published=facts["postimage"]
-            )
+            self._complete(facts, published=facts["postimage"])
 
         # `classify` read the path under this same lock, so this is the
         # state the verdict was reached on and not a second, later reading.
@@ -1383,7 +1388,7 @@ class Run:
         remove_transaction_file(self.root, transaction_id)
         return Resolution(transaction_id, resolution, facts["path"])
 
-    def _restore(self, transaction_id, item, facts):
+    def _restore(self, facts):
         """Put the preimage back, or refuse and leave everything alone.
 
         Two refusals come first, and both leave the transaction open.
@@ -1442,6 +1447,7 @@ class Run:
         The parked blob is not a record either: it is a copy in the vault,
         which the vault is for.
         """
+        transaction_id = facts["id"]
         location = facts["path"]
         durability = facts["durability"]
         # The state `classify` reached its verdict on, read under this
@@ -1476,8 +1482,8 @@ class Run:
         data = None
         replacing_mode = None
         if kind == FILE:
-            reference = item.get("preimage_blob")
-            if not isinstance(reference, str):
+            reference = facts["preimage_blob"]
+            if reference is None:
                 return refuse(
                     f"transaction {transaction_id} says {location} was a "
                     "file and names no preimage for it, so the bytes it was "
@@ -1502,7 +1508,7 @@ class Run:
                     "the bytes this transaction parked. Nothing has been "
                     "restored."
                 )
-            mode = item.get("mode")
+            mode = facts["mode"]
             if mode is None:
                 mode = preimage.get("mode")
             if not isinstance(mode, int) or isinstance(mode, bool):

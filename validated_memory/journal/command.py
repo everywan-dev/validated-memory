@@ -119,12 +119,14 @@ def run(check, resolve, resolution, stdout, stderr):
         # `--check` promises and what the next run does cannot drift apart.
         verdict, facts = classify(root, item, adoption)
         if verdict == PROBLEM_DAMAGED:
-            location = transaction_artifact(item["id"])
-            message = f"damaged transaction {item['id']}: {facts['reason']}"
+            location = transaction_artifact(facts["id"])
+            message = (
+                f"damaged transaction {facts['id']}: {facts['problem_reason']}"
+            )
         else:
             location = facts["path"]
             message = (
-                f"open transaction {item['id']} ({facts['stage']}) on "
+                f"open transaction {facts['id']} ({facts['stage']}) on "
                 f"{location}: {report_word(verdict)}"
             )
         print(Finding(ERROR, location, "journal", message).render(), file=stderr)
