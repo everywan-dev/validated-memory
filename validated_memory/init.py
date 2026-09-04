@@ -36,28 +36,18 @@ a WARNING naming what was lost. So `init` can exit 1 while the link is back,
 which is why the `SessionStart` hook reports success whatever the exit code
 (`hooks/restore-memory-symlink.sh`).
 
-`init` also writes one line into the repository's ignore file
-(`.gitignore`): `/.validated-memory/`, the vault holding preimages and the
-records of mutations whose path leaves the repository. That entry is not
-part of the adoption questionnaire and never was -- ADR 0008 makes the
-vault local by construction rather than by the adopter answering a question
-one way -- so it is written on every run, whatever the project versions.
-The entry is written once: an ignore file that already carries it is left
-exactly as it is, and one that does not exist is created.
+`init` also puts the vault's line in the repository's ignore file, first
+and before anything else it does. What that line is, which shapes of ignore
+file are left alone, and why `.git/info/exclude` settles two of them are
+`ignore.py`'s; what belongs here is what a failure to write it stops.
 
-An entry that cannot be written is an ERROR that stops the journalled run
-where it stands. Everything after it writes into a vault that is then
-exposed to the next commit, and absorbing a harness directory -- which
-moves the adopter's own data -- after a check that gated is further still
-from anything `init` may do on its own. So the scaffold, the take-over and
-the views do not run: the ERROR names the one line to add by hand, and the
-next run picks up from a tree `init` has not touched.
-
-An ignore file the adopter marked read-only is one of those: mode 0444
-denies writing to this user, so the entry is refused before anything is
-prepared and the ERROR names the file and its mode. That is a gated
-adoption on every session start until one `chmod` fixes it: writing to a
-file the adopter marked read-only is not an option this method takes.
+It is an ERROR that stops the journalled run where it stands. Everything
+after it writes into a vault that is then exposed to the next commit, and
+absorbing a harness directory -- which moves the adopter's own data --
+after a check that gated is further still from anything `init` may do on
+its own. So the scaffold, the take-over and the views do not run: the ERROR
+names the one line to add by hand, and the next run picks up from a tree
+`init` has not touched.
 
 The harness symlink is the one act that outlives that gate, because
 restoring it moves no data and it is the whole job of the `SessionStart`
@@ -66,17 +56,6 @@ precisely what is exposed, so it is not written and the loss is a WARNING
 -- exactly the treatment a journal that cannot be written already gets. A
 gated run ends with the link back, an ERROR naming the ignore file, and
 exit 1.
-
-The gate fires only where the vault is really exposed. Before it stops
-anything, `init` reads `.git/info/exclude`: a clone that already ignores
-the vault there has nothing this entry could add. That file is also the
-highest-precedence ignore source git still reads when it cannot read
-`.gitignore` -- the same situation `init` cannot write it in. What a
-symlinked `.gitignore` points at is deliberately not read as if it were
-the rule: git does not follow one (measured on git 2.43, which reports
-"unable to access '.gitignore': Too many levels of symbolic links" and
-leaves the paths untracked), so believing the target would call an exposed
-vault ignored.
 
 With `--view`, `init` also creates `knowledge.html` and `memory.html` --
 once each. The views are optional, and activation is the presence of the
@@ -94,7 +73,7 @@ simply creates nothing this run.
 import os
 from pathlib import Path
 
-from . import adopt, journal, render
+from . import adopt, ignore, journal, render
 from .findings import ERROR, EXIT_ERROR, EXIT_OK, WARNING, Finding
 
 # `Path.exists()` follows a symlink, so a broken one reads as absent and
@@ -107,33 +86,6 @@ BROKEN_SYMLINK = (
     "itself, and `init` never overwrites or deletes something that is "
     "already there, so it is left untouched"
 )
-
-IGNORE_FILENAME = ".gitignore"
-# The clone's own ignore file: git reads it, no commit can carry it, and it
-# is read here only to answer "is the vault ignored anyway?" -- never written
-# to. A `.git` that is a file rather than a directory (a worktree, a
-# submodule) puts it somewhere this does not look, so it reads as empty and
-# the run gates: unsure is the side to be wrong on.
-EXCLUDE_PATH = Path(".git") / "info" / "exclude"
-IGNORE_ENTRY = f"/{journal.VAULT_DIRNAME}/"
-IGNORE_BLOCK = f"""\
-# The validated-memory vault: preimages, and the records of mutations whose
-# path leaves the repository. Always local to this clone (ADR 0008), which is
-# why `init` writes this entry itself rather than the adoption questionnaire
-# asking for it.
-{IGNORE_ENTRY}
-"""
-
-# Forms of the same rule a hand-written ignore file may already carry --
-# including the one the questionnaire's "local" answers write. `init` adds
-# nothing when any of them is already there: it writes the entry once, it
-# does not keep the file in a shape of its own choosing.
-IGNORE_EQUIVALENTS = {
-    IGNORE_ENTRY,
-    IGNORE_ENTRY.rstrip("/"),
-    IGNORE_ENTRY.lstrip("/"),
-    IGNORE_ENTRY.strip("/"),
-}
 
 # Why a mutation went unrecorded, as `_record_symlink` says it. The link is
 # restored on both, because the failure is the record's and not the link's.
@@ -448,127 +400,50 @@ def _journal_artifact(error):
 def _ensure_ignored(session, stdout):
     """Add the vault's ignore entry to the repository's ignore file.
 
-    Returns findings. The entry is `/.validated-memory/`, anchored at the
-    root the same way the questionnaire's list is, and it is not one of the
-    questionnaire's answers: ADR 0008 fixes the vault as always local
-    because it holds preimages, which may carry bytes the adopter
-    deliberately kept out of the repository, and the harness paths that
-    never were repository content. A vault the adopter has to remember to
-    ignore is a vault that gets committed.
+    Returns findings. What the entry is, which shapes are left alone and why
+    `.git/info/exclude` settles two of them are `ignore`'s; what is here is
+    the order the three answers are asked in, the no-op rule this command
+    applies to every mutation it orders (`_refusal`), and the two lines the
+    run prints about it.
 
     It is not counted as an item `init` created or kept. Those counters are
     about the layout `init` owns; this is one line appended to a file the
     adopter owns, and the run reports it on its own line.
 
-    Four shapes are left alone rather than written to: an ignore file that
-    already carries the rule in any of its usual spellings, one that cannot
-    be read, one that is a symlink -- installing over a symlink replaces
-    the link itself, and destroying a link to record an ignore rule is not a
-    trade `init` may make -- and one whose mode denies writing to this user,
-    which the executor refuses before anything is prepared.
-
-    The unreadable one and the symlinked one only gate when the vault is
-    really exposed, which is not the same question. `.git/info/exclude`
-    ignores the same paths, is never versioned, and -- because git will not
-    read an ignore file it cannot open either -- is the highest-precedence
-    source git still consults in exactly these two shapes, so a rule there
-    settles it and the run goes on. The symlink's own target is not read:
-    git does not follow a symlinked ignore file at all, so what it points
-    at ignores nothing.
-
     This runs first, and what that buys is precise: while the vault is
     unignored, no `local` transaction file and no history record exists.
-    Those are the two that carry what a commit must never carry -- a
-    `local` path is absolute by construction (ADR 0008), and a record is
-    versioned. This function's own intention opens a `repo` transaction,
-    and may: that file names `.gitignore`, relative, with two digests and
-    no bytes of the adopter's in it, no more exposed than the lock file
-    already beside it. A parked preimage of `.gitignore` may exist too --
-    an `append` over an existing file parks one before the re-read that
-    can still abort the mutation -- and it holds bytes the adopter already
-    versioned, which is why it is the vault content this gate can afford
-    to be one race short about.
+    Those are the two that carry what a commit must never carry -- a `local`
+    path is absolute by construction (ADR 0008), and a record is versioned.
+    The entry's OWN intention opens a `repo` transaction, and may: that file
+    names `.gitignore`, relative, with two digests and no bytes of the
+    adopter's in it, no more exposed than the lock file already beside it. A
+    parked preimage of `.gitignore` may exist too -- an `append` over an
+    existing file parks one before the re-read that can still abort the
+    mutation -- and it holds bytes the adopter already versioned, which is
+    why it is the vault content this gate can afford to be one race short
+    about.
     """
-    path = Path(IGNORE_FILENAME)
-    missing = _try_write_entry(session, path, stdout)
+    missing, outcome = ignore.write_entry(session)
+    if outcome is not None:
+        missing = _refusal(
+            outcome,
+            f"the vault's ignore entry ({ignore.ENTRY}) could not be written",
+        )
+        if missing is None:
+            print(
+                f"init: ignored {ignore.ENTRY} in {ignore.FILENAME}",
+                file=stdout,
+            )
     if missing is None:
         return []
-    if _carries_entry(_read_text(EXCLUDE_PATH)):
+    if ignore.ignored_elsewhere():
         print(
-            f"init: {IGNORE_ENTRY} already ignored by "
-            f"{EXCLUDE_PATH.as_posix()}",
+            f"init: {ignore.ENTRY} already ignored by "
+            f"{ignore.EXCLUDE_PATH.as_posix()}",
             file=stdout,
         )
         return []
-    return [Finding(ERROR, IGNORE_FILENAME, "ignore-rule", missing)]
-
-
-def _try_write_entry(session, path, stdout):
-    """Try to put the vault's entry in `path`. Returns why it is not there, or None.
-
-    None means the rule is in the file -- appended just now, or already
-    there when `init` looked. Everything else is a reason and NOT a finding,
-    which is why this returns a string and why its name says it tried: a
-    failure here is not yet an error, because `.git/info/exclude` may ignore
-    the vault anyway and the caller asks that next.
-
-    The two shapes the entry can be added to get two different intentions,
-    because their inverses differ and only the record says which was done:
-    an ignore file that is not there at all is a `create` of the whole
-    block, whose inverse is removing a file `init` made; one that is
-    already there is an `append` of the addition alone, whose inverse is
-    truncating the adopter's own file back to the length it had. The
-    expected state is stated, not read on the caller's behalf: the digest
-    of the bytes just read, so an ignore file rewritten between the read
-    and the write is refused rather than appended to blind.
-
-    A refusal comes back as the reason, exactly as an `OSError` did. This
-    is where a read-only ignore file lands: mode 0444 denies writing to
-    this user, the executor refuses before anything is prepared, and the
-    run gates with an ERROR naming the file and its mode. Writing to a file
-    the adopter marked read-only is not an option this method takes.
-    """
-    if path.is_symlink():
-        return (
-            f"the vault's ignore entry ({IGNORE_ENTRY}) is missing and "
-            "cannot be added: the ignore file is a symlink, and writing it "
-            "would replace the link. Add the entry by hand."
-        )
-    try:
-        raw = path.read_bytes() if path.exists() else b""
-        existing = raw.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        return (
-            f"the ignore file could not be read, so the vault's entry "
-            f"({IGNORE_ENTRY}) could not be added: {error}"
-        )
-    if _carries_entry(existing):
-        return None
-    addition = _ignore_addition(existing)
-    if path.exists():
-        intention = journal.append_to_file(
-            purpose="ignore-rule",
-            path=IGNORE_FILENAME,
-            durability=journal.REPO,
-            expected={"kind": journal.FILE, "digest": journal.digest(raw)},
-            content=addition.encode("utf-8"),
-        )
-    else:
-        intention = journal.create_file(
-            purpose="ignore-rule",
-            path=IGNORE_FILENAME,
-            durability=journal.REPO,
-            content=addition.encode("utf-8"),
-        )
-    outcome = session.execute(intention)
-    refusal = _refusal(
-        outcome,
-        f"the vault's ignore entry ({IGNORE_ENTRY}) could not be written",
-    )
-    if refusal is not None:
-        return refusal
-    print(f"init: ignored {IGNORE_ENTRY} in {IGNORE_FILENAME}", file=stdout)
-    return None
+    return [Finding(ERROR, ignore.FILENAME, "ignore-rule", missing)]
 
 
 def _refusal(outcome, prefix):
@@ -599,36 +474,6 @@ def _refusal(outcome, prefix):
             "not in. Nothing has been written."
         )
     return None
-
-
-def _carries_entry(text):
-    """Say whether `text` already carries the rule, in any of its spellings.
-
-    Read line by line rather than matched the way git matches: this only
-    ever decides whether `init` has anything to add, and the reader git
-    would need is a gitignore engine.
-    """
-    return any(
-        line.strip() in IGNORE_EQUIVALENTS for line in text.splitlines()
-    )
-
-
-def _read_text(path):
-    """`path`'s text, or empty when it cannot be read: a file saying nothing."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return ""
-
-
-def _ignore_addition(existing):
-    """The block to append, separated from whatever the file already holds."""
-    prefix = ""
-    if existing and not existing.endswith("\n"):
-        prefix = "\n"
-    if existing.strip():
-        prefix += "\n"
-    return prefix + IGNORE_BLOCK
 
 
 def _ensure_dir(path, session):
