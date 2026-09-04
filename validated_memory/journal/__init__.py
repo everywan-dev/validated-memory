@@ -58,14 +58,14 @@ from .operations import (
     OUTCOME_APPLIED,
     OUTCOME_NOOP,
     OUTCOME_REFUSED,
-    Intention,
+    append_to_file,
+    create_directory,
+    create_file,
+    link_to,
 )
 from .paths import ABSENT, FILE, SYMLINK
 from .records import (
-    APPEND,
-    CREATE,
     JOURNAL_FILENAME,
-    LINK,
     LOCAL,
     REPO,
     VAULT_DIRNAME,
@@ -77,13 +77,9 @@ from .command import run
 
 __all__ = [
     "ABSENT",
-    "APPEND",
-    "CREATE",
     "FILE",
-    "Intention",
     "JOURNAL_FILENAME",
     "JournalError",
-    "LINK",
     "LOCAL",
     "Lock",
     "OUTCOME_APPLIED",
@@ -95,6 +91,10 @@ __all__ = [
     "Run",
     "SYMLINK",
     "VAULT_DIRNAME",
+    "append_to_file",
+    "create_directory",
+    "create_file",
     "digest",
+    "link_to",
     "run",
 ]

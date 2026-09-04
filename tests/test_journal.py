@@ -196,13 +196,9 @@ PRIVATE_JOURNAL_NAMES = (
 # none of it.
 PERMITTED_JOURNAL_EXPORTS = (
     "ABSENT",
-    "APPEND",
-    "CREATE",
     "FILE",
-    "Intention",
     "JOURNAL_FILENAME",
     "JournalError",
-    "LINK",
     "LOCAL",
     "Lock",
     "OUTCOME_APPLIED",
@@ -214,7 +210,11 @@ PERMITTED_JOURNAL_EXPORTS = (
     "Run",
     "SYMLINK",
     "VAULT_DIRNAME",
+    "append_to_file",
+    "create_directory",
+    "create_file",
     "digest",
+    "link_to",
     "run",
 )
 

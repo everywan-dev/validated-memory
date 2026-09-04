@@ -21,8 +21,9 @@ from .operations import (
     OUTCOME_APPLIED,
     OUTCOME_NOOP,
     OUTCOME_REFUSED,
-    Intention,
     Outcome,
+    link_to,
+    replace_file,
 )
 from .paths import (
     ABSENT,
@@ -44,7 +45,6 @@ from .records import (
     LOCAL,
     OBSERVE,
     PREPARED,
-    REPLACE,
     REPO,
     STAGES,
     VAULT_DIRNAME,
@@ -490,7 +490,7 @@ class Run:
     # --- the executor: one intention, one path, one outcome -------------------
 
     def execute(self, intention):
-        """Perform one `Intention`, wholly, and return an `Outcome`.
+        """Perform one intention, wholly, and return an `Outcome`.
 
         This is the mutating surface
         docs/design/2026-09-01-the-journal-core.md §4 asks for: the
@@ -1483,8 +1483,7 @@ class Run:
                 )
             data = blob.read_bytes()
             actual = {"kind": FILE, "mode": mode}
-            intention = Intention(
-                op=REPLACE,
+            intention = replace_file(
                 purpose=facts["intention"]["purpose"],
                 path=location,
                 durability=durability,
@@ -1499,8 +1498,7 @@ class Run:
                     "symlink and does not say where it pointed; this log is "
                     "damaged. Nothing has been restored."
                 )
-            intention = Intention(
-                op=LINK,
+            intention = link_to(
                 purpose=facts["intention"]["purpose"],
                 path=location,
                 durability=durability,
