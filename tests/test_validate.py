@@ -806,3 +806,30 @@ def test_two_separate_cycles_are_both_reported(adopter_dir, write_unit, run_cli)
 
     assert result.returncode == 1
     assert result.stderr.count("supersession cycle") == 2
+
+
+def test_a_supersession_chain_deeper_than_the_recursion_limit_is_still_checked(
+    adopter_dir, write_unit, run_cli
+):
+    """A chain longer than CPython's default recursion limit of 1000 frames.
+
+    `_check_supersession_cycles` walks the graph iteratively, and the comment
+    saying why names the failure this pins: a recursive descent over a chain
+    this long raises `RecursionError`, and a crash is not a finding.
+    """
+    depth = 1200
+    for index in range(depth):
+        frontmatter = f"id: kb-{index:05d}\nevidence: measured\nanchors: []\n"
+        # Each unit supersedes the NEXT id, so the walk enters at the lowest
+        # one and descends the whole chain: a chain written the other way
+        # round is visited in ascending order and never nests.
+        if index < depth - 1:
+            frontmatter += f"supersedes:\n  - kb-{index + 1:05d}\n"
+        write_unit(f"kb-{index:05d}.md", frontmatter)
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "RecursionError" not in result.stderr
+    assert f"{depth} unit(s) checked" in result.stdout
+    assert "cycle" not in result.stderr
