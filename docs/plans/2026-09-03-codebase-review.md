@@ -162,7 +162,7 @@ log when it does.
 - [x] J2 — journal vocabulary ([findings](reviews/j2.md))
 - [x] J3 — write-ahead log and lock ([findings](reviews/j3.md))
 - [x] J4 — the executor ([findings](reviews/j4.md))
-- [ ] S1 — the scaffolder
+- [x] S1 — the scaffolder ([findings](reviews/s1.md))
 - [ ] C1 — the contract
 - [ ] F1 — freshness
 - [ ] M1 — agent memory and corpus
@@ -234,3 +234,14 @@ One line per session, most recent last: date, unit, commit, outcome.
   preflight to work around it — the preflight defends against `Lock`
   creating the vault as much as against the bootstrap, which is what makes
   the obvious fix unavailable.
+- 2026-09-04 — S1, the scaffolder, `d6d9d70` … `6fc9968`. The vault's ignore
+  rule became `ignore.py` (J2's `durable.py` argument); `init.py` 1 016 →
+  859, and the first unit since J1 to shrink its prose, because the same
+  contract had been written twice. Four incidents out, all pinned; two
+  unpinned claims closed, one seen red. J4's inherited question answered
+  yes -- adopting should be an explicit step -- and recorded as an ADR
+  question rather than applied, since it changes the journal's public
+  surface. The unit's most serious finding is a behaviour one and goes to
+  `TODO.md`: on the journal-failure path the harness take-over runs outside
+  the run-wide lock and still moves the adopter's data, where the unignored
+  gate refuses the same act.
