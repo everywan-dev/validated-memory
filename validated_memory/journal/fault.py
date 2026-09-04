@@ -1,7 +1,7 @@
 """The crash seam: the four points at which a test may kill the process.
 
 One module for one environment variable, so the package has exactly one
-reader of it and a grep for `_fault` finds every line that can act on it.
+reader of it and a grep for `fault_at` finds every line that can act on it.
 Neither name here is exported by the package.
 """
 
@@ -23,7 +23,7 @@ FAULT_POINTS = (
 )
 
 
-def _fault(point):
+def fault_at(point):
     """Die at `point`, hard, if `VALIDATED_MEMORY_FAULT` names it.
 
     The one place in the package that reads that variable: a test driving
@@ -38,7 +38,7 @@ def _fault(point):
     death; nothing reads it back.
 
     Unset or naming a point this run never reaches, it is inert: every call
-    site falls through exactly as if `_fault` were not called at all.
+    site falls through exactly as if `fault_at` were not called at all.
     """
     if os.environ.get("VALIDATED_MEMORY_FAULT") == point:
         sys.stdout.flush()

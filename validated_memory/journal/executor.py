@@ -15,14 +15,14 @@ from dataclasses import replace as _replace
 from pathlib import Path
 
 from .durable import fsync_directory, install
-from .fault import _fault
+from .fault import fault_at
 from .lock import Lock
 from .operations import (
     OUTCOME_APPLIED,
     OUTCOME_NOOP,
     OUTCOME_REFUSED,
     Outcome,
-    _Intention,
+    Intention,
     link_to,
     replace_file,
 )
@@ -31,10 +31,10 @@ from .paths import (
     DIRECTORY,
     FILE,
     SYMLINK,
-    _describe,
-    _own_directory,
-    _postimage_state,
-    _write_denied,
+    describe,
+    own_directory,
+    postimage_state,
+    write_denied,
     authorise,
     current_state,
     satisfies,
@@ -51,7 +51,7 @@ from .records import (
     STAGES,
     VAULT_DIRNAME,
     JournalError,
-    _is_inside_path,
+    is_inside_path,
     append,
     artifact_name,
     digest,
@@ -74,18 +74,18 @@ from .transactions import (
     RESTORE,
     Recovery,
     Resolution,
-    _abort_transaction,
-    _classify,
-    _COMPLETE,
-    _DISCARD,
-    _mark_published,
-    _no_such_transaction,
-    _open_transaction,
-    _open_transactions,
-    _REMOVE,
-    _resolution_advice,
-    _resolve_transaction,
-    _transaction_artifact,
+    abort_transaction,
+    classify,
+    VERDICT_COMPLETE,
+    VERDICT_DISCARD,
+    mark_published,
+    no_such_transaction,
+    open_transaction,
+    open_transactions,
+    VERDICT_REMOVE,
+    resolution_advice,
+    remove_transaction_file,
+    transaction_artifact,
 )
 
 
@@ -109,7 +109,7 @@ def _blob_matches(path, reference):
 
 def _preimages_dir(root):
     """Where parked preimages live: under the vault, one file per digest."""
-    return _own_directory(root, PREIMAGE_DIRNAME)
+    return own_directory(root, PREIMAGE_DIRNAME)
 
 
 def bootstrap(root=Path(), run=None, records=None, local=None):
@@ -314,7 +314,7 @@ class Run:
             for entry in records + local
         }
         self._open_paths = {}
-        for item in _open_transactions(self.root):
+        for item in open_transactions(self.root):
             intention = item.get("intention")
             if not isinstance(intention, dict):
                 continue
@@ -325,7 +325,7 @@ class Run:
                 # what `execute` and `observe` look up: a repository path is
                 # normalised and a local one is left exactly as written,
                 # since the vault legitimately names paths this package may
-                # not rewrite (ADR 0008). `_classify` normalises the same
+                # not rewrite (ADR 0008). `classify` normalises the same
                 # way, so a transaction gates the path its own recovery
                 # reports.
                 if durability == REPO:
@@ -355,7 +355,7 @@ class Run:
         forgets to ask `authorise` first, because `read` refuses exactly
         that record back.
         """
-        if durability == REPO and not _is_inside_path(path):
+        if durability == REPO and not is_inside_path(path):
             raise ValueError(
                 f"{path} is not a path inside the adopter root; a "
                 "repository record may only carry a relative path that "
@@ -526,7 +526,7 @@ class Run:
            mutation that changes nothing is not a mutation to record. It is
            also not an `observe`: `observe` means "adoption found this",
            which is a different claim entirely (§4).
-        5. **Refuse a target whose mode denies writing** (`_write_denied`),
+        5. **Refuse a target whose mode denies writing** (`write_denied`),
            before the preimage, so this refusal too leaves nothing behind.
         6. **Park and verify the preimage**, fsynced, and open the
            transaction file, fsynced. From here on there is a write-ahead
@@ -548,10 +548,10 @@ class Run:
         10. **Resolve the transaction** -- the file leaves the disk -- and
             remember the path, so it can never be observed as pre-existing.
 
-        The four `_fault` points are the seams between those steps, so a
+        The four `fault_at` points are the seams between those steps, so a
         test can kill the process at each and assert what is left.
         """
-        if not isinstance(intention, _Intention):
+        if not isinstance(intention, Intention):
             # A type gate, not a vocabulary one, and it is load-bearing:
             # this method reads fields off whatever it is given, so any
             # object shaped like an intention reaches publication. One
@@ -615,16 +615,16 @@ class Run:
                 f"{location} has an unresolved transaction {held} that "
                 "recovery could neither complete nor discard; nothing may "
                 f"write to it until it is closed -- "
-                f"{_resolution_advice(held)}. Nothing has been written.",
+                f"{resolution_advice(held)}. Nothing has been written.",
             )
 
         if not satisfies(actual, intention.expected):
             return self._refused(
                 intention,
                 actual,
-                f"{location} is {_describe(actual)}, and this "
+                f"{location} is {describe(actual)}, and this "
                 f"{intention.op} expects it to be "
-                f"{_describe(intention.expected)}. Nothing has been written.",
+                f"{describe(intention.expected)}. Nothing has been written.",
             )
 
         # A byte-publishing op may only ever land on nothing or on a
@@ -642,7 +642,7 @@ class Run:
             return self._refused(
                 intention,
                 actual,
-                f"{location} is {_describe(actual)}; refusing to replace it. "
+                f"{location} is {describe(actual)}; refusing to replace it. "
                 "Nothing has been written.",
             )
 
@@ -663,7 +663,7 @@ class Run:
                 "its bytes or write over it. Nothing has been written.",
             )
 
-        postimage = _postimage_state(intention, actual, data)
+        postimage = postimage_state(intention, actual, data)
         if satisfies(actual, postimage):
             return Outcome(
                 OUTCOME_NOOP,
@@ -673,7 +673,7 @@ class Run:
                 mode=actual.get("mode"),
             )
 
-        denied = _write_denied(self.root, location, actual)
+        denied = write_denied(self.root, location, actual)
         if denied is not None:
             return self._refused(intention, actual, denied)
 
@@ -697,7 +697,7 @@ class Run:
         # reversal to restore a number nobody chose.
         preimage_mode = actual["mode"] if actual["kind"] == FILE else None
 
-        transaction = _open_transaction(
+        transaction = open_transaction(
             self.root,
             intention,
             actual,
@@ -708,7 +708,7 @@ class Run:
             adoption=self.adoption,
             run=self.run,
         )
-        _fault("after-transaction")
+        fault_at("after-transaction")
 
         # The state as it is NOW, not as it was before the preimage was
         # parked and the transaction fsynced. Compared whole rather than
@@ -739,7 +739,7 @@ class Run:
                 intention,
                 again,
                 f"{location} changed while its mutation was being prepared: "
-                f"it is {_describe(again)} now and was {_describe(actual)} "
+                f"it is {describe(again)} now and was {describe(actual)} "
                 "when this run checked. Nothing has been written.",
             )
 
@@ -753,9 +753,9 @@ class Run:
                 f"{location} could not be written: {error}. Nothing has "
                 "been published.",
             )
-        _fault("after-publish")
-        _mark_published(self.root, transaction)
-        _fault("after-published")
+        fault_at("after-publish")
+        mark_published(self.root, transaction)
+        fault_at("after-published")
 
         # Both records carry the transaction that produced them, because the
         # transaction FILE is local and leaves the disk on the next line:
@@ -788,9 +788,9 @@ class Run:
             self.root,
             intention.durability,
         )
-        _fault("after-history")
+        fault_at("after-history")
 
-        _resolve_transaction(self.root, transaction)
+        remove_transaction_file(self.root, transaction)
         self._seen.add((intention.durability, location))
         return Outcome(
             OUTCOME_APPLIED,
@@ -821,8 +821,8 @@ class Run:
         nothing was published, where a file that simply vanished says
         nothing at all.
         """
-        _abort_transaction(self.root, transaction, message)
-        _resolve_transaction(self.root, transaction)
+        abort_transaction(self.root, transaction, message)
+        remove_transaction_file(self.root, transaction)
         return self._refused(intention, actual, message)
 
     def _payload(self, intention, location, actual):
@@ -996,7 +996,7 @@ class Run:
         this resolves leaves the disk, so a second pass never sees it again;
         and completing one appends only the history records that are not
         already there, checked by transaction id AND stage, because a crash
-        between `append` and `_resolve_transaction` leaves a `published`
+        between `append` and `remove_transaction_file` leaves a `published`
         transaction whose records exist. Appending them again would double
         the mutation in a versioned, append-only file, where nothing takes
         it back.
@@ -1010,19 +1010,19 @@ class Run:
             histories = {}
             results = [
                 self._recover_one(item, histories)
-                for item in _open_transactions(self.root)
+                for item in open_transactions(self.root)
             ]
             self._survey(read(self.root, REPO), read(self.root, LOCAL))
             return results
 
     def _recover_one(self, item, histories):
-        """Act on `_classify`'s verdict for one transaction; return a `Recovery`.
+        """Act on `classify`'s verdict for one transaction; return a `Recovery`.
 
         `histories` caches each journal's records across the pass, so a tree
         with several open transactions reads each file once.
         """
         transaction_id = item["id"]
-        verdict, facts = _classify(self.root, item, self.adoption)
+        verdict, facts = classify(self.root, item, self.adoption)
         path = facts["path"]
         durability = facts["durability"]
 
@@ -1035,14 +1035,14 @@ class Run:
                 message=(
                     f"damaged transaction {transaction_id}: {facts['reason']}; "
                     f"nothing here can say what it did, so "
-                    f"{_transaction_artifact(transaction_id)} "
+                    f"{transaction_artifact(transaction_id)} "
                     "is left for inspection"
                 ),
             )
 
-        if verdict == _REMOVE:
+        if verdict == VERDICT_REMOVE:
             reason = item.get("reason")
-            _resolve_transaction(self.root, transaction_id)
+            remove_transaction_file(self.root, transaction_id)
             said = f" ({reason})" if isinstance(reason, str) else ""
             return Recovery(
                 transaction_id,
@@ -1056,8 +1056,8 @@ class Run:
                 ),
             )
 
-        if verdict == _DISCARD:
-            _resolve_transaction(self.root, transaction_id)
+        if verdict == VERDICT_DISCARD:
+            remove_transaction_file(self.root, transaction_id)
             return Recovery(
                 transaction_id,
                 path,
@@ -1069,9 +1069,9 @@ class Run:
                 ),
             )
 
-        if verdict == _COMPLETE:
+        if verdict == VERDICT_COMPLETE:
             appended = self._complete(transaction_id, item, facts, histories)
-            _resolve_transaction(self.root, transaction_id)
+            remove_transaction_file(self.root, transaction_id)
             return Recovery(
                 transaction_id,
                 path,
@@ -1090,9 +1090,9 @@ class Run:
         if verdict == PROBLEM_DIVERGED:
             message = (
                 f"transaction {transaction_id} published {path}, but {path} "
-                f"is {_describe(facts['actual'])} now and not what was "
+                f"is {describe(facts['actual'])} now and not what was "
                 "published; nothing here can say whether that is wanted -- "
-                f"{_resolution_advice(transaction_id)}"
+                f"{resolution_advice(transaction_id)}"
             )
         elif facts["actual"] is None and facts["stage"] == PUBLISHED:
             # The stage is most of what is known about a transaction whose
@@ -1105,22 +1105,22 @@ class Run:
                 f"transaction {transaction_id} published {path}, and {path} "
                 f"cannot be read: {facts['reason']}; nothing here can say "
                 "whether what it published is still there -- "
-                f"{_resolution_advice(transaction_id)}"
+                f"{resolution_advice(transaction_id)}"
             )
         elif facts["actual"] is None:
             message = (
                 f"transaction {transaction_id} prepared a mutation of {path}, "
                 f"and {path} cannot be read: {facts['reason']}; nothing here "
                 "can say whether it ran -- "
-                f"{_resolution_advice(transaction_id)}"
+                f"{resolution_advice(transaction_id)}"
             )
         else:
             message = (
                 f"transaction {transaction_id} prepared a mutation of {path}, "
-                f"and {path} is {_describe(facts['actual'])} now, which is "
+                f"and {path} is {describe(facts['actual'])} now, which is "
                 "neither the state it was to change from nor the one it was "
                 "to change to; nothing here can say whether it ran -- "
-                f"{_resolution_advice(transaction_id)}"
+                f"{resolution_advice(transaction_id)}"
             )
         return Recovery(
             transaction_id, path, durability, problem=verdict, message=message
@@ -1134,7 +1134,7 @@ class Run:
 
         The records are rebuilt from the transaction file and the state the
         mutation PUBLISHED. Recovery passes nothing for `published` and the
-        state is the one the path is in now, which `_classify` has just
+        state is the one the path is in now, which `classify` has just
         proven is that postimage; `_resolve_one` passes the transaction's
         own postimage, because a `diverged` transaction did publish and
         something wrote over it afterwards, and the mode of that later
@@ -1259,21 +1259,21 @@ class Run:
 
     def _resolve_one(self, transaction_id, resolution):
         """`resolve_transaction`'s body, with the lock already held."""
-        artifact = _transaction_artifact(transaction_id)
+        artifact = transaction_artifact(transaction_id)
         item = next(
             (
                 entry
-                for entry in _open_transactions(self.root)
+                for entry in open_transactions(self.root)
                 if entry["id"] == transaction_id
             ),
             None,
         )
         if item is None:
             return Resolution(
-                transaction_id, resolution, artifact, _no_such_transaction(transaction_id)
+                transaction_id, resolution, artifact, no_such_transaction(transaction_id)
             )
 
-        verdict, facts = _classify(self.root, item, self.adoption)
+        verdict, facts = classify(self.root, item, self.adoption)
         if verdict == PROBLEM_DAMAGED:
             return Resolution(
                 transaction_id,
@@ -1343,7 +1343,7 @@ class Run:
                 transaction_id, item, facts, {}, published=facts["postimage"]
             )
 
-        # `_classify` read the path under this same lock, so this is the
+        # `classify` read the path under this same lock, so this is the
         # state the verdict was reached on and not a second, later reading.
         found = facts["actual"]["kind"]
         note = (
@@ -1366,7 +1366,7 @@ class Run:
             self.root,
             facts["durability"],
         )
-        _resolve_transaction(self.root, transaction_id)
+        remove_transaction_file(self.root, transaction_id)
         return Resolution(transaction_id, resolution, facts["path"])
 
     def _restore(self, transaction_id, item, facts):
@@ -1397,7 +1397,7 @@ class Run:
         from the transaction file, which recorded the preimage's own -- not
         from whatever is at the path now, which may be the plugin's
         replacement or a third party's file. The read-only bit is NOT
-        consulted: `_write_denied` exists so a mutation never quietly
+        consulted: `write_denied` exists so a mutation never quietly
         overwrites what an adopter marked unwritable, and this is the
         opposite -- an operator's explicit instruction to put that adopter's
         own bytes back.
@@ -1430,7 +1430,7 @@ class Run:
         """
         location = facts["path"]
         durability = facts["durability"]
-        # The state `_classify` reached its verdict on, read under this
+        # The state `classify` reached its verdict on, read under this
         # same lock -- what is about to be discarded.
         present = facts["actual"]
 
@@ -1553,7 +1553,7 @@ class Run:
                 f"{location} could not be put back: {error}. Nothing has "
                 "been restored."
             )
-        _resolve_transaction(self.root, transaction_id)
+        remove_transaction_file(self.root, transaction_id)
         return Resolution(transaction_id, RESTORE, location, kept=kept)
 
     def _unpublish(self, location, actual):

@@ -306,7 +306,7 @@ def read(root=Path(), durability=REPO):
                 "it lives in",
                 where,
             )
-        if durability == REPO and not _is_inside_path(entry["path"]):
+        if durability == REPO and not is_inside_path(entry["path"]):
             raise JournalError(
                 lineno,
                 f"record path '{entry['path']}' is not inside the adopter "
@@ -349,7 +349,7 @@ def _check_types(lineno, entry, where):
             )
 
 
-def _is_inside_path(path):
+def is_inside_path(path):
     """Whether `path` is relative and names nothing above the adopter root.
 
     Lexical, because this runs on every record read: `authorise` applies the

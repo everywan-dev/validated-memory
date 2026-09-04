@@ -23,20 +23,20 @@ INTENTION_OPS = (CREATE, REPLACE, APPEND, LINK)
 
 
 @dataclass(frozen=True)
-class _Intention:
+class Intention:
     """One validated, tagged mutation `Run.execute` will consume.
 
     Built by one of the five functions below and never directly. Each names
     a mutation and fixes the fields the other four would need, and that --
     not this class -- is what leaves a payload disagreeing with its op
-    unspellable: `_Intention(op=LINK, ..., content=b"x")` still constructs,
+    unspellable: `Intention(op=LINK, ..., content=b"x")` still constructs,
     and so does `dataclasses.replace` over a valid one -- both are inside
     this package, and neither is a door a caller reaches. A frozen record
     rather than a dict, so what the executor reads three calls later is
     what the caller stated.
 
-    Three modules read the fields -- the executor, `_open_transaction`,
-    which copies them into the transaction file, and `_postimage_state` --
+    Three modules read the fields -- the executor, `open_transaction`,
+    which copies them into the transaction file, and `postimage_state` --
     and three of the fields do not say themselves what they are:
 
     - `expected` -- the preimage state, in `current_state`'s vocabulary
@@ -45,7 +45,7 @@ class _Intention:
       before it touches anything.
     - `content` -- the full new bytes for a creation or a replacement, the
       bytes to add for an append. Never a diff, and never persisted:
-      `_open_transaction` writes the transaction file's `preimage` and
+      `open_transaction` writes the transaction file's `preimage` and
       `postimage` STATE, never these bytes, so payload content never
       touches the local disk twice.
     - `note` -- the free-text annotation both of the mutation's records
@@ -96,7 +96,7 @@ def create_file(purpose, path, durability, content, note=None):
     never a no-op" is true here by construction rather than by inspection
     of each caller.
     """
-    return _Intention(
+    return Intention(
         op=CREATE,
         purpose=purpose,
         path=path,
@@ -113,7 +113,7 @@ def create_directory(purpose, path, durability, note=None):
     No content, because a directory has none, and the same fixed `absent`
     expectation `create_file` gives its reason for.
     """
-    return _Intention(
+    return Intention(
         op=CREATE,
         purpose=purpose,
         path=path,
@@ -131,7 +131,7 @@ def replace_file(purpose, path, durability, expected, content, note=None):
     replaced is what the reversal has to put back, so the preimage is part
     of what is being asked for.
     """
-    return _Intention(
+    return Intention(
         op=REPLACE,
         purpose=purpose,
         path=path,
@@ -144,7 +144,7 @@ def replace_file(purpose, path, durability, expected, content, note=None):
 
 def append_to_file(purpose, path, durability, expected, content, note=None):
     """`content` added to the end of a file whose current state is `expected`."""
-    return _Intention(
+    return Intention(
         op=APPEND,
         purpose=purpose,
         path=path,
@@ -162,7 +162,7 @@ def link_to(purpose, path, durability, expected, target, note=None):
     `{"kind": SYMLINK, "target": ...}` for one being repointed. The previous
     target survives nowhere else, which is what `note` is for.
     """
-    return _Intention(
+    return Intention(
         op=LINK,
         purpose=purpose,
         path=path,

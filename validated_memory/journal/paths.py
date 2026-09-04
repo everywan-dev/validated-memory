@@ -5,7 +5,7 @@ what `lstat` says is there, whether that satisfies what a caller expected,
 whether a record may name it at all, whether this user may write over it,
 whether a directory under the vault is really this plugin's own, and the
 words a refusal uses for it. Four of these do I/O -- `current_state`,
-`authorise`, `_write_denied` and `_own_directory` all touch the filesystem
+`authorise`, `write_denied` and `own_directory` all touch the filesystem
 -- so none of them is a pure helper. None of them writes.
 """
 
@@ -13,7 +13,7 @@ import os
 import stat
 from pathlib import Path
 
-from .records import LINK, REPO, VAULT_DIRNAME, JournalError, _is_inside_path, digest
+from .records import LINK, REPO, VAULT_DIRNAME, JournalError, is_inside_path, digest
 
 
 # The state a path is expected to be in, or found to be in -- lstat
@@ -85,7 +85,7 @@ def satisfies(actual, expected):
     return True
 
 
-def _describe(state):
+def describe(state):
     """A state in the words a refusal uses, not in the words a record uses.
 
     A digest and a mode are what the transaction file carries; a person
@@ -103,10 +103,10 @@ def _describe(state):
     return "a file"
 
 
-def _postimage_state(intention, actual, data):
+def postimage_state(intention, actual, data):
     """The state `intention` will leave at its path, in `current_state`'s words.
 
-    Computed here rather than in `_open_transaction`, for the reason that
+    Computed here rather than in `open_transaction`, for the reason that
     function's docstring gives: an `append`'s digest needs the bytes already
     on disk, and only the executor has read them. `data` is the full new
     bytes publication will write, or None for a mutation that has none.
@@ -129,7 +129,7 @@ def _postimage_state(intention, actual, data):
     return state
 
 
-def _write_denied(root, location, actual):
+def write_denied(root, location, actual):
     """Why this user may not write over `location`, or None when it may.
 
     The read-only bit is how an adopter says do not write here, and no
@@ -186,10 +186,10 @@ def authorise(root, path, durability):
     A `repo` intention asks both, in order:
 
     - Lexical -- `path` is relative and does not climb out with `..`
-      (`_is_inside_path`). `ValueError`, because nothing was touched to
+      (`is_inside_path`). `ValueError`, because nothing was touched to
       find that out.
     - Resolved -- the location, joined to `root`, still resolves below
-      `root` once every symlink on the way is followed (`_resolves_below`).
+      `root` once every symlink on the way is followed (`resolves_below`).
       `OSError`, because a caller may already have read something (a
       preimage, an existing record) to reach this line.
 
@@ -224,13 +224,13 @@ def authorise(root, path, durability):
     if durability != REPO:
         return path
     location = Path(path).as_posix()
-    if not _is_inside_path(location):
+    if not is_inside_path(location):
         raise ValueError(
             f"{location} is not a path inside the adopter root; a "
             "repository record may only carry a relative path that stays "
             "below it. Nothing has been recorded."
         )
-    if not _resolves_below(Path(root), Path(root) / location):
+    if not resolves_below(Path(root), Path(root) / location):
         raise OSError(
             f"{location} resolves outside the adopter root; a repository "
             "record may only name bytes that stay below it. Nothing has "
@@ -239,7 +239,7 @@ def authorise(root, path, durability):
     return location
 
 
-def _own_directory(root, name):
+def own_directory(root, name):
     """The vault directory `name`, refused unless it is a real directory.
 
     `lstat`, and asked BEFORE anything is created, written, replaced or
@@ -283,14 +283,14 @@ def _own_directory(root, name):
     return path
 
 
-def _well_formed_state(state):
+def well_formed_state(state):
     """Whether `state` is a state dict in `current_state`'s own vocabulary.
 
     The kind, and the type of every field a kind carries. A transaction
     file is data
     (docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md
     §7), and every reader downstream of this one -- `satisfies`,
-    `_describe`, `_restore`, which puts a mode back and reads a `target`
+    `describe`, `_restore`, which puts a mode back and reads a `target`
     -- assumes types nothing had checked: a `digest` that is a number
     matches no state and silently diverges, a `target` that is a list
     reaches `symlink_to`, and `"mode": true` is not a mode.
@@ -307,7 +307,7 @@ def _well_formed_state(state):
     return True
 
 
-def _resolves_below(root, target):
+def resolves_below(root, target):
     """Whether `target` is still inside `root` once every symlink is followed."""
     try:
         return target.resolve().is_relative_to(Path(root).resolve())

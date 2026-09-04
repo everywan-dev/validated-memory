@@ -144,7 +144,11 @@ UNRECORDED_WRITES = {
 }
 
 # Names the journal keeps to itself: the two halves of the older two-record
-# protocol, the raw append, and the transaction file's own machinery. A
+# protocol, the raw append, and the transaction file's own machinery. Some
+# carry a leading underscore and some do not, and that difference is about
+# the INSIDE of the package (ADR 0011): a prefixed name is one module's own,
+# an unprefixed one is another module's dependency, and neither is a name a
+# module outside the package may say. A
 # module outside the journal package naming any of them is reaching past
 # `execute`, which is the thing
 # docs/design/2026-09-01-the-journal-core.md §4 removed the public
@@ -153,9 +157,9 @@ UNRECORDED_WRITES = {
 # only because none of these spellings occurs in English.
 #
 # `prepare_op` and `append_op` were the two-record protocol's own methods;
-# `_open_transaction`, `_mark_published`, `_abort_transaction`,
-# `_resolve_transaction` and `_write_transaction_file` are the write-ahead
-# log's four stages and the atomic write beneath them; `_write_denied` is
+# `open_transaction`, `mark_published`, `abort_transaction`,
+# `remove_transaction_file` and `_write_transaction_file` are the write-ahead
+# log's four stages and the atomic write beneath them; `write_denied` is
 # the read-only check a caller must not make for itself; `_park_preimage` is
 # the only copy of bytes about to be overwritten, and a caller that parks its
 # own decides for itself what the pre-adoption state was; `_publish` is the
@@ -172,12 +176,12 @@ UNRECORDED_WRITES = {
 PRIVATE_JOURNAL_NAMES = (
     "prepare_op",
     "append_op",
-    "_open_transaction",
-    "_mark_published",
-    "_abort_transaction",
-    "_resolve_transaction",
+    "open_transaction",
+    "mark_published",
+    "abort_transaction",
+    "remove_transaction_file",
     "_write_transaction_file",
-    "_write_denied",
+    "write_denied",
     "_park_preimage",
     "_publish",
 )
@@ -1731,12 +1735,12 @@ def test_a_journal_that_is_a_broken_symlink_is_never_replaced(
 
 
 def test_journal_check_reports_a_readable_open_transaction(run_cli, tmp_path):
-    """A hand-written transaction file, in `_open_transaction`'s own field shape.
+    """A hand-written transaction file, in `open_transaction`'s own field shape.
 
     No caller opens a transaction except through `Run.execute`, so this
-    is the contract the reader (`_open_transactions`, exercised through
-    `journal --check`) and the writer, `_open_transaction`, have to
-    agree on. The exact shape is `_open_transaction`'s docstring, in
+    is the contract the reader (`open_transactions`, exercised through
+    `journal --check`) and the writer, `open_transaction`, have to
+    agree on. The exact shape is `open_transaction`'s docstring, in
     `validated_memory/journal/transactions.py`.
     """
     assert run_cli("init", cwd=tmp_path).returncode == 0
@@ -2976,7 +2980,7 @@ def _created_then_diverged(tree):
 
 
 def _transaction_file(tree, transaction_id, **overrides):
-    """Hand-write one transaction file, in `_open_transaction`'s field shape.
+    """Hand-write one transaction file, in `open_transaction`'s field shape.
 
     The same fixture `test_journal_check_reports_a_readable_open_transaction`
     builds, factored out because the classification has four answers and
@@ -3143,7 +3147,7 @@ def test_journal_check_says_what_recovery_would_do_with_each_transaction(
 ):
     """Four words, one per row of the table, and `--check` writes nothing.
 
-    The classification is `_classify`'s, which is also what `Run.recover`
+    The classification is `classify`'s, which is also what `Run.recover`
     acts on, so what `--check` promises and what the next run does cannot
     drift apart. `recoverable` covers complete, discard and remove alike:
     `--check` asks one question -- would a run clear this away by itself?
