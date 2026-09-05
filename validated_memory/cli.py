@@ -172,9 +172,7 @@ def build_parser():
                     "time"
                 ),
             )
-            # Kept on the parsed namespace so `main` can raise a proper
-            # argparse usage error (this subparser's own usage line) for a
-            # combination no `type=`/`choices=` check can express on its own.
+            # Cross-flag errors must use this command's usage line.
             subparser.set_defaults(_status_subparser=subparser)
         if name == "journal":
             subparser.add_argument(
@@ -214,10 +212,7 @@ def build_parser():
                 action="store_true",
                 help="--resolve: leave the path as found, and record that",
             )
-            # Kept on the namespace for the same reason `status` keeps its
-            # own: the combinations below are cross-flag rules no `type=` or
-            # `choices=` can express, and they must fail as this
-            # subcommand's usage error rather than as anything else.
+            # Cross-flag errors must use this command's usage line.
             subparser.set_defaults(_journal_subparser=subparser)
     return parser
 
@@ -238,11 +233,7 @@ def main(argv=None):
     if args.command == "render":
         return render.run(args.only_existing, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "status":
-        # Fail-explicit: an age flag with nothing to bound it would silently
-        # pretend to gate. `type=`/`choices=` cannot express a cross-flag
-        # requirement, so this checks it here and raises through the
-        # subparser -- the usual argparse usage error (exit 2), naming the
-        # flag and the subcommand's own usage line, not a generic one.
+        # The age gate and clock override both require an age bound.
         if args.max_verdict_age is None:
             if args.fail_on_aged:
                 args._status_subparser.error(
@@ -260,11 +251,7 @@ def main(argv=None):
             stderr=sys.stderr,
         )
     if args.command == "journal":
-        # Fail-explicit, exactly as `status` above: a resolution flag with
-        # no transaction to apply it to, two of them at once, or one
-        # alongside the read-only `--check`, is a request with no single
-        # meaning, and guessing at one would close a transaction the user
-        # did not name.
+        # Resolution requires an ID, exactly one action, and no --check.
         chosen = [
             name
             for name in journal.RESOLUTIONS
@@ -275,9 +262,7 @@ def main(argv=None):
                 args._journal_subparser.error(f"--{chosen[0]} requires --resolve")
         else:
             if not args.resolve.strip():
-                # An empty id reaches no transaction and names none in the
-                # refusal either, so it is a malformed command line rather
-                # than a fact about the project.
+                # Empty IDs are usage errors, not project findings.
                 args._journal_subparser.error(
                     "--resolve requires the id of a transaction"
                 )

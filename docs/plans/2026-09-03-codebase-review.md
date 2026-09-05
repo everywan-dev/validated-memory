@@ -99,8 +99,10 @@ log when it does.
 ## Session protocol
 
 1. Read this file, then `TODO.md` and the top of `SESSION.md`.
-2. Pick the first unit whose checkbox is unticked. **One unit per session**;
-   two only if the first was trivial and the context is still clean.
+2. Pick the first unit whose checkbox is unticked. Default to one unit per
+   session. When the user authorizes continuous execution, continue in order
+   with separate branches and acceptance gates; stop for a material blocker
+   or a decision requiring the user's input.
 3. Branch: `feature/review-<unit>` (e.g. `feature/review-j1-reporting`).
 4. Read the unit's files in full. Read its tests **by name, not whole**: find
    the relevant ones with `rg 'def test_' tests/<file>.py` and read only
@@ -174,7 +176,7 @@ log when it does.
 - [x] F1 — freshness ([findings](reviews/f1.md))
 - [x] M1 — agent memory and corpus ([findings](reviews/m1.md))
 - [x] V1 — the view stack ([findings](reviews/v1.md))
-- [ ] X1 — the entry point
+- [x] X1 — the entry point ([findings](reviews/x1.md))
 - [ ] T1 — the test surface
 - [ ] Close: archive this plan to `sessions/plans/`, and record in `TODO.md`
       what the review changed overall.
@@ -304,3 +306,10 @@ One line per session, most recent last: date, unit, commit, outcome.
   engineer approved without edits. Architect full suite: 661 passed (658
   published tests plus three clone-only checks). Two preexisting behavior
   defects and remaining verification gaps are recorded separately. X1 next.
+- 2026-09-05 — X1, `feature/review-x1-entrypoint`, after V1 merge `6435810`.
+  Parser/dispatch retained; five comment groups and one module docstring
+  shortened, two overclaims corrected. Four executable ASTs unchanged;
+  102 CLI differential cases preserve output, exits and adopter trees.
+  Prose 1,775 to 759 characters; no tests changed. Reviewer APPROVE and
+  engineer PASS without edits; architect full suite 661 passed. T1 next,
+  under the user's authorization to continue across separately validated units.

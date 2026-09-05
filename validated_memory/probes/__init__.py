@@ -1,7 +1,5 @@
-"""Bundled freshness probes shipped with the plugin.
+"""Bundled freshness probes implementing `docs/reference/cli.md#probe`.
 
-Each module here implements the `probe` contract documented in
-`docs/reference/cli.md#probe` and is invocable on its own as
-`python3 -m validated_memory.probes.<name>`, which is exactly the command an
-adopter registers for it in `validated-memory.md`'s `probes` map.
+Register `python3 -m validated_memory.probes.<name>` in the adopter's
+`validated-memory.md` `probes` map.
 """
