@@ -68,6 +68,7 @@ findings file; bytes are the secondary table below.
 | M1 | see [findings](m1.md) | 2 incident groups | 5 assertion families | 4 retained gaps | 3 | 3 | 1 |
 | V1 | see [findings](v1.md) | 3 incident groups | 5 assertion families | remaining areas documented; 4 inherited gaps closed | 4 | 9 | 0 |
 | X1 | see [findings](x1.md) | 0 | 2 flag-constraint families | diagnostic gaps retained | 0 | 2 | 0 |
+| T1 | see [findings](t1.md) | incident narrative condensed | 6 mapped families plus explicit limits | retained; none closed | 0 | 8 enumerated baseline corrections plus narrower verification claims; R1/R2 corrected in review | 0 |
 
 "claims already pinned" counts prose deleted because a test was found that
 fails when the claim stops being true; J1 predates that step, so it was not
@@ -100,6 +101,7 @@ into a plan archived out of the repository.
 | V1 | see [findings](v1.md) | −384 | −5,724 | −22,516 | ±0 / ±0 | 661 local green; 658 published tests |
 | V1 new CLI tests (outside the two-file T1 counter) | same | +84 | +869 | +391 | +4 / ±0 | 4 added, 0 deleted, 0 renamed |
 | X1 | see [findings](x1.md) | −17 | −297 | −1,016 | ±0 / ±0 | 661 local; no test changes |
+| T1 | see [findings](t1.md) | −1,043 | −14,591 | −57,300 | ±0 / ±0 | 193 scoped IDs unchanged; 661 local tests passed |
 | **running total** | | | | | | |
 
 M1 compares against `a0e0ba5`, after F1; it does not claim F1's earlier gains
@@ -274,3 +276,25 @@ sentence **C1 wrote the same day**, that a second read of the configuration
 "can refuse nothing the first did not". Codex found it while answering a
 different question. Two reads are two opens; nothing holds the tree still
 between them.
+
+## T1 measurement scope
+
+T1 compares against X1 `b787752`. The two test files retain 183 test
+functions and 193 collected cases. Render migrates 49 meaningful leading
+comment blocks to docstrings; journal retains a docstring on every test.
+Source characters fall from 291,112 to 232,747 and prose characters from
+102,291 to 44,991 (56.0% less prose). The counter labels these measurements
+`bytes`, but counts Python string characters. No executable node, fixture,
+assertion, parametrization or operational directive changes. No tests are
+added, deleted or renamed; no coverage gap is closed by the prose changes.
+
+## Whole-review measurement
+
+Against the original `b80325e` population (all runtime Python and these two
+large test files), the completed review moves from 38 to 40 files, 17,059 to
+15,754 lines, 712,096 to 629,429 source characters, and 308,541 to 221,448
+prose characters. The added `durable.py` and `ignore.py` modules are included.
+Prose falls from 43.3% to 35.2% of that population. Other test files, new
+reference tests, documentation and ADRs are outside this size comparison;
+the per-unit findings retain their costs and semantic evidence. These figures
+do not measure runtime performance or establish additional coverage.

@@ -67,10 +67,7 @@ Memory body.
 def test_the_memory_page_is_byte_for_byte_what_it_was_before_the_split(
     run_cli, adopter_dir, write_unit, write_memory, write_index
 ):
-    # No `init` here on purpose: `init` writes an adopter configuration and a
-    # schema stub, and this page must be a function of the memory directory
-    # alone. `render` needs only the knowledge directory, the memory
-    # directory and its index.
+    """Pin the exact memory page without adding `init` configuration inputs."""
     write_unit(
         "kb-0001.md",
         "id: kb-0001\nevidence: measured\n",
@@ -91,11 +88,7 @@ def test_the_memory_page_is_byte_for_byte_what_it_was_before_the_split(
 def test_a_second_run_leaves_the_memory_page_identical_and_untouched(
     run_cli, adopter_dir, write_unit, write_memory, write_index
 ):
-    # The determinism pin `knowledge.html` has had since the views shipped
-    # (`test_a_second_run_reports_unchanged_and_leaves_the_bytes_identical`),
-    # now over the other artifact too: both pages carry the guarantee, and
-    # from this task on they carry separate stylesheets, so one of them could
-    # acquire a non-deterministic value without the other noticing.
+    """Pin memory-page byte determinism and unchanged-file mtime separately."""
     write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n", "# A claim\n")
     write_memory(
         "coffee.md",
@@ -429,14 +422,7 @@ def test_the_self_containment_scan_rejects_hostile_markup(name, page_events):
 def test_the_self_containment_scan_accepts_a_page_built_from_the_whitelist(
     page_events
 ):
-    # The positive control: a page made only of whitelisted elements and
-    # pairs passes, so the cases above are proving the scan catches each
-    # hostile body rather than proving the scan rejects everything. The
-    # trailing `<svg>...</svg>` followed by a real `<a href>` pins the other
-    # side of `unclosed_svg`: a link of the same shape, after an `<svg>`
-    # that DOES close, is accepted -- so `unclosed_svg`'s rejection is shown
-    # to come from the missing close, not from something else about that
-    # shape.
+    """A legal page proves the scan is selective and accepts links after SVGs."""
     _assert_self_contained(
         _wrapped(
             '<p class="basis">Basis: 0 unit(s) under knowledge/</p>'
@@ -544,10 +530,7 @@ def test_a_hostile_provenance_scheme_is_text_and_never_a_link(
 def test_a_hostile_anchor_payload_is_text_and_never_live_markup(
     run_cli, adopter_dir, write_unit, page_elements
 ):
-    # `payload` is a mapping the contract checks is present as one and never
-    # looks inside: the probe interprets its contents, not the contract. So
-    # arbitrary structure -- here, markup nested two levels deep -- reaches
-    # the page from inside the otherwise-validated layer.
+    """Escape arbitrary nested content inside an otherwise valid payload."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -575,9 +558,7 @@ def test_a_hostile_anchor_payload_is_text_and_never_live_markup(
 def test_the_anchor_payload_is_rendered_as_json_not_a_python_repr(
     run_cli, adopter_dir, write_unit
 ):
-    # A reader of this page has no Python: `json.dumps` is the form `probe`
-    # itself writes into the log, and the form both a person and a JSON
-    # parser can read back, unlike a Python `repr`.
+    """Pin the portable JSON rendering of anchor payloads against Python repr."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -598,10 +579,7 @@ def test_the_anchor_payload_is_rendered_as_json_not_a_python_repr(
 def test_a_verdict_log_record_that_is_not_json_is_reported_not_raised(
     run_cli, adopter_dir, write_unit
 ):
-    # `knowledge_view.build` reads the service view through the same log
-    # `derive` reads. A log it cannot parse is a finding naming the file and
-    # line, not a traceback: the person opening this page has no repository
-    # to read a stack trace against.
+    """A malformed log line yields a located finding rather than a traceback."""
     run_cli("init", cwd=adopter_dir)
     write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n")
     (adopter_dir / "verdicts.jsonl").write_text("{not json}\n", encoding="utf-8")
@@ -637,8 +615,7 @@ def test_a_verdict_log_that_is_not_utf8_is_reported_without_a_line_number(
 def test_the_history_window_shows_twenty_and_states_the_true_total(
     run_cli, adopter_dir, write_unit
 ):
-    # 25 probes of one anchor: only the most recent 20 are shown, newest
-    # first, but the log's total and the anchor's own total both count all 25.
+    """Show the newest 20 records while reporting both full totals as 25."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -667,12 +644,7 @@ def test_the_history_window_shows_twenty_and_states_the_true_total(
 def test_a_record_without_a_payload_is_never_attributed_to_an_anchor(
     run_cli, adopter_dir, write_unit
 ):
-    # The rule that matters most: a record written before payloads were
-    # recorded carries no `payload` field at all, and NO anchor reads it --
-    # not even one whose own payload happens to be empty (`{}`), because
-    # `{}` and "absent" are different keys. The record still counts toward
-    # the log's total, but not toward the anchor's, and the anchor it would
-    # have matched on `(system, kind)` alone stays `unknown`.
+    """Keep a payload-less legacy record separate from an empty-payload anchor."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -699,12 +671,7 @@ def test_a_record_without_a_payload_is_never_attributed_to_an_anchor(
 def test_a_record_whose_payload_is_null_stops_render_and_writes_nothing(
     run_cli, adopter_dir, write_unit
 ):
-    # `_group_history` treats "no `payload` key" as "predates payloads" and
-    # skips it -- safe only because `service_view()` (through `_keyed`)
-    # rejects an explicit `payload: null` before grouping ever sees a
-    # record. `derive` already pins this rule for its own read of the log
-    # (`tests/test_derive.py`); this pins it for `render`'s, which reads the
-    # log through a separate call of its own.
+    """An explicit null payload gates render; an absent legacy payload does not."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -777,10 +744,7 @@ def test_a_unit_superseded_twice_is_rendered_once_and_referenced_after(
 def test_a_chain_three_deep_nests_correctly_and_renders_each_unit_once(
     run_cli, adopter_dir, write_unit
 ):
-    # The one piece of non-obvious control flow on this branch: the walk is
-    # iterative with an explicit stack, not recursive. A chain three deep is
-    # enough to prove the nesting comes out right without re-testing the
-    # 200-deep run already done by hand.
+    """Pin three-level nesting and single rendering; extreme depth is untested."""
     run_cli("init", cwd=adopter_dir)
     write_unit("kb-0001.md", "id: kb-0001\nevidence: hypothesis\n", "# Oldest\n")
     write_unit(
@@ -824,13 +788,7 @@ def test_a_chain_three_deep_nests_correctly_and_renders_each_unit_once(
 def test_a_diamond_below_one_root_renders_the_shared_unit_once(
     run_cli, adopter_dir, write_unit
 ):
-    # kb-0004 supersedes both kb-0002 and kb-0003, which both supersede
-    # kb-0001: a diamond, not a plain chain. `_unit_section` marks a unit
-    # `rendered` globally as soon as it is first reached, so the walk down
-    # kb-0004's second branch must find kb-0001 already rendered and emit an
-    # internal reference instead of a second copy -- a regression here (back
-    # to recursing, or dropping the shared `rendered` set) would either blow
-    # the stack or double-render kb-0001 silently.
+    """A diamond renders its shared unit once, then emits an internal link."""
     run_cli("init", cwd=adopter_dir)
     write_unit("kb-0001.md", "id: kb-0001\nevidence: hypothesis\n", "# Shared root\n")
     write_unit(
@@ -899,9 +857,7 @@ def test_the_memory_page_lists_entries_with_their_references(
 def test_the_memory_basis_line_names_the_path_like_the_knowledge_page_does(
     run_cli, adopter_dir, write_unit, write_memory, write_index
 ):
-    # `knowledge.html`'s basis line names the path units were read under
-    # ("... under knowledge/"); `memory.html`'s omitted it. The two pages
-    # should agree on what "basis" discloses.
+    """Both basis lines disclose the directory from which records were read."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory("coffee.md", "name: coffee\ndescription: oat milk\nmetadata:\n  type: user\n")
     write_index("- [Coffee](coffee.md) — oat milk\n")
@@ -932,15 +888,7 @@ def test_an_unresolved_wikilink_is_marked_rather_than_linked(
 def test_an_undeclared_name_falling_back_to_the_filename_does_not_collide_with_a_declared_name(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
 ):
-    # `alpha.md` declares no `name`, so its identity falls back to its
-    # filename, "alpha". `other.md` declares `name: alpha` -- a real
-    # declared name, just not `alpha.md`'s own (a `lint` ERROR the memory
-    # view does not gate on, since it does not enforce). Before the first
-    # fix both entries anchored at id="entry-alpha": a `[[alpha]]` reference
-    # resolves through `by_name` to `other.md`, but the href built from the
-    # same collided id would have landed the reader on `alpha.md` instead.
-    # The two now anchor in disjoint namespaces (`entry-path-<relpath>` vs.
-    # `entry-name-<name>`), so this stays collision-free by construction.
+    """Filename fallbacks and declared names occupy distinct anchor namespaces."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory("alpha.md", "description: no name here\nmetadata:\n  type: user\n")
     write_memory(
@@ -982,17 +930,7 @@ def test_an_undeclared_name_falling_back_to_the_filename_does_not_collide_with_a
 def test_the_fallback_and_declared_schemes_do_not_collide_through_the_file_token(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
 ):
-    # The residual collision the first fix left standing: `alpha.md`
-    # declares no `name`, so under the old scheme it fell back to
-    # `entry-file-<filename>` = "entry-file-alpha". `other.md` declares
-    # `name: file-alpha` for real -- a legal, if unusual, name -- which
-    # under the old scheme anchored at `entry-<name>` = "entry-file-alpha"
-    # too: the discriminator token lived inside the same string space the
-    # two schemes shared, so a declared name starting with "file-" could
-    # walk straight into the fallback scheme's territory. The fixed scheme
-    # puts the token before either payload (`entry-name-` / `entry-path-`),
-    # so no declared name can ever reach into the fallback namespace or
-    # back.
+    """A declared `file-*` name cannot enter the path-fallback namespace."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory("alpha.md", "description: no name here\nmetadata:\n  type: user\n")
     write_memory(
@@ -1020,14 +958,7 @@ def test_the_fallback_and_declared_schemes_do_not_collide_through_the_file_token
 def test_two_undeclared_entries_sharing_a_filename_in_different_subdirectories_get_distinct_anchors(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
 ):
-    # `memory.documents` collects files recursively (`target.rglob('*.md')`),
-    # so two memories can share a bare filename as long as they sit in
-    # different subdirectories -- `lint` reports that as its own collision,
-    # but this view does not enforce and renders both anyway. Neither
-    # declares a `name`, so both fall back; keying the fallback anchor on
-    # the filename ("dup") would collide even after the file/name-token fix
-    # above, because the filename alone does not tell the two apart. Keying
-    # on `relpath` does, since `relpath` includes the subdirectory.
+    """Fallback anchors use relative paths to distinguish equal filenames."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory("first/dup.md", "description: first copy\nmetadata:\n  type: user\n")
     write_memory("second/dup.md", "description: second copy\nmetadata:\n  type: user\n")
@@ -1054,9 +985,7 @@ def test_two_undeclared_entries_sharing_a_filename_in_different_subdirectories_g
 def test_an_outgoing_href_to_a_declared_name_matches_that_sections_id_exactly(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
 ):
-    # A sanity check that the rename did not break navigation: a link from
-    # one entry to another still lands on the linked entry's own anchor,
-    # byte for byte, under the new `entry-name-<name>` spelling.
+    """A resolved wikilink exactly matches its declared-name section id."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory(
         "target.md",
@@ -1096,18 +1025,7 @@ def test_an_outgoing_href_to_a_declared_name_matches_that_sections_id_exactly(
 def test_two_entries_declaring_the_same_name_both_render_at_the_shared_anchor(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
 ):
-    # Pins the one exposure this fix does not close: `memory.resolution`
-    # builds `by_name` as a plain set of declared names with no ambiguity
-    # check (the `len(names) == 1` filter lives only on the separate
-    # `by_filename` table), so two documents declaring the same `name`
-    # both land in `by_name` and both anchor at the identical
-    # `entry-name-<name>`. `lint` reports a duplicate declared `name` as
-    # an ERROR; this view does not gate on it (the "does not enforce"
-    # rule at the top of this module), so it renders both anyway rather
-    # than silently dropping one. No anchor scheme can disambiguate them
-    # -- a `[[wikilink]]` to the shared name is itself ambiguous -- so the
-    # assertion here is honest, not a fix: both entries appear, and both
-    # carry the same id.
+    """Without lint enforcement, render both duplicate names at a shared anchor."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory(
         "first.md",
@@ -1143,15 +1061,7 @@ def test_two_entries_declaring_the_same_name_both_render_at_the_shared_anchor(
 def test_an_unresolved_reference_is_not_linked_from_the_incoming_side_either(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
 ):
-    # `[[noname]]` targets a memory with no declared `name`, so `by_name`
-    # resolution -- the only resolution the outgoing list tests against --
-    # marks it unresolved, matching `lint`. The incoming list must agree: it
-    # is the mirror image of the outgoing list, not a second, looser notion
-    # of what counts as a reference. Before the fix, `noname.md`'s own
-    # incoming list still lists `other.md` as a referrer (keyed by the raw
-    # wikilink text, unfiltered by `resolution.by_name`) and links to it --
-    # a live link for the very reference the outgoing side just marked
-    # unresolved.
+    """Incoming and outgoing lists both leave an undeclared-name target unresolved."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory(
         "noname.md", "description: has no declared name\nmetadata:\n  type: user\n"
@@ -1200,9 +1110,7 @@ def test_a_missing_memory_index_stops_the_run(run_cli, adopter_dir, write_unit):
 def test_a_missing_knowledge_directory_stops_the_run_and_writes_nothing(
     run_cli, adopter_dir
 ):
-    # The mirror case: a curated-layer precondition failing must not leave a
-    # memory.html written either. `render` does not render half a project
-    # quietly.
+    """A curated-layer precondition failure prevents both page writes."""
     run_cli("init", cwd=adopter_dir)
     shutil.rmtree(adopter_dir / "knowledge")
 
@@ -1216,11 +1124,7 @@ def test_a_missing_knowledge_directory_stops_the_run_and_writes_nothing(
 def test_a_memory_file_with_unparseable_frontmatter_is_rendered_not_raised(
     run_cli, adopter_dir, write_unit, write_memory, write_index
 ):
-    # There is no `gated_source` for the memory layer: `render` stops only on
-    # what it cannot read (the directory, the index). A document whose
-    # frontmatter will not parse is still one of the files that directory
-    # holds, so it gets an entry, with the parse error stated in place of the
-    # fields that could not be read -- not a traceback, and not silence.
+    """Render a readable memory file with its frontmatter error in the page."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory("broken.md", "name coffee\n")
     write_index("- [Broken](broken.md) — bad frontmatter\n")
@@ -1237,10 +1141,7 @@ def test_a_memory_file_with_unparseable_frontmatter_is_rendered_not_raised(
 def test_a_non_string_description_does_not_raise(
     run_cli, adopter_dir, write_unit, write_memory, write_index
 ):
-    # Nothing validated this layer's frontmatter, so `description` can be any
-    # JSON type the parser accepts -- here, a list rather than the string
-    # `lint` requires. The page must stringify it, not crash trying to
-    # `.strip()` or membership-test a value of unknown type.
+    """Stringify an unvalidated list description instead of assuming a string."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory(
         "coffee.md",
@@ -1259,10 +1160,7 @@ def test_a_non_string_description_does_not_raise(
 def test_hostile_memory_content_never_becomes_live_markup(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_events
 ):
-    # `memory_view` renders the same kind of adopter-authored freeform text
-    # as `knowledge_view` (body, description, metadata), so it carries the
-    # same injection risk -- mirrors the curated layer's hostile-content and
-    # URL-whitelist tests above, over `memory.html` instead.
+    """Escape hostile memory body and description; metadata escaping is untested."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory(
         "coffee.md",
@@ -1287,14 +1185,7 @@ def test_hostile_memory_content_never_becomes_live_markup(
 def test_a_null_recorded_at_reads_as_absent_in_the_list_and_the_strip_alike(
     run_cli, adopter_dir, write_unit, page_elements
 ):
-    # `recorded_at` is not a key field and nothing validates it, so an
-    # explicit `null` is a legal record. Wherever it reaches the page it must
-    # spell an absent value the same way -- "" and never the literal word
-    # "None" -- and it reaches the page twice: in the history list and in
-    # each band's own <title>, both through `html.escape_text`. The strip's
-    # `aria-label` no longer quotes it at all, being built from the record
-    # count and the last verdict, so the assertion on that attribute is now
-    # a guard that the label stays free of record fields.
+    """A null timestamp never appears as `None` in the page or strip label."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -1439,11 +1330,7 @@ def test_the_two_existing_diagrams_carry_a_title_and_a_desc(
 def test_each_freshness_band_differs_in_shape_and_in_text_not_only_colour(
     run_cli, adopter_dir, write_unit
 ):
-    # "State differs in shape and in text, not only in fill." Three bands,
-    # one per verdict: a full-height solid band, a full-height dashed band,
-    # and a half-height band -- each with its own one-character mark on top.
-    # Printed in black and white, or read by someone who cannot tell the
-    # three fills apart, the strip still says which is which.
+    """Distinguish all verdicts by geometry and marks as well as colour."""
     _two_diagram_fixture(run_cli, adopter_dir, write_unit)
 
     run_cli("render", cwd=adopter_dir)
@@ -1471,13 +1358,7 @@ SVG_FORBIDDEN_ELEMENTS = {"use", "image", "iframe", "object", "embed", "script"}
 def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
     run_cli, adopter_dir, write_unit, page_elements, page_events
 ):
-    # A page where BOTH diagrams are actually drawn: a confluence (three
-    # units superseded at once) and a freshness strip (several probes of one
-    # anchor). The generic URL-whitelist and hostile-content tests elsewhere
-    # in this file exercise pages with no anchors and no three-way
-    # supersession, so they never contain an <svg> at all -- they would pass
-    # unchanged even if `svg.py` started emitting a `<use href=...>`. This
-    # test exists so that scan actually has an SVG to scan.
+    """Exercise all three SVG classes so the safety scan cannot pass vacuously."""
     run_cli("init", cwd=adopter_dir)
     for old in ("kb-0001", "kb-0002", "kb-0003"):
         write_unit(f"{old}.md", f"id: {old}\nevidence: hypothesis\n", f"# {old}\n")
@@ -1511,7 +1392,7 @@ def test_the_svg_diagrams_never_load_a_resource_or_carry_live_markup(
     page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
     elements = page_elements(page)
 
-    # The page really does draw both diagrams -- asserted by count, not just
+    # The page really does draw all three diagrams -- asserted by count, not just
     # "any svg", so this test cannot go vacuous the way the reused one did.
     svgs = [(tag, attrs) for tag, attrs in elements if tag == "svg"]
     assert len(svgs) == 3, svgs
@@ -1605,12 +1486,7 @@ def test_all_three_diagrams_carry_a_title_and_a_desc(
 def test_a_page_with_all_three_diagrams_renders_the_same_bytes_twice(
     run_cli, adopter_dir, write_unit
 ):
-    # The determinism pin over the page that actually draws every diagram.
-    # SVG is where a non-deterministic value would hide -- an id built from
-    # `hash()`, a float formatted one way here and another there, a clock in
-    # a label -- and the pin that has existed since the views shipped
-    # (`test_a_second_run_reports_unchanged_and_leaves_the_bytes_identical`)
-    # runs over a corpus that draws no diagram at all.
+    """Pin byte determinism and unchanged-file mtime with every SVG present."""
     _all_three_fixture(run_cli, adopter_dir, write_unit)
     run_cli("render", cwd=adopter_dir)
     first = (adopter_dir / "knowledge.html").read_bytes()
@@ -1629,9 +1505,7 @@ def test_a_page_with_all_three_diagrams_renders_the_same_bytes_twice(
 def test_the_rationale_diagram_is_drawn_for_that_unit_and_no_other(
     run_cli, adopter_dir, write_unit
 ):
-    # One page, two units: only the one carrying a rationale gets a diagram.
-    # A per-page diagram instead of a per-unit one would pass a test over a
-    # corpus of one and fail every real corpus.
+    """A two-unit corpus proves rationale diagrams belong to individual units."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -1654,11 +1528,7 @@ def test_the_rationale_diagram_is_drawn_for_that_unit_and_no_other(
 def test_text_too_long_to_draw_falls_back_and_stays_on_the_page(
     run_cli, adopter_dir, write_unit
 ):
-    # An SVG <text> does not wrap, and a character count is not a width --
-    # which is exactly why the fallback is a fallback and not an estimate.
-    # One threshold governs every node, question included: nothing is omitted
-    # and nothing is truncated, the node says "?" or "#2" and the page says
-    # the rest.
+    """Long questions and labels use SVG markers but remain complete on the card."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -1718,8 +1588,7 @@ def test_above_eight_options_every_node_is_numbered(
 def test_the_rationale_diagram_element_ids_derive_from_the_unit_and_position(
     run_cli, adopter_dir, write_unit
 ):
-    # Deterministic ids, never `hash()`, which is salted per process: the
-    # same corpus must render the same bytes on every run and every machine.
+    """Pin element ids to exact unit-and-position spellings."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -1765,11 +1634,7 @@ def test_the_chosen_option_differs_in_shape_and_in_text_not_only_in_fill(
 def test_hostile_rationale_text_never_becomes_live_markup_inside_the_svg(
     run_cli, adopter_dir, write_unit, page_elements, page_events
 ):
-    # Two hostile shapes at once. The label tries to close the <text> element
-    # it is drawn in; the question carries a URL, which is the one thing no
-    # attribute on this page but `a[href]` may hold -- so it must reach the
-    # drawing as a text node and never as part of a title, an aria-label or
-    # a description.
+    """Keep hostile labels and URL-shaped questions inside SVG text nodes."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -1809,12 +1674,7 @@ def test_hostile_rationale_text_never_becomes_live_markup_inside_the_svg(
 def test_an_outgoing_href_matches_a_spaced_and_punctuated_name_anchor(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_elements
 ):
-    # Unlike a curated unit's `id`, nothing constrains a memory's `name`: a
-    # real corpus (ADR 0001) has names shaped like titles, with spaces, dots,
-    # capitals and parentheses. The anchor (`id="entry-name-<name>"`) and a
-    # resolved wikilink's `href` are built by the same escaping call on the
-    # same string, so they should agree byte for byte -- verified here
-    # rather than assumed.
+    """A title-shaped memory name produces exactly matching href and anchor."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_memory(
         "release-owner.md",
@@ -1868,10 +1728,7 @@ def test_only_existing_regenerates_what_is_there_and_creates_nothing(
 def test_an_existing_artifact_that_is_not_valid_utf8_is_overwritten_not_raised(
     run_cli, adopter_dir, write_unit
 ):
-    # `write_if_changed` reads the existing artifact only to decide whether a
-    # write is needed. A file it cannot decode is not thereby known to equal
-    # what is about to be written, so the safe default is to write over it --
-    # never a traceback on a page a reader has no repository to debug.
+    """An undecodable artifact is unequal to the new page and gets replaced."""
     _scaffold(run_cli, adopter_dir, write_unit)
     (adopter_dir / "knowledge.html").write_bytes(b"\xff\xfe not valid utf-8\n")
 
@@ -1893,11 +1750,7 @@ def test_an_existing_artifact_that_is_not_valid_utf8_is_overwritten_not_raised(
 def test_only_existing_is_fail_open_on_an_unwritable_working_directory(
     run_cli, adopter_dir, write_unit
 ):
-    # The other reproduction: the temporary file itself cannot be written
-    # (here, a read-only working directory). Fail-open is documented for
-    # `--only-existing`, so this must warn and exit 0, leaving the artifact
-    # already on disk exactly as it was -- not a `PermissionError` traceback
-    # on every session start.
+    """Unattended write failure warns and preserves the active artifact."""
     _scaffold(run_cli, adopter_dir, write_unit)
     (adopter_dir / "knowledge.html").write_text("stale\n", encoding="utf-8")
     adopter_dir.chmod(0o555)
@@ -1918,10 +1771,7 @@ def test_only_existing_is_fail_open_on_an_unwritable_working_directory(
 def test_a_write_failure_gates_when_render_runs_explicitly(
     run_cli, adopter_dir, write_unit
 ):
-    # The mirror case: run explicitly (no `--only-existing`), the same write
-    # failure gates as an ERROR does, same as any other finding -- a person
-    # asking for the views by hand is entitled to be told they were not
-    # written, without a traceback.
+    """The same write failure gates explicit rendering without a traceback."""
     _scaffold(run_cli, adopter_dir, write_unit)
     (adopter_dir / "knowledge.html").write_text("stale\n", encoding="utf-8")
     adopter_dir.chmod(0o555)
@@ -1939,11 +1789,7 @@ def test_a_write_failure_gates_when_render_runs_explicitly(
 def test_only_existing_is_fail_open_when_the_artifact_cannot_be_replaced(
     run_cli, adopter_dir, write_unit
 ):
-    # The root-proof mirror of the reproduction above: a directory where the
-    # artifact belongs. The atomic rename onto it fails with `EISDIR` for
-    # every user, root included -- unlike permission bits, which root
-    # ignores -- so the fail-open contract stays pinned in the CI container
-    # too, where the test above can only be skipped.
+    """A directory target gives a root-independent unattended write failure."""
     _scaffold(run_cli, adopter_dir, write_unit)
     (adopter_dir / "knowledge.html").mkdir()
 
@@ -1959,8 +1805,7 @@ def test_only_existing_is_fail_open_when_the_artifact_cannot_be_replaced(
 def test_a_write_failure_gates_when_the_artifact_cannot_be_replaced(
     run_cli, adopter_dir, write_unit
 ):
-    # The gating half of the same root-proof reproduction: run explicitly and
-    # the write failure is an ERROR that gates, still without a traceback.
+    """A directory target gives a root-independent explicit write failure."""
     _scaffold(run_cli, adopter_dir, write_unit)
     (adopter_dir / "knowledge.html").mkdir()
 
@@ -1976,11 +1821,7 @@ def test_a_write_failure_gates_when_the_artifact_cannot_be_replaced(
 def test_duplicate_supersedes_entries_count_once_in_the_page(
     run_cli, adopter_dir, write_unit
 ):
-    # The frontmatter subset accepts a list naming the same id three times;
-    # the page must not multiply that into a "3 units" confluence of three
-    # identical rows. The set of superseded units is what the page states --
-    # here one unit, below the three-source threshold, so no confluence at
-    # all, exactly as a single-entry list renders.
+    """Duplicate entries cannot fabricate a three-source confluence."""
     _scaffold(run_cli, adopter_dir, write_unit)
     write_unit(
         "kb-0002.md",
@@ -1999,9 +1840,7 @@ def test_duplicate_supersedes_entries_count_once_in_the_page(
 def test_a_memory_file_that_cannot_be_read_is_a_finding_not_a_traceback(
     run_cli, adopter_dir, write_unit
 ):
-    # `documents` reads every memory file; one that is not valid UTF-8 must
-    # surface as an ERROR naming the file -- the same posture the unreadable
-    # verdict log already gets -- never a traceback.
+    """An unreadable memory file yields a named error without a traceback."""
     _scaffold(run_cli, adopter_dir, write_unit)
     (adopter_dir / "memory" / "broken.md").write_bytes(b"\xff\xfe not utf-8\n")
 
@@ -2016,8 +1855,7 @@ def test_a_memory_file_that_cannot_be_read_is_a_finding_not_a_traceback(
 def test_only_existing_is_fail_open_on_a_memory_file_that_cannot_be_read(
     run_cli, adopter_dir, write_unit
 ):
-    # The unattended mirror: the same unreadable memory file must warn and
-    # exit 0, leaving the active page exactly as it was.
+    """Unattended unreadable memory warns and preserves the active page."""
     _scaffold(run_cli, adopter_dir, write_unit)
     (adopter_dir / "memory.html").write_text("stale\n", encoding="utf-8")
     (adopter_dir / "memory" / "broken.md").write_bytes(b"\xff\xfe not utf-8\n")
@@ -2051,11 +1889,7 @@ def test_only_existing_is_fail_open_on_an_invalid_corpus(
 def test_only_existing_with_neither_artifact_present_is_a_clean_no_op(
     run_cli, adopter_dir, write_unit
 ):
-    # Nobody has activated either view yet: `--only-existing` must not
-    # create one, and -- since there is nothing to regenerate -- it must
-    # not even read or validate the corpus to get there. An adopter who
-    # never ran `init --view` sees no output and no findings from the
-    # startup hook.
+    """With no active views, return 0 without stderr or creating either page."""
     _scaffold(run_cli, adopter_dir, write_unit)
 
     result = run_cli("render", "--only-existing", cwd=adopter_dir)
@@ -2069,10 +1903,7 @@ def test_only_existing_with_neither_artifact_present_is_a_clean_no_op(
 def test_only_existing_is_fail_open_on_a_corrupt_verdict_log(
     run_cli, adopter_dir, write_unit
 ):
-    # The broader ruling: unattended mode downgrades every build failure,
-    # not only the contract's own ERROR findings. A verdict log this reader
-    # cannot parse is one such failure -- same fail-open contract, same
-    # "leave the artifact exactly as it was" guarantee.
+    """Unattended log parse failure warns and preserves the active page."""
     _scaffold(run_cli, adopter_dir, write_unit)
     (adopter_dir / "knowledge.html").write_text("stale\n", encoding="utf-8")
     (adopter_dir / "verdicts.jsonl").write_text("{not json}\n", encoding="utf-8")
@@ -2087,8 +1918,7 @@ def test_only_existing_is_fail_open_on_a_corrupt_verdict_log(
 def test_only_existing_is_fail_open_on_a_missing_memory_index(
     run_cli, adopter_dir, write_unit
 ):
-    # Same ruling, over the memory-layer read precondition rather than the
-    # curated-layer contract or the verdict log.
+    """Unattended memory-index failure warns and preserves the active page."""
     _scaffold(run_cli, adopter_dir, write_unit)
     (adopter_dir / "knowledge.html").write_text("stale\n", encoding="utf-8")
     (adopter_dir / "memory" / "MEMORY.md").unlink()
@@ -2103,9 +1933,7 @@ def test_only_existing_is_fail_open_on_a_missing_memory_index(
 def test_only_existing_regenerates_memory_when_only_memory_exists(
     run_cli, adopter_dir, write_unit
 ):
-    # The mirror of the brief's own case: with `knowledge.html` absent and
-    # `memory.html` present, only the latter is regenerated and the former
-    # is still not created.
+    """Regenerate only the active memory page in unattended mode."""
     _scaffold(run_cli, adopter_dir, write_unit)
     (adopter_dir / "memory.html").write_text("stale\n", encoding="utf-8")
 
@@ -2119,11 +1947,7 @@ def test_only_existing_regenerates_memory_when_only_memory_exists(
 def test_an_extension_that_cannot_be_loaded_stops_render_and_writes_nothing(
     run_cli, adopter_dir, write_unit, write_document
 ):
-    # `collect_and_validate` loads the declared extension and, from this task
-    # on, hands it to the renderer instead of discarding it. The failure path
-    # must not soften on the way: an extension that will not load is one
-    # blocking finding, no documents, and no page -- rendering the base
-    # contract alone would report a pass the adopter never asked for.
+    """An unloadable declared extension gates before either page is written."""
     run_cli("init", cwd=adopter_dir)
     write_unit("kb-0001.md", "id: kb-0001\nevidence: measured\n")
     write_document("validated-memory.md", "extension:\n  schema: gone.md\n  version: \"1\"\n")
@@ -2140,10 +1964,7 @@ def test_an_extension_that_cannot_be_loaded_stops_render_and_writes_nothing(
 def test_a_corpus_with_a_declared_extension_still_renders(
     run_cli, adopter_dir, write_unit, write_document
 ):
-    # The other half: a schema that loads must reach the renderer without
-    # changing what it draws. Nothing on the page shows an extension field
-    # yet, and nothing in this plan ever will, so this is the guard that
-    # threading the object through changed no output.
+    """A valid declared extension renders successfully with the unit id present."""
     run_cli("init", cwd=adopter_dir)
     write_document(
         "knowledge-extension.md",
@@ -2258,10 +2079,7 @@ def test_the_unprobed_queue_lists_anchors_of_active_units_only(
 def test_an_anchor_whose_payload_changed_is_unprobed_again(
     run_cli, adopter_dir, write_unit
 ):
-    # The key is `(unit, system, kind, payload)`. A record written against
-    # the old payload says nothing about what the anchor points at now, so
-    # the anchor has no record under its current key and is unprobed. That is
-    # the honest reading, and it is why the queue is keyed and not counted.
+    """A verdict for an old payload does not probe the anchor's current key."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -2390,10 +2208,7 @@ def test_the_map_links_carry_the_headline_not_only_the_id(
 def test_a_system_named_unclassified_and_the_no_anchors_group_are_both_shown(
     run_cli, adopter_dir, write_unit
 ):
-    # No group carries an id, so a label is the only thing telling two groups
-    # apart on the page -- which is why the group of units with no anchors is
-    # labelled `unclassified (no anchors)` and not `unclassified`. It is also
-    # always last, whatever the system names sort as.
+    """Distinct labels separate a real `unclassified` system from no anchors."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -2490,9 +2305,7 @@ def test_the_card_renders_its_parts_in_the_fixed_order(
 def test_the_card_carries_its_evidence_and_verdict_as_data_attributes(
     run_cli, adopter_dir, write_unit, page_elements
 ):
-    # The badge text is on the summary, unchanged; the machine-readable state
-    # is on the section, beside `data-state`, because a filter hides a card
-    # and not a span.
+    """Machine-readable evidence and verdict belong on the filterable section."""
     _card_fixture(run_cli, adopter_dir, write_unit)
 
     run_cli("render", cwd=adopter_dir)
@@ -2546,9 +2359,7 @@ def test_a_unit_with_no_rationale_gets_no_rationale_block(
 def test_hostile_rationale_text_never_becomes_live_markup(
     run_cli, adopter_dir, write_unit
 ):
-    # `question`, `label` and `reason` are adopter text that reaches an HTML
-    # file meant to be sent to third parties. The contract validates their
-    # shape, never their content.
+    """Prevent question, label, and reason text from becoming live markup."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
