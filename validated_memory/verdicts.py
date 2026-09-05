@@ -78,18 +78,17 @@ def anchor_key(unit_id, system, kind, payload):
     anchors sharing a `(system, kind)`: two refs of the same repository, both
     `git_ref` on the same system.
     """
-    return (unit_id, system, kind, _canonical(payload))
+    return (
+        unit_id, system, kind,
+        NO_PAYLOAD if payload is None else canonical_payload(payload),
+    )
 
 
-def _canonical(payload):
-    """A hashable, stable rendering of a payload, or `NO_PAYLOAD` if absent.
+def canonical_payload(payload):
+    """Return JSON for anchor keys and displays: sorted mapping keys, ordered lists.
 
-    `sort_keys` makes two equal mappings render identically whatever order
-    they were written in; a list keeps its order, because there the order is
-    part of what the payload says.
+    Preserve default JSON spacing and ASCII escapes; these bytes identify anchors.
     """
-    if payload is None:
-        return NO_PAYLOAD
     return json.dumps(payload, sort_keys=True)
 
 

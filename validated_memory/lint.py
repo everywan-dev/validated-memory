@@ -1,17 +1,7 @@
-"""The `lint` subcommand: the agent-memory layer of the adopter.
+"""Enforce agent-memory index, frontmatter, identity and reference contracts.
 
-The agent-memory layer is one Markdown file per fact, plus a one-line-per-
-entry index (`MEMORY.md`) at the root of the memory directory. `lint`
-enforces five things: the index and the files agree in both directions, each
-file's frontmatter is complete, `name` matches the filename that is the
-memory's canonical identity, a wikilink between memories names a real memory
-(or is flagged as pending), and the supersession convention -- a
-`description` rewritten to start with `superseded by [[name]]` -- is either
-well formed or reported.
-
-The rules live here; how the layer is read and how a reference resolves live
-in `memory`, so that a second reader of the same layer cannot resolve
-references differently from `lint`.
+`memory` owns reading and resolution; this module owns findings and severity.
+See `docs/reference/agent-memory.md` for the public rules.
 """
 
 import re
@@ -34,13 +24,7 @@ def run(path, stdout, stderr):
 
 
 def collect_and_lint(path):
-    """Collect the memory documents under `path` and lint them, without printing.
-
-    The front half `run` reports through `report`; `status` builds one
-    combined report across several checks and needs these findings on their
-    own, the same way `validate.collect_and_validate` gives it the curated
-    layer's.
-    """
+    """Return collected memory documents and findings without printing."""
     target = Path(path) if path else Path(DEFAULT_MEMORY_DIR)
     documents, findings = _collect(target, explicit=bool(path))
     findings.extend(_lint_memories(documents))
@@ -74,8 +58,6 @@ def _collect(target, explicit):
     try:
         documents = memory_module.documents(target)
     except memory_module.MemoryReadError as error:
-        # Same posture `render` takes: a file that is there but cannot be
-        # read is an ERROR naming it, never a traceback.
         return [], [
             Finding(
                 ERROR,
@@ -121,13 +103,7 @@ def _check_sync(index_location, entries, documents):
 
 
 def _lint_memories(documents):
-    """Lint each memory file's frontmatter, then cross-file name resolution.
-
-    Names are collected in a first pass, once every document has parsed, so
-    duplicate detection and reference resolution do not depend on file order --
-    the same two-pass shape `validate` uses for id declaration and supersedes
-    resolution.
-    """
+    """Check filenames and frontmatter, collect names, then resolve references."""
     findings = _check_filename_collisions(documents)
     parsed = []
     for document in documents:
@@ -189,16 +165,9 @@ def _lint_memories(documents):
 
 
 def _check_filename_collisions(documents):
-    """Report two memories claiming the same canonical identity.
+    """Warn on shared filename identities, including unparseable documents.
 
-    Two files in one directory cannot share a name, so this only ever fires
-    across subdirectories. It is a fact about the files, so it is checked
-    before any frontmatter is read and holds even when neither file parses.
-
-    A WARNING for the same reason the divergence rule is one -- it becomes an
-    ERROR in 2.0.0 alongside it. Reporting it matters now because without it
-    `lint` tells both files to repair `name` towards the same value, and
-    following that advice lands on the duplicate-name ERROR unannounced.
+    Migration severity becomes ERROR in 2.0.0, as for name divergence.
     """
     findings = []
     first_seen = {}
@@ -224,12 +193,7 @@ def _check_filename_collisions(documents):
 
 
 def _check_description_references(location, own_name, description, resolution):
-    """Check the supersession marker (if any), then any remaining wikilink.
-
-    A wikilink that opens a well-formed `superseded by [[name]]` marker is
-    checked by the supersession rule below, not by the generic wikilink scan,
-    so it is not reported twice.
-    """
+    """Check supersession once, then scan only the remaining description links."""
     if not isinstance(description, str):
         return []
     findings = []
@@ -258,13 +222,10 @@ def _check_description_references(location, own_name, description, resolution):
 
 
 def _check_supersession_target(location, own_name, target, resolution):
-    """Check the successor a memory is retired onto.
+    """Require an existing, different successor.
 
-    Order matters. A target that resolves to another memory is a valid
-    supersession even when it happens to equal this file's own filename, so
-    resolution is settled first. Only then does the filename count as naming
-    this memory itself -- it is the canonical identity, so retiring a memory
-    onto it is retiring it onto itself, whatever `name` currently says.
+    Resolve another declared name before testing filename self-reference:
+    that name may legitimately equal this entry's filename.
     """
     if target in resolution.by_name and target != own_name:
         return []
@@ -281,9 +242,6 @@ def _check_supersession_target(location, own_name, target, resolution):
     if hint is None:
         message = f"supersession points at '{target}', which does not exist"
     else:
-        # Unlike a wikilink, a successor cannot be left pending: this gates.
-        # Saying the memory does not exist would send the repair to the wrong
-        # file, so the message names what actually fails to resolve.
         message = (
             f"supersession points at '{target}', which does not resolve by "
             f"name; {hint}"
@@ -301,8 +259,6 @@ def _check_references(location, field, text, resolution):
         if hint is None:
             message = f"wikilink to '{target}' has no matching memory (not written yet)"
         else:
-            # The file is right there; what does not resolve is its `name`.
-            # Saying 'not written yet' here would point at the wrong repair.
             message = f"wikilink to '{target}' has no matching memory; {hint}"
         findings.append(Finding(WARNING, location, field, message))
     return findings
@@ -333,14 +289,9 @@ def _check_name(location, data):
 
 
 def _check_filename_identity(location, data):
-    """Check `name` against the filename, which is the canonical identity.
+    """Warn when `name` differs from the canonical filename (ADR 0001).
 
-    When the two disagree the filename wins and `name` is repaired to match it,
-    never the other way round: a third of a real corpus carries titles in
-    `name` -- spaces, dots, capitals -- for which no rename exists (ADR 0001).
-
-    This is a WARNING rather than an ERROR purely as a migration concession for
-    memory sets written before the rule. It becomes an ERROR in 2.0.0.
+    Repair the name, not the filename. Migration severity becomes ERROR in 2.0.0.
     """
     name = data["name"]
     filename = memory_module.filename(location)
@@ -410,36 +361,18 @@ def _describe(value):
     return "a missing value"
 
 
-# The population is the startup hook's glob, `memory/source-*.md`, matched
-# by name against the path relative to the memory directory: direct children
-# only, and every name the glob admits, including one outside the alias
-# grammar. A check whose population were wider by name would warn about an
-# entry the hook never counts; one narrower would leave an entry it does
-# count unchecked. The hook additionally drops a symlinked entry, which
-# `lint` still reads and checks like every other memory file -- the warning
-# stays true there, it just decides nothing about a count.
+# Match the startup hook's direct-child source filename glob, not alias grammar.
+# Unlike the hook, lint also checks symlinked entries; this does not imply a count.
 SOURCE_FILENAME = re.compile(r"^source-[^/]*\.md$")
 QUOTED_DESCRIPTION = re.compile(r"^description[ ]*:[ \t]*[\"']")
 DESCRIPTION_KEY = re.compile(r"^description[ ]*:")
 
 
 def _check_source_description_form(location, relpath, text):
-    """A source record's `description` is written unquoted, and only unquoted.
+    """Warn on quoted source descriptions; both forms parse and the hook counts both.
 
-    Both forms parse, and since 1.5.2 the startup hook counts both, so a
-    quoted value is no longer invisible. It is still wrong: one canonical
-    form is what keeps the skill that writes these entries, the hook that
-    reads them and this check saying the same thing. Measured on the first
-    real adoption (2026-08-30): eight source records were written quoted and
-    the hook counted zero, and nothing in the toolchain said so.
-
-    Only the first frontmatter block is read, and the scan stops at its
-    closing fence: a `description:` line below it is adopter prose, not a
-    value the entry declares. The document has already parsed by the time
-    this runs, so both fences are guaranteed, and so is the absence of a tab
-    in the payload between them -- which is all this scan reads. A tab on a
-    fence line or in the body is not rejected by the parser and is not this
-    scan's business.
+    Requires parsed frontmatter. Scan only its first block: the parser excludes
+    payload tabs, but permits tabs on fences and in the body outside this check.
     """
     if not SOURCE_FILENAME.match(relpath):
         return []

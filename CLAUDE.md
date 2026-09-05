@@ -22,3 +22,25 @@
 - Commit messages: Conventional Commits, written in **English** (this
   repository is public and English-only, overriding the inherited
   Spanish-commits norm).
+
+## Agent skills
+
+The engineering-skill configuration is local to this checkout under
+`.codex/docs/` and is not distributed with the repository. Read the following
+files when present; their absence in another clone is expected.
+
+### Issue tracker
+
+Development issues, specifications, and testing are managed in GitLab;
+validated work is subsequently published to GitHub. See
+`.codex/docs/issue-tracker.md` for the workflow and tracker operations.
+
+### Triage labels
+
+Use the default Matt Pocock triage labels, mapped in
+`.codex/docs/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository: `CONTEXT.md` defines the vocabulary and
+`docs/adr/` records decisions. See `.codex/docs/domain.md` for consumer rules.

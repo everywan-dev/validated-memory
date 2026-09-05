@@ -186,12 +186,7 @@ def _repeat_reference(unit_id):
 
 
 def _anchors(corpus, unit_id, shown_keys):
-    # `payload` is a mapping the contract never looks inside -- the probe
-    # interprets it, not the contract -- so it is arbitrary structure even
-    # here, in the validated layer. `html.escape_text` stringifies before
-    # escaping, which is what keeps that from raising, and
-    # `corpus.canonical_payload` is what it stringifies with, not
-    # `str`/`repr`: a reader of this page has no Python.
+    # Payload contents are arbitrary: serialize as the key's JSON, then HTML-escape.
     rows = corpus_module.anchor_rows(corpus, unit_id)
     if not rows:
         return '<p class="meta">No anchors: this unit cannot expire.</p>\n'
@@ -205,7 +200,7 @@ def _anchors(corpus, unit_id, shown_keys):
             f'<span class="kind">{html.escape_text(anchor.get("kind"))}</span> '
             f'<span class="captured">{html.escape_text(anchor.get("captured_at"))}</span>'
             f'<pre class="payload">'
-            f"{html.escape_text(corpus_module.canonical_payload(payload))}</pre>"
+            f"{html.escape_text(verdicts.canonical_payload(payload))}</pre>"
             f"{_history(corpus.history.get(key, []))}"
             "</li>"
         )

@@ -1,18 +1,8 @@
-"""How the agent-memory layer is read, and how a reference resolves.
+"""Read agent-memory files, index entries and references; `lint` owns policy.
 
-The layer is one Markdown file per fact under a memory directory, plus a
-one-line-per-entry index (`MEMORY.md`) at its root. This module knows how to
-read that -- collect the files, parse the index, find the body, extract
-wikilinks, parse the supersession marker -- and how a reference to another
-memory resolves. It holds no rules: nothing here decides whether what it read
-is well formed. `lint` is the rules on top of it.
-
-The split exists so a second reader cannot resolve references differently
-from `lint`. Resolution has three subtleties that are easy to get wrong
-apart: it goes by `name` while the canonical identity is the filename
-(ADR 0001), a filename only explains an unresolved reference when it is
-unambiguous, and ambiguity is counted over every file collected rather than
-over the ones whose frontmatter happened to parse.
+References resolve by declared name; filenames are canonical identities
+(ADR 0001). Filename hints require uniqueness across all collected files,
+including those with unparseable frontmatter.
 """
 
 import re
@@ -28,49 +18,33 @@ WIKILINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
 SUPERSEDED_PREFIX = "superseded by "
 SUPERSEDED_WIKILINK_PATTERN = re.compile(r"^\[\[([^\]]+)\]\]")
 
-# One memory file as it was read. `relpath` is the path the index refers to
-# it by; `location` is the path a finding names.
+# `relpath` is index-relative; `location` is the path a finding names.
 Document = namedtuple("Document", "location relpath text")
 
-# One `- [Title](file.md) — note` line of the index. `note` is whatever
-# follows the link, free text this layer does not interpret; `line` is the
-# entry as written, stripped of surrounding whitespace, which is what a
-# reader that has to preserve it rather than re-render it needs.
+# `note` is uninterpreted link suffix; `line` preserves the stripped entry.
 IndexEntry = namedtuple("IndexEntry", "title href note line")
 
-# How a reference to another memory resolves. `by_name` is what resolution
-# actually goes by; `by_filename` only ever explains a reference that did not
-# resolve, since the canonical identity is the filename and that is what a
-# writer reaches for.
+# Only `by_name` resolves; `by_filename` explains unresolved references.
 Resolution = namedtuple("Resolution", "by_name by_filename")
 
 
 class MemoryReadError(Exception):
-    """A memory file exists but its bytes cannot be read as text.
-
-    Carries the file at fault, so a consumer can turn the failure into a
-    finding naming it instead of a traceback naming this module.
-    """
+    """Unreadable memory text, with location and reason for a caller's finding."""
 
     def __init__(self, location, reason):
         super().__init__(f"{location}: {reason}")
         self.location = location
         self.reason = reason
 
-# A parsed `superseded by [[name]]` marker. `target` is None when the marker
-# opened but no wikilink followed it, and then `remainder` is empty: nothing
-# after an unparseable marker can be read as an ordinary reference. Otherwise
-# `remainder` is the description text after the marker, which still has to be
-# scanned for ordinary wikilinks.
+# A malformed marker has target=None and no remainder to scan for wikilinks.
+# Otherwise `remainder` contains the description after the successor link.
 Supersession = namedtuple("Supersession", "target remainder")
 
 
 def filename(location):
     """Return the memory's canonical identity: its filename minus `.md`.
 
-    Not `PurePosixPath.stem`, which reads a leading dot as the start of a name
-    rather than as a suffix boundary: a file called `.md` has `stem == '.md'`,
-    which would hand it the identity `.md` instead of none at all.
+    Do not use `PurePosixPath.stem`: `.md` must have an empty identity.
     """
     name = PurePosixPath(location).name
     if name.endswith(SUFFIX):
@@ -79,13 +53,10 @@ def filename(location):
 
 
 def documents(target):
-    """Every memory file under `target`, sorted, as `Document`s.
+    """Return sorted recursive memory documents, excluding the root index.
 
-    The index itself is excluded: it is not a memory. Whether `target` or the
-    index exist at all is the caller's business -- this reads what is there.
-    A file that is there but cannot be read as UTF-8 text raises
-    `MemoryReadError`: which severity that deserves is the caller's rule,
-    but the file at fault is only known here.
+    Raises `MemoryReadError` for unreadable UTF-8 files. The caller checks
+    directory/index existence and decides finding severity.
     """
     index_path = target / INDEX_FILENAME
     collected = []
@@ -113,13 +84,7 @@ def documents(target):
 
 
 def index_entries(text):
-    """Return every bullet-with-link entry of the index, in order.
-
-    Only lines shaped `- [Title](file.md)` count as entries; headers and prose
-    are ignored. The href is stripped here rather than by each caller: it is
-    used as a key, and two callers stripping it differently is how they come
-    to disagree about which entry names which file.
-    """
+    """Return bullet-with-link entries in order, with href and note stripped."""
     entries = []
     for line in text.splitlines():
         match = INDEX_ENTRY_PATTERN.match(line.strip())
@@ -132,11 +97,7 @@ def index_entries(text):
 
 
 def body(text):
-    """Return the document text after the closing frontmatter fence.
-
-    Called only once the frontmatter has already been parsed, so the fences
-    are known to be well formed.
-    """
+    """Return text after the closing fence; requires parsed frontmatter."""
     lines = text.split("\n")
     for index in range(1, len(lines)):
         if lines[index].rstrip() == "---":
@@ -160,11 +121,9 @@ def wikilinks(text):
 
 
 def supersession(description):
-    """Parse the supersession marker, when the description opens with one.
+    """Return None for no prefix, otherwise a parsed `Supersession`.
 
-    Returns None when there is no marker at all -- an ordinary description --
-    and a `Supersession` otherwise, whose `target` is None when the prefix was
-    not followed by a parseable wikilink.
+    A prefix without a following wikilink yields target=None.
     """
     if not isinstance(description, str) or not description.startswith(
         SUPERSEDED_PREFIX
@@ -178,14 +137,9 @@ def supersession(description):
 
 
 def resolution(documents_read, declared):
-    """Build the resolution tables for a memory set.
+    """Build resolution from all documents and location-to-declared-name data.
 
-    `declared` maps a location to the `name` its frontmatter declares, for the
-    documents whose frontmatter parsed. `documents_read` is every document
-    collected, parsed or not -- ambiguity is counted over all of them, so a
-    filename shared by two memories stays ambiguous even when only one of the
-    two has readable frontmatter: the readable one is not thereby known to be
-    the memory that was meant.
+    Filename ambiguity includes unparseable siblings, not just `declared`.
     """
     by_filename = {}
     for document in documents_read:
@@ -203,11 +157,7 @@ def resolution(documents_read, declared):
 
 
 def filename_hint(target, resolved):
-    """Name the file a reference was reaching for, when it is certain which.
-
-    None when no single file carries that filename -- there is nothing certain
-    to say, and guessing would send the repair to the wrong file.
-    """
+    """Describe an unambiguous filename's declared name, or return None."""
     declared = resolved.by_filename.get(target)
     if declared is None:
         return None
@@ -215,10 +165,5 @@ def filename_hint(target, resolved):
 
 
 def is_declared(value):
-    """Say whether a frontmatter value counts as a declared name.
-
-    Shared with `lint` rather than restated there: resolution and the rules
-    have to agree about which names exist, and two definitions of that are
-    how a name the rules accept gets left out of resolution.
-    """
+    """Whether a value is a string containing non-whitespace characters."""
     return isinstance(value, str) and bool(value.strip())

@@ -33,11 +33,10 @@ state the non-obvious constraint.
 A finding on axis B has three possible destinations, in this order:
 
 1. **Delete** — it restates what the code says.
-2. **Move to a test** — it asserts behaviour. A test name or docstring
-   executes; a comment does not. This repository already pins its published
-   prose by test (`test_readme_currency`, `test_walkthrough`,
-   `test_docs_links`, `test_contract_docs`); comments are the one prose
-   surface with no pin, which is why they drift.
+2. **Check the assertions** — it asserts behaviour. Name the test whose
+   assertions pin the claim, or record a coverage gap under ADR 0010.
+   Test names and docstrings do not execute. Structural tests check
+   documentary references in code prose, not the truth of its claims.
 3. **Keep, shortened** — it states a constraint the code cannot state: a
    platform quirk, an ordering that matters, a rejected alternative that
    would look correct to the next reader.
@@ -114,13 +113,21 @@ log when it does.
    **every claim about behaviour names the test and the assertions that pin
    it**, or the coverage gap it opened. That classification is the review
    half of ADR 0010's enforcement; the mechanical half is already a test.
-6. Apply what is decided. Defer what needs a decision, and say where it went.
+6. The architect specifies bounded work for the programmer and uses Claude
+   Code to challenge consequential analyses and decisions (never Fable).
+   The architect records the ruling; the challenger does not approve work.
+   Apply what is decided. Defer what needs a decision, and say where it went.
 7. Run `python3 -m pytest`. **The whole suite green before any claim**
-   — 650 tests at the end of J2, and the number moves as units add
-   pins. A unit that lowers it has deleted a test, and says which one
-   and why. A comment whose deletion breaks a test was a pin in the
-   wrong place — record that; it is an axis-B finding of the best kind.
-8. Commit, merge to `main` when green, push to **both** remotes.
+   — record the before/after counts and list tests added, deleted, or
+   renamed with their reasons; an unchanged total can hide a replacement.
+   Verify that shortened prose retains contracts and constraints, and that
+   tests assert behavior rather than requiring its old wording.
+8. Develop and test on the feature branch in GitLab. After implementation,
+   require independent code review, engineer integration and adversarial
+   testing, and final architect acceptance, following `AGENTS.md`. Merge
+   validated work in GitLab and publish it to GitHub only when authorized;
+   passing tests alone does not authorize a merge or push. Releases follow
+   `CONTRIBUTING.md`.
 9. Tick the checkbox below with the commit, fill the unit's row in
    `reviews/ledger.md` — the semantic counts first, bytes second — add a
    dated `SESSION.md` entry, and update `TODO.md` if anything was deferred.
@@ -165,7 +172,7 @@ log when it does.
 - [x] S1 — the scaffolder ([findings](reviews/s1.md))
 - [x] C1 — the contract ([findings](reviews/c1.md))
 - [x] F1 — freshness ([findings](reviews/f1.md))
-- [ ] M1 — agent memory and corpus
+- [x] M1 — agent memory and corpus ([findings](reviews/m1.md))
 - [ ] V1 — the view stack
 - [ ] X1 — the entry point
 - [ ] T1 — the test surface
@@ -278,3 +285,12 @@ One line per session, most recent last: date, unit, commit, outcome.
   — and found a sentence C1 had written the same day to be false, since two
   reads are two opens and nothing holds the tree still between them. Five
   sentences of history out, three false claims corrected. 653 tests green.
+- 2026-09-05 — M1, agent memory and corpus, `feature/review-m1-memory`.
+  Canonical payload JSON has one owner in `verdicts`, with absent-payload
+  identity handled separately. M1 prose fell from 20,607 to 5,873 characters;
+  interfaces and constraints replaced repeated narrative. Three CLI tests
+  added, seven contrary behaviors rejected in isolated copies, baseline and
+  candidate HTML bytes equal. Claude Code Opus challenged the design; the
+  architect adjudicated its suggestions. Independent reviewer APPROVE and
+  engineer PASS, 656 tests green. Four existing coverage gaps are recorded
+  in the findings. V1 is next.
