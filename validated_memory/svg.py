@@ -1,38 +1,12 @@
-"""The three generated diagrams: freshness, confluence and rationale.
+"""Deterministic, inert freshness, confluence and rationale SVG.
 
-All inline SVG, generated deterministically from the data alone, and all of
-them obey one set of rules -- written once, here, because a rule kept in
-three places is a rule two of them will drift from:
-
-- **Deterministic.** Element ids derive from the data, never from `hash()`,
-  which is salted per process. No clock, no generation timestamp, no font
-  metrics. The freshness strip's right edge is the LAST RECORD, never "now":
-  an edge at "now" would redraw the artifact on every regeneration and dirty
-  `git status` on every session.
-- **Inert.** No `href` of any kind, no `<use>`, no `<image>`.
-- **Escaped.** Every text node and attribute goes through
-  `html.escape_text` / `html.escape_attribute`. An SVG carrying unescaped
-  adopter text is an XSS surface, not a drawing.
-- **Not colour-alone.** State differs in shape and in text as well as in
-  fill, so the diagrams survive colour blindness and a black and white
-  printer. Every diagram carries a `<title>` and a `<desc>`.
-- **Never load-bearing.** Everything a diagram shows is also on the page as
-  structured HTML.
-
-A diagram's `<title>`, `aria-label` and `<desc>` are built from values of
-closed domains -- counts, verdicts, unit ids -- and never from adopter or
-probe text. An attribute is the one place on the page where a stray `://`
-would breach the self-containment rule, and `recorded_at`, a `label` and a
-`question` are all values nothing constrains. They reach the page as escaped
-text instead, which is where they belong.
-
-Two guarantees, and only two: these drawings are BYTE-DETERMINISTIC, and they
-are NOT promised to look the same on every platform. An SVG `<text>` does not
-wrap, and no layout computed without font metrics can promise "it fits",
-"nothing is truncated" and "it is legible" at once for arbitrary adopter text
--- CJK, emoji sequences, combining marks and right-to-left text break any
-character-count estimate. Hence `LABEL_LIMIT` below, which is deterministic
-rather than clever.
+Use integer geometry, no clock/font metrics/hash ordering, and no links or
+external assets. Escape text and attributes; callers provide complete HTML
+text alongside diagrams. Diagram-level titles, labels and descriptions use
+counts, verdicts and unit IDs; band titles also carry escaped optional
+timestamps. Shape and text supplement colour, but screen-reader, print and
+contrast behavior lack direct tests. Byte stability does not guarantee text
+fit or identical appearance across fonts and platforms.
 """
 
 from . import html
@@ -41,54 +15,31 @@ BAND_HEIGHT = 24
 WIDTH = 640
 CONFLUENCE_WIDTH = 460
 COLOURS = {"current": "#2e7d32", "drifted": "#c62828", "unknown": "#757575"}
-# One character per verdict, drawn in the band. These three are ASCII, so no
-# font has to have them.
+# Redundant verdict marks supplement shape and colour.
 MARKS = {"current": "+", "drifted": "!", "unknown": "?"}
-# And one shape per verdict -- `(top edge, height, dash pattern)` -- so the
-# strip reads the same in greyscale as in colour: a full solid band, a full
-# dashed band, and a half-height band.
+# Shape tuples: top edge, height, dash pattern.
 SHAPES = {
     "current": (0, BAND_HEIGHT, None),
     "drifted": (0, BAND_HEIGHT, "3 2"),
     "unknown": (BAND_HEIGHT // 2, BAND_HEIGHT // 2, None),
 }
 
-# A label at or under this many characters is drawn inside its node; above
-# it, the node draws its number and the full text is read from the list
-# beside the diagram. A character count is not a width, which is exactly why
-# this is a fallback and not an estimate.
+# Character-count fallback, not a text-width estimate.
 LABEL_LIMIT = 48
-# Above this many options every node draws its number, whatever its label
-# measures: past this point a column of numbers reads better than a column of
-# half-fitting text, and a uniform rule never leaves a reader wondering why
-# one node is numbered and its neighbour is not.
+# Above this count number every option, regardless of label length.
 NUMBERED_ABOVE = 8
-# The rationale diagram is a top-down tree of full-width rows: the question
-# across the top, the options indented beneath it. A side-by-side layout is
-# what would force two different thresholds -- a narrow left-hand question
-# column overflows into the option column long before `LABEL_LIMIT`
-# characters -- and one threshold every node can honour is worth more than a
-# layout that looks more like a graph.
+# Full-width question and option rows share one character-count threshold.
 ROW_HEIGHT = 34
 BOX_HEIGHT = 28
 OPTION_INDENT = 24
 
 
 def _diagram(class_name, width, height, label, description, body):
-    """The shell every diagram shares: sized, titled, described and inert.
+    """Wrap trusted SVG markup with an escaped label and description.
 
-    `label` is both the `aria-label` and the `<title>`, so a reader using a
-    screen reader and a reader hovering the drawing get the same sentence.
-    `<desc>` says what the drawing means and, more importantly, what it does
-    not mean -- which for the freshness strip is "distance in time".
-
-    Both are built by the caller out of closed-domain values only; see the
-    module docstring for why nothing adopter-authored may reach them.
-
-    `class_name`, `label` and `description` are escaped here, by the shell.
-    `body` is inserted verbatim -- it is the caller's job to have already
-    escaped everything inside it, since the shell has no way to tell markup
-    from text once the two are concatenated into one string.
+    The label supplies both aria-label and the diagram title. Callers must
+    escape body text before assembly; only closed-domain values belong in the
+    diagram-level metadata. Per-diagram accessibility structure is unpinned.
     """
     return (
         f'<svg class="{html.escape_attribute(class_name)}" role="img" '
@@ -101,21 +52,11 @@ def _diagram(class_name, width, height, label, description, body):
 
 
 def freshness_strip(records):
-    """A horizontal band per record, oldest to newest, labelled with its verdict.
+    """Draw records in supplied append order, never sorted by timestamp.
 
-    `records` is the anchor's own group, oldest first, in log file order,
-    never re-sorted by `recorded_at`: the log is append-only, so file order is
-    chronological, and the verdict parser requires only `unit`, `system`,
-    `kind`, `verdict` and the payload -- `recorded_at` is what `probe`
-    happens to write, not something a reader can demand. Each band is still
-    labelled with its `recorded_at` when there is one, in its own `<title>`.
-
-    This is a sequence, NOT a time axis, and the `<desc>` says so: with
-    `recorded_at` optional, no width here may imply distance in time between
-    two records.
-
-    Three channels tell a band apart and only one is colour: its shape
-    (`SHAPES`), its mark (`MARKS`) and its `<title>`.
+    Band titles include optional recorded_at text. Width represents sequence,
+    not elapsed time; the right edge is the last record, never now. Verdicts
+    differ by shape, mark and colour.
     """
     if not records:
         return ""
@@ -127,20 +68,9 @@ def freshness_strip(records):
         outline = (
             f' stroke="currentColor" stroke-dasharray="{dash}"' if dash else ""
         )
-        # The mark sits vertically centred in its own band: `top +
-        # band_height // 2` is the band's own midline, and `+ 4` compensates
-        # for a 12px glyph's baseline sitting below its visual centre. A
-        # full-height band centres at 16; the half-height band starts lower
-        # (`top` is 12, not 0), so its midline -- and its mark -- moves down
-        # with it, to 22, keeping the glyph inside the shorter box instead
-        # of centred on a band twice its height.
+        # Offset the glyph baseline from its own band's midline.
         baseline = top + band_height // 2 + 4
-        # Integer division, not `WIDTH / count`: computing each band's own
-        # edges from the index (rather than a running float total) is what
-        # keeps every band's width an integer and the strip byte-identical
-        # across platforms, and it still tiles the full width exactly --
-        # `right` of one band is `left` of the next, with no gap and no
-        # float rounding to drift between them.
+        # Derive integer edges independently: adjacent bands tile WIDTH without drift.
         left = index * WIDTH // count
         right = (index + 1) * WIDTH // count
         bands.append(
@@ -169,15 +99,8 @@ def freshness_strip(records):
 
 
 def confluence(superseded_ids, successor_id):
-    """Three or more units merging into one. Below three, nothing is drawn.
-
-    Below three, a chain is two boxes and an arrow saying what one line of
-    text already says.
-    """
-    # Deduplicated first, so the guard below and the rows drawn after it
-    # always count the same set: a caller passing the same id three times
-    # over must see the guard refuse it exactly as a genuine two-id list
-    # would, not a "3 units" drawing over one actual row.
+    """Draw three or more distinct superseded IDs, sorted; otherwise return empty."""
+    # Count and draw the same distinct IDs.
     ordered = sorted(set(superseded_ids))
     if len(ordered) < 3:
         return ""
@@ -209,46 +132,16 @@ def confluence(superseded_ids, successor_id):
 
 
 def rationale(unit_id, record):
-    """One diagram per unit that carries a rationale: the question, then the options.
+    """Draw a validated rationale: question, then one row per option.
 
-    A top-down tree of fixed depth: the question in a full-width row across
-    the top, one full-width row per option indented beneath it, and one line
-    from the question down to each. No edges between options and no edge
-    leaving the unit -- a rationale holds no reference to anything, so there
-    is no global graph here and no hairball to avoid. Size and edge count are
-    linear in the number of options.
+    Require at least two options and exactly one chosen disposition. Rounded,
+    heavier borders and disposition text distinguish the chosen option; list
+    position identifies options, not their disposition. There are no edges
+    between options or outside the unit.
 
-    Every node is a full-width row precisely so that ONE threshold governs
-    them all. Laid out side by side, the question would sit in a narrow
-    column and overflow into the options well before `LABEL_LIMIT`
-    characters, and a drawing with two different limits is one a reader
-    cannot predict.
-
-    The chosen option is told apart three ways at once, none of them colour:
-    a rounded, heavier border, the word `chosen` drawn inside the node, and
-    its position in the numbered list beside the diagram.
-
-    Nothing is omitted and nothing is silently truncated. Text at or under
-    `LABEL_LIMIT` characters is drawn inline; above it -- or, for an option,
-    past `NUMBERED_ABOVE` options, where the whole diagram switches to
-    numbers at once -- the node draws `#n`, or `?` for the question, and the
-    reader finds the full text beside the drawing. The `<desc>` says so,
-    inside the drawing.
-
-    The label, the `aria-label` and the `<desc>` name the unit and count the
-    options, and quote no adopter text at all: a `question` is unconstrained,
-    so one carrying `://` would put a URL in an SVG attribute (which the
-    page's self-containment rule allows nowhere but `a[href]`), and one past
-    the threshold would contradict the fallback the drawing has just applied.
-
-    Every coordinate here is an integer, so no float formatting can differ
-    between platforms: the same rationale renders the same bytes.
-
-    `record` is a validated rationale mapping: `question` is a non-empty
-    string and `options` a list of at least two mappings, each with `label`,
-    `disposition` and `reason`, exactly one of them `chosen`. It is named
-    `record` rather than `rationale` so that it does not shadow this
-    function.
+    Long questions use ?, long labels use #n; above NUMBERED_ABOVE options all
+    labels use #n. The adjacent HTML retains full text. Exact fallback thresholds
+    lack direct tests; the emitted description omits the option-count trigger.
     """
     options = record["options"]
     question = record["question"]

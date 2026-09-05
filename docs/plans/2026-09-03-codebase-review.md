@@ -173,7 +173,7 @@ log when it does.
 - [x] C1 — the contract ([findings](reviews/c1.md))
 - [x] F1 — freshness ([findings](reviews/f1.md))
 - [x] M1 — agent memory and corpus ([findings](reviews/m1.md))
-- [ ] V1 — the view stack
+- [x] V1 — the view stack ([findings](reviews/v1.md))
 - [ ] X1 — the entry point
 - [ ] T1 — the test surface
 - [ ] Close: archive this plan to `sessions/plans/`, and record in `TODO.md`
@@ -294,3 +294,13 @@ One line per session, most recent last: date, unit, commit, outcome.
   architect adjudicated its suggestions. Independent reviewer APPROVE and
   engineer PASS, 656 tests green. Four existing coverage gaps are recorded
   in the findings. V1 is next.
+- 2026-09-05 — V1, the view stack, `feature/review-v1-views`, after M1's
+  validated merge `0398a65`. Interfaces retained; comments/docstrings only,
+  seven executable ASTs and output strings unchanged. Prose fell from
+  30,098 to 7,582 characters (74.8%); four inherited CLI coverage gaps closed
+  with four tests observed rejecting contrary behavior. Sixteen HTML pairs
+  matched, with additional independent hash-seed and malformed-input checks.
+  Claude Code Opus high challenged the specification; reviewer, UserCare and
+  engineer approved without edits. Architect full suite: 661 passed (658
+  published tests plus three clone-only checks). Two preexisting behavior
+  defects and remaining verification gaps are recorded separately. X1 next.

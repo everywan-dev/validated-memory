@@ -1,15 +1,6 @@
-"""The overview block of `knowledge.html`: what the corpus holds, at a glance.
+"""Render counts, map links and the unprobed queue from one corpus.
 
-Three parts, in this order: the counts of active units by evidence state
-crossed with verdict, the map of the corpus, and the queue of anchors no
-probe has answered for under their current key. Every figure comes from
-`corpus`, so the overview and the cards below it cannot disagree.
-
-The map is a NAVIGATION INDEX -- links to cards, never cards. That is what
-makes grouping on a multi-valued axis well defined: a unit anchored in three
-systems is a link in three groups while its card is still rendered exactly
-once, so no id on this page is ever duplicated and the single-render rule the
-card walk enforces is untouched.
+Multi-system units have one link per group, never duplicate cards.
 """
 
 from . import html, verdicts
@@ -17,7 +8,7 @@ from . import corpus as corpus_module
 
 
 def build(corpus):
-    """The whole overview, as one section."""
+    """Return the overview section: counts, map, then unprobed anchors."""
     return (
         '<section class="overview" id="overview">\n'
         + _counts(corpus)

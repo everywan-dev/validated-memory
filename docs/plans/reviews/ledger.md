@@ -1,7 +1,8 @@
 # What the review has gained, unit by unit
 
-The counter for [the codebase review](../2026-09-03-codebase-review.md). Every
-number here is produced by [`measure.py`](measure.py), never typed by hand:
+The counter for [the codebase review](../2026-09-03-codebase-review.md).
+Source-size measurements come from [`measure.py`](measure.py); semantic
+counts are recorded from the findings:
 
 ```
 python3 docs/plans/reviews/measure.py                    # the table now
@@ -65,6 +66,7 @@ findings file; bytes are the secondary table below.
 | F1 | `049bc09` … `0361f55` | 5 | 3 | 0 | 0 | 3 | 2 |
 | **total through F1** | | **27** | **22** | **3** | **9** | **41** | **18** |
 | M1 | see [findings](m1.md) | 2 incident groups | 5 assertion families | 4 retained gaps | 3 | 3 | 1 |
+| V1 | see [findings](v1.md) | 3 incident groups | 5 assertion families | remaining areas documented; 4 inherited gaps closed | 4 | 9 | 0 |
 
 "claims already pinned" counts prose deleted because a test was found that
 fails when the claim stops being true; J1 predates that step, so it was not
@@ -94,6 +96,8 @@ into a plan archived out of the repository.
 | M1 | see [findings](m1.md) | −263 | −3,746 | −14,734 | −1 / ±0 | 656 green |
 | M1 → F1, V1 (serializer owner and consumers) | same | −6 | −99 | −391 | +1 / −1 | — |
 | M1 new CLI tests (outside the two-file T1 counter) | same | +96 | +1,084 | +323 | +3 / ±0 | 3 added, 0 deleted, 0 renamed |
+| V1 | see [findings](v1.md) | −384 | −5,724 | −22,516 | ±0 / ±0 | 661 local green; 658 published tests |
+| V1 new CLI tests (outside the two-file T1 counter) | same | +84 | +869 | +391 | +4 / ±0 | 4 added, 0 deleted, 0 renamed |
 | **running total** | | | | | | |
 
 M1 compares against `a0e0ba5`, after F1; it does not claim F1's earlier gains
@@ -107,6 +111,15 @@ to 25,604 in M1, and prose from 20,607 to 5,873 (71.5%). Including the three
 direct consumers and the 4,338-character test file, net source reduction is
 11,038 characters. These are the counter's text measurements, not a measured
 runtime speedup. The preceding journal/plan corrections are separate.
+
+V1 compares against `7b78e78`, after M1 and its CI correction. Seven runtime
+modules fell from 62,466 to 39,573 source characters and from 30,098 to 7,582
+prose characters (74.8% less prose). Public/private names stay 12/23. Including
+the new 3,476-character test file, net source reduction is 19,417 characters.
+The tool's historical `bytes` field measures Python string length, so these
+are character counts and approximate context costs, not encoded byte counts
+or runtime-speed measurements. The M1 CI correction's extra structural test
+is separate; local full-suite counts also include three ignored clone tests.
 
 The reference work adds prose and is a gain: a citation that resolves is
 longer than one that does not, and four new pins carry their own docstrings.
@@ -125,7 +138,7 @@ out. What went in: five factory docstrings and a module docstring for
 `journal/durable.py`, which between them replaced enforcement-by-paragraph
 with enforcement-by-signature — three combinations `Intention`'s docstring
 called impossible were constructible, and now have no spelling — and two
-new tests, whose docstrings are prose that runs.
+new tests, whose assertions execute the guarantees described by their docstrings.
 
 The four false claims are the three `Intention` combinations plus "step
 1b", a pointer that survived the reference pass in two files because it is

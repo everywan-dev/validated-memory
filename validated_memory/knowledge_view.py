@@ -1,28 +1,17 @@
-"""Builds `knowledge.html`: the curated layer, live conclusions first."""
+"""Build the curated-knowledge page from one corpus, active conclusions first."""
 
 from . import html, knowledge_overview, styles, svg, verdicts
 from . import corpus as corpus_module
 
 TITLE = "Curated knowledge"
 
-# The most recent probes shown under each anchor. The log itself is never
-# truncated -- only what a page shows of it -- and each anchor states its
-# own true total beside the window, so a reader can tell a full history from
-# a partial one without leaving the page.
+# Window presentation only; retain the log and disclose unwindowed totals.
 HISTORY_WINDOW = 20
 
 
 def build(corpus):
-    """Return the whole page as a string.
-
-    `corpus` is `corpus.build(...)`, the one reading of the repository this
-    page is a function of: the overview's numbers, the map's groups and each
-    card's badges all come out of it, so no two parts of the page can be
-    computed from different data.
-    """
-    # Populated as anchors are rendered below, so the header's "belonging"
-    # total reflects exactly what ended up on the page -- not a count
-    # derived separately, which could drift from the walk.
+    """Return the page; overview and cards share the supplied corpus snapshot."""
+    # Count records belonging to anchors actually rendered, not orphan log keys.
     shown_keys = set()
 
     sections = []
@@ -38,10 +27,7 @@ def build(corpus):
         f'<p class="basis">Basis: {len(corpus.units)} unit(s) under '
         f"{html.escape_text(corpus.basis)}</p>"
     )
-    # Two totals, not one: the log outlives the corpus (nothing prunes a
-    # record whose unit or anchor is gone), so the log's own total can never
-    # be reconciled by a reader against the histories on the page -- only
-    # the "belonging" count can be.
+    # The log outlives its units and anchors; distinguish total from belonging.
     parts.append(
         f'<p class="window">Verdict log: {corpus.record_total} record(s) in '
         f"{html.escape_text(verdicts.LOG_FILENAME)}, of which {belonging} "
@@ -54,20 +40,11 @@ def build(corpus):
 
 
 def _unit_section(corpus, unit_id, rendered, shown_keys, top=True):
-    """Render this unit's section, with its supersession chain nested inside.
+    """Render a validated supersession DAG with an explicit stack.
 
-    A chain's length is set by whoever writes `supersedes` and nothing in
-    the contract bounds it, so this walks with an explicit stack rather than
-    recursing -- a deep chain must not turn into a `RecursionError`. Two
-    units may supersede the same one, so a unit already rendered elsewhere
-    on the page is referenced by anchor (`<a href="#unit-...">`) instead of
-    rendered again; that repeat rule is also what stops the walk from
-    re-entering a shared ancestor. `render` validates before it renders, so
-    `validate`'s rejection of a supersession cycle already guarantees this
-    walk is over a DAG -- there is no separate cycle guard here. Likewise a
-    `supersedes` entry naming a unit outside the validated set is its own
-    contract ERROR (`_check_supersedes`) that gates before this ever runs,
-    so every `target` below is guaranteed to be a key of `corpus.units`.
+    Targets must exist and cycles must already be rejected. Shared ancestors
+    become links after their first render. Recursion-limit-depth behavior lacks
+    a direct test.
     """
     if unit_id in rendered:
         return _repeat_reference(unit_id)
@@ -98,9 +75,7 @@ def _new_frame(corpus, unit_id, top):
     return {
         "unit": unit,
         "top": top,
-        # The frontmatter subset accepts a list naming the same id twice;
-        # the set is what the page must state, or a duplicated entry
-        # multiplies one unit into a "N units" confluence of identical rows.
+        # Duplicate supersedes declarations must not multiply rows or diagram counts.
         "children": sorted(set(unit.data.get("supersedes") or [])),
         "index": 0,
         "pieces": [],
@@ -112,9 +87,6 @@ def _render_section(corpus, frame, shown_keys):
     chain = "".join(frame["pieces"])
     if chain:
         chain = f'<div class="chain">\n{chain}\n</div>\n'
-    # A confluence is drawn only when three or more units are superseded at
-    # once by this one -- below three, a chain is two boxes and an arrow
-    # saying what one line of text already says, so nothing is drawn.
     confluence = svg.confluence(frame["children"], unit.unit_id)
     css_class = "unit" if frame["top"] else "unit superseded"
     return (
@@ -140,19 +112,10 @@ def _render_section(corpus, frame, shown_keys):
 
 
 def _rationale(unit):
-    """The unit's rationale: the question, the diagram, then every option in full.
+    """Render optional rationale and every option in full beside its diagram.
 
-    Drawn only for a unit that carries one -- most units are measurements,
-    record no choice between alternatives, and must not be nagged into
-    inventing one.
-
-    `rejected` is written as itself and nowhere near the words used for
-    supersession or for a failed verdict: an option was considered and not
-    chosen HERE. It is not false, and it is not superseded.
-
-    This list is the complete text, always. The diagram above it may fall
-    back to `?` for a question or `#n` for a label it cannot fit; nothing it
-    shows is missing from here, which is what "never load-bearing" means.
+    Rejected options are neither superseded units nor failed verdicts. Keep the
+    complete text even when the diagram substitutes a question mark or number.
     """
     rationale = unit.data.get("rationale")
     if not rationale:
@@ -208,18 +171,11 @@ def _anchors(corpus, unit_id, shown_keys):
 
 
 def _history(matching):
-    """This anchor's probe history: at most `HISTORY_WINDOW` records, newest first.
+    """Show the last HISTORY_WINDOW appended records, latest append first.
 
-    `matching` is already this anchor's own records (`corpus._group_history`
-    keys on the same `anchor_key` computed above), oldest first; reversed
-    here so the most recent probe reads first, then windowed. The disclosure
-    line states the anchor's true total before the window, so a reader never
-    mistakes a partial history for a complete one.
-
-    The freshness strip below the list is drawn from `shown` -- the same
-    windowed records the text history displays, put back in oldest-first
-    order -- not a second pass over the log. A record outside the window
-    never appears on the page in any form, text or drawn.
+    `matching` is one anchor's log-ordered group, not timestamp-sorted. Disclose
+    the full group total; the strip uses the same window in append order. Exact
+    SVG window ordering lacks a direct test.
     """
     shown = list(reversed(matching))[:HISTORY_WINDOW]
     items = "\n".join(
