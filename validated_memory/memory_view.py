@@ -1,21 +1,8 @@
-"""Builds `memory.html`: the agent-memory layer, one entry per file.
+"""Render every collected memory document, without enforcing lint.
 
-Unlike `knowledge_view`, this layer has no `gated_source` -- `lint` is the
-rules on top of `memory.py`'s reading, and this module is not `lint`. So this
-view does not enforce: every document collected gets an entry, an entry with
-no line in the index still appears, an unresolved wikilink is marked rather
-than dropped, and a document whose frontmatter will not parse is rendered
-with the parse error stated in place of the fields that could not be read.
-Hiding a record because `lint` would complain about it would make the page
-lie about what the repository holds, and `lint` is one command away.
-
-Nothing validated these values either, so nothing here may assume their
-type: a `description` can be a list, `metadata.type` a mapping, `name` a
-number. Every value that reaches the page goes through `html.escape_text` or
-`html.escape_attribute`, both of which stringify first, and no membership
-test, sort or `.strip()` touches a frontmatter value directly -- the few
-operations that need one (`is_declared`, `wikilinks`, `supersession`) are the
-reader functions in `memory.py` that already guard with `isinstance`.
+Show malformed frontmatter and unresolved references rather than hiding
+entries. Frontmatter values are unvalidated: guard type-dependent operations
+and stringify/escape all displayed values.
 """
 
 from collections import namedtuple
@@ -27,25 +14,9 @@ from .frontmatter import parse as parse_frontmatter
 
 TITLE = "Agent memory"
 
-# One document as read for this page.
-#
-# `filename` is the canonical identity (ADR 0001), always present -- it is a
-# plain path computation, never touched by unparsed or mistyped frontmatter.
-# `identity` is what a resolved wikilink targets: `name` when it is declared,
-# `filename` otherwise; `declared` says which. A document with no declared
-# name can never be a resolution target (`memory.resolution` excludes it
-# from `by_name`), so nothing a reference resolves to ever names the
-# fallback -- but the entry still needs an anchor of its own to sit at on
-# the page. `anchor` is that DOM id (see `_anchor`): for a declared entry it
-# is built from `identity` (the name); for one with no declared name it is
-# built from `document.relpath`, not from `identity` (the filename) --
-# `identity` can repeat across subdirectories where `relpath` cannot, so the
-# anchor and `identity` deliberately part ways there too.
-#
-# `error` is set when the frontmatter would not parse; then `data`, `body`,
-# `targets` and `marker` are never populated, because deriving them needs the
-# frontmatter (or, for `body`, needs the closing fence `memory.body` assumes
-# is there).
+# filename is canonical identity (ADR 0001); identity is name or filename.
+# Undeclared anchors use relpath, not identity; only declared names resolve.
+# A parse error leaves data/body/marker absent and targets empty.
 _Record = namedtuple(
     "_Record",
     "document filename identity declared anchor data body targets marker error",
@@ -53,47 +24,11 @@ _Record = namedtuple(
 
 
 def _anchor(value, declared):
-    """The DOM id an entry sits at.
+    """Use disjoint declared-name and relative-path DOM-id namespaces.
 
-    Disjoint by construction, not by hoping the two inputs differ: a
-    declared name anchors as `entry-name-<name>`, an entry with no declared
-    name anchors as `entry-path-<relpath>`, and `name-` and `path-` are
-    fixed tokens that differ at the first character right after the shared
-    `entry-` prefix. No string either scheme can produce is ever a string
-    the other can produce, whatever `value` holds. That is what
-    `entry-<value>` for both, with a `file-` prefix folded into `value` on
-    the fallback side, did not guarantee: `_anchor('alpha', False)` (no
-    declared name, filename `alpha`) and `_anchor('file-alpha', True)`
-    (declared `name: file-alpha`) both landed on `entry-file-alpha`,
-    because the discriminator lived inside the same string space it was
-    supposed to keep separate.
-
-    Each namespace still has to be injective on its own inputs for the
-    anchor to be unique, and only one of the two can make that promise
-    unconditionally. The no-declared-name scheme is keyed on `relpath`,
-    not the bare filename: `relpath` -- the document's path relative to
-    the memory directory (`memory.documents` builds it as
-    `candidate.relative_to(target)`) -- is unique by construction across
-    every document `memory` reads, no matter what the corpus contains,
-    unlike the filename, which two memories in different subdirectories
-    may share (`lint` reports that as its own finding).
-
-    The declared-name scheme has no such guarantee, and does not claim
-    one. `memory.resolution` builds `by_name` as a plain set of declared
-    names (`{name for name in declared.values() if is_declared(name)}`),
-    with no uniqueness check -- that check exists only on the separate
-    `by_filename` table, over a different key. Two documents can declare
-    the same `name`, and both then anchor at the identical
-    `entry-name-<name>`: a real duplicate id inside this one namespace.
-    `lint` reports a duplicate declared name as an ERROR; this view
-    renders it anyway, per the "does not enforce" rule at the top of this
-    module. That is a known, accepted consequence of not enforcing, not
-    something the anchor scheme guards against -- and it predates this
-    fix, which only closed the *cross-scheme* collision. No anchor
-    spelling could close this one instead: with two entries claiming one
-    name, a `[[wikilink]]` to it is already ambiguous before an id is
-    ever built, and inventing a disambiguated anchor would let the page
-    imply a resolution `lint` does not make.
+    Fallback paths, not bare filenames, distinguish subdirectories. Duplicate
+    declared names still produce duplicate IDs: this view does not enforce
+    lint or invent a resolution for ambiguous wikilinks.
     """
     if declared:
         return f"entry-name-{value}"
@@ -101,12 +36,7 @@ def _anchor(value, declared):
 
 
 def build(documents, basis, resolution):
-    """Return the whole page as a string.
-
-    `basis` is the path the memory files were read under, in the same form
-    `knowledge_view.build` reports for the curated layer, so the two basis
-    lines agree on what "basis" discloses.
-    """
+    """Return entries ordered by filename, disclosing their source path as basis."""
     ordered = sorted(
         documents, key=lambda document: memory_module.filename(document.location)
     )
@@ -119,24 +49,14 @@ def build(documents, basis, resolution):
         f"{html.escape_text(basis)}</p>"
     )
     for record in records:
-        # Only a record whose identity is itself a declared name can be the
-        # target `_incoming_map` indexed anything under -- a fallback
-        # identity (a filename) is never in `resolution.by_name`, so looking
-        # it up here regardless would risk a coincidental match: some other
-        # document's real name happening to equal this one's filename.
+        # A fallback filename matching another entry's name must not inherit its links.
         referrers = incoming.get(record.identity, []) if record.declared else []
         parts.append(_entry_section(record, resolution, referrers))
     return html.page(TITLE, "\n".join(parts), styles.MEMORY)
 
 
 def _read(document):
-    """Parse one document into a `_Record`, never raising.
-
-    Called once per document, independently of whatever resolution the
-    caller already computed -- parsing frontmatter is a pure function of the
-    text with no ambiguity to disagree with `lint` about, unlike resolving a
-    reference, which is why `resolution` is taken as an argument instead.
-    """
+    """Parse a document for presentation; capture FrontmatterError in its record."""
     filename = memory_module.filename(document.location)
     try:
         data = parse_frontmatter(document.text)
@@ -149,10 +69,7 @@ def _read(document):
     name = data.get("name")
     declared = memory_module.is_declared(name)
     identity = name if declared else filename
-    # The anchor is keyed on `identity` (the name) when declared, but on
-    # `document.relpath` -- not `identity` -- when it falls back: `identity`
-    # is the filename there, and a filename is not unique across
-    # subdirectories the way `relpath` is (see `_anchor`).
+    # Fallback filenames may repeat across subdirectories; relative paths do not.
     anchor = (
         _anchor(identity, declared)
         if declared
@@ -162,8 +79,7 @@ def _read(document):
     description = data.get("description")
     marker = memory_module.supersession(description)
     scan_text = marker.remainder if marker is not None else description
-    # `wikilinks` guards non-string input itself (returns `[]`), so this is
-    # safe to call on `description` whatever its type turned out to be.
+    # wikilinks accepts unvalidated, non-string descriptions.
     targets = _ordered_unique(
         memory_module.wikilinks(scan_text) + memory_module.wikilinks(body)
     )
@@ -174,7 +90,7 @@ def _read(document):
 
 
 def _ordered_unique(items):
-    """De-duplicate `items` (already known to be strings), first seen first."""
+    """Deduplicate strings in first-seen order."""
     seen = set()
     result = []
     for item in items:
@@ -186,17 +102,7 @@ def _ordered_unique(items):
 
 
 def _incoming_map(records, resolution):
-    """Map each declared name to the records whose outgoing targets name it.
-
-    Built once over every record, restricted to targets `resolution.by_name`
-    recognises -- the same set `_outgoing_list` and `_supersession_html` test
-    membership against, so a wikilink the outgoing side marks unresolved can
-    never turn into a live incoming reference on the other end. Looked up by
-    `identity`, so an entry's incoming list is exactly "which other entries
-    carry this identity among their outgoing targets" -- the mirror image of
-    the outgoing list, with no separate notion of what counts as a
-    reference.
-    """
+    """Index outgoing references only under names recognized by resolution."""
     incoming = {}
     for record in records:
         for target in record.targets:
@@ -250,9 +156,6 @@ def _supersession_html(marker, resolution):
     if marker is None:
         return ""
     if marker.target is not None and marker.target in resolution.by_name:
-        # `marker.target` is a declared name, checked against `by_name` on
-        # the line above -- `_anchor`'s declared branch, same as every other
-        # link built from a resolved target.
         anchor = _anchor(marker.target, True)
         target_html = (
             f'<a href="#{html.escape_attribute(anchor)}">'
