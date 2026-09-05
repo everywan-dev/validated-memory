@@ -67,6 +67,7 @@ findings file; bytes are the secondary table below.
 | **total through F1** | | **27** | **22** | **3** | **9** | **41** | **18** |
 | M1 | see [findings](m1.md) | 2 incident groups | 5 assertion families | 4 retained gaps | 3 | 3 | 1 |
 | V1 | see [findings](v1.md) | 3 incident groups | 5 assertion families | remaining areas documented; 4 inherited gaps closed | 4 | 9 | 0 |
+| X1 | see [findings](x1.md) | 0 | 2 flag-constraint families | diagnostic gaps retained | 0 | 2 | 0 |
 
 "claims already pinned" counts prose deleted because a test was found that
 fails when the claim stops being true; J1 predates that step, so it was not
@@ -98,6 +99,7 @@ into a plan archived out of the repository.
 | M1 new CLI tests (outside the two-file T1 counter) | same | +96 | +1,084 | +323 | +3 / ±0 | 3 added, 0 deleted, 0 renamed |
 | V1 | see [findings](v1.md) | −384 | −5,724 | −22,516 | ±0 / ±0 | 661 local green; 658 published tests |
 | V1 new CLI tests (outside the two-file T1 counter) | same | +84 | +869 | +391 | +4 / ±0 | 4 added, 0 deleted, 0 renamed |
+| X1 | see [findings](x1.md) | −17 | −297 | −1,016 | ±0 / ±0 | 661 local; no test changes |
 | **running total** | | | | | | |
 
 M1 compares against `a0e0ba5`, after F1; it does not claim F1's earlier gains
