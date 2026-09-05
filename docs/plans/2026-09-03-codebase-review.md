@@ -1,6 +1,7 @@
 # Codebase review — plan (multi-session)
 
-**Status:** in progress. Started 2026-09-03, after releasing 1.6.0 (`d20fc9b`).
+**Status:** review complete, 2026-09-05; GitLab integration pending.
+Started 2026-09-03, after releasing 1.6.0 (`d20fc9b`).
 This file is the state: the checklist at the bottom is what a new session
 reads to know where the work stands.
 
@@ -177,9 +178,11 @@ log when it does.
 - [x] M1 — agent memory and corpus ([findings](reviews/m1.md))
 - [x] V1 — the view stack ([findings](reviews/v1.md))
 - [x] X1 — the entry point ([findings](reviews/x1.md))
-- [ ] T1 — the test surface
-- [ ] Close: archive this plan to `sessions/plans/`, and record in `TODO.md`
-      what the review changed overall.
+- [x] T1 — the test surface ([findings](reviews/t1.md)); accepted on
+      `feature/review-t1-test-prose`, GitLab integration pending
+- [x] Close: archive a local copy to `sessions/plans/`, retain this public
+      historical path for the ledger and Python documentary-reference pins,
+      and record the overall outcome and remaining work in `TODO.md`.
 
 ## Log
 
@@ -313,3 +316,18 @@ One line per session, most recent last: date, unit, commit, outcome.
   Prose 1,775 to 759 characters; no tests changed. Reviewer APPROVE and
   engineer PASS without edits; architect full suite 661 passed. T1 next,
   under the user's authorization to continue across separately validated units.
+
+- 2026-09-05 — T1, `feature/review-t1-test-prose`, baseline X1 `b787752`.
+  Two exclusive programmers retained all executable test nodes and 193 scoped
+  cases; 49 render comment blocks became verification docstrings. Claude Opus
+  high challenged the checks. Reviewer APPROVE round 3 after metadata and
+  preservation overclaims were corrected; engineer PASS without edits. No
+  tests added, deleted or renamed. Exact evidence and limits are in
+  [T1 findings](reviews/t1.md), measurements in the ledger.
+- 2026-09-05 — Review closed across all eleven units. Durable changes include
+  journal ownership and vocabulary, explicit module seams, shared serialization
+  and log readings, documentary-reference pins, and more accurate verification
+  prose. Follow-up behavior changes and coverage gaps remain in `TODO.md`.
+  A local archival copy is retained; the public plan stays at this path because
+  versioned findings and Python comments link to it. This closes the review,
+  not the outstanding product backlog or the pending GitLab publication.
