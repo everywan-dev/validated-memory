@@ -12,7 +12,7 @@ once, so no id on this page is ever duplicated and the single-render rule the
 card walk enforces is untouched.
 """
 
-from . import html
+from . import html, verdicts
 from . import corpus as corpus_module
 
 
@@ -109,7 +109,7 @@ def _unprobed(corpus):
         f'<span class="system">{html.escape_text(system)}</span> '
         f'<span class="kind">{html.escape_text(kind)}</span>'
         f'<pre class="payload">'
-        f"{html.escape_text(corpus_module.canonical_payload(payload))}</pre>"
+        f"{html.escape_text(verdicts.canonical_payload(payload))}</pre>"
         "</li>"
         for unit_id, system, kind, payload in rows
     )

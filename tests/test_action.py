@@ -108,3 +108,21 @@ def test_the_readme_documents_the_action_and_sha_pinning_first():
         "the SHA-pinned example must be presented before the @v1 convenience one"
     )
     assert "full commit SHA" in text, "README does not document SHA pinning"
+
+
+def test_gitlab_runs_full_suite_as_an_unprivileged_checkout_owner():
+    """Structural pin: root bypasses permission failures and skips DAC coverage."""
+    text = (REPO_ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    commands = [
+        line.removeprefix("    - ")
+        for line in text.splitlines()
+        if line.startswith("    - ")
+    ]
+    assert commands == [
+        "apt-get update -qq && apt-get install -y -qq git passwd util-linux",
+        'pip install --quiet ".[dev]"',
+        "useradd --create-home --user-group vm-test",
+        'test "${CI_PROJECT_DIR:?}" != /',
+        'chown -R vm-test:vm-test "$CI_PROJECT_DIR"',
+        "runuser -u vm-test -- python -m pytest -q -rs",
+    ]

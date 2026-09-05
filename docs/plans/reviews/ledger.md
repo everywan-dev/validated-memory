@@ -63,7 +63,8 @@ findings file; bytes are the secondary table below.
 | S1 | `d6d9d70` … `6fc9968` | 4 | 4 | 0 | 1 (+1 strengthened) | 2 | 2 |
 | C1 | `84a0dec` … `2625351` | 0 | 4 | 0 | 1 | 1 | 2 |
 | F1 | `049bc09` … `0361f55` | 5 | 3 | 0 | 0 | 3 | 2 |
-| **total** | | **27** | **22** | **3** | **9** | **41** | **18** |
+| **total through F1** | | **27** | **22** | **3** | **9** | **41** | **18** |
+| M1 | see [findings](m1.md) | 2 incident groups | 5 assertion families | 4 retained gaps | 3 | 3 | 1 |
 
 "claims already pinned" counts prose deleted because a test was found that
 fails when the claim stops being true; J1 predates that step, so it was not
@@ -90,7 +91,22 @@ into a plan archived out of the repository.
 | C1 → F1, V1 (cost of the fix) | same | −2 | −12 | ±0 | ±0 | — |
 | F1 | `049bc09` … `0361f55` | **−10** | **−146** | **−558** | −2 / ±0 | 653 green |
 | F1 → V1, M1, C1, X1 (**gain** of the fix) | same | −7 | −187 | **−701** | ±0 | — |
+| M1 | see [findings](m1.md) | −263 | −3,746 | −14,734 | −1 / ±0 | 656 green |
+| M1 → F1, V1 (serializer owner and consumers) | same | −6 | −99 | −391 | +1 / −1 | — |
+| M1 new CLI tests (outside the two-file T1 counter) | same | +96 | +1,084 | +323 | +3 / ±0 | 3 added, 0 deleted, 0 renamed |
 | **running total** | | | | | | |
+
+M1 compares against `a0e0ba5`, after F1; it does not claim F1's earlier gains
+in `corpus.py`. Its semantic row counts two explicit incident groups (the
+real-corpus identity anecdote and dated source import), five existing
+assertion families named in the findings, four retained coverage gaps,
+three false corpus explanations, and one shared serializer. It does not
+count every shortened sentence as a separate finding. Its new tests close
+three additional characterization gaps. Source characters fell from 40,586
+to 25,604 in M1, and prose from 20,607 to 5,873 (71.5%). Including the three
+direct consumers and the 4,338-character test file, net source reduction is
+11,038 characters. These are the counter's text measurements, not a measured
+runtime speedup. The preceding journal/plan corrections are separate.
 
 The reference work adds prose and is a gain: a citation that resolves is
 longer than one that does not, and four new pins carry their own docstrings.

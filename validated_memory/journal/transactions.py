@@ -397,14 +397,9 @@ def classify(root, item, adoption=None):
     with a settled type, which is why nothing outside this module needs the
     transaction file's own key names.
 
-    The two reasons are two fields, because they answer different questions
-    and never both apply: `problem_reason` says why a transaction is
-    `damaged` or its path `unknown`, and `abort_reason` is what the run that
-    closed it `aborted` said. One key called `reason` was read as each in
-    branches of `Run._recover_one` four lines apart. This function writes nothing and is the ONE place the
-    decision table below is expressed -- `Run.recover` acts on it and
-    `journal --check` reports it, and a reader who has to compare two
-    copies of a decision table is a reader who will find them disagreeing.
+    `problem_reason` explains a `damaged` transaction or `unknown` path;
+    `abort_reason` records why a run closed the transaction as `aborted`.
+    This read-only decision table serves both recovery and `journal --check`.
 
     The rules, in order:
 
@@ -576,12 +571,8 @@ def classify(root, item, adoption=None):
     try:
         actual = current_state(root, facts["path"])
     except OSError as error:
-        # `current_state` swallows every `lstat` failure -- what it cannot
-        # see at all is `absent` -- but a regular file it CAN see is read
-        # for its digest, and that read raises. What is at the path cannot
-        # be established, which is what `unknown` says; `actual` is None
-        # because there is no state to report, and every caller reads
-        # `reason` instead.
+        # A digest read failure leaves the state unknown; callers use
+        # `problem_reason` instead of `actual`.
         facts["actual"] = None
         facts["problem_reason"] = str(error)
         return PROBLEM_UNKNOWN, facts
