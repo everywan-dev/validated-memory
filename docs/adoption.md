@@ -50,6 +50,7 @@ the layout:
 /verdicts.jsonl
 /knowledge.html
 /memory.html
+/knowledge-app.html
 ```
 
 Ignoring never untracks: a path already committed stays committed until
@@ -67,12 +68,12 @@ does not depend on this answer at all -- it is listed above only so the
 "local" list is complete, and `init` adds nothing when it is already
 there.
 
-The remaining four lines are derived files; a repository that versions the
+The remaining five lines are derived files; a repository that versions the
 layout still chooses, separately, whether to version them -- `knowledge-index.md`
 and `verdicts.jsonl` together or not at all (see [step 7](#7-gate-ci-on-the-derived-index);
 a repository that does not version them runs `status` with `--skip-index`,
 per [ADR 0002](adr/0002-status-gates-consistency-and-only-reports-freshness.md)),
-and the two HTML views (see [step 8](#8-activate-the-html-views-optional)).
+and the canonical HTML views plus the optional app (see [step 8](#8-activate-the-html-views-optional)).
 
 What git cannot express is a **per-remote** answer for the same commit: a
 path is either in a commit or not, and every remote that receives the commit
@@ -296,6 +297,25 @@ running `init --view` again brings it back. Like `knowledge-index.md` and
 `verdicts.jsonl`, neither artifact is in `.gitignore`: both are derived
 files, and this project decides whether to version them.
 
+To add search, combined filters and diagram pan/zoom, opt into the separate app:
+
+```
+python3 -P -m validated_memory init --view --app
+```
+
+It also creates missing canonical pages and keeps existing selected files.
+`--app` without `--view` is a usage error before writes. knowledge-app.html
+adds one local inline script, without network access, browser storage or
+third-party runtime; the canonical pages stay inert. Decide separately whether
+to version or ignore the app. The local-layout list above includes it; for a
+versioned layout with ignored views, include `/knowledge-app.html` alongside
+the two canonical HTML entries in the chosen ignore/exclude file.
+
+An existing app, even empty, activates refresh and requires knowledge.html:
+`render --only-existing` restores that canonical page if absent, but does not
+create missing memory.html. Deleting the app deactivates it; only requesting
+`init --view --app` again recreates it.
+
 Once activated, a view stays current on its own -- see
 ["The startup hooks"](#the-startup-hooks) below for how.
 
@@ -324,8 +344,9 @@ whenever the adopter wants -- the plugin never touches it again.
 `hooks/refresh-views.sh` keeps whichever HTML views this project has
 activated (see [step 8](#8-activate-the-html-views-optional) above)
 up to date, the same way: it re-runs `render --only-existing`, silencing
-its stdout, which regenerates only the artifacts already on disk and
-creates neither. A project that never ran `init --view` has no artifacts,
+its stdout. It regenerates present artifacts and restores missing knowledge.html
+when knowledge-app.html exists; it never creates an absent app or memory page.
+A project that never activated a view has no artifacts,
 so this hook finds nothing to do and costs it nothing. Fail-open the same
 way as the other hook: an invalid corpus, an unreadable verdict log, or a
 missing memory directory or index is reported to stderr and the hook still

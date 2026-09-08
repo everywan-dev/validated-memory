@@ -26,6 +26,9 @@ def page(title, body, stylesheet):
         "<!doctype html>\n"
         '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<meta http-equiv="Content-Security-Policy" content="'
+        "default-src 'none'; connect-src 'none'; img-src 'none'; "
+        "style-src 'unsafe-inline'; script-src 'unsafe-inline'\">\n"
         f"<title>{escape_text(title)}</title>\n"
         f"<style>{stylesheet}</style>\n</head>\n<body>\n"
         f"{body}\n</body>\n</html>\n"

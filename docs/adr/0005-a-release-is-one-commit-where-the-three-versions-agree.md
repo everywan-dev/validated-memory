@@ -1,5 +1,9 @@
 # A release is one commit where the three versions agree
 
+The single-major-channel policy below is superseded by
+[ADR 0015](0015-major-channels-never-cross-major-versions.md). The release
+identity, immutable tags and dual-remote invariants are unchanged.
+
 The plugin ships from its own repository: the repo is its own marketplace,
 and the CI action runs the CLI from the action's checkout
 (`PYTHONPATH=$GITHUB_ACTION_PATH`), so the code that runs is exactly the

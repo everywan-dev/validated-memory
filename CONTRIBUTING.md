@@ -42,10 +42,16 @@ same version, tagged with that same version — see
 3. Tag: `git tag vX.Y.Z`. Before pushing it, confirm the tag's version
    equals the three files' at the tagged commit — the half of the
    invariant no test can see.
-4. Re-point the convenience channel: `git tag -f v1 vX.Y.Z` — only ever at
-   a commit already carrying an immutable `vX.Y.Z` tag.
-5. Push the commit and the tags to **both** remotes. A tag on one remote
-   and not the other publishes two different truths.
+4. Re-point only the matching major channel: for 2.x,
+   `git tag -f v2 v2.Y.Z` — only ever at a commit already carrying that
+   immutable version tag. Never point `v1` at 2.x; it stays on its 1.x release.
+5. Develop and verify the release branch on GitLab first. After the full suite
+   and required CI pass, merge without force-pushing `main`, then push the same
+   release commit and tags to **both** remotes. Verify remote commit/tag targets
+   and both CI results; a local success or a tag on one remote is not publication
+   on both. Updating a moving major tag may require an explicit force update of
+   that tag alone, never of `main` or an immutable version tag.
 
 `vX.Y.Z` tags are immutable: a mistake in a release is fixed by the next
-release, never by moving a versioned tag. Only `v1` moves.
+release, never by moving a versioned tag. Only major channels move, within their
+own major version; see [ADR 0015](docs/adr/0015-major-channels-never-cross-major-versions.md).

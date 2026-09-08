@@ -12,6 +12,63 @@ import re
 
 import pytest
 
+
+def test_app_requires_view_before_any_write(adopter_dir, run_cli):
+    before = sorted(adopter_dir.rglob("*"))
+    result = run_cli("init", "--app", cwd=adopter_dir)
+    assert result.returncode == 2
+    assert "--app requires --view" in result.stderr
+    assert sorted(adopter_dir.rglob("*")) == before
+
+
+def test_init_view_app_creates_all_three_pages(adopter_dir, run_cli):
+    result = run_cli("init", "--view", "--app", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    for name in ("knowledge.html", "memory.html", "knowledge-app.html"):
+        assert f"init: created {name}" in result.stdout
+        assert (adopter_dir / name).read_text().startswith("<!doctype html>")
+
+
+@pytest.mark.parametrize("content", ["", "Hand-edited app\n"])
+def test_init_preserves_an_existing_app(adopter_dir, run_cli, content):
+    app = adopter_dir / "knowledge-app.html"
+    app.write_text(content)
+    stamp = app.stat().st_mtime_ns
+    result = run_cli("init", "--view", "--app", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    assert "init: kept knowledge-app.html" in result.stdout
+    assert app.read_text() == content
+    assert app.stat().st_mtime_ns == stamp
+
+
+def test_init_keeps_a_broken_app_symlink(adopter_dir, run_cli):
+    app = adopter_dir / "knowledge-app.html"
+    app.symlink_to("missing.html")
+    result = run_cli("init", "--view", "--app", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    assert "WARNING: knowledge-app.html: create:" in result.stderr
+    assert app.is_symlink()
+    assert app.readlink().as_posix() == "missing.html"
+    assert not (adopter_dir / "missing.html").exists()
+
+
+def test_init_does_not_activate_app_when_build_is_refused(
+    adopter_dir, run_cli, write_unit
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: invalid\n")
+    result = run_cli("init", "--view", "--app", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    assert "WARNING" in result.stderr
+    for name in ("knowledge.html", "memory.html", "knowledge-app.html"):
+        assert not (adopter_dir / name).exists()
+
+
+def test_plain_init_view_does_not_create_app(adopter_dir, run_cli):
+    result = run_cli("init", "--view", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    assert not (adopter_dir / "knowledge-app.html").exists()
+
 # --- the full scaffold, from an empty directory -------------------------------
 
 

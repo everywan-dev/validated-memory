@@ -148,7 +148,7 @@ fields:
 A declared field carrying a valid value passes. A value outside a closed
 domain, and a field neither the base contract nor the schema declares, are
 ERRORs naming the unit and the field. A declared field is permitted, not
-required: v1 has no way to demand one.
+required: the base contract has no way to demand one.
 
 ### Where the schema lives
 

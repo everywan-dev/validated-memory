@@ -1,4 +1,4 @@
-"""Build inert knowledge and memory pages before publishing either.
+"""Build canonical pages and the optional enhanced app before publication.
 
 Publication is per artifact, not across pages; concurrent processes are
 last-writer-wins and may publish an older snapshot. The knowledge page uses
@@ -18,26 +18,35 @@ from .frontmatter import parse as parse_frontmatter
 
 KNOWLEDGE_ARTIFACT = "knowledge.html"
 MEMORY_ARTIFACT = "memory.html"
+APP_ARTIFACT = "knowledge-app.html"
 
 # Build, write and stdout order are explicit, independent of dict iteration.
 ARTIFACTS = (KNOWLEDGE_ARTIFACT, MEMORY_ARTIFACT)
 
 
 def run(only_existing, stdout, stderr):
-    """Render both pages, or only existing pages in unattended mode.
+    """Render canonical pages and an app activated by its presence.
 
     Unattended mode returns 0 and downgrades findings, but never bypasses build
-    gates. With no existing artifact it returns before reading inputs. Write
+    gates. It restores absent canonical knowledge when an app exists. With no
+    existing artifact it returns before reading inputs. Write
     failures become findings unless temporary cleanup itself raises.
     """
+    include_app = Path(APP_ARTIFACT).exists()
     if only_existing:
         targets = [path for path in ARTIFACTS if Path(path).exists()]
+        if include_app and KNOWLEDGE_ARTIFACT not in targets:
+            targets.insert(0, KNOWLEDGE_ARTIFACT)
         if not targets:
             return EXIT_OK
     else:
         targets = list(ARTIFACTS)
+    if include_app:
+        targets.append(APP_ARTIFACT)
 
-    artifacts, findings, ok = build_artifacts(downgrade=only_existing)
+    artifacts, findings, ok = build_artifacts(
+        downgrade=only_existing, include_app=include_app
+    )
     for finding in findings:
         print(finding.render(), file=stderr)
     if not ok:
@@ -55,12 +64,13 @@ def run(only_existing, stdout, stderr):
     return EXIT_OK
 
 
-def build_artifacts(downgrade=False):
+def build_artifacts(downgrade=False, include_app=False):
     """Return `(artifacts, findings, ok)` without writes or printing.
 
     Validate knowledge, read one verdict snapshot, and require readable memory
     with an index; memory content is not lint-gated. A failed prerequisite
-    returns no artifacts. Build both pages before the caller writes either.
+    returns no artifacts. Build all selected pages before the caller writes.
+    `include_app` enhances the exact canonical knowledge page when requested.
     `downgrade` changes reported severity only, never the gate; the caller
     prints findings once.
     """
@@ -115,10 +125,15 @@ def build_artifacts(downgrade=False):
         memory_documents, memory_basis, memory_resolution
     )
 
-    return {
+    artifacts = {
         KNOWLEDGE_ARTIFACT: knowledge_content,
         MEMORY_ARTIFACT: memory_content,
-    }, findings, True
+    }
+    if include_app:
+        from .knowledge_app import enhance
+
+        artifacts[APP_ARTIFACT] = enhance(knowledge_content)
+    return artifacts, findings, True
 
 
 def _downgraded(finding, downgrade):

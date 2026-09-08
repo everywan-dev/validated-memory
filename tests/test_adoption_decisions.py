@@ -4,7 +4,7 @@
 in the adopter repository or kept local to the clone. The "local" answers
 write an ignore list, and that list is pinned here against the CLI's fixed
 root outputs that the ignore question actually covers -- every item `init`
-(with and without `--view`), `derive` and `probe` write at the adopter's root
+(with and without `--view --app`), `derive` and `probe` write at the adopter's root
 on a normal run, minus `journal.jsonl` -- so a new root artifact cannot
 appear without the skill and the adoption guide learning to ignore it, and a
 stale entry cannot linger after one is retired.
@@ -123,9 +123,10 @@ def _ignore_entries(path):
 
 def _root_artifacts(adopter_dir, tmp_path_factory, run_cli):
     """Everything the CLI writes at the adopter's root, as ignore entries."""
-    for args in (("init",), ("init", "--view")):
+    for args in (("init",), ("init", "--view"), ("init", "--view", "--app")):
         result = run_cli(*args, cwd=adopter_dir)
         assert result.returncode == 0, result.stderr
+    assert (adopter_dir / "knowledge-app.html").is_file()
 
     # A fake probe, kept outside the adopter tree so the tree holds only what
     # the CLI itself wrote; registered in place of the bundled git_ref probe.

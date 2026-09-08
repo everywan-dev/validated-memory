@@ -34,24 +34,26 @@ BOX_HEIGHT = 28
 OPTION_INDENT = 24
 
 
-def _diagram(class_name, width, height, label, description, body):
+def _diagram(class_name, width, height, label, description, body, instance):
     """Wrap trusted SVG markup with an escaped label and description.
 
     The label supplies both aria-label and the diagram title. Callers must
     escape body text before assembly; only closed-domain values belong in the
-    diagram-level metadata. Per-diagram accessibility structure is unpinned.
+    diagram-level metadata. Instance identity comes from the containing unit
+    and, for freshness strips, the anchor position.
     """
     return (
         f'<svg class="{html.escape_attribute(class_name)}" role="img" '
         f'viewBox="0 0 {width} {height}" width="100%" height="{height}" '
-        f'aria-label="{html.escape_attribute(label)}">'
+        f'aria-label="{html.escape_attribute(label)}" '
+        f'aria-describedby="desc-{html.escape_attribute(instance)}">'
         f"<title>{html.escape_text(label)}</title>"
-        f"<desc>{html.escape_text(description)}</desc>"
+        f'<desc id="desc-{html.escape_attribute(instance)}">{html.escape_text(description)}</desc>'
         f"{body}</svg>"
     )
 
 
-def freshness_strip(records):
+def freshness_strip(records, instance):
     """Draw records in supplied append order, never sorted by timestamp.
 
     Band titles include optional recorded_at text. Width represents sequence,
@@ -95,6 +97,7 @@ def freshness_strip(records):
         "shape (full band current, dashed band drifted, half-height band "
         "unknown), a mark (+ current, ! drifted, ? unknown) and a colour.",
         "".join(bands),
+        f"freshness-{instance}",
     )
 
 
@@ -128,6 +131,7 @@ def confluence(superseded_ids, successor_id):
         "that replaced them all on the right. Every id drawn here is also a "
         "card nested below this one.",
         "".join(lines),
+        f"confluence-{successor_id}",
     )
 
 
@@ -140,8 +144,7 @@ def rationale(unit_id, record):
     between options or outside the unit.
 
     Long questions use ?, long labels use #n; above NUMBERED_ABOVE options all
-    labels use #n. The adjacent HTML retains full text. Exact fallback thresholds
-    lack direct tests; the emitted description omits the option-count trigger.
+    labels use #n. The adjacent HTML retains full text.
     """
     options = record["options"]
     question = record["question"]
@@ -185,10 +188,12 @@ def rationale(unit_id, record):
         f"Rationale of {unit_id}: {len(options)} options considered, one chosen",
         "The question across the top, one row per option beneath it, and no "
         "edge between options or out of this unit. The chosen option is drawn "
-        "with a rounded, heavier border and the word 'chosen'. A node showing "
-        f"'#n', or a question showing '?', means the text ran past {LABEL_LIMIT} "
-        "characters and could not be drawn: the full text is beside this "
+        "with a rounded, heavier border and the word 'chosen'. Options use "
+        f"'#n' when their label exceeds {LABEL_LIMIT} characters or there are "
+        f"more than {NUMBERED_ABOVE} options. A question uses '?' when it exceeds "
+        f"{LABEL_LIMIT} characters. The full text is beside this "
         "drawing -- the question just above it, an option at position n of "
         "the list.",
         "".join(parts),
+        f"rationale-{unit_id}",
     )

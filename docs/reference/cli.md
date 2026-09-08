@@ -21,8 +21,14 @@ directory could resolve `validated_memory` ahead of `PYTHONPATH` — see
 ### `init`
 
 ```
-python3 -P -m validated_memory init [--harness-memory PATH] [--view]
+python3 -P -m validated_memory init [--harness-memory PATH] [--view [--app]]
 ```
+
+`--view` creates missing canonical knowledge.html and memory.html. Add `--app`
+to select the optional knowledge-app.html too. `--app` without `--view` is usage
+exit 2 before any write. Existing selected views, including empty or hand-edited
+files, are kept; a broken view symlink is warned and left untouched. Regeneration
+belongs to `render`, not initialization.
 
 Scaffolds a new adopter project in the working directory: `knowledge/`
 (empty), `memory/` with an empty index (`memory/MEMORY.md`), the adopter
@@ -480,12 +486,14 @@ traceback, and never exits non-zero.
 python3 -P -m validated_memory render [--only-existing]
 ```
 
-Writes two self-contained HTML pages to the working directory -- alongside
+Writes two canonical self-contained HTML pages to the working directory -- alongside
 `knowledge-index.md` and `verdicts.jsonl`, never inside `knowledge/`:
 `knowledge.html`, the curated layer, and `memory.html`, the agent-memory
 layer. Two files rather than one because the two layers share neither
 frontmatter, nor relations, nor the way each stops being true -- no single
-name covers both without being false about one of them.
+name covers both without being false about one of them. If knowledge-app.html
+already exists, render also refreshes that optional enhanced knowledge page;
+it never activates an absent app. Create it with `init --view --app`.
 
 `render` validates before rendering, exactly like `derive`: an ERROR
 finding is reported in `validate`'s format and stops the run with nothing
@@ -505,7 +513,7 @@ byte-identical output run after run. Without this, the refresh hook (see [Startu
 hooks](hooks.md)) would dirty `git status` on every session start, forever, in a repository
 that treats that churn as a defect.
 
-**Both pages are inert.** No JavaScript and no request to the network:
+**Both canonical pages are inert.** No JavaScript and no request to the network:
 collapsing a section uses the browser's native `<details>`/`<summary>`, not
 a script. The only attribute anywhere in either page that carries an
 external URL is `href` on an `<a>` element, and only a `provenance` entry
@@ -546,7 +554,8 @@ which is what actually lets a reader tell a full history from a truncated
 one.
 
 Three diagrams, all inline SVG, all generated from the data with no
-third-party code, and each carrying a title and a description: a freshness
+third-party code, and each carrying a title, an accessible name and its own
+uniquely identified description linked by `aria-describedby`: a freshness
 strip per anchor (one band per probe, in log order, told apart by shape, mark
 and colour, and never a time axis), a many-to-one confluence drawn only when
 three or more units are superseded at once, and a rationale tree drawn only
@@ -563,10 +572,27 @@ hairball nobody reads anything out of). A superseded entry is marked as
 such and links to its successor. A wikilink inside a body is never turned
 into a link: the body is verbatim, and linkifying it would be rendering it.
 
-**`--only-existing`** regenerates only the artifacts already on disk and
-creates neither -- it is what the refresh hook invokes, and it is what
-makes activation and deactivation (see [Startup hooks](hooks.md)) mean
-anything.
+**`knowledge-app.html`** is the canonical knowledge page plus one repository-owned
+inline script. Removing that script yields knowledge.html byte-for-byte. The
+script enhances existing content with combined text/state/evidence/verdict
+filters, reset and matching counts, and keyboard-operable bounded diagram
+pan/zoom. Overview totals describe the full corpus. Matching historical units
+retain their enclosing history context; fragment navigation reveals its target
+and clears filters when necessary. Printing shows the full content, then restores
+the interactive state. With JavaScript disabled, all canonical content remains.
+
+No third-party runtime, browser storage or network API is used. All pages carry
+the same fixed CSP:
+`default-src 'none'; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'`.
+Canonical pages independently remain script-free; only the app allows exactly
+one attribute-less script. Source scans are structural checks, not a claim of
+universal browser or assistive-technology behavior.
+
+**`--only-existing`** refreshes present artifacts, with one deliberate dependency:
+an existing app also creates or refreshes canonical knowledge.html. It never
+activates an absent app or absent memory.html. Empty app files are active;
+deleting the app deactivates it. With no active artifact it returns without
+reading the corpus. This is what the refresh hook invokes; see [Startup hooks](hooks.md).
 It is also fail-open: an invalid corpus, an unreadable verdict log, or a
 missing memory directory or index is a WARNING and exit 0, leaving whatever
 is already on disk exactly as it was, rather than an ERROR that a hook

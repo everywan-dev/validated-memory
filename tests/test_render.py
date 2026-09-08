@@ -8,6 +8,79 @@ import shutil
 import pytest
 
 HISTORY_WINDOW = 20
+CSP = "default-src 'none'; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+
+
+def test_canonical_pages_carry_the_fixed_csp(run_cli, adopter_dir, page_elements):
+    run_cli("init", cwd=adopter_dir)
+    result = run_cli("render", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    for name in ("knowledge.html", "memory.html"):
+        metas = [attrs for tag, attrs in page_elements((adopter_dir / name).read_text())
+                 if tag == "meta" and "http-equiv" in attrs]
+        assert metas == [{"http-equiv": "Content-Security-Policy", "content": CSP}]
+
+
+@pytest.mark.parametrize("only_existing", [False, True])
+def test_an_empty_app_activates_render_and_restores_its_canonical_page(
+    run_cli, adopter_dir, only_existing
+):
+    run_cli("init", cwd=adopter_dir)
+    (adopter_dir / "knowledge-app.html").touch()
+    args = ("--only-existing",) if only_existing else ()
+    result = run_cli("render", *args, cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    assert "render: wrote knowledge-app.html" in result.stdout
+    assert (adopter_dir / "knowledge.html").is_file()
+    assert (adopter_dir / "memory.html").exists() is (not only_existing)
+
+
+def test_app_matches_canonical_bytes_and_noop_preserves_every_mtime(
+    run_cli, adopter_dir, page_events
+):
+    result = run_cli("init", "--view", "--app", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    paths = [adopter_dir / name for name in
+             ("knowledge.html", "memory.html", "knowledge-app.html")]
+    before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
+    app = paths[-1].read_text()
+    _assert_app_self_contained(app, page_events)
+    assert re.sub(r"<script>.*?</script>", "", app, flags=re.S) == paths[0].read_text()
+    result = run_cli("render", cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    for path, (content, stamp) in zip(paths, before):
+        assert f"render: unchanged {path.name}" in result.stdout
+        assert path.read_bytes() == content
+        assert path.stat().st_mtime_ns == stamp
+
+
+@pytest.mark.parametrize("only_existing", [False, True])
+def test_deleting_app_deactivates_it(run_cli, adopter_dir, only_existing):
+    assert run_cli("init", "--view", "--app", cwd=adopter_dir).returncode == 0
+    (adopter_dir / "knowledge-app.html").unlink()
+    args = ("--only-existing",) if only_existing else ()
+    result = run_cli("render", *args, cwd=adopter_dir)
+    assert result.returncode == 0, result.stderr
+    assert not (adopter_dir / "knowledge-app.html").exists()
+    assert "knowledge-app.html" not in result.stdout
+
+
+@pytest.mark.parametrize("only_existing", [False, True])
+def test_failed_app_build_preserves_all_selected_bytes(
+    run_cli, adopter_dir, write_unit, only_existing
+):
+    run_cli("init", cwd=adopter_dir)
+    names = ("knowledge.html", "memory.html", "knowledge-app.html")
+    for name in names:
+        (adopter_dir / name).write_text(f"Previous {name}")
+    write_unit("kb-0001.md", "id: kb-0001\nevidence: invalid\n")
+    args = ("--only-existing",) if only_existing else ()
+    result = run_cli("render", *args, cwd=adopter_dir)
+    assert result.returncode == (0 if only_existing else 1)
+    assert ("WARNING" if only_existing else "ERROR") in result.stderr
+    assert not result.stdout
+    for name in names:
+        assert (adopter_dir / name).read_text() == f"Previous {name}"
 
 
 def _log(adopter_dir, records):
@@ -29,6 +102,7 @@ MEMORY_PAGE = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <title>Agent memory</title>
 <style>
 :root { color-scheme: light dark; }
@@ -200,6 +274,7 @@ SELF_CONTAINED_ATTRIBUTES = {
     ("meta", "charset"),
     ("meta", "name"),
     ("meta", "content"),
+    ("meta", "http-equiv"),
     ("section", "class"),
     ("section", "id"),
     ("section", "data-unit"),
@@ -227,6 +302,8 @@ SELF_CONTAINED_ATTRIBUTES = {
     ("svg", "width"),
     ("svg", "height"),
     ("svg", "aria-label"),
+    ("svg", "aria-describedby"),
+    ("desc", "id"),
     ("g", "id"),
     ("rect", "x"),
     ("rect", "y"),
@@ -262,7 +339,7 @@ def _assert_self_contained(page, page_events):
     substrings: every element must be in `SELF_CONTAINED_ELEMENTS`, every
     (element, attribute) pair in `SELF_CONTAINED_ATTRIBUTES`,
     `("a", "href")` is the only pair allowed to carry an external URL, and no
-    `<meta>` is an `http-equiv`.
+    `<meta http-equiv>` carries anything except the fixed CSP.
 
     Three of those rules need more than a flat list of start tags, which is
     why this walks an event stream:
@@ -306,8 +383,8 @@ def _assert_self_contained(page, page_events):
         if svg_depth:
             assert tag != "a", f"an <a> inside an <svg>: {attrs}"
             assert "href" not in attrs, f"<{tag} href> inside an <svg>: {attrs}"
-        if tag == "meta":
-            assert "http-equiv" not in attrs, f"<meta http-equiv> found: {attrs}"
+        if tag == "meta" and "http-equiv" in attrs:
+            assert attrs == {"http-equiv": "Content-Security-Policy", "content": CSP}
         for name, value in attrs.items():
             assert (tag, name) in SELF_CONTAINED_ATTRIBUTES, (
                 f"{tag}[{name}]={value!r} is outside the self-containment whitelist"
@@ -337,6 +414,32 @@ def _assert_self_contained(page, page_events):
     assert svg_depth == 0, "an <svg> was never closed"
     assert style_depth == 0, "a <style> was never closed"
     return elements
+
+
+def _assert_app_self_contained(page, page_events):
+    """App source allows exactly one attribute-less script, then strict HTML."""
+    scripts = [event for event in page_events(page)
+               if event[0] == "start" and event[1] == "script"]
+    assert len(scripts) == 1
+    assert scripts[0][2] == {}
+    canonical, count = re.subn(r"<script>.*?</script>", "", page, flags=re.S)
+    assert count == 1
+    return _assert_self_contained(canonical, page_events)
+
+
+@pytest.mark.parametrize("body", [
+    "<script src='remote.js'></script>",
+    "<script></script><script></script>",
+    "<script></script><meta http-equiv='refresh' content='0'>",
+    "<script></script><meta http-equiv='Content-Security-Policy' content=\"default-src *\">",
+])
+def test_app_policy_rejects_other_scripts_and_meta_policies(body, page_events):
+    with pytest.raises(AssertionError):
+        _assert_app_self_contained(_wrapped(body), page_events)
+
+
+def test_app_policy_accepts_only_its_one_script(page_events):
+    _assert_app_self_contained(_wrapped("<script>const local = 1;</script>"), page_events)
 
 
 def _wrapped(body):

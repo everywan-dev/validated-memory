@@ -31,16 +31,16 @@ spaces, dots and capitals, for which no rename exists at all.
 direction of the repair:
 
 ```
-WARNING: memory/coffee-preference.md: name: 'Coffee Preference' does not match
+ERROR: memory/coffee-preference.md: name: 'Coffee Preference' does not match
 the filename 'coffee-preference'; the filename is the canonical identity --
 repair 'name' to match it
 ```
 
-**This is a WARNING purely as a migration concession**, so that a project
-whose memory was written before the rule can adopt the plugin without being
-gated on its whole backlog. It is not the norm: the rule is that they match,
-and the finding **becomes an ERROR in 2.0.0**. The memory layer carries no
-version of its own, so it versions with the plugin. A memory whose `name` is
+**This is an ERROR from 2.0.0.** The 1.x WARNING was a migration concession,
+not the norm: the rule is that they match. Repair a divergent `name` before
+upgrading a gating CLI or CI job; see [migration](../migration-2.md).
+The memory layer carries no version of its own, so it versions with the plugin.
+A memory whose `name` is
 missing or empty is not also reported as diverging -- that defect already has
 its own ERROR, and reporting it twice would say the same thing in two places.
 
@@ -51,7 +51,7 @@ it is a fact about the files: it is reported even when neither one's
 frontmatter parses.
 
 ```
-WARNING: memory/beta/shared.md: filename: the filename 'shared' is also
+ERROR: memory/beta/shared.md: filename: the filename 'shared' is also
 carried by memory/alpha/shared.md; the filename is the canonical identity,
 so these are two memories with the same identity -- rename one
 ```
@@ -61,8 +61,8 @@ that rule forbids is renaming a file to match its `name`, and what collides
 here is two files, not a file and its `name`. Reporting it matters now
 because otherwise `lint` tells both files to repair `name` towards the same
 value, and following that advice lands on the duplicate-name ERROR with no
-warning it was coming. It is a WARNING for the same migration reason, and
-**becomes an ERROR in 2.0.0** alongside the divergence rule.
+warning it was coming. Like divergence, this **is an ERROR from 2.0.0**;
+the earlier WARNING migration concession has ended.
 
 Resolution itself is unchanged: still by `name`. What ADR 0001 settles is
 only which of the two fields gives way when they disagree -- see

@@ -240,7 +240,7 @@ metadata:
 """
 
 
-def test_a_name_diverging_from_its_filename_warns_without_gating(
+def test_a_name_diverging_from_its_filename_gates(
     adopter_dir, write_memory, write_index, run_cli
 ):
     write_memory("coffee-preference.md", DIVERGING_MEMORY)
@@ -248,13 +248,12 @@ def test_a_name_diverging_from_its_filename_warns_without_gating(
 
     result = run_cli("lint", cwd=adopter_dir)
 
-    assert result.returncode == 0, result.stderr
-    assert "ERROR" not in result.stderr
-    assert "WARNING: memory/coffee-preference.md: name: " in result.stderr
-    assert "1 warning(s)" in result.stdout
+    assert result.returncode == 1, result.stderr
+    assert "ERROR: memory/coffee-preference.md: name: " in result.stderr
+    assert "1 error(s), 0 warning(s)" in result.stdout
 
 
-def test_the_divergence_warning_names_both_sides_and_the_repair(
+def test_the_divergence_finding_names_both_sides_and_the_repair(
     adopter_dir, write_memory, write_index, run_cli
 ):
     write_memory("coffee-preference.md", DIVERGING_MEMORY)
@@ -331,7 +330,7 @@ def test_a_wikilink_to_a_diverging_file_names_the_cause(
 
     result = run_cli("lint", cwd=adopter_dir)
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "WARNING: memory/notes.md: body: " in result.stderr
     assert "coffee-preference.md" in result.stderr
     assert "declares name 'Coffee Preference'" in result.stderr
@@ -379,7 +378,7 @@ def test_an_ambiguous_filename_keeps_the_generic_wikilink_message(
 
     result = run_cli("lint", cwd=adopter_dir)
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "WARNING: memory/notes.md: body: " in result.stderr
     assert "not written yet" in result.stderr
     assert "declares name" not in result.stderr
@@ -537,11 +536,11 @@ def test_a_supersession_resolving_by_name_is_not_read_as_itself(
 
     result = run_cli("lint", cwd=adopter_dir)
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "itself" not in result.stderr
     assert "supersession" not in result.stderr
     # Both files still diverge from their filenames; that is the only finding.
-    assert "2 warning(s)" in result.stdout
+    assert "2 error(s), 0 warning(s)" in result.stdout
 
 
 def test_an_unparseable_sibling_still_makes_a_filename_ambiguous(
@@ -632,9 +631,9 @@ def test_a_supersession_resolving_onto_a_diverging_successor_is_valid(
 
     result = run_cli("lint", cwd=adopter_dir)
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "supersession" not in result.stderr
-    assert "1 warning(s)" in result.stdout
+    assert "1 error(s), 0 warning(s)" in result.stdout
 
 
 def test_two_memories_sharing_a_filename_are_reported(
@@ -659,8 +658,8 @@ def test_two_memories_sharing_a_filename_are_reported(
 
     result = run_cli("lint", cwd=adopter_dir)
 
-    assert result.returncode == 0, result.stderr
-    assert "WARNING: memory/beta/shared.md: filename: " in result.stderr
+    assert result.returncode == 1, result.stderr
+    assert "ERROR: memory/beta/shared.md: filename: " in result.stderr
     assert "'shared'" in result.stderr
     assert "memory/alpha/shared.md" in result.stderr
 
@@ -681,7 +680,7 @@ def test_a_shared_filename_is_reported_even_when_one_file_does_not_parse(
 
     result = run_cli("lint", cwd=adopter_dir)
 
-    assert "WARNING: memory/beta/shared.md: filename: " in result.stderr
+    assert "ERROR: memory/beta/shared.md: filename: " in result.stderr
 
 
 def test_distinct_filenames_across_subdirectories_are_not_a_collision(

@@ -51,6 +51,10 @@ plugin is pinned to it: an adopter sees a change only when that number
 changes. Publishing a fix therefore means bumping the version, not only
 merging it — a commit on the default branch reaches nobody on its own.
 
+Before switching a gating CLI, CI job or Action to the v2 channel, follow the
+[v2 migration notes](migration-2.md): memory identity conflicts now gate, while
+the enhanced HTML app remains an explicit opt-in. The v1 channel stays on 1.x.
+
 ## Installing for a team
 
 To install it for a whole team without each person running the two commands,

@@ -99,13 +99,13 @@ def test_every_third_party_action_is_sha_pinned():
 def test_the_readme_documents_the_action_and_sha_pinning_first():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     sha_example = "uses: everywan-dev/validated-memory@<full commit SHA>"
-    v1_example = "uses: everywan-dev/validated-memory@v1"
+    major_example = "uses: everywan-dev/validated-memory@v2"
     sha_index = text.find(sha_example)
-    v1_index = text.find(v1_example)
+    major_index = text.find(major_example)
     assert sha_index != -1, "README does not show the SHA-pinned, placeholder-free example"
-    assert v1_index != -1, "README does not show the @v1 convenience example"
-    assert sha_index < v1_index, (
-        "the SHA-pinned example must be presented before the @v1 convenience one"
+    assert major_index != -1, "README does not show the @v2 convenience example"
+    assert sha_index < major_index, (
+        "the SHA-pinned example must be presented before the @v2 convenience one"
     )
     assert "full commit SHA" in text, "README does not document SHA pinning"
 

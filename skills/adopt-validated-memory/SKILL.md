@@ -43,6 +43,7 @@ start still hold.
      /verdicts.jsonl
      /knowledge.html
      /memory.html
+     /knowledge-app.html
      ```
 
      `journal.jsonl` is **not** part of this choice and is never added to the
@@ -100,7 +101,11 @@ start still hold.
    `memory.html` shows every memory entry's body. Ask whether to create
    them; if the answer to the first question was "versioned", ask whether
    these two are versioned or ignored -- to ignore them, append
-   `/knowledge.html` and `/memory.html` to the same file as above.
+   `/knowledge.html` and `/memory.html` to the same file as above. Separately
+   offer the optional interactive `knowledge-app.html` (one local script,
+   no network or browser storage). Only on consent use `init --view --app`;
+   include `/knowledge-app.html` in that same ignore/exclude file if the
+   adopter chose ignored views. Do not infer app consent from static-view consent.
 
 The ignore rules and the `status` flags are the record of these answers;
 nothing else needs writing down.
@@ -337,6 +342,19 @@ brings it back. The plugin's `SessionStart` hooks already include one
 (`hooks/refresh-views.sh`) that keeps whichever views are active fresh on
 every session start, so nothing further needs to be invoked by hand after
 this. See the reference's `render` section (docs/reference/cli.md) for what each page shows.
+
+If the adopter also chose the interactive app:
+
+```
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m validated_memory init --view --app
+```
+
+This adds knowledge-app.html and keeps every existing selected file. The
+canonical pages remain script-free. App presence (including an empty file)
+activates refresh and requires canonical knowledge.html, so unattended refresh
+can restore that missing canonical page, but never missing memory.html.
+Deleting the app deactivates it; `--app` without `--view` is a usage error before
+writes. `render` refreshes active app bytes; init never overwrites hand edits.
 
 ## Verify the adoption
 

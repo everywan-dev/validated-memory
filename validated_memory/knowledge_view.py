@@ -154,7 +154,7 @@ def _anchors(corpus, unit_id, shown_keys):
     if not rows:
         return '<p class="meta">No anchors: this unit cannot expire.</p>\n'
     items = []
-    for key, anchor in rows:
+    for position, (key, anchor) in enumerate(rows, start=1):
         shown_keys.add(key)
         payload = anchor.get("payload")
         items.append(
@@ -164,13 +164,13 @@ def _anchors(corpus, unit_id, shown_keys):
             f'<span class="captured">{html.escape_text(anchor.get("captured_at"))}</span>'
             f'<pre class="payload">'
             f"{html.escape_text(verdicts.canonical_payload(payload))}</pre>"
-            f"{_history(corpus.history.get(key, []))}"
+            f"{_history(corpus.history.get(key, []), f'{unit_id}-{position}')}"
             "</li>"
         )
     return '<ul class="anchors">\n' + "\n".join(items) + "\n</ul>\n"
 
 
-def _history(matching):
+def _history(matching, instance):
     """Show the last HISTORY_WINDOW appended records, latest append first.
 
     `matching` is one anchor's log-ordered group, not timestamp-sorted. Disclose
@@ -187,7 +187,7 @@ def _history(matching):
         f'<p class="meta">{len(matching)} record(s) for this anchor; '
         f"showing {len(shown)}.</p>\n"
         f'<ul class="history">\n{items}\n</ul>\n'
-        f"{svg.freshness_strip(list(reversed(shown)))}"
+        f"{svg.freshness_strip(list(reversed(shown)), instance)}"
     )
 
 

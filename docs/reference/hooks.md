@@ -44,8 +44,9 @@ already there, the symlink it wrote or re-pointed -- is recorded the same
 way any other `init` run is: see [Journal](journal.md). The hook itself
 never calls `journal`; it only makes the `init` calls that fill it.
 
-**Activating and refreshing the HTML views.** Activation of `knowledge.html`
-and `memory.html` is the presence of the artifact, not a configuration key:
+**Activating and refreshing the HTML views.** Activation of `knowledge.html`,
+`memory.html` and the optional `knowledge-app.html` is the presence of the
+artifact, not a configuration key:
 
 ```
 python3 -P -m validated_memory init --view
@@ -59,6 +60,12 @@ generator inside `init` would break the very command that defines it, so
 regeneration belongs to `render` and to the second hook below. Deleting a
 file deactivates it; running `init --view` again reactivates it.
 
+For the optional interactive knowledge view, use `init --view --app`. This
+creates the missing app alongside the canonical pages, keeping every existing
+selected file. An active app requires its canonical knowledge page during
+refresh; deleting only knowledge.html therefore does not deactivate that page
+while the app remains. Delete knowledge-app.html to deactivate the app.
+
 A configuration key was considered for this and rejected: an unknown field
 in `validated-memory.md` is an ERROR that gates every other subcommand, so
 an adopter who added a `view` key and then worked from a machine with an
@@ -69,18 +76,20 @@ sees an `.html` file it does not understand and ignores it.
 
 The second hook, `hooks/refresh-views.sh`, keeps whichever views are active
 fresh by running `render --only-existing` (see [`render`](cli.md#render)): it
-regenerates only the artifacts already on disk and creates none, so an
+regenerates present artifacts and restores a missing canonical knowledge page
+when the app exists. It never creates an absent app or absent memory page, so an
 adopter who never activated the views pays nothing at session start. It is
 fail-open on every path it can fail on -- an invalid corpus, an unreadable
 verdict log, a missing memory directory or index, or a write that fails at
 the OS level (permissions, a full disk) -- and always exits 0, the same
 discipline the first hook follows.
 
-Neither `knowledge.html` nor `memory.html` is added to `.gitignore`: like
+None of `knowledge.html`, `memory.html` or `knowledge-app.html` is automatically
+added to `.gitignore`: like
 `knowledge-index.md` and `verdicts.jsonl`, they are derived files, and this
 project decides whether to version them. Versioning them means a fresh
 clone has the views immediately; not versioning them means running `init
---view` once after cloning.
+--view` (and `--app` if desired) once after cloning.
 
 **Injecting the project's current status.** `hooks/session-context.sh` is
 the only one of the three that produces output the model reads. It prints

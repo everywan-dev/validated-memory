@@ -165,10 +165,7 @@ def _lint_memories(documents):
 
 
 def _check_filename_collisions(documents):
-    """Warn on shared filename identities, including unparseable documents.
-
-    Migration severity becomes ERROR in 2.0.0, as for name divergence.
-    """
+    """Gate on shared filename identities, including unparseable documents."""
     findings = []
     first_seen = {}
     for document in documents:
@@ -180,7 +177,7 @@ def _check_filename_collisions(documents):
             continue
         findings.append(
             Finding(
-                WARNING,
+                ERROR,
                 document.location,
                 "filename",
                 f"the filename '{filename}' is also carried by "
@@ -289,9 +286,9 @@ def _check_name(location, data):
 
 
 def _check_filename_identity(location, data):
-    """Warn when `name` differs from the canonical filename (ADR 0001).
+    """Gate when `name` differs from the canonical filename (ADR 0001).
 
-    Repair the name, not the filename. Migration severity becomes ERROR in 2.0.0.
+    Repair the name, not the filename. Empty filenames retain their warning.
     """
     name = data["name"]
     filename = memory_module.filename(location)
@@ -309,7 +306,7 @@ def _check_filename_identity(location, data):
         return []
     return [
         Finding(
-            WARNING,
+            ERROR,
             location,
             "name",
             f"'{name}' does not match the filename '{filename}'; the filename "

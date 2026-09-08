@@ -517,19 +517,21 @@ This is **2.0.0**: one commit where `pyproject.toml`,
 `validated_memory/__init__.py` and `.claude-plugin/plugin.json` agree with the
 tag, pushed to both remotes (ADR 0005).
 
-A `v2` channel starts and `v1` stops being re-pointed. `CONTRIBUTING.md:39-51`
-currently instructs re-pointing `v1` at every release and says "Only `v1`
-moves"; it is updated in this change, or the release procedure contradicts
-itself.
+A `v2` channel starts and `v1` stays on 1.x. At design time CONTRIBUTING.md
+instructed re-pointing `v1` at every release; ADR 0015 and the updated release
+procedure now generalize that policy without moving an older channel across
+a breaking boundary.
 
-Migration facts for the release notes:
+Migration facts, reconciled with shipped history on 2026-09-08:
 
 - **A corpus with no colliding extension field keeps validating.**
   `rationale` is optional and additive on the data side.
-- **The break runs the other way.** A unit carrying `rationale` is an unknown
-  field, and an ERROR, for any 1.x reader
-  (`validated_memory/contract.py:70-79`). CLI, CI, the Action and the hooks
-  must be on 2.x before the first `rationale` is written.
+- **Rationale already shipped in v1.5.0**, including quoted-source enforcement.
+  Readers before that release reject the field; the original blanket claim
+  about all 1.x readers is historical and incorrect for current 1.x. Update
+  every consumer before introducing the field. The new 2.0 gating changes are
+  the two identity warning-to-error promotions promised by the agent-memory
+  reference; see [migration](../migration-2.md).
 - **An adopter whose extension already declares `rationale`** has a hard
   migration, and it is stated plainly rather than glossed: their schema stops
   loading (`validated_memory/extension.py:116-125`), and renaming the
@@ -550,6 +552,11 @@ why, and inferring it from bodies, commits or supersession would fabricate the
 very record this field exists to make trustworthy.
 
 ## ADRs
+
+Recorded by [ADR 0012](../adr/0012-rationale-is-local-structured-metadata.md),
+[ADR 0013](../adr/0013-canonical-views-are-inert-and-the-app-is-opt-in.md),
+[ADR 0014](../adr/0014-generated-views-have-no-third-party-runtime.md) and
+[ADR 0015](../adr/0015-major-channels-never-cross-major-versions.md).
 
 - **Rationale is local structured metadata on a unit.** The closed envelope,
   the single-choice rule, the absence of references, and that `rejected` is

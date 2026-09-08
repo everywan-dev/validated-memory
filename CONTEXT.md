@@ -22,6 +22,11 @@ state, and optional anchors separated from provenance. Its frontmatter is the
 base contract plus whatever the project's own declared extension adds.
 _Avoid_: unit of knowledge, article, doc
 
+**Rationale**:
+A knowledge unit's recorded question, considered options and reasons, including
+the single chosen option. An option is not a knowledge unit; rejecting one does
+not say that it is false or superseded.
+
 There is deliberately **no umbrella term** covering both. They share neither
 frontmatter, nor relations, nor the way each stops being true, so a single word
 for both would hide three differences at once.

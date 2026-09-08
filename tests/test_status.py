@@ -17,6 +17,21 @@ import json
 INDEX_FILENAME = "knowledge-index.md"
 VERDICT_LOG = "verdicts.jsonl"
 
+
+def test_memory_identity_concessions_now_gate_status(
+    adopter_dir, run_cli, write_memory, write_index
+):
+    run_cli("init", cwd=adopter_dir)
+    for folder, name in (("alpha", "shared"), ("beta", "different")):
+        write_memory(f"{folder}/shared.md",
+                     f"name: {name}\ndescription: A fact\nmetadata:\n  type: project\n")
+    write_index("- [Alpha](alpha/shared.md)\n- [Beta](beta/shared.md)\n")
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+    assert result.returncode == 1, result.stderr
+    assert "ERROR: memory/beta/shared.md: filename:" in result.stderr
+    assert "ERROR: memory/beta/shared.md: name:" in result.stderr
+    assert "status: lint: 2 memory file(s) checked, 2 error(s), 0 warning(s)" in result.stdout
+
 ACTIVE_UNIT = """\
 id: kb-0001
 evidence: measured

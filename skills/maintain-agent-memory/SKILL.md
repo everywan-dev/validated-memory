@@ -81,8 +81,10 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m vali
 Enforces, over the whole memory set: the index and the files agree in both
 directions, every file's frontmatter is complete, every wikilink either
 resolves or is flagged pending, and the supersession marker (if any) is well
-formed. It also **warns** -- without gating -- when a `name` does not match
-its filename; that one is a WARNING only as a migration concession, and
-becomes an ERROR in 2.0.0. See the agent-memory reference (docs/reference/agent-memory.md) for the
+formed. A `name` differing from its filename or duplicate filenames across
+subdirectories are **ERRORs** from 2.0.0; the 1.x migration warnings have ended.
+Repair a divergent `name` to match its filename; for duplicate filenames,
+rename one and update its index/references without losing the fact or history.
+See the agent-memory reference (docs/reference/agent-memory.md) for the
 exact rules. Run it after any edit to memory files
 or the index.

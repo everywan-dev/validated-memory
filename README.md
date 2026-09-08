@@ -153,7 +153,7 @@ Exit codes: `0` = clean or WARNING-only findings; `1` = ERROR (gates);
 The repository is also a reusable GitHub Action that runs `status` — the
 CLI runs straight from the action's checkout, so the code that gates is
 exactly the code at the ref you name. Pin to a full commit SHA — copy it
-from the [release](https://github.com/everywan-dev/validated-memory/releases)
+from the [release tag](https://github.com/everywan-dev/validated-memory/tags)
 you are adopting — for CI that must not trust a mutable ref:
 
 ```yaml
@@ -162,17 +162,17 @@ you are adopting — for CI that must not trust a mutable ref:
     args: --fail-on drifted
 ```
 
-Less rigorous but more convenient, the moving `v1` major tag works the
+Less rigorous but more convenient, the moving `v2` major tag works the
 same way:
 
 ```yaml
-- uses: everywan-dev/validated-memory@v1
+- uses: everywan-dev/validated-memory@v2
   with:
     args: --fail-on drifted
 ```
 
 Pinning, by decreasing rigor: a full commit SHA for CI that must not trust
-a mutable ref, an immutable `vX.Y.Z` tag, or the moving `v1` major tag
+a mutable ref, an immutable `vX.Y.Z` tag, or the moving `v2` major tag
 shown above for convenience. `args` is passed to
 [`status`](docs/reference/cli.md#status) verbatim; without it, structural
 consistency gates and freshness is only reported.
@@ -191,13 +191,24 @@ answer drift by writing a successor unit.
 
 ## The views
 
-`render` writes two self-contained HTML pages — no JavaScript, no network —
+`render` writes two canonical, self-contained HTML pages — no JavaScript, no network —
 showing live conclusions, each anchor's probe history as a freshness strip,
 and the supersession chain that led to every fact:
 
-<img src="docs/assets/knowledge-view.png" alt="knowledge.html: units with verdicts, anchor payloads, probe history strips, and a superseded unit nested inside the history of its successor." width="830">
+<img src="docs/assets/knowledge-view.png" alt="knowledge-app.html with search and state/evidence/verdict filters, full-corpus overview and navigation, and a synthetic unit's probe history with keyboard-operable diagram controls." width="830">
 
-See [`render`](docs/reference/cli.md#render) for both pages' contracts, and
+For optional search, filters and diagram pan/zoom, activate the separate app:
+
+```sh
+python3 -P -m validated_memory init --view --app
+```
+
+`knowledge-app.html` adds one local inline script; it uses no network or browser
+storage. Remove the script and its content is the canonical knowledge page
+byte-for-byte. Delete the app file to stop regenerating it. As with other CLI
+commands, use the installed package or set `PYTHONPATH` to the plugin checkout.
+
+See [`render`](docs/reference/cli.md#render) for the pages' contracts, and
 [Startup hooks](docs/reference/hooks.md) for how the views stay fresh across
 sessions once activated.
 
@@ -227,9 +238,9 @@ a rule the CLI already enforces:
 
 ## Requirements and compatibility
 
-- **The v1 surface is complete** — every subcommand in the [CLI
+- **The v2 surface includes** every subcommand in the [CLI
   reference](docs/reference/cli.md), every skill listed above, all three
-  startup hooks, and the static HTML views. The version this clone ships is
+  startup hooks, canonical static HTML views and an opt-in app. The version this clone ships is
   declared in `pyproject.toml` and the plugin manifest, not restated here.
 - **Python ≥ 3.11**, standard library only; pytest is the only development
   dependency.
@@ -238,6 +249,8 @@ a rule the CLI already enforces:
 - **Git on `PATH`** for the bundled `git_ref` probe; no other probe needs it.
 - Updates are version-pinned — see
   [Updating](docs/installing.md#updating).
+- Before moving a gating CLI or CI job to v2, resolve memory identity conflicts;
+  see [migration to v2](docs/migration-2.md). The v1 channel stays on 1.x.
 
 ## Documentation
 

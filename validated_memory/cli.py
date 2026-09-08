@@ -112,13 +112,19 @@ def build_parser():
                     "artifact that already exists"
                 ),
             )
+            subparser.add_argument(
+                "--app", action="store_true",
+                help="with --view, also create the optional knowledge-app.html",
+            )
+            subparser.set_defaults(_init_subparser=subparser)
         if name == "render":
             subparser.add_argument(
                 "--only-existing",
                 action="store_true",
                 help=(
                     "regenerate only the artifacts that already exist, and "
-                    "create none (the startup hook's mode: fail-open)"
+                    "restore knowledge.html when the app exists "
+                    "(the startup hook's mode: fail-open)"
                 ),
             )
         if name == "status":
@@ -283,6 +289,9 @@ def main(argv=None):
             stdout=sys.stdout,
             stderr=sys.stderr,
         )
+    if args.app and not args.view:
+        args._init_subparser.error("--app requires --view")
     return init.run(
-        args.harness_memory, args.view, stdout=sys.stdout, stderr=sys.stderr
+        args.harness_memory, args.view, stdout=sys.stdout, stderr=sys.stderr,
+        app=args.app,
     )

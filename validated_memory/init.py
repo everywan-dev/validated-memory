@@ -179,7 +179,7 @@ overwrites a file that already exists.
 """
 
 
-def run(harness_memory, view, stdout, stderr):
+def run(harness_memory, view, stdout, stderr, app=False):
     """Scaffold the adopter layout under the working directory.
 
     Returns an exit code: 0 unless an item could not be created, or the
@@ -304,7 +304,7 @@ def run(harness_memory, view, stdout, stderr):
     if journal_failure is not None:
         findings.append(journal_failure)
     elif view and not unignored:
-        view_created, view_kept, view_findings = _ensure_views(stdout)
+        view_created, view_kept, view_findings = _ensure_views(stdout, app)
         created += view_created
         kept += view_kept
         findings.extend(view_findings)
@@ -777,8 +777,8 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
     ]
 
 
-def _ensure_views(stdout):
-    """Create `knowledge.html` and `memory.html` once each.
+def _ensure_views(stdout, app=False):
+    """Create canonical pages and the selected optional app once each.
 
     Returns `(created, kept, findings)`: the counters `run` adds to its own,
     and the findings it prints from its one central loop. Nothing here
@@ -791,14 +791,14 @@ def _ensure_views(stdout):
     Only a missing artifact triggers a build, and that build goes through
     `render.build_artifacts` -- the one place page composition lives, so
     `init --view`, `render`, and the `--only-existing` startup hook never
-    each grow their own copy of it. Both artifacts are built together (one
-    `build_artifacts` call covers whichever are missing) before either is
-    written, matching `render`'s own all-or-nothing write order.
+    each grow their own copy of it. Selected artifacts are built together (one
+    `build_artifacts` call covers whichever are missing) before publication.
+    Writes are atomic per artifact, not across the selected set.
 
     A corpus `build_artifacts` refuses is folded into the returned findings
     as a WARNING -- `downgrade=True`, the same fail-open mode `render
-    --only-existing` uses -- and creates neither artifact; whichever of the
-    two already existed is still reported `kept`.
+    --only-existing` uses -- and creates no artifacts; existing selected pages
+    are still reported `kept`.
 
     A write that fails at the OS level (permissions, a full disk, ...) is,
     like `--harness-memory`, a WARNING rather than a crash or a gate: an
@@ -816,18 +816,21 @@ def _ensure_views(stdout):
     created = 0
     kept = 0
     findings = []
+    selected = render.ARTIFACTS + ((render.APP_ARTIFACT,) if app else ())
     missing = [
         name
-        for name in render.ARTIFACTS
+        for name in selected
         if not (Path(name).is_symlink() or Path(name).exists())
     ]
     artifacts = {}
     if missing:
-        artifacts, build_findings, ok = render.build_artifacts(downgrade=True)
+        artifacts, build_findings, ok = render.build_artifacts(
+            downgrade=True, include_app=app
+        )
         findings.extend(build_findings)
         if not ok:
             artifacts = {}
-    for name in render.ARTIFACTS:
+    for name in selected:
         path = Path(name)
         if path.is_symlink() and not path.exists():
             findings.append(Finding(WARNING, name, "create", BROKEN_SYMLINK))
