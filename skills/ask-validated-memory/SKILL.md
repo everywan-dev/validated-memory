@@ -39,5 +39,6 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m vali
   decision and name it.
 - When the question is about the adopter's own data (their units, their
   index, their verdicts), this skill is the wrong tool: point at
+  `consult-project-memory` to search recorded memory and knowledge, or at
   `maintain-agent-memory`, `probe-freshness` or the CLI's enforcement
   commands instead of interpreting their files.

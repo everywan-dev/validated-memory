@@ -1,0 +1,125 @@
+{
+  "python": "3.12.3",
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "runtime_sha256": {
+    "recall.py": "9f6fe834ca862b82bba04d5a4814982e36ca6ac94af3384f88beebb4db5ccff9",
+    "recall_io.py": "959264e2d7c46b1bbcdc51d2be3ab7452fbd6c006ced1428988e2b76f6c70bc6"
+  },
+  "measurements": [
+    {
+      "exit": 0,
+      "seconds": 0.0496,
+      "peak_rss_kib": 20812,
+      "stdout_bytes": 5326,
+      "coverage": {
+        "enumerated": 100,
+        "read": 100,
+        "invalid": 0,
+        "unreadable": 0,
+        "auxiliary_read": 0,
+        "eligible": 100,
+        "matched": 100
+      },
+      "documents": 100
+    },
+    {
+      "exit": 0,
+      "seconds": 0.0802,
+      "peak_rss_kib": 25304,
+      "stdout_bytes": 5340,
+      "coverage": {
+        "enumerated": 1000,
+        "read": 1000,
+        "invalid": 0,
+        "unreadable": 0,
+        "auxiliary_read": 0,
+        "eligible": 1000,
+        "matched": 1000
+      },
+      "documents": 1000
+    },
+    {
+      "exit": 0,
+      "seconds": 0.4268,
+      "peak_rss_kib": 67840,
+      "stdout_bytes": 5354,
+      "coverage": {
+        "enumerated": 10000,
+        "read": 10000,
+        "invalid": 0,
+        "unreadable": 0,
+        "auxiliary_read": 0,
+        "eligible": 10000,
+        "matched": 10000
+      },
+      "documents": 10000
+    }
+  ],
+  "caps": [
+    {
+      "case": "document_count",
+      "exit": 1,
+      "seconds": 0.1743,
+      "peak_rss_kib": 32060,
+      "stdout_bytes": 606,
+      "coverage": {
+        "enumerated": 20001,
+        "read": 20000,
+        "invalid": null,
+        "unreadable": null,
+        "auxiliary_read": null,
+        "eligible": null,
+        "matched": null
+      },
+      "documents": 20001
+    },
+    {
+      "case": "entry_count",
+      "exit": 1,
+      "seconds": 0.07,
+      "peak_rss_kib": 27168,
+      "stdout_bytes": 603,
+      "coverage": {
+        "enumerated": null,
+        "read": null,
+        "invalid": null,
+        "unreadable": null,
+        "auxiliary_read": null,
+        "eligible": null,
+        "matched": null
+      }
+    },
+    {
+      "case": "aggregate_bytes",
+      "exit": 1,
+      "seconds": 0.0977,
+      "peak_rss_kib": 88232,
+      "stdout_bytes": 599,
+      "coverage": {
+        "enumerated": 65,
+        "read": 65,
+        "invalid": null,
+        "unreadable": null,
+        "auxiliary_read": null,
+        "eligible": null,
+        "matched": null
+      }
+    },
+    {
+      "case": "redirect_associations",
+      "exit": 1,
+      "seconds": 0.405,
+      "peak_rss_kib": 70940,
+      "stdout_bytes": 605,
+      "coverage": {
+        "enumerated": 636,
+        "read": 636,
+        "invalid": 0,
+        "unreadable": 0,
+        "auxiliary_read": 0,
+        "eligible": null,
+        "matched": null
+      }
+    }
+  ]
+}

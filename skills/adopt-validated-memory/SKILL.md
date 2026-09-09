@@ -8,6 +8,53 @@ description: Use when a project wants to adopt the validated-memory method -- bo
 Adopting the plugin in a project is one command, run from the project root
 -- preceded by one decision the command cannot make for the adopter.
 
+## Which branch this request is
+
+Decide this before anything below, and never run the bootstrap questionnaire
+without deciding it first.
+
+- **Adoption has not run** (`validated-memory.md` or `memory/MEMORY.md` is
+  missing) -- continue with "Decide what this repository versions" and the
+  rest of this skill.
+- **Adoption has run and the request is about the managed instruction block**
+  ("update the block", "refresh the CLAUDE.md section") -- do "Update the
+  managed block" below, report, and stop.
+- **Adoption has run and the request is something else** (importing existing
+  knowledge, verifying the adoption, declaring an extension, registering
+  probes, gating CI,
+  activating the HTML views, wiring the harness memory) -- go straight to
+  that section here or to the skill that owns it, and do not re-ask a
+  decision this project has already recorded. An already-adopted project is
+  not a reason to divert the request into a block update.
+
+## Update the managed block
+
+This branch brings the managed instruction-file block up to date and nothing
+else: never a re-run of `init`, never a re-ask of the versioning question or
+Q1--Q3, and never a re-offer of the HTML-view questionnaire below. There is
+no automatic upgrade routine that runs on its own, and no unattended rewrite
+of the instruction file.
+
+1. Verify the adoption is intact: `validated-memory.md` and
+   `memory/MEMORY.md` exist, and `validate` and `lint` both pass clean (see
+   "Verify the adoption" below).
+2. Read this project's instruction file(s) (`CLAUDE.md`, and `AGENTS.md`
+   where one exists) for the managed block, delimited by
+   `<!-- validated-memory:begin -->` / `<!-- validated-memory:end -->`.
+3. Compare what is there against the canonical block under "Tell later
+   sessions..." below. Already equal -- say so and do nothing; a
+   block that already matches is not prompted about again merely out of
+   habit. Different -- show the exact diff and apply the identical write
+   rule from that section on confirmation: the same closed handling of no
+   marker / one matched pair / anything else, the same symlink and
+   outside-root refusal, and the same byte-for-byte preservation of
+   everything outside the markers. That confirmation is the only
+   authorization this path needs; it does not require re-running the
+   bootstrap or import questionnaire to justify updating one block.
+4. Report what was found and what, if anything, was written -- then stop.
+   Finishing this branch is a complete answer; it never continues into the
+   bootstrap questionnaire below.
+
 ## Decide what this repository versions
 
 Ask before running anything (with the harness's question tool when there is
@@ -307,6 +354,9 @@ probed); agent memory lives in `memory/` (one fact per file, indexed in
 - `memory/source-*.md` entries record sources of existing knowledge seen at
   adoption; one whose status is `declared, not scanned` is knowledge this
   project has not imported yet (`bootstrap-from-repo` imports it).
+- To look up this project's recorded memory and knowledge, use `recall`
+  (`consult-project-memory`). A consultation-first workflow is opt-in;
+  this block does not require it before every substantial task.
 - Usage questions: `ask-validated-memory`.
 <!-- validated-memory:end -->
 ```

@@ -107,6 +107,11 @@ def _records(root):
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise VerdictLogError(None, f"cannot be read: {error}") from error
+    yield from _records_from_text(text)
+
+
+def _records_from_text(text):
+    """Yield `(lineno, record)` for already-read log text, fail-loud."""
     for lineno, line in enumerate(text.splitlines(), start=1):
         line = line.strip()
         if not line:
@@ -173,6 +178,22 @@ class LogSnapshot:
         self.records = records
         self.latest = latest
         self.view = {key: record["verdict"] for key, record in latest.items()}
+
+
+def parse_text(text):
+    """Validate already-acquired verdict-log bytes. Returns a `LogSnapshot`.
+
+    Mirrors `read`'s validation exactly, for a caller that acquired the log
+    itself and must not read the filesystem again. Empty text is an empty
+    snapshot, the same as a log that was never probed.
+    """
+    collected = []
+    latest = {}
+    for lineno, record in _records_from_text(text):
+        key, _verdict = _keyed(lineno, record)
+        latest[key] = record
+        collected.append(record)
+    return LogSnapshot(tuple(collected), latest)
 
 
 def read(root=Path()):

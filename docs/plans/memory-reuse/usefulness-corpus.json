@@ -1,0 +1,77 @@
+{
+  "schema_note": "Solver-visible corpus, one materialized tree per case. Contains no gold. knowledge-index.md is derived at the adopter root by 'validated-memory derive'; it is deliberately not authored here and never lives under knowledge/.",
+  "cases": [
+    {
+      "id": "ordinary-reuse",
+      "files": {
+        "docs/payment-gateway.md": "# Payment gateway client\n\nThe payment-gateway client uses a retry timeout of 12 seconds. It performs 3\nretry attempts with a backoff factor of 2. These values were set after the\n2026-03 outage postmortem, which found that the previous 5-second timeout\ncaused premature retries during gateway GC pauses.\n\nThis timeout applies to the payment-gateway client only; other outbound\nclients (inventory-service, shipping-service) keep their own timeout\nsettings and are not affected by this change.\n",
+        "memory/MEMORY.md": "# Memory index\n\n- [Payment gateway retry timeout](payment-gateway-timeout.md) - 12 seconds, 3 attempts, payment-gateway client only\n",
+        "memory/payment-gateway-timeout.md": "---\nname: payment-gateway-timeout\ndescription: Payment-gateway client retry timeout is 12 seconds (3 attempts, backoff factor 2), applying only to the payment-gateway client. See docs/payment-gateway.md.\nmetadata:\n  type: project\n---\n\nThe payment-gateway client's outbound retry timeout is 12 seconds, with 3\nretry attempts and a backoff factor of 2. Set after the 2026-03 outage\npostmortem. Scope: payment-gateway client only, not other outbound clients.\n",
+        "knowledge/.gitkeep": ""
+      }
+    },
+    {
+      "id": "rejected-alternative",
+      "files": {
+        "docs/queue-decision.md": "# Order-events queue: transport choice\n\nQuestion: what transport should carry order-events for this project's\naudit-rebuild consumer?\n\nRequirement: an audit rebuild covers the trailing 90-day audit period, so\nthe audit-rebuild consumer must be able to replay every order-event from\nthe last 90 days on demand.\n\nConsidered options:\n- Kafka: topic per event type, consumer groups replaying from a stored\n  offset. The `order-events` topic is configured with 90-day retention,\n  which covers the required replay window.\n- Redis Streams: XADD/XREADGROUP with consumer groups, but replay reaches\n  only as far back as the stream's trim window. This project's Redis\n  deployment trims `order-events` at 7 days, and raising that trim to 90\n  days was rejected as too costly for the available Redis memory budget.\n- Direct HTTP webhooks to the audit service: no durable replay at all.\n\nRedis Streams was rejected for this use case: its configured 7-day trim\nwindow is shorter than the required 90-day replay window, so an audit\nrebuild could not reach the oldest events it must cover. This is a\nconsequence of the configuration chosen here, not a limit of the\ntechnology.\n\nDecision: Kafka, with the 90-day retention topic `order-events`, was chosen\nfor the audit-rebuild consumer. Replay beyond 90 days is out of scope for\nboth transports as configured.\n",
+        "memory/MEMORY.md": "# Memory index\n",
+        "knowledge/order-events-transport.md": "---\nid: k-order-events-transport\nevidence: verifiable\nanchors: []\nsupersedes: []\nrationale:\n  question: \"What transport should carry order-events for this project's audit-rebuild consumer?\"\n  options:\n    - label: \"Kafka topic order-events with 90-day retention\"\n      disposition: chosen\n      reason: \"90-day retention covers the required 90-day audit replay window.\"\n    - label: \"Redis Streams with consumer groups\"\n      disposition: rejected\n      reason: \"The stream is trimmed at 7 days here and raising the trim to 90 days exceeds the Redis memory budget.\"\n    - label: \"Direct HTTP webhooks to the audit service\"\n      disposition: rejected\n      reason: \"No durable replay at all.\"\n---\n\n# Order-events transport: Kafka chosen over Redis Streams\n\nThe audit-rebuild consumer must replay every order-event from the last 90\ndays, because an audit rebuild covers the trailing 90-day audit period.\n\nRedis Streams was rejected for this use case: this project's Redis\ndeployment trims `order-events` at 7 days, which is shorter than the\nrequired 90-day replay window, and raising the trim to 90 days was rejected\nas too costly for the Redis memory budget. Direct HTTP webhooks were\nrejected for lacking durable replay.\n\nKafka, with the 90-day retention topic `order-events`, is used for the\naudit-rebuild consumer. The rejection is a consequence of the configured\ntrim window against a stated requirement, not a claim about Redis Streams\nin general. See docs/queue-decision.md.\n"
+      }
+    },
+    {
+      "id": "historical-successor",
+      "files": {
+        "docs/rate-limit-v1.md": "# Public API rate limit (2025-01)\n\nThe public API enforces a rate limit of 60 requests per minute per API key,\neffective 2025-01. Limits are enforced at the gateway using a token-bucket\nthrottler.\n",
+        "docs/rate-limit.md": "# Public API rate limit\n\nThe public API enforces a rate limit of 600 requests per minute per API\nkey, effective 2026-06. This supersedes the earlier 60 requests-per-minute\nlimit from 2025-01 (see docs/rate-limit-v1.md), after the gateway migrated\nto the new sliding-window throttler.\n",
+        "memory/MEMORY.md": "# Memory index\n",
+        "knowledge/rate-limit-v1.md": "---\nid: k-rate-limit-v1\nevidence: verifiable\nanchors: []\nsupersedes: []\n---\n\n# Public API rate limit (2025-01)\n\nThe public API enforces a rate limit of 60 requests per minute per API key,\neffective 2025-01. See docs/rate-limit-v1.md.\n",
+        "knowledge/rate-limit.md": "---\nid: k-rate-limit\nevidence: verifiable\nanchors: []\nsupersedes:\n  - k-rate-limit-v1\n---\n\n# Public API rate limit\n\nThe public API enforces a rate limit of 600 requests per minute per API\nkey, effective 2026-06, superseding the 2025-01 limit of 60 requests per\nminute. See docs/rate-limit.md.\n"
+      }
+    },
+    {
+      "id": "applicability-exception",
+      "files": {
+        "docs/deploy-policy.md": "# Deploy and health-check policy\n\nAll services must run an HTTP health check every 30 seconds while deployed,\npolled by the orchestrator.\n\nException: the batch-reconciler service is exempt from the 30-second health\ncheck. It runs as a scheduled batch job with no long-lived process to\nprobe, so a periodic HTTP check does not apply. It is monitored instead\nthrough job-completion alerts emitted at the end of each run.\n",
+        "memory/MEMORY.md": "# Memory index\n\n- [Batch reconciler health-check exemption](batch-reconciler-health-check-exception.md) - exempt from the 30-second HTTP health check\n",
+        "memory/batch-reconciler-health-check-exception.md": "---\nname: batch-reconciler-health-check-exception\ndescription: batch-reconciler is exempt from the standard 30-second health check because it runs as a scheduled job; other services still require it. See docs/deploy-policy.md.\nmetadata:\n  type: project\n---\n\nAll services must run a 30-second HTTP health check by default. Exception:\nbatch-reconciler is exempt because it is a scheduled batch job with no\nlong-lived process to probe; it is monitored via job-completion alerts\ninstead. The 30-second rule still applies to every other service.\n",
+        "knowledge/.gitkeep": ""
+      }
+    },
+    {
+      "id": "stale-freshness",
+      "files": {
+        "docs/latency-budget.md": "# Checkout endpoint latency\n\nThe checkout endpoint's p95 latency was measured at 420ms on 2026-02-15, by\nthe `checkout-loadtest` suite running against the staging environment. The\nmeasurement was taken after an outbound retry timeout change, to confirm\nthat the change did not regress checkout latency.\n\nNo later run of that suite has been recorded, and no freshness check\nagainst it has been recorded either.\n",
+        "memory/MEMORY.md": "# Memory index\n",
+        "knowledge/checkout-latency.md": "---\nid: k-checkout-latency\nevidence: measured\nanchors:\n  - system: staging-loadtest\n    kind: loadtest_p95\n    captured_at: 2026-02-15\n    payload:\n      suite: checkout-loadtest\n      environment: staging\n      metric: p95_latency_ms\n      endpoint: checkout\nsupersedes: []\n---\n\n# Checkout endpoint p95 latency\n\nThe checkout endpoint's p95 latency was measured at 420ms on 2026-02-15 by\nthe `checkout-loadtest` suite on staging. The anchor above names that\nmeasurement and its capture date. No later run of the suite and no\nfreshness check against the anchor have been recorded, so whether 420ms\nstill holds is unknown. See docs/latency-budget.md.\n"
+      }
+    },
+    {
+      "id": "source-only",
+      "files": {
+        "docs/scratch-idempotency.md": "# Draft note: order-submit retries\n\nDraft, not yet reviewed. While investigating a duplicate-order report, I\nconfirmed that the order-submit endpoint does not deduplicate retried\nsubmissions by idempotency key: if a client times out and resends the same\norder-submit request, a second order is created. There is no idempotency\nkey check in the current handler.\n\nNeeds follow-up: decide whether to add an idempotency key table before\npromoting this to project memory.\n",
+        "memory/MEMORY.md": "# Memory index\n",
+        "knowledge/.gitkeep": ""
+      }
+    },
+    {
+      "id": "cross-language",
+      "files": {
+        "docs/auth-policy.md": "# Signup password policy\n\nNew user passwords must be between 12 and 64 characters, enforced by the\nsignup validator since 2026-04. Passwords outside this range are rejected\nat signup with a validation error naming the allowed range.\n\nThis rule is applied at signup only. It does not retroactively invalidate\nan existing account's password.\n",
+        "memory/MEMORY.md": "# Memory index\n\n- [Signup password policy](signup-password-policy.md) - new user passwords are 12-64 characters\n",
+        "memory/signup-password-policy.md": "---\nname: signup-password-policy\ndescription: New user passwords must be between 12 and 64 characters, enforced by the signup validator since 2026-04. See docs/auth-policy.md.\nmetadata:\n  type: project\n---\n\nSignup passwords for new users must be 12-64 characters; the validator\nrejects lengths outside this range with a validation error naming the\nallowed range. The check runs at signup and does not invalidate existing\naccount passwords.\n",
+        "knowledge/.gitkeep": ""
+      }
+    },
+    {
+      "id": "session-resumption",
+      "files": {
+        "docs/handoff-note.md": "# Handoff: continuing deploy-window task\n\nPicking this up from the previous session. Remember: the deploy freeze\nwindow is Fridays 14:00-18:00 UTC (see docs/deploy-freeze-v1.md) -- avoid\nscheduling the migration during that window.\n",
+        "docs/deploy-freeze-v1.md": "# Deploy freeze window (original)\n\nDeploy freeze window: Fridays 14:00-18:00 UTC. No deploys to production are\npermitted during this window except emergency hotfixes approved by an\non-call lead.\n",
+        "docs/deploy-freeze.md": "# Deploy freeze window\n\nUpdated 2026-08: the deploy freeze window is now Thursdays 16:00-20:00 UTC,\nsuperseding the prior Friday 14:00-18:00 UTC window (see\ndocs/deploy-freeze-v1.md), after the release-train schedule moved from\nFriday to Thursday cuts.\n",
+        "memory/MEMORY.md": "# Memory index\n",
+        "knowledge/deploy-freeze-v1.md": "---\nid: k-deploy-freeze-v1\nevidence: verifiable\nanchors: []\nsupersedes: []\n---\n\n# Deploy freeze window (original)\n\nDeploy freeze window: Fridays 14:00-18:00 UTC. See docs/deploy-freeze-v1.md.\n",
+        "knowledge/deploy-freeze.md": "---\nid: k-deploy-freeze\nevidence: verifiable\nanchors: []\nsupersedes:\n  - k-deploy-freeze-v1\n---\n\n# Deploy freeze window\n\nUpdated 2026-08: the deploy freeze window is now Thursdays 16:00-20:00 UTC,\nsuperseding the prior Friday 14:00-18:00 UTC window, after the\nrelease-train schedule moved from Friday to Thursday cuts. See\ndocs/deploy-freeze.md.\n"
+      }
+    }
+  ]
+}

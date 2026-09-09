@@ -16,6 +16,7 @@ from . import (
     journal,
     lint,
     probe,
+    recall,
     render,
     status,
     validate,
@@ -27,10 +28,25 @@ SUBCOMMANDS = {
     "validate": "Validate curated-knowledge units against the base contract",
     "derive": "Re-derive indexes and summaries from curated-knowledge units",
     "probe": "Run freshness probes and record ternary verdicts",
+    "recall": "Search memory and/or knowledge read-only; discovery, not validation",
     "render": "Render static HTML views of the curated and agent-memory layers",
     "status": "Report project consistency and freshness; read-only, never probes",
     "journal": "Report the append-only record of what the plugin has written",
 }
+
+
+def _limit_range(value):
+    parsed = int(value)
+    if not 1 <= parsed <= 100:
+        raise argparse.ArgumentTypeError("--limit must be between 1 and 100")
+    return parsed
+
+
+def _max_bytes_range(value):
+    parsed = int(value)
+    if not 2048 <= parsed <= 65536:
+        raise argparse.ArgumentTypeError("--max-bytes must be between 2,048 and 65,536")
+    return parsed
 
 
 def build_parser():
@@ -220,6 +236,36 @@ def build_parser():
             )
             # Cross-flag errors must use this command's usage line.
             subparser.set_defaults(_journal_subparser=subparser)
+        if name == "recall":
+            subparser.add_argument(
+                "query", nargs="?", metavar="QUERY",
+                help="search terms; omit and pass --map for a query-free listing",
+            )
+            subparser.add_argument(
+                "--map", action="store_true",
+                help="list every active record without a query (mutually exclusive with QUERY)",
+            )
+            subparser.add_argument(
+                "--layer", choices=("all", "memory", "knowledge"), default="all",
+                help="which layer(s) to search (default: all)",
+            )
+            subparser.add_argument(
+                "--limit", type=_limit_range, default=8,
+                help="maximum results returned, 1-100 (default: 8)",
+            )
+            subparser.add_argument(
+                "--max-bytes", type=_max_bytes_range, default=12288, dest="max_bytes",
+                help="maximum serialized envelope size, 2048-65536 (default: 12288)",
+            )
+            subparser.add_argument(
+                "--format", choices=("text", "json"), default="text",
+                help="output format (default: text)",
+            )
+            subparser.add_argument(
+                "--include-superseded", action="store_true", dest="include_superseded",
+                help="include superseded records directly, without redirect expansion",
+            )
+            subparser.set_defaults(_recall_subparser=subparser)
     return parser
 
 
@@ -236,6 +282,14 @@ def main(argv=None):
         return lint.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "probe":
         return probe.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
+    if args.command == "recall":
+        if args.map and args.query is not None:
+            args._recall_subparser.error("--map is mutually exclusive with a supplied query")
+        return recall.run(
+            args.query, args.map, args.layer, args.limit, args.max_bytes,
+            args.format, args.include_superseded,
+            stdout=sys.stdout, stderr=sys.stderr,
+        )
     if args.command == "render":
         return render.run(args.only_existing, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "status":

@@ -5,7 +5,7 @@ python3 -P -m validated_memory <command>
 ```
 
 Commands: [`init`](#init), [`lint`](#lint), [`validate`](#validate),
-[`derive`](#derive), [`probe`](#probe), [`render`](#render),
+[`derive`](#derive), [`probe`](#probe), [`recall`](#recall), [`render`](#render),
 [`status`](#status), [`journal`](#journal).
 
 Exit codes: `0` = clean run or WARNING-only findings (does not gate);
@@ -479,6 +479,19 @@ itself to the probe contract directly rather than leaning on the
 framework's fallback: every failure it can anticipate is caught and turned
 into `unknown` with a reason here, so it never raises, never prints a raw
 traceback, and never exits non-zero.
+
+### `recall`
+
+```
+python3 -P -m validated_memory recall QUERY [--layer {all,memory,knowledge}]
+    [--limit N] [--max-bytes N] [--format {text,json}] [--include-superseded]
+python3 -P -m validated_memory recall --map [same flags]
+```
+
+Read-only, bounded search over `memory/` and/or `knowledge/`: discovery, not
+validation -- a match says a record exists and roughly why, never that its
+claim still applies. Full contract, exact field-by-field reference, exit
+codes and known limitations in [Recall](recall.md).
 
 ### `render`
 

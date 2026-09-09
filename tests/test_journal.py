@@ -178,6 +178,67 @@ def _writing_mode(call):
     return True
 
 
+# `os.open` takes flags, not a mode string. Only these flags prove a read-only
+# descriptor; O_WRONLY, O_RDWR, O_CREAT, O_TRUNC and O_APPEND are absent by
+# design, and so is anything the scanner cannot evaluate.
+READ_ONLY_OPEN_FLAGS = frozenset(
+    {
+        "O_RDONLY",
+        "O_DIRECTORY",
+        "O_NOFOLLOW",
+        "O_NONBLOCK",
+        "O_CLOEXEC",
+        "O_PATH",
+        "O_NOCTTY",
+    }
+)
+
+
+def _read_only_flags(node):
+    """Whether a flags expression is a proven read-only `os.O_*` combination.
+
+    Recursive over `|` alone. The leaves are a literal 0, an allowed `os.O_*`
+    attribute and `getattr(os, "O_...", 0)` over the same set. A variable, a
+    call, an arithmetic expression or an unlisted flag is not proven."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _read_only_flags(node.left) and _read_only_flags(node.right)
+    if isinstance(node, ast.Constant):
+        return node.value == 0
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+    ):
+        return node.attr in READ_ONLY_OPEN_FLAGS
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) == 3
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "os"
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[2], ast.Constant)
+        and node.args[2].value == 0
+    ):
+        return node.args[1].value in READ_ONLY_OPEN_FLAGS
+    return False
+
+
+def _os_open_writes(call):
+    """Whether an `os.open(...)` call may create or modify its target.
+
+    A missing flags argument, a computed one, or any flag outside the
+    read-only allowlist counts as a write."""
+    flags = call.args[1] if len(call.args) > 1 else None
+    for keyword in call.keywords:
+        if keyword.arg == "flags":
+            flags = keyword.value
+    if flags is None:
+        return True
+    return not _read_only_flags(flags)
+
+
 def _mutating_call(call):
     """The name of the filesystem mutation this call performs, or None."""
     function = call.func
@@ -187,11 +248,14 @@ def _mutating_call(call):
         return None
     if not isinstance(function, ast.Attribute):
         return None
-    if function.attr == "open":
-        return "open(...) for writing" if _writing_mode(call) else None
     receiver = (
         function.value.id if isinstance(function.value, ast.Name) else None
     )
+    if receiver == "os" and function.attr == "open":
+        # os.open's second argument is a flags expression, not a mode string.
+        return "os.open(...) for writing" if _os_open_writes(call) else None
+    if function.attr == "open":
+        return "open(...) for writing" if _writing_mode(call) else None
     for module, vocabulary in (
         ("os", OS_MUTATORS),
         ("shutil", SHUTIL_MUTATORS),
@@ -863,6 +927,75 @@ def test_every_write_in_the_package_goes_through_the_journal():
         "`Run.execute` or add them to EXECUTOR_EXCEPTIONS / "
         "UNRECORDED_WRITES with the reason:\n" + "\n".join(offenders)
     )
+
+
+READ_ONLY_OS_OPEN_SNIPPETS = (
+    'os.open(".", os.O_DIRECTORY | os.O_RDONLY | os.O_NOFOLLOW)',
+    "os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)",
+    "os.open(name, os.O_DIRECTORY | os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)",
+    "os.open(name, flags=os.O_RDONLY)",
+    'os.open(name, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))',
+    "os.open(name, 0)",
+)
+
+WRITING_OS_OPEN_SNIPPETS = (
+    "os.open(p, os.O_WRONLY | os.O_CREAT)",
+    "os.open(p, flags)",
+    "os.open(p, os.O_RDONLY | os.O_TRUNC)",
+    "os.open(p, os.O_RDWR)",
+    "os.open(p, os.O_WRONLY | os.O_APPEND)",
+    "os.open(p)",
+    'os.open(p, getattr(os, "O_CREAT", 0))',
+    "os.open(p, os.O_RDONLY | mode)",
+    "os.open(p, flags=os.O_RDONLY | os.O_CREAT)",
+)
+
+
+def _only_call(source):
+    return ast.parse(source).body[0].value
+
+
+@pytest.mark.parametrize("source", READ_ONLY_OS_OPEN_SNIPPETS)
+def test_read_only_os_open_is_not_counted_as_a_write(source):
+    """Pin the read-only side of the `os.open` branch.
+
+    Before it existed, the generic mode check read the flags expression as a
+    mode string, so every descriptor-relative read counted as a write."""
+    assert _mutating_call(_only_call(source)) is None
+
+
+@pytest.mark.parametrize("source", WRITING_OS_OPEN_SNIPPETS)
+def test_creating_or_unknown_os_open_is_still_a_write(source):
+    """Pin the write side: only the proven read-only allowlist is exempt.
+
+    A creating or truncating flag, an unlisted flag, a computed expression
+    and a missing flags argument each stay a write, so a genuine write added
+    to a read-only module cannot slip past this scanner."""
+    assert _mutating_call(_only_call(source)) == "os.open(...) for writing"
+
+
+def test_ordinary_open_modes_are_unaffected_by_the_os_open_branch():
+    """The new branch must not change plain `open` or `path.open` verdicts."""
+    assert _mutating_call(_only_call('open(p, "w")')) == "open(...) for writing"
+    assert _mutating_call(_only_call('open(p, "r")')) is None
+    assert _mutating_call(_only_call('path.open("a")')) == "open(...) for writing"
+    assert _mutating_call(_only_call("path.open()")) is None
+
+
+def test_recall_acquisition_opens_are_all_reads_as_written():
+    """Every `os.open` in the acquisition module is read-only as written."""
+    source = (REPO_ROOT / "validated_memory" / "recall_io.py").read_text(
+        encoding="utf-8"
+    )
+    opens = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "open"
+    ]
+    assert len(opens) >= 3
+    assert [_mutating_call(node) for node in opens] == [None] * len(opens)
 
 
 def test_no_module_outside_the_journal_reaches_past_the_executor():

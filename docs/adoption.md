@@ -11,10 +11,26 @@ walkthrough](walkthrough.md).
 
 Install `validated-memory` as a Claude Code plugin (however your harness
 manages plugins -- a marketplace, a local plugin path, or a checkout
-referenced directly). Once installed, its seven skills are discovered from
+referenced directly). Once installed, its eight skills are discovered from
 `skills/*/SKILL.md` by directory convention, and its three startup hooks from
 `hooks/hooks.json` -- neither needs any registration inside the adopter
 project.
+
+## Updating the managed block in an existing adoption
+
+If this project has already run `init` -- `validated-memory.md` and
+`memory/MEMORY.md` already exist -- do not repeat steps 2-8 below.
+
+What to do next depends on what is being asked. A request to update or check
+the managed instruction-file block (see [step
+4](#4-import-existing-knowledge)) is the `adopt-validated-memory` skill's
+"Update the managed block" branch: it verifies the adoption, shows the exact
+diff, writes only on confirmation, reports, and stops there. It never re-runs
+`init`, never re-asks the versioning or HTML-view questions, and there is no
+unattended, automatic rewrite of the instruction file. Any other request in
+an adopted project -- importing knowledge, declaring an extension,
+registering probes, gating CI, activating the views -- goes to the step that
+owns it below, without re-asking a decision the project already recorded.
 
 ## 2. Decide what this repository versions
 
@@ -201,6 +217,9 @@ probed); agent memory lives in `memory/` (one fact per file, indexed in
 - `memory/source-*.md` entries record sources of existing knowledge seen at
   adoption; one whose status is `declared, not scanned` is knowledge this
   project has not imported yet (`bootstrap-from-repo` imports it).
+- To look up this project's recorded memory and knowledge, use `recall`
+  (`consult-project-memory`). A consultation-first workflow is opt-in;
+  this block does not require it before every substantial task.
 - Usage questions: `ask-validated-memory`.
 <!-- validated-memory:end -->
 ```

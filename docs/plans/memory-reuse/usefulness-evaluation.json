@@ -1,0 +1,334 @@
+{
+  "schema_note": "Independent evaluator scoring of the completed recall-usefulness comparison. Answer-level judgments are scored against authoring/raw-and-gold-v2.json only. Trace-level fields (recall_called, opened_original, redundant_investigation, read_calls, bash_file_read_commands) are scored from the run stream only. The gold was not modified; no run was repaired or re-executed.",
+  "scored_on": "2026-09-09",
+  "inputs": {
+    "gold": "usefulness-gold.json",
+    "gold_sha256": "8158add3b10d5bead29aa9f4ff8b14c183f5d3118f73dd9c1ac127000f841f93",
+    "gold_sha256_matches_protocol": true,
+    "corpus": "usefulness-corpus.json",
+    "corpus_sha256": "ca05fd8edcbf03a241d07ffcfc8832bea1d1ebe24b65030dec6df75616be9dd8",
+    "corpus_sha256_matches_protocol": true,
+    "runs_declared": 16,
+    "runs_completed": 16,
+    "runs_scored": 16,
+    "all_fixtures_unchanged": true
+  },
+  "scoring_rules_applied": {
+    "supported_outcome": "Every expected_proposition is asserted or plainly entailed, and no unsafe_claim is asserted. optional_context is never required.",
+    "material_caveats_preserved": "Every required_caveat is conveyed in substance. Wording is free. Cases with an empty required_caveats list are true by construction.",
+    "unsafe_reliance": "The answer asserts, or relies on, an item from unsafe_claims.",
+    "redundant_investigation": "Null except for cross-language, the one fixture with a preregistered instance. There it is true only if the identical literal Spanish query was reissued after a zero-match return with no change of terms, layer or scope.",
+    "recall_called": "The run invoked the validated_memory recall command in its trace.",
+    "opened_original": "The run read at least one underlying docs/ source file, by Read or by a shell read.",
+    "not_counted_as_defects": [
+      "Omitting optional_context.",
+      "Not narrating retired or superseded values when the current value is unambiguous.",
+      "Answering a project-scoped Redis rejection without an added lecture on general Redis Streams capability.",
+      "Omitting supporting capture tooling or environment when the answer clearly states the old measurement is not known to be current.",
+      "Ordinary source reading and verification, at any count."
+    ]
+  },
+  "runs": [
+    {
+      "id": "00-baseline",
+      "case": "ordinary-reuse",
+      "arm": "baseline",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": false,
+      "opened_original": true,
+      "read_calls": 1,
+      "bash_file_read_commands": 1,
+      "evidence": "States 12 seconds and 3 retry attempts and confines the value to the payment-gateway client, so neither unsafe generalisation applies. No caveat is required for this case. Trace reads the memory unit and then cats docs/payment-gateway.md."
+    },
+    {
+      "id": "00-candidate",
+      "case": "ordinary-reuse",
+      "arm": "candidate",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": true,
+      "opened_original": false,
+      "read_calls": 1,
+      "bash_file_read_commands": 0,
+      "evidence": "States 12 seconds and 3 retry attempts, scoped to the payment-gateway client only. Recall returned the memory unit, which the run then read; it says the source doc was not independently opened, which is accurate and not a required caveat here."
+    },
+    {
+      "id": "01-baseline",
+      "case": "rejected-alternative",
+      "arm": "baseline",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": false,
+      "opened_original": true,
+      "read_calls": 0,
+      "bash_file_read_commands": 2,
+      "evidence": "All four propositions present: rejection of Redis Streams here, the 90-day replay requirement, the 7-day trim shortfall, and Kafka with 90-day retention chosen. Scopes the rejection to this project's configuration rather than the technology. Kafka is described as 90-day retention, not unlimited history."
+    },
+    {
+      "id": "01-candidate",
+      "case": "rejected-alternative",
+      "arm": "candidate",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": true,
+      "opened_original": false,
+      "read_calls": 1,
+      "bash_file_read_commands": 0,
+      "evidence": "All four propositions present. Says twice that the rejection follows from the configured 7-day trim against the 90-day requirement and is not a claim about Redis Streams as a technology, which satisfies the required caveat. Kafka stated as 90-day retention."
+    },
+    {
+      "id": "02-baseline",
+      "case": "historical-successor",
+      "arm": "baseline",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": false,
+      "opened_original": true,
+      "read_calls": 2,
+      "bash_file_read_commands": 2,
+      "evidence": "Names 600 requests per minute per key as current and the 60 figure as superseded, leaving no ambiguity about which is in force. Reading both rate-limit units and the current source doc is ordinary verification, not waste."
+    },
+    {
+      "id": "02-candidate",
+      "case": "historical-successor",
+      "arm": "candidate",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": true,
+      "opened_original": false,
+      "read_calls": 1,
+      "bash_file_read_commands": 1,
+      "evidence": "Names 600 per minute per key as current, superseding the 2025-01 limit. Recall returned only the active unit, so the superseded unit never had to be disambiguated by hand. The added freshness note is optional and does not muddy currency."
+    },
+    {
+      "id": "03-baseline",
+      "case": "applicability-exception",
+      "arm": "baseline",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": false,
+      "opened_original": true,
+      "read_calls": 2,
+      "bash_file_read_commands": 0,
+      "evidence": "Answers no, cites the documented exemption, names job-completion alerts as the substitute, and states the 30-second rule still binds every other service, so the exemption is not generalised."
+    },
+    {
+      "id": "03-candidate",
+      "case": "applicability-exception",
+      "arm": "candidate",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": false,
+      "opened_original": true,
+      "read_calls": 2,
+      "bash_file_read_commands": 0,
+      "evidence": "Same two propositions and the same non-generalisation. Notable trace fact: this candidate run never invoked recall; it read the memory unit and the policy doc directly, so its trace is identical in kind to its baseline pair."
+    },
+    {
+      "id": "04-baseline",
+      "case": "stale-freshness",
+      "arm": "baseline",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": false,
+      "opened_original": false,
+      "read_calls": 1,
+      "bash_file_read_commands": 1,
+      "evidence": "Answers that 420ms is not confirmed current, gives the 2026-02-15 capture date, reports the verdict as unknown rather than fresh or drifted, and says it must be re-checked before use. It quotes the unit's sentence about no later run, so the suite and environment being unnamed in its own prose is not a caveat failure."
+    },
+    {
+      "id": "04-candidate",
+      "case": "stale-freshness",
+      "arm": "candidate",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": true,
+      "opened_original": false,
+      "read_calls": 2,
+      "bash_file_read_commands": 0,
+      "evidence": "Names the checkout-loadtest suite, staging and the 2026-02-15 date, reports the anchor verdict as unknown, and says to treat 420ms as the last known measurement rather than a current figure. Does not infer drift from the missing verdict."
+    },
+    {
+      "id": "05-baseline",
+      "case": "source-only",
+      "arm": "baseline",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": false,
+      "opened_original": true,
+      "read_calls": 0,
+      "bash_file_read_commands": 2,
+      "evidence": "Answers no and states that a timed-out resend creates a second order. Explicitly marks the finding as an unreviewed draft that is not promoted memory or curated knowledge, and confirms both stores are empty on the topic."
+    },
+    {
+      "id": "05-candidate",
+      "case": "source-only",
+      "arm": "candidate",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": true,
+      "opened_original": true,
+      "read_calls": 1,
+      "bash_file_read_commands": 0,
+      "evidence": "Same two propositions and the same draft-standing caveat. Recall returned zero matches and the run said so, then fell back to a Grep and read the draft note directly, which is the intended fallback and not waste."
+    },
+    {
+      "id": "06-baseline",
+      "case": "cross-language",
+      "arm": "baseline",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": false,
+      "recall_called": false,
+      "opened_original": true,
+      "read_calls": 1,
+      "bash_file_read_commands": 1,
+      "evidence": "Answers in Spanish with the 12 to 64 character range and confines it to signup for new users, without claiming it applies to existing accounts. No query was issued at all, so the preregistered repeat query did not occur.",
+      "lexical_recovery": null,
+      "lexical_recovery_note": "Not observable. This arm has no recall command, so no zero-match query path existed."
+    },
+    {
+      "id": "06-candidate",
+      "case": "cross-language",
+      "arm": "candidate",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": false,
+      "recall_called": true,
+      "opened_original": true,
+      "read_calls": 1,
+      "bash_file_read_commands": 1,
+      "evidence": "Answers in Spanish with the 12 to 64 character range, names the signup validator and says it does not retroactively invalidate existing passwords. The single recall query was issued in English and matched on the first attempt.",
+      "lexical_recovery": null,
+      "lexical_recovery_note": "Not observable. The run never issued a Spanish query, so it never hit a zero-match return and the cross-language recovery behaviour this fixture was built to exercise was never triggered. This is the one fixture able to measure the preregistered redundant investigation, and it recorded neither the waste nor the recovery."
+    },
+    {
+      "id": "07-baseline",
+      "case": "session-resumption",
+      "arm": "baseline",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": false,
+      "opened_original": true,
+      "read_calls": 1,
+      "bash_file_read_commands": 2,
+      "evidence": "Ends on Thursdays 16:00-20:00 UTC as the current window and identifies the handoff note's Friday window as superseded. Borderline call recorded: the answer first types 16:00-18:00 and self-corrects mid-sentence. Scored as supported because the corrected value is stated immediately and the answer leaves no ambiguity about which window is current. The transient wrong figure is a legibility defect, noted and deliberately not counted against this arm."
+    },
+    {
+      "id": "07-candidate",
+      "case": "session-resumption",
+      "arm": "candidate",
+      "supported_outcome": true,
+      "material_caveats_preserved": true,
+      "unsafe_reliance": false,
+      "redundant_investigation": null,
+      "recall_called": false,
+      "opened_original": true,
+      "read_calls": 5,
+      "bash_file_read_commands": 0,
+      "evidence": "States Thursdays 16:00-20:00 UTC as the window to avoid and flags the handoff note as stale. This candidate run also never invoked recall; it used a find and five reads across both freeze documents and both knowledge units."
+    }
+  ],
+  "paired_gate": {
+    "criteria": {
+      "no_new_unsafe_reliance": {
+        "met": true,
+        "detail": "Zero runs in either arm assert an unsafe claim, so the candidate introduces none."
+      },
+      "no_decisive_caveat_loss": {
+        "met": true,
+        "detail": "The three cases carrying required caveats (rejected-alternative, stale-freshness, source-only) preserve them in both arms."
+      },
+      "supported_outcomes_at_least_baseline": {
+        "met": true,
+        "baseline_supported": 8,
+        "candidate_supported": 8,
+        "total_pairs": 8
+      },
+      "at_least_two_paired_tasks_improved": {
+        "met": false,
+        "improved_supported_outcome": [],
+        "avoided_preregistered_redundant_investigation": [],
+        "detail": "All eight pairs tie at supported. The only fixture able to measure redundant investigation, cross-language, recorded none in either arm, so no avoidance credit exists to award."
+      }
+    },
+    "gate_met": false,
+    "disposition": "not met",
+    "summary": "Both arms answered all eight tasks in a supported way with every required caveat intact and no unsafe reliance. Safety criteria hold; the benefit criterion fails because nothing improved. All tie, so the gate is not met."
+  },
+  "descriptive_measures": {
+    "note": "Descriptive only. Not evidence of quality, and deliberately not used in the gate. Elapsed time, tool-call counts, read counts and byte counts were not treated as quality signals in either direction.",
+    "controlled_bytes_definition": "prompt_bytes plus tool_result_text_bytes. This is the only directly observed byte channel.",
+    "baseline": {
+      "runs": 8,
+      "elapsed_seconds_total": 89.393,
+      "tool_calls_total": 22,
+      "prompt_bytes_total": 14980,
+      "tool_result_text_bytes_total": 9892,
+      "controlled_bytes_total": 24872,
+      "read_calls_total": 8,
+      "bash_file_read_commands_total": 11
+    },
+    "candidate": {
+      "runs": 8,
+      "elapsed_seconds_total": 87.45,
+      "tool_calls_total": 24,
+      "prompt_bytes_total": 55476,
+      "tool_result_text_bytes_total": 12612,
+      "controlled_bytes_total": 68088,
+      "read_calls_total": 14,
+      "bash_file_read_commands_total": 2
+    },
+    "unknown": [
+      "host_input_bytes is null for all sixteen runs",
+      "billed_currency and billed amount are null for all sixteen runs",
+      "total host context is not measured by controlled bytes",
+      "authoring and reviewer time is unmeasured, not zero"
+    ]
+  },
+  "recall_usage": {
+    "candidate_runs_invoking_recall": 6,
+    "candidate_runs_not_invoking_recall": [
+      "03-candidate",
+      "07-candidate"
+    ],
+    "baseline_runs_invoking_recall": 0
+  },
+  "limitations": [
+    "This is not statistical evidence. One session per arm per case, sixteen sessions total, no repeats and no variance estimate.",
+    "Seven of eight fixtures record unnecessary_investigation as null, so rework is mostly unmeasurable here by construction.",
+    "The one fixture that could measure rework never triggered its own mechanism, because the candidate queried in English and never hit a zero-match Spanish return.",
+    "No long-project productivity, savings or cost inference is licensed by these synthetic tiny corpora.",
+    "Two candidate runs never invoked recall, so those pairs compare prompt scaffolding rather than the retrieval path.",
+    "Ceiling effect: every run in both arms was supported, which leaves the benefit gate no room to detect a difference even if one exists."
+  ]
+}

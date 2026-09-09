@@ -643,6 +643,61 @@ def test_the_skill_asks_the_versioning_question_before_init():
         assert needle in section, f"decision section does not mention {needle!r}"
 
 
+# --- the already-adopted branch ------------------------------------------------
+
+
+def test_the_branch_decision_precedes_the_bootstrap_questionnaire():
+    # An already-adopted project must reach a branch decision before any
+    # question the bootstrap asks, so a request that is not about the managed
+    # block is never diverted into one, and none of the recorded decisions is
+    # asked again.
+    text = ADOPT_SKILL.read_text(encoding="utf-8")
+    branch = text.index("## Which branch this request is")
+    block = text.index("## Update the managed block")
+    decide = text.index("## Decide what this repository versions")
+    assert branch < block < decide
+    section = text[branch:block]
+    assert "Adoption has not run" in section
+    assert "the request is about the managed instruction block" in section
+    assert "the request is something else" in section
+    assert "not a reason to divert the request into a block update" in section
+
+
+def test_the_block_branch_verifies_confirms_and_then_stops():
+    # The safety promises of the block-only path: no re-run of `init`, no
+    # re-ask of the recorded decisions, a diff and a confirmation before any
+    # write, the same closed-marker and refusal rules, and a terminal report
+    # that never continues into the questionnaire.
+    text = ADOPT_SKILL.read_text(encoding="utf-8")
+    section = text[
+        text.index("## Update the managed block") :
+        text.index("## Decide what this repository versions")
+    ]
+    normalized = " ".join(section.split())
+    for needle in (
+        "never a re-run of `init`",
+        "never a re-ask of the versioning question or Q1--Q3",
+        "never a re-offer of the HTML-view questionnaire",
+        "no unattended rewrite of the instruction file",
+        "Verify the adoption is intact",
+        "show the exact diff",
+        "on confirmation",
+        "symlink and outside-root refusal",
+        "byte-for-byte preservation of everything outside the markers",
+        "then stop",
+        "never continues into the bootstrap questionnaire",
+    ):
+        assert needle in normalized, f"the block branch no longer promises {needle!r}"
+
+
+def test_the_guide_describes_the_same_two_branches():
+    guide = " ".join(ADOPTION_GUIDE.read_text(encoding="utf-8").split())
+    assert "Update the managed block" in guide
+    assert "writes only on confirmation, reports, and stops there" in guide
+    assert "never re-runs `init`" in guide
+    assert "Any other request in an adopted project" in guide
+
+
 # --- the import phase (spec section 1) ----------------------------------------
 
 # Needles are matched against the skill with whitespace normalized to single
@@ -850,10 +905,13 @@ probed); agent memory lives in `memory/` (one fact per file, indexed in
 - `memory/source-*.md` entries record sources of existing knowledge seen at
   adoption; one whose status is `declared, not scanned` is knowledge this
   project has not imported yet (`bootstrap-from-repo` imports it).
+- To look up this project's recorded memory and knowledge, use `recall`
+  (`consult-project-memory`). A consultation-first workflow is opt-in;
+  this block does not require it before every substantial task.
 - Usage questions: `ask-validated-memory`.
 <!-- validated-memory:end -->"""
 
-# Every skill the block names: six of the seven, all but
+# Every skill the block names: seven of the eight, all but
 # `adopt-validated-memory` itself, which is the skill that writes the block.
 # Compared as an exact set, not a subset -- a block that quietly stopped
 # naming `supersede-knowledge` would still pass a subset check while leaving
@@ -865,6 +923,7 @@ MANAGED_BLOCK_SKILLS = {
     "probe-freshness",
     "bootstrap-from-repo",
     "ask-validated-memory",
+    "consult-project-memory",
 }
 
 

@@ -31,6 +31,18 @@ def collect_and_lint(path):
     return documents, findings
 
 
+def validate_in_memory(index_location, index_text, documents):
+    """Validate already-acquired memory documents and index text.
+
+    Mirrors `collect_and_lint`'s validation half exactly, for a caller that
+    acquired the bytes itself and must not read the filesystem again.
+    """
+    entries = memory_module.index_entries(index_text)
+    findings = _check_sync(index_location, entries, documents)
+    findings.extend(_lint_memories(documents))
+    return findings
+
+
 def _collect(target, explicit):
     """Resolve the memory directory and its index, and read every memory file."""
     location = target.as_posix()

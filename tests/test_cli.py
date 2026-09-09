@@ -15,6 +15,7 @@ SUBCOMMANDS = [
     "validate",
     "derive",
     "probe",
+    "recall",
     "render",
     "status",
     "journal",

@@ -140,6 +140,7 @@ project, CI gate included.
 | [`validate`](docs/reference/cli.md#validate) | Enforce the base contract plus the adopter's declared extension |
 | [`derive`](docs/reference/cli.md#derive) | Re-derive the knowledge index; `--check` gates CI against drift |
 | [`probe`](docs/reference/cli.md#probe) | Run freshness probes; append ternary verdicts to the log |
+| [`recall`](docs/reference/cli.md#recall) | Search memory and/or knowledge read-only; discovery, not validation |
 | [`render`](docs/reference/cli.md#render) | Write self-contained, inert HTML views of both layers |
 | [`status`](docs/reference/cli.md#status) | Read-only report: structural gates plus a reported (opt-in gated) freshness summary |
 | [`journal`](docs/reference/cli.md#journal) | Report the append-only record of what `init` did; `--check` gates on an unfinished record pair, a pair that disagrees or an open transaction, and `--resolve` closes one |
@@ -214,7 +215,7 @@ sessions once activated.
 
 ## Skills
 
-Seven skills make the method invocable from an agent session, each naming the
+Eight skills make the method invocable from an agent session, each naming the
 exact CLI invocation and the data discipline to follow — never reimplementing
 a rule the CLI already enforces:
 
@@ -230,7 +231,12 @@ a rule the CLI already enforces:
 - **`maintain-agent-memory`** — record or supersede a memory fact, verify
   with `lint`.
 - **`ask-validated-memory`** — answer usage questions from the plugin's own
-  docs and `--help`, quoting exact invocations, never inventing a flag.
+  docs and `--help`, quoting exact invocations, never inventing a flag; points
+  questions about the adopter's own data to `consult-project-memory`.
+- **`consult-project-memory`** — on an explicit lookup request, or in a
+  project that has opted into a consultation-first workflow, search this
+  project's own memory and knowledge with `recall`, read the sources behind a
+  match, and tell an unavailable search apart from a clean zero-match one.
 - **`bootstrap-from-repo`** — scan the repository, and any source the
   adopter declared and consented to, and propose starting facts for both
   layers under an explicit security perimeter; only what a confirmed report
@@ -264,6 +270,7 @@ a rule the CLI already enforces:
 | **[Agent memory](docs/reference/agent-memory.md)** | The memory layer's rules, identity, and supersession |
 | **[Startup hooks](docs/reference/hooks.md)** | What runs at session start, and what it writes |
 | **[Journal](docs/reference/journal.md)** | The append-only record of what adoption did, and the `journal` subcommand |
+| **[Recall](docs/reference/recall.md)** | The `recall` command's full field reference, exit codes and known limitations |
 | **[ADRs](docs/adr)** | Decisions of record |
 
 ## Development

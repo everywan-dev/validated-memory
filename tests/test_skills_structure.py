@@ -33,6 +33,7 @@ REAL_SUBCOMMANDS = {
     "validate",
     "derive",
     "probe",
+    "recall",
     "render",
     "status",
     "journal",
@@ -94,6 +95,7 @@ def test_the_skill_set_is_exactly_the_documented_one():
         "maintain-agent-memory",
         "ask-validated-memory",
         "bootstrap-from-repo",
+        "consult-project-memory",
     }
 
 

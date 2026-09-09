@@ -73,6 +73,37 @@ def load(root):
     return Extension(_fields(config_path.parent / declared["schema"]))
 
 
+def extension_from_texts(config_location, config_text, schema_location, schema_text):
+    """Build the declared `Extension` from already-acquired bytes, or None.
+
+    Mirrors `load`'s validation exactly, for a caller that acquired the
+    configuration and schema itself and must not read the filesystem again.
+    `schema_text` is required whenever the configuration declares a schema.
+    """
+    config = _validate_config(config_location, _parse_text(config_location, config_text))
+    declared = _declaration_of(config_location, config)
+    if declared is None:
+        return None
+    if schema_text is None:
+        raise ExtensionError(
+            config_location, "extension.schema", "declared schema could not be read"
+        )
+    schema = _parse_text(schema_location, schema_text)
+    return Extension(_fields_of(schema_location, schema))
+
+
+def declared_schema(config_location, config_text):
+    """The schema path an already-read configuration declares, or None.
+
+    Uses the same parser and declaration validator as `load`, so a caller
+    deciding which file to acquire cannot disagree with validation about what
+    the configuration says.
+    """
+    config = _validate_config(config_location, _parse_text(config_location, config_text))
+    declared = _declaration_of(config_location, config)
+    return None if declared is None else declared["schema"]
+
+
 def probes(root):
     """The adopter's probe registry: `kind` -> command, or `{}` when unconfigured.
 
@@ -95,6 +126,11 @@ def _fields(schema_path):
     """Read the field declarations of the adopter's schema."""
     location = schema_path.as_posix()
     schema = _read(schema_path)
+    return _fields_of(location, schema)
+
+
+def _fields_of(location, schema):
+    """Validate an already-parsed schema mapping and return its fields."""
     if "fields" not in schema:
         raise ExtensionError(location, "fields", "required field is missing")
     declarations = schema["fields"]
@@ -175,7 +211,11 @@ def _config(config_path):
     """
     location = config_path.as_posix()
     config = _read(config_path)
+    return _validate_config(location, config)
 
+
+def _validate_config(location, config):
+    """Validate an already-parsed configuration mapping."""
     for key in config:
         if key not in CONFIG_FIELDS:
             raise ExtensionError(
@@ -214,7 +254,11 @@ def _declaration(config_path):
     """
     location = config_path.as_posix()
     config = _config(config_path)
+    return _declaration_of(location, config)
 
+
+def _declaration_of(location, config):
+    """Validate the `extension` block of an already-validated configuration."""
     if "extension" not in config:
         return None
 
@@ -250,6 +294,11 @@ def _read(path):
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise ExtensionError(location, "file", f"cannot be read: {error}") from error
+    return _parse_text(location, text)
+
+
+def _parse_text(location, text):
+    """Parse already-read text as frontmatter, or raise `ExtensionError`."""
     try:
         return parse(text)
     except FrontmatterError as error:

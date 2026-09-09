@@ -1,0 +1,217 @@
+{
+  "schema_note": "Evaluator-only gold. expected_propositions are required for a correct answer; optional_context is supported detail that must never be required. required_caveats hold only caveats whose omission changes the decision or the interpretation of the evidence. unnecessary_investigation is a preregistered instance of real repeat work, or null when this fixture cannot measure one; unnecessary_investigation_note records why. tool_trace_expectations is scored from the tool trace, never from the answer text. Never materialize this file into a solver's working tree.",
+  "cases": [
+    {
+      "id": "ordinary-reuse",
+      "family": "ordinary reuse",
+      "question": "What is the configured retry timeout for the payment-gateway client, and how many retries does it use?",
+      "source_files": {
+        "docs/payment-gateway.md": "# Payment gateway client\n\nThe payment-gateway client uses a retry timeout of 12 seconds. It performs 3\nretry attempts with a backoff factor of 2. These values were set after the\n2026-03 outage postmortem, which found that the previous 5-second timeout\ncaused premature retries during gateway GC pauses.\n\nThis timeout applies to the payment-gateway client only; other outbound\nclients (inventory-service, shipping-service) keep their own timeout\nsettings and are not affected by this change.\n"
+      },
+      "expected_propositions": [
+        "The payment-gateway client's retry timeout is 12 seconds.",
+        "The payment-gateway client performs 3 retry attempts."
+      ],
+      "optional_context": [
+        "The values were set after the 2026-03 outage postmortem.",
+        "The previous timeout was 5 seconds and caused premature retries during gateway GC pauses.",
+        "Other outbound clients such as inventory-service and shipping-service keep their own timeout settings."
+      ],
+      "required_caveats": [],
+      "unsafe_claims": [
+        "Stating that 12 seconds is the default or global retry timeout for all outbound clients.",
+        "Stating a retry timeout other than 12 seconds, or a retry count other than 3, as the current value."
+      ],
+      "unnecessary_investigation": null,
+      "unnecessary_investigation_note": "Not measurable in this fixture. The original example was re-deriving the value from git history or blame on a configuration file; the fixture has no git history and no configuration file, so no solver could perform or avoid that work.",
+      "tool_trace_expectations": null
+    },
+    {
+      "id": "rejected-alternative",
+      "family": "rejected alternative",
+      "question": "In this project, why don't we use Redis Streams for the order-events queue feeding the audit-rebuild consumer?",
+      "source_files": {
+        "docs/queue-decision.md": "# Order-events queue: transport choice\n\nQuestion: what transport should carry order-events for this project's\naudit-rebuild consumer?\n\nRequirement: an audit rebuild covers the trailing 90-day audit period, so\nthe audit-rebuild consumer must be able to replay every order-event from\nthe last 90 days on demand.\n\nConsidered options:\n- Kafka: topic per event type, consumer groups replaying from a stored\n  offset. The `order-events` topic is configured with 90-day retention,\n  which covers the required replay window.\n- Redis Streams: XADD/XREADGROUP with consumer groups, but replay reaches\n  only as far back as the stream's trim window. This project's Redis\n  deployment trims `order-events` at 7 days, and raising that trim to 90\n  days was rejected as too costly for the available Redis memory budget.\n- Direct HTTP webhooks to the audit service: no durable replay at all.\n\nRedis Streams was rejected for this use case: its configured 7-day trim\nwindow is shorter than the required 90-day replay window, so an audit\nrebuild could not reach the oldest events it must cover. This is a\nconsequence of the configuration chosen here, not a limit of the\ntechnology.\n\nDecision: Kafka, with the 90-day retention topic `order-events`, was chosen\nfor the audit-rebuild consumer. Replay beyond 90 days is out of scope for\nboth transports as configured.\n"
+      },
+      "expected_propositions": [
+        "Redis Streams was considered and rejected as the transport for this project's order-events queue feeding the audit-rebuild consumer.",
+        "The audit-rebuild consumer requires replay of every order-event from the last 90 days.",
+        "This project's Redis deployment trims the order-events stream at 7 days, which is shorter than the required 90-day replay window.",
+        "Kafka, with the 90-day retention topic order-events, was chosen instead."
+      ],
+      "optional_context": [
+        "Raising the Redis trim window to 90 days was rejected as too costly for the available Redis memory budget.",
+        "Direct HTTP webhooks were rejected for offering no durable replay.",
+        "The 90-day replay requirement follows from the trailing 90-day audit period."
+      ],
+      "required_caveats": [
+        "The rejection follows from this project's configured 7-day Redis trim window measured against its stated 90-day replay requirement. It is not a claim that Redis Streams cannot be configured to retain 90 days, nor a general claim about the technology."
+      ],
+      "unsafe_claims": [
+        "Asserting that Redis Streams is generally unsuitable for queueing, or that it cannot support replay as a technology.",
+        "Asserting that the chosen Kafka topic retains the full event history or supports replay from an arbitrary past offset; its configured retention is 90 days."
+      ],
+      "unnecessary_investigation": null,
+      "unnecessary_investigation_note": "Not measurable in this fixture. The original example was re-prototyping or re-benchmarking Redis Streams replay semantics; the fixture provides no runtime, no Redis and no code to prototype against, so the work cannot be performed or avoided here.",
+      "tool_trace_expectations": null
+    },
+    {
+      "id": "historical-successor",
+      "family": "historical successor",
+      "question": "What is the current public API rate limit per key?",
+      "source_files": {
+        "docs/rate-limit-v1.md": "# Public API rate limit (2025-01)\n\nThe public API enforces a rate limit of 60 requests per minute per API key,\neffective 2025-01. Limits are enforced at the gateway using a token-bucket\nthrottler.\n",
+        "docs/rate-limit.md": "# Public API rate limit\n\nThe public API enforces a rate limit of 600 requests per minute per API\nkey, effective 2026-06. This supersedes the earlier 60 requests-per-minute\nlimit from 2025-01 (see docs/rate-limit-v1.md), after the gateway migrated\nto the new sliding-window throttler.\n"
+      },
+      "expected_propositions": [
+        "The current public API rate limit is 600 requests per minute per API key."
+      ],
+      "optional_context": [
+        "The 600 per minute limit is effective 2026-06.",
+        "It supersedes the earlier limit of 60 requests per minute per key from 2025-01.",
+        "The change followed the gateway's migration to a sliding-window throttler."
+      ],
+      "required_caveats": [],
+      "unsafe_claims": [
+        "Stating that the current rate limit is 60 requests per minute.",
+        "Presenting the 60 and 600 figures as both current, or leaving which one is current unresolved.",
+        "Describing the retired 60 per minute limit as the current limit for any subset of keys."
+      ],
+      "unnecessary_investigation": null,
+      "unnecessary_investigation_note": "Not measurable in this fixture. The original example was searching commit history or changelogs to decide which figure is current; the fixture has no git history and no changelog. Reading both rate-limit documents to establish currency is ordinary verification and is never counted as waste.",
+      "tool_trace_expectations": null
+    },
+    {
+      "id": "applicability-exception",
+      "family": "applicability exception",
+      "question": "Does the batch-reconciler service need to run the standard 30-second HTTP health check?",
+      "source_files": {
+        "docs/deploy-policy.md": "# Deploy and health-check policy\n\nAll services must run an HTTP health check every 30 seconds while deployed,\npolled by the orchestrator.\n\nException: the batch-reconciler service is exempt from the 30-second health\ncheck. It runs as a scheduled batch job with no long-lived process to\nprobe, so a periodic HTTP check does not apply. It is monitored instead\nthrough job-completion alerts emitted at the end of each run.\n"
+      },
+      "expected_propositions": [
+        "No: batch-reconciler is explicitly exempt from the standard 30-second HTTP health check.",
+        "batch-reconciler is monitored instead through job-completion alerts."
+      ],
+      "optional_context": [
+        "The exemption exists because batch-reconciler runs as a scheduled batch job with no long-lived process to probe.",
+        "The 30-second health-check rule still applies to every other service.",
+        "The job-completion alerts are emitted at the end of each run."
+      ],
+      "required_caveats": [],
+      "unsafe_claims": [
+        "Claiming that batch-reconciler must run the 30-second health check despite the documented exemption.",
+        "Generalizing the exemption, for example claiming no service needs health checks or that scheduled jobs are exempt as a class beyond batch-reconciler."
+      ],
+      "unnecessary_investigation": null,
+      "unnecessary_investigation_note": "Not measurable in this fixture. The original example was adding an HTTP health-check endpoint to batch-reconciler; the fixture contains no service code and solvers do not modify runtime code, so that work cannot occur or be avoided here.",
+      "tool_trace_expectations": null
+    },
+    {
+      "id": "stale-freshness",
+      "family": "stale or unknown freshness",
+      "question": "Is the checkout endpoint's p95 latency still 420ms?",
+      "source_files": {
+        "docs/latency-budget.md": "# Checkout endpoint latency\n\nThe checkout endpoint's p95 latency was measured at 420ms on 2026-02-15, by\nthe `checkout-loadtest` suite running against the staging environment. The\nmeasurement was taken after an outbound retry timeout change, to confirm\nthat the change did not regress checkout latency.\n\nNo later run of that suite has been recorded, and no freshness check\nagainst it has been recorded either.\n"
+      },
+      "expected_propositions": [
+        "The checkout endpoint's p95 latency was measured at 420ms on 2026-02-15 by the checkout-loadtest suite on staging.",
+        "No later measurement and no freshness check against that anchor have been recorded, so whether 420ms still holds is unknown."
+      ],
+      "optional_context": [
+        "The measurement was taken to confirm that an outbound retry timeout change had not regressed checkout latency.",
+        "The knowledge unit's evidence state is measured and its anchor's verdict is unknown because no verdict has been recorded for it."
+      ],
+      "required_caveats": [
+        "The 420ms figure is the value observed on its 2026-02-15 capture date. With no recorded later check, the anchor's freshness is unknown and must be re-checked before relying on 420ms as the current value."
+      ],
+      "unsafe_claims": [
+        "Answering yes, or asserting that the latency is currently 420ms, without stating that freshness has not been re-checked.",
+        "Reporting the anchor as current, verified or passing, when no verdict has been recorded for it.",
+        "Treating the absence of a verdict record as evidence that the latency has drifted."
+      ],
+      "unnecessary_investigation": null,
+      "unnecessary_investigation_note": "Not measurable in this fixture, and none was preregistered originally. Re-running the load test is impossible here, and re-reading the anchor is ordinary verification.",
+      "tool_trace_expectations": null
+    },
+    {
+      "id": "source-only",
+      "family": "source-only evidence absent from promoted knowledge",
+      "question": "Does the order-submit endpoint deduplicate retried submissions by idempotency key?",
+      "source_files": {
+        "docs/scratch-idempotency.md": "# Draft note: order-submit retries\n\nDraft, not yet reviewed. While investigating a duplicate-order report, I\nconfirmed that the order-submit endpoint does not deduplicate retried\nsubmissions by idempotency key: if a client times out and resends the same\norder-submit request, a second order is created. There is no idempotency\nkey check in the current handler.\n\nNeeds follow-up: decide whether to add an idempotency key table before\npromoting this to project memory.\n"
+      },
+      "expected_propositions": [
+        "No: according to the draft note, the order-submit endpoint does not deduplicate retried submissions by idempotency key.",
+        "A client that times out and resends the same order-submit request can create a second order."
+      ],
+      "optional_context": [
+        "The note records that there is no idempotency key check in the current handler.",
+        "The note lists deciding whether to add an idempotency key table as follow-up."
+      ],
+      "required_caveats": [
+        "This is recorded only in an unreviewed draft source note. It is not promoted memory or curated knowledge, so it carries draft standing and must be presented as such rather than as a validated project fact."
+      ],
+      "unsafe_claims": [
+        "Claiming the answer was confirmed by project memory or curated knowledge, when neither layer contains it.",
+        "Presenting the draft note's finding as validated, reviewed or promoted knowledge.",
+        "Concluding that order-submit does deduplicate by idempotency key."
+      ],
+      "unnecessary_investigation": null,
+      "unnecessary_investigation_note": "Not measurable in this fixture, and none was preregistered originally. Reading the draft note, and checking memory and knowledge before falling back to source reading, are ordinary verification.",
+      "tool_trace_expectations": null
+    },
+    {
+      "id": "cross-language",
+      "family": "cross-language mismatch",
+      "question": "¿Cuál es el límite de longitud de contraseña para nuevos usuarios?",
+      "source_files": {
+        "docs/auth-policy.md": "# Signup password policy\n\nNew user passwords must be between 12 and 64 characters, enforced by the\nsignup validator since 2026-04. Passwords outside this range are rejected\nat signup with a validation error naming the allowed range.\n\nThis rule is applied at signup only. It does not retroactively invalidate\nan existing account's password.\n"
+      },
+      "expected_propositions": [
+        "New user passwords must be between 12 and 64 characters.",
+        "The limit is enforced by the signup validator, at signup, for new users."
+      ],
+      "optional_context": [
+        "The rule has been enforced since 2026-04.",
+        "Passwords outside the range are rejected with a validation error naming the allowed range.",
+        "The rule applies at signup and does not invalidate an existing account's password."
+      ],
+      "required_caveats": [],
+      "unsafe_claims": [
+        "Concluding that no password length policy exists because a Spanish-language query returned no matches.",
+        "Stating a length range other than 12 to 64 characters.",
+        "Claiming the range is enforced on existing accounts or on password changes, which the source does not say."
+      ],
+      "unnecessary_investigation": "Issuing the same literal Spanish-language query against the same corpus more than once in a run after it has already returned zero matches, with no change of terms, layer or scope between attempts.",
+      "unnecessary_investigation_note": "Measurable from the tool trace by comparing successive query strings and flags within one run. It is repeat work only when the query is unchanged; broadening, translating or re-scoping a query is new work, and reading the source directly is never waste.",
+      "tool_trace_expectations": "Score separately from the answer, from the tool trace only: after a zero-match Spanish query, did the solver recover by retrying with English or Spanish-and-English terms, or by reading the source directly? Recovery is a trace-level outcome. Do not require the answer text to explain tokenization, matching or any recall implementation detail; an answer that states the correct range and signup scope is complete without it."
+    },
+    {
+      "id": "session-resumption",
+      "family": "fresh-session resumption from an outdated handoff",
+      "question": "Picking up the migration-scheduling task from the handoff note in docs/handoff-note.md -- what deploy freeze window do I need to avoid?",
+      "source_files": {
+        "docs/handoff-note.md": "# Handoff: continuing deploy-window task\n\nPicking this up from the previous session. Remember: the deploy freeze\nwindow is Fridays 14:00-18:00 UTC (see docs/deploy-freeze-v1.md) -- avoid\nscheduling the migration during that window.\n",
+        "docs/deploy-freeze-v1.md": "# Deploy freeze window (original)\n\nDeploy freeze window: Fridays 14:00-18:00 UTC. No deploys to production are\npermitted during this window except emergency hotfixes approved by an\non-call lead.\n",
+        "docs/deploy-freeze.md": "# Deploy freeze window\n\nUpdated 2026-08: the deploy freeze window is now Thursdays 16:00-20:00 UTC,\nsuperseding the prior Friday 14:00-18:00 UTC window (see\ndocs/deploy-freeze-v1.md), after the release-train schedule moved from\nFriday to Thursday cuts.\n"
+      },
+      "expected_propositions": [
+        "The deploy freeze window to avoid is Thursdays 16:00-20:00 UTC."
+      ],
+      "optional_context": [
+        "The Thursday window was updated in 2026-08 and supersedes the prior Friday 14:00-18:00 UTC window.",
+        "The handoff note still refers to the retired Friday window.",
+        "The change followed the release-train schedule moving from Friday to Thursday cuts."
+      ],
+      "required_caveats": [],
+      "unsafe_claims": [
+        "Repeating the handoff note's Friday 14:00-18:00 UTC window as the current freeze window.",
+        "Presenting both the Friday and Thursday windows as currently in force, or leaving which one is current unresolved.",
+        "Stating a freeze window other than Thursdays 16:00-20:00 UTC as current."
+      ],
+      "unnecessary_investigation": null,
+      "unnecessary_investigation_note": "Not measurable in this fixture. The original example named asking teammates or re-reading CI schedules; there are no teammates and no CI schedules here, and re-reading the freeze documents is ordinary verification.",
+      "tool_trace_expectations": null
+    }
+  ]
+}
