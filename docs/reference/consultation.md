@@ -20,6 +20,9 @@ those commands. Current source registration creates schema 3 with unreleased
 1/2 stores remains available without migration. Existing stores require explicit
 upgrade to 3 for transfer writes; incorporation requires at least 2.
 
+For the complete correction-to-report lifecycle, see the
+[everyday workflow](everyday-workflow.md).
+
 ## Two-adopter walkthrough
 
 Run from the source checkout in Bash. These are ordinary adopter files, created

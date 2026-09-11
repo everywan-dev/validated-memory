@@ -163,6 +163,9 @@ source stores use schema 3; existing schema 1/2 stores require explicit upgrade
 for transfer writes. Exported historical evidence does not establish live origin
 freshness or local authorization. Assess disclosure and size before exporting.
 
+The [everyday workflow](docs/reference/everyday-workflow.md) connects initial
+incorporation, routine checked reuse, corrected successors and downstream reports.
+
 ### Gate CI in three lines
 
 The repository is also a reusable GitHub Action that runs `status` — the
