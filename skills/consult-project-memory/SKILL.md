@@ -176,3 +176,31 @@ never truncate evidence into a usable receipt. Track returned bytes and repeated
 acquisitions when assessing usefulness. Checked consultation does not probe
 anchors, rank evidence states, discover undeclared conflicts or gate arbitrary
 responses. Existing hooks remain fail-open.
+
+## Optional challenge and incorporation history
+
+When the requested work includes contributions or correction effects, consult the
+[incorporation reference](../../docs/reference/incorporation.md). Its lifecycle and
+schema 2 are an unreleased source-tree addition; published 2.2.0 does not supply
+them. An existing schema 1 store requires explicit `upgrade`, never an implicit
+migration during ordinary lookup. Preserve the task's authorized participation.
+
+Keep proposal acceptance, observed canonical incorporation, challenge resolution,
+consumer address and publication reflection separate. `inspect` emits complete
+historical material before its second-line inspection handle; consume both lines
+and check exit 0. Retained content may be old and is not a current evidence check.
+A later binding inspection permits an unchanged-evidence resolution without
+inventing a support-review revision.
+
+A matching accepted challenge stales prior affected receipts through its review
+frontier, even after resolution or reversal; reacquire the consumer. A current
+unaffected replacement/removal use can retain its old ID: `address` validates it
+now, and does not require artificially inserting a new use. The explicit
+`dependency-removed` mode requires an attributed explanation; disappearance alone
+never addresses historical effects.
+
+Use read-only `reconcile` to enumerate declared historical effects and separate
+current observations. A complete report exits 0 even when rows are unresolved or
+unavailable. Do not turn that exit code into an all-clear. Report the affected use,
+address and tracked publication/reflection separately, preserving unknown
+undeclared dependencies and unobserved external distribution as limitations.

@@ -1,6 +1,7 @@
 # Consultation storage schema
 
-Schema version 1. This is the strict local storage contract for
+The schema 1 contract shipped with 2.2.0, including shared primitives used by
+[the unreleased schema 2 addition](incorporation-storage.md). This is the strict local storage contract for
 [checked consultation](consultation.md), selected in
 [ADR 0017](../adr/0017-checked-consultation-retains-use-outside-canonical-authoring.md).
 Use `consultation show HANDLE` for historical inspection. This reference describes
@@ -90,15 +91,19 @@ H({kind: KIND, prior: PRIOR_OR_NULL, payload: PAYLOAD_OBJECT})
 ```
 
 Payload carries `version: 1`. Database sequence and timestamp are excluded from
-ID. They still undergo strict validation. No UPDATE or DELETE of either table.
+ID. They still undergo strict validation. No UPDATE or DELETE of either table during ordinary operations. The explicit
+[schema upgrade](incorporation-storage.md#exact-schema-2-ddl-and-migration) is
+the sole physical rebuild exception and preserves every logical event field.
 Insert metadata once. Events must reference only lower-sequence events, including
 all embedded handles. Roll back the entire operation on any failure.
 
 SQLite may leave transient rollback sidecars. A hot journal prevents read-only
 inspection until explicit recover succeeds; never delete sidecars manually.
 Recover opens existing paths with mode=rw and lets SQLite recover, then validates.
-If the recovered database has no user schema objects, recover may create the two
-tables and metadata in one transaction, without a registration. Zero-length files
+In the released schema 1 implementation, an empty recovered database may be
+initialized as schema 1 without registration. In the unreleased schema 2 addition,
+fresh registration and explicit empty-store recovery create schema 2; complete
+schema 1 or 2 recovery preserves its existing version. Zero-length files
 are included in this explicit empty case. Any nonempty partial schema refuses.
 Existing files are never unlinked automatically. Initial creation/retry must inspect
 schema again after obtaining BEGIN IMMEDIATE; a concurrent initializer may have
@@ -312,6 +317,11 @@ must independently permit every participant in the checked closure.
 
 ### Receipt and use
 
+The payload below is the legacy receipt version 1. Schema 2 acquires receipt
+version 2 with an additional accepted-challenge `review_frontier`; its exact
+chronological rules are in [incorporation storage](incorporation-storage.md#receipt-2-and-live-review-gate).
+Snapshot and existing content/wire shapes stay unchanged.
+
 ```text
 content = {
   units: [{identity: Identity, binding: Digest,
@@ -421,6 +431,9 @@ inspection is bounded by the store payload ceiling rather than read's evidence
 acquisition max-bytes setting.
 
 ## Idempotent retries
+
+These rules cover the legacy event kinds below. New lifecycle kinds have their
+own [exact attribution and inspection retries](incorporation-storage.md#retry-rules-needing-no-fabricated-prior).
 
 Registration UUID allocation occurs only after identical-request lookup inside the
 transaction. All immutable event retries must compare normalized semantic content

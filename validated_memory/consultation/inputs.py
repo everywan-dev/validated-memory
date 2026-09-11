@@ -162,7 +162,7 @@ class _Project:
                   f'{location}: root identity changed; restore or explicitly relocate')
 
 
-def capture(state, registrations=None, support_overrides=None):
+def capture(state, registrations=None, support_overrides=None, insertion=None):
     """Capture the complete prospective inventory without consulting stored heads."""
     registrations = (registrations if registrations is not None else
                      {key: event['payload'] for key, event in state.registrations.items()})
@@ -194,6 +194,22 @@ def capture(state, registrations=None, support_overrides=None):
                 errors = [finding.render() for finding in validate_documents(documents, declared)
                           if finding.severity == ERROR]
                 m.require(not errors, f'{location}: canonical validation failed: ' + '; '.join(errors) + '; repair canonical inputs')
+                before_states = effective_states(documents)
+                if insertion and insertion['identity']['project'] == project:
+                    candidate = insertion['unit']
+                    m.require(candidate['path'] not in membership and insertion['identity']['unit'] not in before_states,
+                              'proposal destination path/ID exists; renew its exact installed proposal')
+                    m.require(not os.path.lexists(os.path.join(location, candidate['path'])), 'proposal destination already exists')
+                    knowledge.append(candidate)
+                    knowledge.sort(key=lambda item: item['path'])
+                    source.files[candidate['path']] = candidate
+                    budget[0] += 1
+                    budget[1] += candidate['size']
+                    m.require(budget[0] <= 4096 and budget[1] <= 16777216, 'prospective input bound exceeded')
+                    documents.append((candidate['path'], candidate['text']))
+                errors = [finding.render() for finding in validate_documents(documents, declared)
+                          if finding.severity == ERROR]
+                m.require(not errors, f'{location}: canonical validation failed: ' + '; '.join(errors) + '; repair canonical inputs')
                 states = effective_states(documents)
                 units = {m.frontmatter(item['text'])['id']: item for item in knowledge}
                 units = {key: dict(file=units[key], data=data, state=status)
@@ -201,7 +217,7 @@ def capture(state, registrations=None, support_overrides=None):
                 inventory = dict(version=1, project=project, root=location, root_identity=identity,
                                  config=m.revision(config), schema=m.revision(schema) if schema else None,
                                  knowledge=[m.revision(item) for item in knowledge], support=[])
-                projects[project] = dict(inventory=inventory, files=source.files, units=units)
+                projects[project] = dict(inventory=inventory, files=source.files, units=units, before_states=before_states)
                 captures.append((source, membership))
             for source, _membership in captures:
                 project = source.registration['project']
@@ -222,3 +238,33 @@ def capture(state, registrations=None, support_overrides=None):
     except (OSError, UnicodeError, extension.ExtensionError) as error:
         raise m.Refusal(f'{location}: input capture failed: {error}; inspect and restore complete valid UTF-8 inputs') from error
     return projects
+
+
+def external(path, maximum=1048576):
+    """Capture one supplied file without following any directory or leaf link."""
+    supplied = os.fspath(path)
+    absolute = supplied if os.path.isabs(supplied) else os.path.join(os.getcwd(), supplied)
+    parent, leaf = os.path.split(absolute)
+    root, node = root_identity(parent)
+    with _directory(root) as fd:
+        source = _Project(fd, {'root': root, 'root_identity': node}, [0, 0])
+        value = source.read(leaf)
+        m.require(value['size'] <= maximum, 'supplied file exceeds byte bound')
+        actual = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+        m.require(_stamp(actual) == source.stamps[leaf], 'supplied file changed; retry')
+    return absolute, value
+
+
+def publication(state, project, path, projects):
+    """Capture a declared publication, never canonical or private store files."""
+    m.path(path)
+    inv = projects[project]['inventory']
+    excluded = {'knowledge', 'memory', '.git', '.validated-memory'}
+    m.require(path.split('/')[0] not in excluded and path != 'validated-memory.md'
+              and (inv['schema'] is None or path != inv['schema']['path']),
+              'publication path is canonical/configuration/private; choose a downstream artifact')
+    root = state.registrations[project]['payload']['root']
+    absolute, value = external(os.path.join(root, path))
+    m.require(absolute not in [state.store_path + suffix for suffix in ('', '-journal', '-wal', '-shm')],
+              'publication cannot be workspace storage')
+    return dict(value, path=path)

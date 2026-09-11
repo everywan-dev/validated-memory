@@ -14,6 +14,8 @@ LIMITATION = ('Inspection is not checked use. Hashes do not prove entailment; '
               'anchor verdicts are not checked.')
 KINDS = ('registration', 'relocation', 'checkpoint', 'binding', 'support-review',
          'conflict', 'choice', 'receipt', 'use')
+LIFECYCLE_KINDS = ('proposal', 'challenge', 'inspection', 'decision', 'incorporation',
+                   'resolution', 'address', 'publication', 'reflection')
 
 
 class Refusal(Exception):
@@ -221,6 +223,10 @@ def frontmatter(value):
 
 
 def payload(kind, value):
+    if kind in LIFECYCLE_KINDS:
+        from .lifecycle_model import payload as lifecycle_payload
+        lifecycle_payload(kind, value)
+        return
     fields = {
         'registration': 'alias project root source root_identity inventory_sha256',
         'relocation': 'alias project root source root_identity inventory_sha256 checkpoint actor reason',
@@ -233,8 +239,13 @@ def payload(kind, value):
         'use': 'root receipt snapshot_sha256 content_sha256 scope',
     }
     require(kind in fields, 'unknown event kind; upgrade deliberately or restore history')
-    obj(value, 'version ' + fields[kind])
-    require(type(value['version']) is int and value['version'] == 1, 'unsupported payload version')
+    extra = ' review_frontier' if kind == 'receipt' and value.get('version') == 2 else ''
+    obj(value, 'version ' + fields[kind] + extra)
+    require(type(value['version']) is int and value['version'] in ((1, 2) if kind == 'receipt' else (1,)), 'unsupported payload version')
+    if extra:
+        array(value['review_frontier'], maximum=10000, sort=lambda x: x)
+        for handle in value['review_frontier']:
+            sha(handle)
     for field in ('actor', 'reason'):
         if field in value:
             text(value[field], 256 if field == 'actor' else 4096)

@@ -113,3 +113,27 @@ consultation receipt. It does not establish perpetual validity or semantic truth
 **Current-use check**:
 An observation of whether a historical checked use remains eligible against the
 inputs available now. Earlier observations do not establish present eligibility.
+
+### Incorporation and review
+
+**Contribution proposal**:
+A retained proposed knowledge unit with its evidence, applicability and intended
+place in an adopter project. Submission does not make it canonical knowledge.
+
+**Challenge**:
+An attributed request to reconsider an exact knowledge-unit revision within a
+stated scope. A factual challenge disputes justification; a policy challenge
+requests reconsideration of a declared decision. Neither proves a replacement.
+
+**Disposition**:
+An attributed acceptance, rejection or deferral of a contribution proposal or
+challenge. A later disposition retains the earlier decision rather than erasing it.
+
+**Incorporation observation**:
+A recorded check that an accepted proposal's exact content and declared evidence
+have become canonical knowledge. Acceptance alone is not incorporation.
+
+**Publication reflection**:
+An attributed observation that a declared downstream artifact has been updated
+to reflect a reviewed conclusion. Captured bytes do not prove semantic correctness
+or delivery to external readers.

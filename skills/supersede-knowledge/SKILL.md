@@ -49,3 +49,30 @@ If the new unit carries its own anchors, its freshness verdict starts at
 `unknown` until `probe-freshness` runs against it -- the superseded unit
 keeps whatever verdict it last had recorded, since `probe` only probes
 active units.
+
+## Optional challenge and correction effects
+
+For explicitly requested retained correction review, follow
+[incorporation](../../docs/reference/incorporation.md). It is an unreleased
+source-tree addition, unavailable in published 2.2.0; an existing schema 1 store
+requires explicit `upgrade`. This does not replace the normal authoring steps.
+
+A factual or policy `challenge` records a question about an exact retained bound
+claim without fabricating its successor. Inspect before an attributed disposition.
+An accepted challenge gates matching current consultation, not ordinary authoring,
+and does not itself prove the claim false. If evidence already supports unchanged
+meaning, inspect the exact current binding after acceptance and `resolve --review`;
+the resolution supplies the fresh review, so do not manufacture a support change.
+
+When meaning changes, propose and incorporate the actual canonical successor,
+retaining predecessor bytes. Inspect its current binding after challenge acceptance
+and resolve through that incorporation. Then author/review all consumer changes
+before final acquisition. Explicitly `address` each affected historical use with
+its current replacement or intentional `--mode dependency-removed` use. Omission
+of a dependency is not an address, and a current use may keep its deduplicated ID.
+
+Track declared publications before changing them and separately `reflect` their
+changed bytes with the matching address. Regenerate derived artifacts through
+their usual generator. `reconcile` keeps historical effects visible while showing
+current, stale or unavailable observations; review closure never silently rewrites
+consumers, publications or evidence history.

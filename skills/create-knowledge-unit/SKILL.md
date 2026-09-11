@@ -91,3 +91,27 @@ If the project declares an extension (`knowledge-extension.md`), your unit
 may also carry the fields it declares, on top of the base contract; an
 undeclared field is an ERROR. See the "Declared extension" section of
 docs/reference/curated-knowledge.md.
+
+## Optional retained proposal
+
+When the task explicitly requests contribution review in a consultation workspace,
+follow [incorporation](../../docs/reference/incorporation.md). This lifecycle is an
+unreleased source-tree addition; published 2.2.0 does not provide it. Confirm the
+installed command surface before using it; existing schema 1 stores need explicit
+`upgrade`. Ordinary knowledge authoring remains available without participation.
+
+Prepare the candidate outside enrolled roots, then `submit` its future absent
+canonical path and complete intended binding declaration. Inspect the complete
+retained proposal and check both output lines and exit 0 before using the
+inspection handle in `decide`. Acceptance does not write Markdown. Author the
+accepted bytes through the normal workflow, bind them, and `incorporate` with the
+exact acceptance before unrelated consumer authoring changes its context.
+
+If exact installed content has stale context, use `renew`, inspect and accept the
+new proposal. Changed support justification requires an explicit complete renewal
+declaration and, for an installed candidate, a matching ordinary support review
+first. Omitted reference flags in that explicit form mean no references; support
+and scope are mandatory. Keep prior evidence and predecessor bytes. Changed
+canonical meaning requires a real successor, never deletion or an invented hash.
+The CLI creates all handles; retain them programmatically rather than asking a
+person to copy them or edit SQLite.

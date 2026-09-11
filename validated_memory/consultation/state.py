@@ -4,10 +4,13 @@ from . import model as m
 
 
 class State:
-    def __init__(self, workspace, store_path):
+    def __init__(self, workspace, store_path, version=1):
         m.uid(workspace)
         self.workspace = workspace
         self.store_path = store_path
+        self.version = version
+        self.decisions = {}
+        self.resolutions = {}
         self.events = {}
         self.registrations = {}
         self.aliases = {}
@@ -61,11 +64,16 @@ class State:
         m.require(event['id'] not in self.events, 'duplicate event ID; restore intact history')
         m.timestamp(event['created_at'])
         kind, p, prior = event['kind'], event['payload'], event['prior']
+        m.require(self.version == 2 or (kind not in m.LIFECYCLE_KINDS and p.get('version') == 1),
+                  'lifecycle requires schema 2; run consultation upgrade')
         m.payload(kind, p)
         if prior is not None:
             self.event(prior)
         m.require(event['id'] == m.event_id(kind, prior, p), 'event digest mismatch; restore intact history')
-        if kind in ('registration', 'relocation'):
+        if kind in m.LIFECYCLE_KINDS:
+            from .lifecycle_state import add
+            add(self, event)
+        elif kind in ('registration', 'relocation'):
             self._registration(event)
         elif kind == 'checkpoint':
             registration = self.registrations.get(p['project'])
@@ -109,6 +117,8 @@ class State:
             m.require(all(p[f] == receipt[f] for f in ('root', 'scope', 'snapshot_sha256', 'content_sha256')),
                       'use fields disagree with its receipt')
             m.require(receipt['snapshot']['heads'] == self.heads(), 'use committed against stale semantic heads')
+            from .lifecycle_state import gate
+            gate(self, receipt['content'], receipt['scope'], receipt.get('review_frontier', []))
         self.events[event['id']] = event
 
     def _registration(self, event):
@@ -182,6 +192,8 @@ class State:
         from .checks import content
 
         p = event['payload']
+        from .lifecycle_state import gate
+        gate(self, p['content'], p['scope'], p.get('review_frontier', []))
         snap = p['snapshot']
         m.require(snap['workspace'] == self.workspace and snap['heads'] == self.heads(),
                   'receipt historical workspace/head mismatch')

@@ -150,6 +150,13 @@ Exit codes: `0` = clean or WARNING-only findings; `1` = ERROR (gates);
 `2` = usage error. Full contracts in the
 **[CLI reference](docs/reference/cli.md)**.
 
+The source tree also includes an **unreleased** opt-in
+[incorporation and correction lifecycle](docs/reference/incorporation.md): retain
+proposals and challenges, inspect and decide, then separately observe canonical
+incorporation, addressed uses and changed tracked publications. Existing schema 1
+stores require explicit upgrade; published 2.2.0 does not include these commands.
+Canonical authoring and ordinary lookup remain separate.
+
 ### Gate CI in three lines
 
 The repository is also a reusable GitHub Action that runs `status` — the
@@ -269,6 +276,8 @@ a rule the CLI already enforces:
 | **[Adoption guide](docs/adoption.md)** | The checklist for a real project, CI gate included |
 | **[Walkthrough](docs/walkthrough.md)** | Every layer end to end, with real file contents |
 | **[CLI reference](docs/reference/cli.md)** | The full contract of each subcommand |
+| **[Incorporation](docs/reference/incorporation.md)** | Unreleased proposals, challenge review, consumer effects and tracked publication observations |
+| **[Incorporation storage](docs/reference/incorporation-storage.md)** | Unreleased schema 2, immutable lifecycle history and explicit upgrade |
 | **[Curated knowledge](docs/reference/curated-knowledge.md)** | Base contract, adopter configuration, declared extension |
 | **[Agent memory](docs/reference/agent-memory.md)** | The memory layer's rules, identity, and supersession |
 | **[Startup hooks](docs/reference/hooks.md)** | What runs at session start, and what it writes |

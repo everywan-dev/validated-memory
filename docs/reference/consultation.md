@@ -12,6 +12,12 @@ the conclusion remains a separate operation: a refusal can leave authored
 Markdown without a checked-use record. Normal validation, discovery and rendering
 do not acquire an implicit publication gate.
 
+The [incorporation lifecycle](incorporation.md) is an unreleased source-tree
+addition for proposals, challenges and correction effects. Its schema 2 requires
+explicit `upgrade` for existing schema 1 stores; published 2.2.0 does not provide
+those commands. Current source registration creates schema 2, while ordinary
+consultation on complete schema 1 stores remains available without migration.
+
 ## Two-adopter walkthrough
 
 Run from the source checkout in Bash. These are ordinary adopter files, created
@@ -465,6 +471,9 @@ ancestors. Support cannot escape its registered root. All enrolled configuration
 declared schemas, complete knowledge membership/bytes, support of active bound
 units and current semantic declaration heads participate in snapshot invalidation.
 Receipts, checked-use records and checkpoints do not invalidate themselves.
+In schema 2, matching accepted challenges additionally gate current use and
+enter a receipt review frontier; resolution or reversal does not revive older
+affected receipts. See [correction eligibility](incorporation.md#inspection-retries-and-current-eligibility).
 Operational outputs, memory, indexes and verdict logs are excluded unless an
 ordinary in-root file is explicitly declared support.
 

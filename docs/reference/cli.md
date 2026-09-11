@@ -511,6 +511,14 @@ exit codes. The [storage schema](consultation-storage.md) defines retained event
 `read` emits inspection content before committing its receipt and returning its
 `id` on a second JSON line; consume both lines and check exit 0 before using it.
 
+The unreleased source-tree [incorporation lifecycle](incorporation.md) adds
+`upgrade`, `submit`, `challenge`, `inspect`, `decide`, `renew`, `incorporate`,
+`resolve`, `reconcile`, `address`, `track-publication` and `reflect` within
+`consultation`. Acceptance, canonical incorporation and downstream observations
+are separate retained outcomes. Schema 1 stores require explicit upgrade for
+these additions; published 2.2.0 does not provide them. Exact schema 2 and
+compatibility rules are in [incorporation storage](incorporation-storage.md).
+
 ### `render`
 
 ```

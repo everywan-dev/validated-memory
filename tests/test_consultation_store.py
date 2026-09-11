@@ -143,7 +143,7 @@ def test_store_corruption_refuses_entire_history_without_writes(workspace, mutat
         elif mutation == 'extra_trigger':
             db.execute('CREATE TRIGGER foreign_trigger BEFORE DELETE ON events BEGIN SELECT 1; END')
         elif mutation == 'metadata_version':
-            db.execute('UPDATE workspace SET schema_version=2')
+            db.execute('UPDATE workspace SET schema_version=3')
         elif mutation == 'partial_schema':
             db.execute('DROP TABLE events')
     before = tree(w.root)

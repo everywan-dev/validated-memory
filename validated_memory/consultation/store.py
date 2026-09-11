@@ -16,14 +16,22 @@ from pathlib import Path
 from . import model as m
 from .state import State
 
-DDL = (
-    'CREATE TABLE workspace (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), '
-    'schema_version INTEGER NOT NULL CHECK (schema_version = 1), workspace_id TEXT NOT NULL)',
-    'CREATE TABLE events (sequence INTEGER PRIMARY KEY CHECK (sequence >= 1), '
-    'id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK (kind IN (' +
-    ','.join("'" + kind + "'" for kind in m.KINDS) + ')), '
-    'prior TEXT REFERENCES events(id), payload TEXT NOT NULL, created_at TEXT NOT NULL)',
-)
+LEGACY_KINDS = ('registration', 'relocation', 'checkpoint', 'binding', 'support-review',
+                'conflict', 'choice', 'receipt', 'use')
+
+
+def ddl(version):
+    kinds = LEGACY_KINDS if version == 1 else LEGACY_KINDS + m.LIFECYCLE_KINDS
+    return (
+        'CREATE TABLE workspace (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), '
+        f'schema_version INTEGER NOT NULL CHECK (schema_version = {version}), workspace_id TEXT NOT NULL)',
+        'CREATE TABLE events (sequence INTEGER PRIMARY KEY CHECK (sequence >= 1), '
+        'id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK (kind IN (' +
+        ','.join("'" + kind + "'" for kind in kinds) + ')), '
+        'prior TEXT REFERENCES events(id), payload TEXT NOT NULL, created_at TEXT NOT NULL)',
+    )
+
+
 COLUMNS = {
     'workspace': [(0, 'singleton', 'INTEGER', 0, None, 1),
                   (1, 'schema_version', 'INTEGER', 1, None, 0),
@@ -108,9 +116,9 @@ class Store:
                 m.require(self.create or self.recover,
                           'empty/incomplete workspace; run consultation recover explicitly')
                 self.empty = True
-                for statement in DDL:
+                for statement in ddl(2):
                     c.execute(statement)
-                c.execute('INSERT INTO workspace VALUES (1,1,?)', (str(uuid.uuid4()),))
+                c.execute('INSERT INTO workspace VALUES (1,2,?)', (str(uuid.uuid4()),))
             self._load()
             return self
         except BaseException:
@@ -128,7 +136,11 @@ class Store:
         def tokens(statement):
             return [token if token.startswith("'") else token.upper()
                     for token in re.findall(r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[^\s]", statement)]
-        for table, statement in zip(('workspace', 'events'), DDL):
+        rows = c.execute('SELECT singleton,schema_version,workspace_id FROM workspace').fetchall()
+        m.require(len(rows) == 1 and rows[0][0] == 1 and type(rows[0][1]) is int
+                  and rows[0][1] in (1, 2), 'unsupported workspace metadata')
+        self.version = rows[0][1]
+        for table, statement in zip(('workspace', 'events'), ddl(self.version)):
             actual = c.execute('SELECT sql FROM sqlite_master WHERE name=?', (table,)).fetchone()[0]
             m.require(tokens(actual) == tokens(statement), 'workspace table constraints mismatch')
         for table, expected in COLUMNS.items():
@@ -142,9 +154,9 @@ class Store:
                   c.execute('PRAGMA index_info(sqlite_autoindex_events_1)').fetchall() == [(0, 1, 'id')],
                   'workspace uniqueness schema mismatch')
         rows = c.execute('SELECT singleton,schema_version,workspace_id FROM workspace').fetchall()
-        m.require(len(rows) == 1 and rows[0][:2] == (1, 1) and
+        m.require(len(rows) == 1 and rows[0][:2] == (1, self.version) and
                   all(type(x) is int for x in rows[0][:2]), 'unsupported workspace metadata')
-        self.state = State(rows[0][2], self.path)
+        self.state = State(rows[0][2], self.path, self.version)
         size, count = c.execute('SELECT coalesce(sum(length(cast(payload AS BLOB))),0),count(*) FROM events').fetchone()
         m.require(count <= 10000 and size <= 32 * 1024 * 1024, 'workspace history bound exceeded; inspect enrollment/history')
         for row in c.execute('SELECT sequence,id,kind,prior,payload,created_at FROM events ORDER BY sequence'):
@@ -155,6 +167,27 @@ class Store:
             self.state.add(dict(zip(('sequence', 'id', 'kind', 'prior', 'payload', 'created_at'),
                                     (*row[:4], value, row[5]))))
         self.payload_size = size
+
+    def upgrade(self):
+        if self.version == 2:
+            return
+        c = self.connection
+        rows = c.execute('SELECT sequence,id,kind,prior,payload,created_at FROM events ORDER BY sequence').fetchall()
+        workspace = self.state.workspace
+        fault('before-upgrade-rebuild')
+        for row in reversed(rows):
+            c.execute('DELETE FROM events WHERE sequence=?', (row[0],))
+        c.execute('DROP TABLE events')
+        c.execute('DROP TABLE workspace')
+        for statement in ddl(2):
+            c.execute(statement)
+        c.execute('INSERT INTO workspace VALUES (1,2,?)', (workspace,))
+        c.executemany('INSERT INTO events VALUES (?,?,?,?,?,?)', rows)
+        self._load()
+        m.require(c.execute('SELECT sequence,id,kind,prior,payload,created_at FROM events ORDER BY sequence').fetchall() == rows,
+                  'upgrade altered logical history')
+        m.require(not c.execute('PRAGMA foreign_key_check').fetchall(), 'upgrade foreign-key failure')
+        fault('after-upgrade-rebuild')
 
     def append(self, kind, payload, prior=None):
         m.require(self.writable, 'read-only operation cannot publish history')
