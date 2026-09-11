@@ -6,7 +6,7 @@ python3 -P -m validated_memory <command>
 
 Commands: [`init`](#init), [`lint`](#lint), [`validate`](#validate),
 [`derive`](#derive), [`probe`](#probe), [`recall`](#recall), [`render`](#render),
-[`status`](#status), [`journal`](#journal).
+[`status`](#status), [`journal`](#journal), [`consultation`](#consultation).
 
 Exit codes: `0` = clean run or WARNING-only findings (does not gate);
 `1` = ERROR (gates); `2` = usage error.
@@ -492,6 +492,24 @@ Read-only, bounded search over `memory/` and/or `knowledge/`: discovery, not
 validation -- a match says a record exists and roughly why, never that its
 claim still applies. Full contract, exact field-by-field reference, exit
 codes and known limitations in [Recall](recall.md).
+
+### `consultation`
+
+```text
+python3 -P -m validated_memory consultation --store PATH OPERATION
+```
+
+Opt-in checked use across local adopter projects: register roots, bind existing
+knowledge units to support and dependencies, acquire a complete receipt, record
+use of an exact consumer conclusion, and check its current eligibility read-only.
+Canonical authoring remains separate; existing commands and hooks gain no
+implicit publication gate. Historical use is not a present eligibility result.
+
+The [consultation reference](consultation.md) contains the complete operation
+surface, two-adopter workflow, two-line `read` protocol, maintenance, limits and
+exit codes. The [storage schema](consultation-storage.md) defines retained events.
+`read` emits inspection content before committing its receipt and returning its
+`id` on a second JSON line; consume both lines and check exit 0 before using it.
 
 ### `render`
 

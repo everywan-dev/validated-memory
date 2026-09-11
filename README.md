@@ -141,6 +141,7 @@ project, CI gate included.
 | [`derive`](docs/reference/cli.md#derive) | Re-derive the knowledge index; `--check` gates CI against drift |
 | [`probe`](docs/reference/cli.md#probe) | Run freshness probes; append ternary verdicts to the log |
 | [`recall`](docs/reference/cli.md#recall) | Search memory and/or knowledge read-only; discovery, not validation |
+| [`consultation`](docs/reference/consultation.md) | Opt-in checked use of an exact consumer conclusion; retain receipts and check current eligibility |
 | [`render`](docs/reference/cli.md#render) | Write self-contained, inert HTML views of both layers |
 | [`status`](docs/reference/cli.md#status) | Read-only report: structural gates plus a reported (opt-in gated) freshness summary |
 | [`journal`](docs/reference/cli.md#journal) | Report the append-only record of what `init` did; `--check` gates on an unfinished record pair, a pair that disagrees or an open transaction, and `--resolve` closes one |
@@ -237,6 +238,8 @@ a rule the CLI already enforces:
   project that has opted into a consultation-first workflow, search this
   project's own memory and knowledge with `recall`, read the sources behind a
   match, and tell an unavailable search apart from a clean zero-match one.
+  An explicit checked-use opt-in adds final consumer acquisition, retained use
+  and current checks through `consultation`; lookup alone never enables it.
 - **`bootstrap-from-repo`** — scan the repository, and any source the
   adopter declared and consented to, and propose starting facts for both
   layers under an explicit security perimeter; only what a confirmed report
@@ -271,6 +274,8 @@ a rule the CLI already enforces:
 | **[Startup hooks](docs/reference/hooks.md)** | What runs at session start, and what it writes |
 | **[Journal](docs/reference/journal.md)** | The append-only record of what adoption did, and the `journal` subcommand |
 | **[Recall](docs/reference/recall.md)** | The `recall` command's full field reference, exit codes and known limitations |
+| **[Checked consultation](docs/reference/consultation.md)** | Local cross-project checked use, maintenance and honest limits |
+| **[Consultation storage](docs/reference/consultation-storage.md)** | Strict schema and retained artifact relationships |
 | **[ADRs](docs/adr)** | Decisions of record |
 
 ## Development

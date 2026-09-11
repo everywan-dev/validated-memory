@@ -97,6 +97,10 @@ EXECUTOR_EXCEPTIONS = {
 # These are not executor exceptions -- there is nothing about them for the
 # executor to own.
 UNRECORDED_WRITES = {
+    ("consultation/store.py", "*"): (
+        "ADR 0017 approves only the external SQLite workspace writer and its "
+        "test rendezvous; canonical adopter mutations remain forbidden"
+    ),
     ("render.py", "*"): "writes only derived artifacts, which `render` rebuilds",
     ("derive.py", "*"): "writes only derived artifacts, which `derive` rebuilds",
     ("init.py", "_ensure_views"): (
@@ -3699,3 +3703,27 @@ def test_resolving_an_id_nothing_carries_is_the_same_refusal_in_an_adopted_tree(
         "there is no unresolved transaction deadbeefdeadbeef" in result.stderr
     ), result.stderr
     assert (tmp_path / "journal.jsonl").read_text(encoding="utf-8") == before
+
+
+def test_sqlite_connections_belong_only_to_consultation_store():
+    owners = []
+    leaks = []
+    for relative, path in _package_modules():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                owners.extend(relative for alias in node.names if alias.name == "sqlite3")
+            elif isinstance(node, ast.ImportFrom):
+                if (node.module or "").startswith("sqlite3"):
+                    owners.append(relative)
+                elif any(alias.name == "sqlite3" for alias in node.names):
+                    leaks.append(relative)
+            if relative != "consultation/store.py":
+                if isinstance(node, ast.Attribute) and node.attr == "sqlite3":
+                    leaks.append(relative)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    receiver = node.func.value
+                    if node.func.attr == "connect" and isinstance(receiver, ast.Name) and receiver.id == "sqlite3":
+                        leaks.append(relative)
+    assert owners == ["consultation/store.py"]
+    assert not leaks, leaks

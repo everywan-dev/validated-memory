@@ -28,6 +28,7 @@ DOCS_DIR = REPO_ROOT / "docs"
 
 # The CLI's real subcommands (see validated_memory/cli.py's SUBCOMMANDS).
 REAL_SUBCOMMANDS = {
+    "consultation",
     "init",
     "lint",
     "validate",

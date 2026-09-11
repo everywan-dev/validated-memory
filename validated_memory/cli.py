@@ -11,6 +11,7 @@ import sys
 
 from . import (
     __version__,
+    consultation,
     derive,
     init,
     journal,
@@ -23,6 +24,7 @@ from . import (
 )
 
 SUBCOMMANDS = {
+    "consultation": "Record and check opt-in consultation over registered adopters",
     "init": "Scaffold the validated-memory layout in an adopter project",
     "lint": "Lint the agent-memory layer: index sync, frontmatter, wikilinks, supersession",
     "validate": "Validate curated-knowledge units against the base contract",
@@ -62,6 +64,8 @@ def build_parser():
     )
     for name, help_text in SUBCOMMANDS.items():
         subparser = subparsers.add_parser(name, help=help_text, description=help_text)
+        if name == "consultation":
+            consultation.parser(subparser)
         if name == "validate":
             subparser.add_argument(
                 "path",
@@ -272,6 +276,8 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "consultation":
+        return consultation.run(args, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "validate":
         return validate.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "derive":

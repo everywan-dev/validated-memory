@@ -25,7 +25,8 @@ Run this procedure on two triggers, and no others:
 
 - **An explicit request** to look something up in this project's memory or
   knowledge -- "check what we know about X", "has this been looked at
-  before", or a direct ask to run `recall`.
+  before", or a direct ask to run `recall`. An explicit request for checked use follows
+  the additional opt-in path below.
 - **A project that has opted into a consultation-first workflow**, recorded
   in its own instruction file (see "Recall never mandates itself" below).
   There, follow that project's own cadence: before substantial
@@ -39,6 +40,15 @@ automatically on every substantial task. Skip it for trivial formatting,
 ordinary conversation, and tasks unrelated to this project's recorded
 knowledge. Consulting is proportionate to the decision, not a ritual to
 perform on every turn.
+
+## Select the requested operation
+
+Ordinary lookup uses recall below. Checked use requires an explicit request or an
+explicit checked-use requirement in the adopter's instructions; opting into
+lookup alone does not enable registrations or persistent checked-use records.
+For checked use, read [the consultation reference](../../docs/reference/consultation.md)
+and follow the additional path at the end of this skill. Preserve established
+project scope and authorization; ask only about unresolved material judgments.
 
 ## Run recall
 
@@ -105,3 +115,64 @@ read. Never treat a path recall itself refused (an outside path, a symlink
 it would not follow) as something safe to open manually as a workaround;
 ordinary reading of files already inside the task's authorized scope remains
 fine and is the normal fallback.
+
+## Explicit checked-use path
+
+Run only when checked use itself is opted into. Resolve the plugin as above:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m validated_memory consultation --store STORE OPERATION
+```
+
+The store is explicit, local and outside registered adopter roots. Register only
+the intended projects. Supply semantic declarations through CLI arguments:
+qualified unit identities, support paths, authority/source label, scope,
+dependencies, actor and reason. The CLI generates mechanical hashes and storage
+JSON; do not write them yourself. Actor/reason records an assertion, not human
+approval or authenticated identity. Do not attribute an agent review to a human.
+
+1. Inspect relevant source content and limitations. Author the consumer conclusion
+   as ordinary knowledge-unit Markdown and validate it through the existing
+   workflow. Bind its exact revision with all declared support and references.
+   Canonical authoring is separate: a failed use can leave an authored conclusion.
+2. After all authoring and binding changes, `read` the **consumer conclusion as
+   root**, with the requested scope. Consume exactly two JSON lines and check
+   exit 0: the first has status `inspected`, complete `content`, `root`, `scope`
+   and `limitation`, with no `id`; the second has status `receipt recorded` and
+   the committed receipt `id`. Parse each line separately using JSON, as shown
+   in the reference's capture helper. Inspect the full returned content. One
+   inspection line followed by a refusal is not a receipt. Never use a source-root
+   receipt for a different consumer or carry an earlier receipt past authoring.
+3. Pass that returned handle to `record-use ALIAS:ID --receipt HANDLE`. Report
+   `checked-use recorded`, with the exact consumer and scope. Reading alone does
+   not create checked use; no operation establishes understanding or entailment.
+4. Before claiming current eligibility in a later session, use `check-use HANDLE`.
+   It is read-only and current only at invocation. `show HANDLE` is historical
+   inspection and cannot replace a current check. Unavailable means unavailable,
+   never current. Direct source reading remains possible within authorized scope,
+   but does not satisfy a refused checked-use operation.
+
+On support drift or rename, inspect retained old bytes and proposed new inputs.
+For unchanged canonical claim bytes, `review-support` names the current binding
+via `--prior` and repeats the complete intended declaration. A renamed old path
+can be replaced even when missing; another active binding still naming it remains
+blocking. If meaning changed, author and bind a canonical successor instead.
+Keep predecessors. Update consumer references with attributed review if its claim
+is unchanged, or author its own successor when meaning changes.
+
+An applicable conflict needs an explicit attributed choice. Route unresolved
+material choices to the appropriate human. Stale candidates require a retained
+conflict successor via `--prior`, with `--replacement OLD=NEW` for changed
+same-project successor identities, then a fresh choice; old choices do not carry
+forward. Before moving a project, obtain a `checkpoint`; explicit `relocate`
+requires that latest checkpoint, unavailable old root and identical content.
+Follow the reference for recovery and exact command options.
+
+Finish maintenance before acquiring the final consumer again. All enrolled
+semantic inputs and membership affect the current snapshot, including unrelated
+changes. Name the changed paths and resulting reacquisition honestly; do not
+silently narrow the check or claim saved context. Bound reads with `--max-bytes`;
+never truncate evidence into a usable receipt. Track returned bytes and repeated
+acquisitions when assessing usefulness. Checked consultation does not probe
+anchors, rank evidence states, discover undeclared conflicts or gate arbitrary
+responses. Existing hooks remain fail-open.

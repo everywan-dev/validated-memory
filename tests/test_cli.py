@@ -10,6 +10,7 @@ import pytest
 # The set moved deliberately: `journal` was added later, the read side of
 # the append-only record init already writes to.
 SUBCOMMANDS = [
+    "consultation",
     "init",
     "lint",
     "validate",

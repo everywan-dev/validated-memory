@@ -94,3 +94,22 @@ The fixed path outside the project where Claude Code expects to read a
 project's agent memory. The plugin makes it a symlink into the project, so the
 data stays versioned in the repo while the harness reads it where it always
 did.
+
+### Checked consultation
+
+**Binding**:
+An attributed declaration connecting a knowledge-unit revision to its support,
+qualified dependencies and scope of applicability.
+
+**Consultation receipt**:
+A retained account of the complete content returned for a knowledge-unit
+consultation and the inputs against which it was checked. It does not establish
+that a reader understood or correctly interpreted the content.
+
+**Checked-use record**:
+A historical account of a consumer conclusion's eligibility against a particular
+consultation receipt. It does not establish perpetual validity or semantic truth.
+
+**Current-use check**:
+An observation of whether a historical checked use remains eligible against the
+inputs available now. Earlier observations do not establish present eligibility.
