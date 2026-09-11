@@ -21,7 +21,11 @@ LEGACY_KINDS = ('registration', 'relocation', 'checkpoint', 'binding', 'support-
 
 
 def ddl(version):
-    kinds = LEGACY_KINDS if version == 1 else LEGACY_KINDS + m.LIFECYCLE_KINDS
+    kinds = LEGACY_KINDS
+    if version >= 2:
+        kinds += m.LIFECYCLE_KINDS
+    if version == 3:
+        kinds += m.TRANSFER_KINDS
     return (
         'CREATE TABLE workspace (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), '
         f'schema_version INTEGER NOT NULL CHECK (schema_version = {version}), workspace_id TEXT NOT NULL)',
@@ -116,9 +120,9 @@ class Store:
                 m.require(self.create or self.recover,
                           'empty/incomplete workspace; run consultation recover explicitly')
                 self.empty = True
-                for statement in ddl(2):
+                for statement in ddl(3):
                     c.execute(statement)
-                c.execute('INSERT INTO workspace VALUES (1,2,?)', (str(uuid.uuid4()),))
+                c.execute('INSERT INTO workspace VALUES (1,3,?)', (str(uuid.uuid4()),))
             self._load()
             return self
         except BaseException:
@@ -138,7 +142,7 @@ class Store:
                     for token in re.findall(r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[^\s]", statement)]
         rows = c.execute('SELECT singleton,schema_version,workspace_id FROM workspace').fetchall()
         m.require(len(rows) == 1 and rows[0][0] == 1 and type(rows[0][1]) is int
-                  and rows[0][1] in (1, 2), 'unsupported workspace metadata')
+                  and rows[0][1] in (1, 2, 3), 'unsupported workspace metadata')
         self.version = rows[0][1]
         for table, statement in zip(('workspace', 'events'), ddl(self.version)):
             actual = c.execute('SELECT sql FROM sqlite_master WHERE name=?', (table,)).fetchone()[0]
@@ -169,7 +173,7 @@ class Store:
         self.payload_size = size
 
     def upgrade(self):
-        if self.version == 2:
+        if self.version == 3:
             return
         c = self.connection
         rows = c.execute('SELECT sequence,id,kind,prior,payload,created_at FROM events ORDER BY sequence').fetchall()
@@ -179,9 +183,9 @@ class Store:
             c.execute('DELETE FROM events WHERE sequence=?', (row[0],))
         c.execute('DROP TABLE events')
         c.execute('DROP TABLE workspace')
-        for statement in ddl(2):
+        for statement in ddl(3):
             c.execute(statement)
-        c.execute('INSERT INTO workspace VALUES (1,2,?)', (workspace,))
+        c.execute('INSERT INTO workspace VALUES (1,3,?)', (workspace,))
         c.executemany('INSERT INTO events VALUES (?,?,?,?,?,?)', rows)
         self._load()
         m.require(c.execute('SELECT sequence,id,kind,prior,payload,created_at FROM events ORDER BY sequence').fetchall() == rows,

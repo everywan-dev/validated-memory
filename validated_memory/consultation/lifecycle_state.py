@@ -106,6 +106,8 @@ def validate_address(state, p):
         descendant(state, matching[0]['binding'], resolution['payload']['remedy']['binding'])
     m.require(new['snapshot']['heads'] == state.heads(), 'snapshot changed/stale: new use semantic heads; reconsult')
     gate(state, new['content'], new['scope'], new.get('review_frontier', []))
+    from .transfer_projection import check_receipt
+    check_receipt(state, new)
 
 
 def add(state, event):
@@ -156,9 +158,14 @@ def add(state, event):
         head = state.decisions.get(p['submission'])
         m.require(prior == (head['id'] if head else None), 'decision prior is not current disposition')
         m.require(not head or head['payload'] != p, 'redundant disposition')
+        if p['outcome'] == 'accept' and state.event(p['submission'])['kind'] == 'proposal':
+            from .transfer_projection import proposal_gate
+            proposal_gate(state, p['submission'], 'accept', p['inspection'])
         state.decisions[p['submission']] = event
     elif kind == 'incorporation':
         proposal = state.event(p['proposal'], ('proposal',))['payload']
+        from .transfer_projection import proposal_gate
+        proposal_gate(state, p['proposal'], 'incorporate')
         accepted(state, p['proposal'], p['decision'])
         binding = state.event(p['binding'], ('binding', 'support-review'))
         m.require(state.binding(proposal['identity']) == binding and lm.declaration(binding['payload']) == lm.declaration(proposal),
@@ -186,6 +193,8 @@ def add(state, event):
             m.require(binding['payload']['identity'] == challenge['target']['identity']
                       and binding['payload']['unit'] == challenge['target']['unit'], 'review changes challenged canonical claim')
         m.require(m.applies(binding['payload']['scope'], challenge['scope']), 'resolution scope mismatch')
+        from .transfer_projection import binding_gate
+        binding_gate(state, binding, challenge['scope'])
         state.resolutions[p['decision']] = event
     elif kind == 'address':
         validate_address(state, p)

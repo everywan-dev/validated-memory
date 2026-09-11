@@ -76,3 +76,35 @@ changed bytes with the matching address. Regenerate derived artifacts through
 their usual generator. `reconcile` keeps historical effects visible while showing
 current, stale or unavailable observations; review closure never silently rewrites
 consumers, publications or evidence history.
+
+## Successors with retained foreign origins
+
+[Portable transfer](../../docs/reference/transfer.md) is an unreleased schema-3
+source-tree addition unavailable in published 2.2.0. Its origin obligations follow
+explicit local supersedes ancestry, including unbound intermediate canonical
+units. Authoring a successor cannot silently shed a retained origin.
+
+Inspect newest known origin history and every inherited path before choosing a
+successor's declaration. Retaining successors require the appropriate explicit
+origin link and post-link local proposal inspection/acceptance/incorporation.
+If the successor is independently justified, use detach-transfer on its proposal
+with the inherited link and an attributed removal reason; consume complete source
+material/corrections and both output lines. This disposition applies only to a
+genuine canonical successor, never an identical local revision edited in place.
+
+At a merge, an independent sibling does not cancel a retaining sibling. Discharge
+an inherited origin across the merged successor only through the explicit review
+covering all inherited paths. Retain original claims, links and source history.
+Mapped source predecessors are active installed retaining counterparts before
+candidate insertion; do not reactivate retired predecessors merely to map them.
+Origin-only preserves foreign predecessor history when no active retaining local
+counterpart remains. An attributed independence assertion does not prove absence
+of semantic dependence; the contract does not detect unrelated manual copies.
+
+When a source successor replaces A1 with A2, map the exact source predecessor to
+the active local retaining predecessor that the new local candidate supersedes.
+This explicit correspondence replaces the inherited A1 obligation on mapped paths
+with A2, while retaining A1 bytes/history. Do not require retired A1 to become
+current again or mislabel this correction as independence. Unmapped retaining
+siblings and unrelated origins remain obligations; origin-only cannot discharge
+an existing local retaining path.

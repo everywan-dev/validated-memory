@@ -2,7 +2,9 @@
 
 **Unreleased source-tree addition.** Published 2.2.0 supports the original
 consultation commands and schema 1; it does not provide this lifecycle or schema 2.
-Use a source checkout containing this implementation for the commands below.
+Current source storage is schema 3; [Transfer storage](transfer-storage.md)
+supersedes current creation/upgrade behavior and adds origin projection. The
+schema-2 shapes and layout below remain the incorporation compatibility contract.
 
 Schema version 2 extends [consultation storage](consultation-storage.md) with
 retained proposals, challenges, inspections, dispositions and downstream
@@ -10,10 +12,11 @@ observations. The [incorporation reference](incorporation.md) documents commands
 and an executable synthetic workflow. Every object below is closed: unknown
 fields refuse. All unchanged legacy payloads retain their original shapes.
 
-Fresh registration and explicit empty-store recovery create schema 2. Existing
+Fresh registration and explicit empty-store recovery now create schema 3. Existing
 complete schema 1 stores continue ordinary consultation without implicit
-migration; lifecycle operations require explicit `upgrade`. Older schema-1-only
-clients refuse schema 2. The JSON envelope `schema_version: 1` is a separate
+migration; schema-1 lifecycle operations require explicit `upgrade`, while
+schema-2 lifecycle operations remain available. Older schema-1-only
+clients refuse schema 2/3. The JSON envelope `schema_version: 1` is a separate
 wire-format version and does not identify the database schema.
 
 ## Encoding and event envelope
@@ -279,7 +282,7 @@ envelopes. The database schema is a separate field only where explicitly shown.
 Legacy operations remain byte-contract compatible except IDs of new receipts.
 
 ```text
-upgrade: {schema_version:1,operation:"upgrade",status:"upgraded",storage_version:2}
+upgrade: {schema_version:1,operation:"upgrade",status:"upgraded",storage_version:3}
 new artifact: {schema_version:1,operation:COMMAND,status:"recorded",id:Digest}
 inspect first: {schema_version:1,operation:"inspect",
  status:"historical material; not a current evidence check",id:SUBMISSION_ID,
@@ -320,6 +323,11 @@ store corruption/over-bound exits 1, usage 2.
 
 ## Exact schema 2 DDL and migration
 
+The following DDL and 1-to-2 algorithm preserve the earlier unreleased format as
+an exact compatibility reference. Current upgrade targets schema 3 instead;
+[Transfer storage](transfer-storage.md) provides that layout and current behavior.
+Do not use this historical section as instructions to edit a database manually.
+
 ```sql
 CREATE TABLE workspace (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), schema_version INTEGER NOT NULL CHECK (schema_version = 2), workspace_id TEXT NOT NULL);
 CREATE TABLE events (sequence INTEGER PRIMARY KEY CHECK (sequence >= 1), id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK (kind IN ('registration','relocation','checkpoint','binding','support-review','conflict','choice','receipt','use','proposal','challenge','inspection','decision','incorporation','resolution','address','publication','reflection')), prior TEXT REFERENCES events(id), payload TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -331,7 +339,7 @@ full kind list. No extra tables or indexes remain after migration. Foreign keys
 must be ON for the complete upgrade transaction; journal DELETE, synchronous
 EXTRA, five-second busy timeout, same safe store/sidecar checks.
 
-Upgrade algorithm, all writes under one BEGIN IMMEDIATE:
+Historical 1-to-2 upgrade algorithm, all writes under one BEGIN IMMEDIATE:
 
 1. Open existing store, obtain lock, then validate supported exact layout,
    metadata, integrity, bounds and every chronological event. Do not bootstrap a
@@ -352,7 +360,8 @@ Upgrade algorithm, all writes under one BEGIN IMMEDIATE:
 Deleting/reinserting physical rows inside this upgrade is the explicit migration exception in
 [ADR 0018](../adr/0018-incorporation-separates-acceptance-from-canonical-observation.md); it does not remove or rewrite logical history.
 Read-only modes never recover writes. Explicit recover preserves a complete
-supported layout; empty recovery creates schema 2.
+supported layout. Empty recovery created schema 2 in that implementation;
+current empty recovery creates schema 3.
 
 ## Current assertions and publication eligibility
 
@@ -401,3 +410,12 @@ ordinary `bind`/`review-support` happens separately before renewal. The renewed
 proposal requires fresh complete inspection and acceptance. This supports evidence
 maintenance without deleting installed knowledge or inventing a successor to an
 unchanged claim; no prior proposal or retained support is rewritten.
+
+## Schema-3 extension
+
+Explicit current upgrade moves a complete schema 1/2 store to 3 without changing
+old logical rows or receipt1/2 inspection strings. Incorporation still requires
+at least 2; transfer writes require 3. See [Transfer storage](transfer-storage.md)
+for new kinds, receipt3 lineage/frontier/origin summaries, source histories and
+post-link proposal eligibility. Existing lifecycle payloads above stay closed and
+unchanged. Source-tree schema 2 and 3 remain unreleased relative to published 2.2.0.

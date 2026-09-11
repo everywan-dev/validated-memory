@@ -16,6 +16,7 @@ KINDS = ('registration', 'relocation', 'checkpoint', 'binding', 'support-review'
          'conflict', 'choice', 'receipt', 'use')
 LIFECYCLE_KINDS = ('proposal', 'challenge', 'inspection', 'decision', 'incorporation',
                    'resolution', 'address', 'publication', 'reflection')
+TRANSFER_KINDS = ('transfer-import', 'transfer-link')
 
 
 class Refusal(Exception):
@@ -223,6 +224,10 @@ def frontmatter(value):
 
 
 def payload(kind, value):
+    if kind in TRANSFER_KINDS:
+        from .transfer_values import payload as transfer_payload
+        transfer_payload(kind, value)
+        return
     if kind in LIFECYCLE_KINDS:
         from .lifecycle_model import payload as lifecycle_payload
         lifecycle_payload(kind, value)
@@ -239,9 +244,11 @@ def payload(kind, value):
         'use': 'root receipt snapshot_sha256 content_sha256 scope',
     }
     require(kind in fields, 'unknown event kind; upgrade deliberately or restore history')
-    extra = ' review_frontier' if kind == 'receipt' and value.get('version') == 2 else ''
+    extra = ' review_frontier' if kind == 'receipt' and value.get('version') in (2, 3) else ''
+    if kind == 'receipt' and value.get('version') == 3:
+        extra += ' transfer'
     obj(value, 'version ' + fields[kind] + extra)
-    require(type(value['version']) is int and value['version'] in ((1, 2) if kind == 'receipt' else (1,)), 'unsupported payload version')
+    require(type(value['version']) is int and value['version'] in ((1, 2, 3) if kind == 'receipt' else (1,)), 'unsupported payload version')
     if extra:
         array(value['review_frontier'], maximum=10000, sort=lambda x: x)
         for handle in value['review_frontier']:
@@ -337,8 +344,13 @@ def payload(kind, value):
         require(type(value['inspection_text']) is str and
                 byte_digest(value['inspection_text'].encode('utf-8')) == value['inspection_sha256'],
                 'receipt inspection digest mismatch')
+        additions = {}
+        if value['version'] == 3:
+            from .transfer_values import transfer
+            transfer(value['transfer'])
+            additions['transfer'] = value['transfer']
         require(value['inspection_text'] == line('read', 'inspected', root=value['root'],
-                scope=value['scope'], content=value['content'], limitation=LIMITATION),
+                scope=value['scope'], content=value['content'], limitation=LIMITATION, **additions),
                 'receipt inspection differs from captured content')
 
 

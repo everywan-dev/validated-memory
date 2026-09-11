@@ -107,7 +107,7 @@ def test_decision_exact_inspection_prior_and_attribution(workspace):
     assert w.call('decide', changed, '--inspection', inspected, '--outcome', 'accept', *ATTR).returncode == 1
 
 
-@pytest.mark.parametrize('point,version', [('before-upgrade-rebuild', 1), ('after-upgrade-rebuild', 1), ('after-commit', 2)])
+@pytest.mark.parametrize('point,version', [('before-upgrade-rebuild', 1), ('after-upgrade-rebuild', 1), ('after-commit', 3)])
 def test_upgrade_crash_preserves_complete_schema_and_exact_history(workspace, point, version):
     w = workspace
     uuid, rows = w.legacy()

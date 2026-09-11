@@ -4,11 +4,14 @@ from . import model as m
 
 
 class State:
-    def __init__(self, workspace, store_path, version=1):
+    def __init__(self, workspace, store_path, version=1, origin_cache=None):
         m.uid(workspace)
         self.workspace = workspace
         self.store_path = store_path
         self.version = version
+        from .origin_history import Registry
+        self.origins = Registry(workspace, origin_cache)
+        self.transfer_links = {}
         self.decisions = {}
         self.resolutions = {}
         self.events = {}
@@ -64,13 +67,17 @@ class State:
         m.require(event['id'] not in self.events, 'duplicate event ID; restore intact history')
         m.timestamp(event['created_at'])
         kind, p, prior = event['kind'], event['payload'], event['prior']
-        m.require(self.version == 2 or (kind not in m.LIFECYCLE_KINDS and p.get('version') == 1),
+        m.require((self.version >= 2 or (kind not in m.LIFECYCLE_KINDS and p.get('version') == 1))
+                  and (self.version == 3 or (kind not in m.TRANSFER_KINDS and p.get('version') != 3)),
                   'lifecycle requires schema 2; run consultation upgrade')
         m.payload(kind, p)
         if prior is not None:
             self.event(prior)
         m.require(event['id'] == m.event_id(kind, prior, p), 'event digest mismatch; restore intact history')
-        if kind in m.LIFECYCLE_KINDS:
+        if kind in m.TRANSFER_KINDS:
+            from .transfer_links import add
+            add(self, event)
+        elif kind in m.LIFECYCLE_KINDS:
             from .lifecycle_state import add
             add(self, event)
         elif kind in ('registration', 'relocation'):
@@ -119,6 +126,8 @@ class State:
             m.require(receipt['snapshot']['heads'] == self.heads(), 'use committed against stale semantic heads')
             from .lifecycle_state import gate
             gate(self, receipt['content'], receipt['scope'], receipt.get('review_frontier', []))
+            from .transfer_projection import check_receipt
+            check_receipt(self, receipt)
         self.events[event['id']] = event
 
     def _registration(self, event):
@@ -194,6 +203,8 @@ class State:
         p = event['payload']
         from .lifecycle_state import gate
         gate(self, p['content'], p['scope'], p.get('review_frontier', []))
+        from .transfer_projection import check_receipt
+        check_receipt(self, p)
         snap = p['snapshot']
         m.require(snap['workspace'] == self.workspace and snap['heads'] == self.heads(),
                   'receipt historical workspace/head mismatch')

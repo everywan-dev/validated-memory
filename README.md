@@ -157,6 +157,12 @@ incorporation, addressed uses and changed tracked publications. Existing schema 
 stores require explicit upgrade; published 2.2.0 does not include these commands.
 Canonical authoring and ordinary lookup remain separate.
 
+Unreleased [portable historical contributions](docs/reference/transfer.md) add
+explicit whole-history export/import and reviewed local origin mappings. Current
+source stores use schema 3; existing schema 1/2 stores require explicit upgrade
+for transfer writes. Exported historical evidence does not establish live origin
+freshness or local authorization. Assess disclosure and size before exporting.
+
 ### Gate CI in three lines
 
 The repository is also a reusable GitHub Action that runs `status` — the
@@ -277,7 +283,9 @@ a rule the CLI already enforces:
 | **[Walkthrough](docs/walkthrough.md)** | Every layer end to end, with real file contents |
 | **[CLI reference](docs/reference/cli.md)** | The full contract of each subcommand |
 | **[Incorporation](docs/reference/incorporation.md)** | Unreleased proposals, challenge review, consumer effects and tracked publication observations |
-| **[Incorporation storage](docs/reference/incorporation-storage.md)** | Unreleased schema 2, immutable lifecycle history and explicit upgrade |
+| **[Incorporation storage](docs/reference/incorporation-storage.md)** | Unreleased schema-2 lifecycle contracts preserved by schema 3 |
+| **[Portable transfer](docs/reference/transfer.md)** | Unreleased offline historical contributions and explicit local incorporation |
+| **[Transfer storage](docs/reference/transfer-storage.md)** | Unreleased schema 3, whole-history capsules and origin-aware current checks |
 | **[Curated knowledge](docs/reference/curated-knowledge.md)** | Base contract, adopter configuration, declared extension |
 | **[Agent memory](docs/reference/agent-memory.md)** | The memory layer's rules, identity, and supersession |
 | **[Startup hooks](docs/reference/hooks.md)** | What runs at session start, and what it writes |

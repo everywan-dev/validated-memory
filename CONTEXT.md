@@ -137,3 +137,25 @@ have become canonical knowledge. Acceptance alone is not incorporation.
 An attributed observation that a declared downstream artifact has been updated
 to reflect a reviewed conclusion. Captured bytes do not prove semantic correctness
 or delivery to external readers.
+
+### Portable contributions
+
+**Transfer capsule**:
+A bounded portable representation of selected historical consultation material
+and complete recorded workspace history. Receipt selection identifies the
+contribution; it does not narrow the history disclosed by the capsule.
+
+**Transfer origin**:
+The original workspace, project, knowledge-unit identity and revision retained
+alongside a locally incorporated contribution. It records historical lineage,
+not authenticated authorship or a new adopter Source alias.
+
+**Transfer link**:
+An inspected, attributed correspondence between an imported origin and a local
+contribution proposal, including evidence, dependency and predecessor mappings.
+It does not establish semantic equivalence or replace local acceptance.
+
+**Independent successor disposition**:
+An inspected, attributed declaration that a local canonical successor no longer
+depends on a named inherited transfer origin. It preserves the predecessor's
+history; omission alone cannot discharge the dependency.

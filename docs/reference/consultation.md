@@ -15,8 +15,10 @@ do not acquire an implicit publication gate.
 The [incorporation lifecycle](incorporation.md) is an unreleased source-tree
 addition for proposals, challenges and correction effects. Its schema 2 requires
 explicit `upgrade` for existing schema 1 stores; published 2.2.0 does not provide
-those commands. Current source registration creates schema 2, while ordinary
-consultation on complete schema 1 stores remains available without migration.
+those commands. Current source registration creates schema 3 with unreleased
+[portable transfer](transfer.md), while ordinary consultation on complete schema
+1/2 stores remains available without migration. Existing stores require explicit
+upgrade to 3 for transfer writes; incorporation requires at least 2.
 
 ## Two-adopter walkthrough
 
@@ -484,5 +486,6 @@ use `mode=ro`, create no files and refuse a hot journal needing explicit recover
 Recovery does not remove corrupt semantic rows or migrate unknown schemas. Never
 manually delete sidecars or force-break a live lock. Retained canonical/support
 text and inspection content consume the store bound; there is no automatic
-compaction, transfer or history-pruning command. Event hashes detect accidental
+compaction or history-pruning command. Explicit [whole-history transfer](transfer.md)
+is available in the unreleased source tree. Event hashes detect accidental
 corruption, not an attacker able to rewrite rows and recompute hashes.

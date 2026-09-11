@@ -78,10 +78,11 @@ def _schema_path(declaration, root, root_fd):
 
 
 class _Project:
-    def __init__(self, fd, registration, budget):
+    def __init__(self, fd, registration, budget, maximum=1048576):
         self.fd = fd
         self.registration = registration
         self.budget = budget
+        self.maximum = maximum
         self.files = {}
         self.stamps = {}
 
@@ -105,16 +106,16 @@ class _Project:
             try:
                 before = os.fstat(fd)
                 m.require(stat.S_ISREG(before.st_mode), f'{path}: input must be a regular nonsymlink file; inspect inputs')
-                m.require(before.st_size <= 1048576, f'{path}: 1 MiB file limit exceeded; narrow enrolled scope')
+                m.require(before.st_size <= self.maximum, f'{path}: 1 MiB file limit exceeded; narrow enrolled scope')
                 chunks = []
                 size = 0
                 while True:
-                    chunk = os.read(fd, min(65536, 1048577 - size))
+                    chunk = os.read(fd, min(65536, self.maximum + 1 - size))
                     if not chunk:
                         break
                     chunks.append(chunk)
                     size += len(chunk)
-                    m.require(size <= 1048576, f'{path}: 1 MiB file limit exceeded; narrow enrolled scope')
+                    m.require(size <= self.maximum, f'{path}: 1 MiB file limit exceeded; narrow enrolled scope')
                 m.require(_stamp(before) == _stamp(os.fstat(fd)), f'{path}: input changed during capture; retry with stable inputs')
             finally:
                 os.close(fd)
@@ -247,7 +248,7 @@ def external(path, maximum=1048576):
     parent, leaf = os.path.split(absolute)
     root, node = root_identity(parent)
     with _directory(root) as fd:
-        source = _Project(fd, {'root': root, 'root_identity': node}, [0, 0])
+        source = _Project(fd, {'root': root, 'root_identity': node}, [0, 0], maximum=maximum)
         value = source.read(leaf)
         m.require(value['size'] <= maximum, 'supplied file exceeds byte bound')
         actual = os.stat(leaf, dir_fd=fd, follow_symlinks=False)

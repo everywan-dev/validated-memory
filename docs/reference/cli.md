@@ -848,3 +848,19 @@ a resolution flag with no `--resolve`, `--resolve` with none of the three
 or with two of them, `--resolve` alongside the read-only `--check`, or an
 empty id, which reaches no transaction and would name none in a refusal
 either.
+
+## Unreleased portable transfer operations
+
+Source-tree schema 3 adds `export-transfer`, `import-transfer`, `show-transfer`,
+`link-transfer` and `detach-transfer` under consultation. Published 2.2.0 provides
+schema 1 checked consultation; incorporation/schema 2 and transfer/schema 3 are
+unreleased additions. Current fresh stores use 3; existing complete 1/2 stores
+keep ordinary consultation without implicit migration. Explicit upgrade preserves
+old event fields and moves 1/2 to 3; transfer writes require 3.
+
+[Transfer](transfer.md) explains whole-workspace-history disclosure, read-only
+`--assess`, offline inspection and explicit dependency/predecessor mappings. An
+import or foreign receipt is never local checked-use authorization. Link/detach
+outputs complete source material before its committed handle; local proposal
+inspection/acceptance/incorporation remains separate. [Transfer storage](transfer-storage.md)
+defines closed capsules, prefix-compatible origins and receipt3 current-use gates.

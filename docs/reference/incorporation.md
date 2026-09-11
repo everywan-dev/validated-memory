@@ -3,6 +3,8 @@
 **Unreleased source-tree addition.** Published 2.2.0 supports the original
 consultation commands and schema 1; it does not provide this lifecycle or schema 2.
 Use a source checkout containing this implementation for the commands below.
+Current source storage is schema 3 with [portable transfer](transfer.md); schema 2
+remains the earlier unreleased incorporation format.
 
 Use this opt-in lifecycle to retain a contribution, inspect it, accept or reject
 it, and observe whether its exact accepted content was incorporated. A challenge
@@ -34,24 +36,24 @@ rendering and fail-open hooks gain no implicit incorporation requirement.
 ## Explicit store upgrade
 
 Fresh registration and explicit recovery of an empty database create storage
-schema 2. Existing complete schema 1 stores continue ordinary consultation with
-legacy receipts; lifecycle commands refuse with an upgrade instruction. Upgrade
+schema 3. Existing complete schema 1/2 stores continue ordinary consultation with
+legacy receipts; lifecycle commands require at least 2, transfer writes require 3. Upgrade
 only the explicitly selected store when this lifecycle is wanted:
 
 ```sh
 python3 -P -m validated_memory consultation --store /absolute/workspace.sqlite upgrade
 ```
 
-`upgrade` validates and changes an existing complete schema 1 store in one
+`upgrade` validates and changes an existing complete schema 1/2 store to 3 in one
 transaction. It preserves workspace identity and every old logical event field,
 including original payload strings. It does not create missing/empty stores.
-Retry on valid schema 2 succeeds without rewriting. An interrupted upgrade leaves
+Retry on valid schema 3 succeeds without rewriting. An interrupted upgrade leaves
 a complete old or new schema after rollback/recovery. Older clients that only
-support schema 1 refuse upgraded stores; ordinary commands never migrate them
+support only older schemas refuse upgraded stores; ordinary commands never migrate them
 implicitly. Do not edit SQLite or delete recovery sidecars manually.
 
 The database schema is distinct from the JSON envelope `schema_version: 1`.
-An upgrade response includes `storage_version: 2` and status `upgraded`.
+An upgrade response includes `storage_version: 3` and status `upgraded`.
 
 ## Commands
 
@@ -410,3 +412,20 @@ can require explicit renewal or reacquisition. No operation detects undeclared
 semantic dependents, proves an agent understood an inspection, transfers history,
 or certifies a correction reached an external publication. The synthetic example
 measures behavior only; it does not establish usefulness or reduced maintenance.
+
+## Proposals retaining transferred origins
+
+[Portable transfer](transfer.md) is an unreleased schema-3 addition. Inspect imported
+scope/material before local authoring. Link all applicable origins to the proposal
+before its final local inspection and decision; a foreign receipt or import is
+not local acceptance or incorporation. Mapped dependencies must already be
+incorporated locally. Source inspection from link-transfer and local inspection
+from inspect serve different reviews.
+
+A renewed proposal for identical canonical bytes retains its origin obligations.
+Acceptance and incorporation check current origin material with only their own
+not-yet-created stage omitted. Current checked use/downstream assertions require
+full current local acceptance, incorporation and origin eligibility. Source updates
+can stale those assertions without rewriting their historical records. Explicit
+local successors inherit origins through canonical ancestry; independence requires
+an attributed successor disposition, not omission of a link.

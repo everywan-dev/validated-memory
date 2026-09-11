@@ -115,3 +115,31 @@ and scope are mandatory. Keep prior evidence and predecessor bytes. Changed
 canonical meaning requires a real successor, never deletion or an invented hash.
 The CLI creates all handles; retain them programmatically rather than asking a
 person to copy them or edit SQLite.
+
+## Candidates derived from portable contributions
+
+For explicitly requested foreign contribution reuse, follow
+[portable transfer](../../docs/reference/transfer.md), an unreleased schema-3
+source-tree addition unavailable in published 2.2.0. First inspect imported scope,
+selected canonical/support bytes, dependency mappings and known corrections.
+Import never authors a canonical unit or authorizes local use.
+
+Adapt local IDs, paths, declared extension fields and wording through explicit
+judgment. Retain all required source evidence hashes in local support and match
+the source receipt scope. Incorporate mapped local dependencies first. Submit the
+local candidate, retain explicit origin links, then inspect the local proposal
+AFTER all effective links before deciding. Several origin links may be prepared
+sequentially without prematurely accepting the target. Author/install, bind and
+incorporate through the ordinary separate steps; the CLI creates no adopter files.
+
+Where a source successor has no active installed local predecessor counterpart,
+use the explicit origin-only predecessor disposition. Preserve source predecessor
+bytes/history; do not insert a foreign project ID into local supersedes or fabricate
+a predecessor receipt. If an active local retaining counterpart exists, map it
+explicitly. Missing or inconsistent source predecessor material blocks linking
+without hiding the inspectable import.
+
+A foreign receipt or completed link is not local checked use. Obtain the final
+local consumer receipt and record use only after local incorporation. Retained
+attribution asserts correspondence and applicability; it is not proof of semantic
+equivalence or independent corroboration.

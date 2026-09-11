@@ -5,6 +5,7 @@ import os
 
 from . import checks, inputs, model as m, store
 from . import lifecycle_model as lm, lifecycle_state as ls
+from . import transfer_projection as tp
 from .command import attribution, capture, recapture, ensure_snapshot, emit, lineage
 
 
@@ -12,6 +13,7 @@ def current_use(state, handle, projects, snapshot):
     receipt = ls.receipt(state, handle)
     ls.gate(state, receipt['content'], receipt['scope'], receipt.get('review_frontier', []))
     ensure_snapshot(receipt['snapshot'], snapshot)
+    tp.check_receipt(state, receipt, projects)
     content = checks.content(state, projects, receipt['root'], receipt['scope'])
     m.require(content == receipt['content'], 'receipt content changed; reconsult')
     return receipt
@@ -21,6 +23,7 @@ def current_resolution(state, event, projects):
     binding = ls.resolution_binding(state, event)
     challenge = state.event(event['payload']['challenge'], ('challenge',))['payload']
     checks.binding(state, projects, binding['payload']['identity'], challenge['scope'])
+    tp.binding_gate(state, binding, challenge['scope'], projects)
     return binding
 
 
@@ -154,6 +157,13 @@ def decide(args, database):
     state.event(args.handle, ('proposal', 'challenge'))
     p = dict(version=1, submission=args.handle, inspection=args.inspection, outcome=args.outcome, **attribution(args))
     head = state.decisions.get(args.handle)
+    if args.outcome == 'accept' and state.event(args.handle)['kind'] == 'proposal' and state.transfer_links:
+        proposal = state.event(args.handle)['payload']
+        root = state.registrations[proposal['identity']['project']]['payload']['root']
+        installed = os.path.lexists(os.path.join(root, proposal['unit']['path']))
+        projects, snapshot, kwargs = proposal_capture(state, proposal['identity'], proposal['unit'], [f['path'] for f in proposal['support']], installed)
+        tp.proposal_gate(state, args.handle, 'accept', args.inspection, projects)
+        recapture(state, snapshot, **kwargs)
     if head and head['payload'] == p:
         return head
     return database.append('decision', p, args.prior)
@@ -170,6 +180,7 @@ def incorporate(args, database):
         expected['heads']['bindings'] = sorted([*expected['heads']['bindings'], binding['id']])
     ensure_snapshot(expected, snapshot)
     m.require(lm.declaration(binding['payload']) == lm.declaration(proposal), 'incorporation declaration differs from accepted proposal; renew and accept')
+    tp.proposal_gate(state, args.handle, 'incorporate', projects=projects)
     recapture(state, snapshot)
     return database.append('incorporation', dict(version=1, proposal=args.handle, decision=args.decision,
                                                 binding=binding['id'], **attribution(args)))
@@ -198,6 +209,7 @@ def resolve(args, database):
     decision = state.event(args.decision, ('decision',))
     m.require(inspected['payload']['submission'] == binding['id'] and inspected['sequence'] > decision['sequence'],
               'resolution requires exact binding inspection after acceptance')
+    tp.binding_gate(state, binding, challenge['scope'], projects)
     p = dict(version=1, challenge=args.handle, decision=args.decision, inspection=args.inspection,
              remedy=remedy, **attribution(args))
     recapture(state, snapshot)
@@ -252,9 +264,9 @@ def run(args, database, stdout):
     if args.operation == 'upgrade':
         database.upgrade()
         database.commit()
-        emit(stdout, m.line('upgrade', 'upgraded', storage_version=2))
+        emit(stdout, m.line('upgrade', 'upgraded', storage_version=3))
         return 0
-    m.require(database.version == 2, 'lifecycle requires schema 2; run consultation --store PATH upgrade explicitly')
+    m.require(database.version >= 2, 'lifecycle requires schema 2; run consultation --store PATH upgrade explicitly')
     if args.operation == 'inspect':
         inspect(args, database, stdout)
     elif args.operation == 'reconcile':

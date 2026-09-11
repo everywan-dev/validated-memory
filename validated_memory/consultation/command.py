@@ -7,7 +7,7 @@ from collections import deque
 from pathlib import Path
 
 from . import checks, inputs, model as m, store
-from . import lifecycle_cli, lifecycle_state as ls
+from . import lifecycle_cli, lifecycle_state as ls, transfer_cli, transfer_projection as tp
 from .state import State
 
 
@@ -65,9 +65,12 @@ def parser(parent):
             sub.add_argument('--receipt', action=_SingleValue, required=True)
         sub.set_defaults(consultation_parser=sub)
     lifecycle_cli.parser(commands, _SingleValue)
+    transfer_cli.parser(commands, _SingleValue)
 
 
 def normalize(args):
+    if args.operation in transfer_cli.OPERATIONS:
+        transfer_cli.normalize(args)
     if args.operation in lifecycle_cli.OPERATIONS:
         lifecycle_cli.normalize(args)
     if hasattr(args, 'scope'):
@@ -363,13 +366,16 @@ def read(args, database, stdout):
     projects, snapshot = capture(state)
     content = checks.content(state, projects, root, args.scope)
     ls.gate(state, content, args.scope)
-    inspection = m.line('read', 'inspected', root=root, scope=args.scope, content=content, limitation=m.LIMITATION)
+    addition = {}
+    if database.version == 3:
+        addition['transfer'] = tp.project(state, content, args.scope, tp.tree_from_projects(projects))
+    inspection = m.line('read', 'inspected', root=root, scope=args.scope, content=content, limitation=m.LIMITATION, **addition)
     p = dict(version=1, root=root, scope=args.scope, max_bytes=args.max_bytes,
              snapshot=snapshot, snapshot_sha256=m.digest(snapshot), content=content,
              content_sha256=m.digest(content), inspection_text=inspection,
              inspection_sha256=m.byte_digest(inspection.encode('utf-8')))
-    if database.version == 2:
-        p.update(version=2, review_frontier=ls.frontier(state, content, args.scope))
+    if database.version >= 2:
+        p.update(version=database.version, review_frontier=ls.frontier(state, content, args.scope), **addition)
     handle = m.event_id('receipt', None, p)
     final = m.line('read', 'receipt recorded', id=handle)
     m.require(len((inspection + final).encode('utf-8')) <= args.max_bytes,
@@ -397,6 +403,7 @@ def use(args, database):
     m.require(root == receipt['root'], f"{root}: receipt belongs to a different consumer {receipt['root']}; read the exact conclusion")
     projects, snapshot = capture(state)
     ls.gate(state, receipt['content'], receipt['scope'], receipt.get('review_frontier', []))
+    tp.check_receipt(state, receipt, projects)
     ensure_snapshot(receipt['snapshot'], snapshot)
     content = checks.content(state, projects, root, receipt['scope'])
     m.require(content == receipt['content'], 'receipt content changed; inspect and reconsult')
@@ -424,10 +431,13 @@ def run(args, stdout, stderr):
             project = str(uuid.uuid4())
             inputs.capture(temporary, registrations={project: dict(project=project, root=root,
                            root_identity=node, alias=args.alias, source=args.source)})
-        readonly = args.operation in ('show', 'check-use', 'reconcile')
+        readonly = args.operation in ('show', 'check-use', 'reconcile', 'export-transfer', 'show-transfer')
         database = store.Store(store_path, writable=not readonly,
                                create=args.operation == 'register' and missing_store, recover=args.operation == 'recover')
         with database:
+            if args.operation in transfer_cli.OPERATIONS:
+                from .transfer_command import run as transfer_run
+                return transfer_run(args, database, stdout)
             if args.operation in lifecycle_cli.OPERATIONS:
                 from .lifecycle_command import run as lifecycle_run
                 return lifecycle_run(args, database, stdout)

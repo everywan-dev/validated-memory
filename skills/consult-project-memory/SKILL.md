@@ -204,3 +204,42 @@ current observations. A complete report exits 0 even when rows are unresolved or
 unavailable. Do not turn that exit code into an all-clear. Report the affected use,
 address and tracked publication/reflection separately, preserving unknown
 undeclared dependencies and unobserved external distribution as limitations.
+
+## Optional portable historical contributions
+
+Use [portable transfer](../../docs/reference/transfer.md) only when the task
+explicitly includes export/import or reviewed reuse of foreign material. It is
+an unreleased schema-3 source-tree addition; published 2.2.0 does not provide it.
+Existing schema 1/2 stores need explicit upgrade for transfer writes. Preserve
+ordinary lookup and the task's already authorized participation.
+
+Before exporting, assess exact size and whole-workspace-history disclosure.
+`--include-workspace-history` includes unrelated projects, absolute paths, retained
+publications and nested imports; receipt selection does not narrow that disclosure.
+Never export an actual operational corpus merely to demonstrate the command.
+A supported capsule is historical evidence with live origin not checked.
+
+After import, use show-transfer for scope, dependencies, predecessor availability,
+known corrections and affected-link recovery. Use bounded read-only JSON selection
+from historical show for complete selected bytes, as in the public example; do
+not inject the entire capsule into routine context or edit its mechanical JSON.
+Local scope must equal the selected receipt scope. Copying evidence does not create
+independent corroboration or authenticated attribution.
+
+Author local candidates and support through the normal authorized workflow.
+Incorporate mapped dependencies first. Link explicit origin revisions; map active
+local retaining predecessors or explicitly retain origin-only predecessor history
+when no such counterpart exists. Consume complete link inspection and its committed
+second-line handle with exit 0. Then inspect the local proposal after all effective
+links, decide explicitly, author/bind and observe incorporation. An import or a
+foreign receipt is never a local acceptance/use handle.
+
+Before reporting current use, check the local use against newest known origin
+history. Follow dependency-first recovery for stale links; later compatible or
+shorter imports cannot erase a known correction. A source update received through
+another workspace can gate current use before its intermediate consumer re-exports.
+Never bypass a refused origin mapping by silently dropping links. Explicit local
+successors inherit origins, including through unbound intermediates. An independent
+successor needs its attributed detach-transfer review; a retaining sibling remains
+binding at a merge. Ordinary unrelated unlinked knowledge remains outside this
+opt-in contract; no semantic-copy detector is implied.
