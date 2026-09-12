@@ -11,6 +11,8 @@ inheritance or protected-action enforcement. Requested learning and selective
 review use existing authoring skills; prompt discovery performs no automatic
 learning capture and is not a transcript collector. See
 [Requested learning and selective review](learning.md).
+Task continuation uses an explicit [trusted handoff](task-lifecycle.md), not
+prompt-hook state.
 
 ## Project profile
 

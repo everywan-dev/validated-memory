@@ -54,6 +54,11 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHO
   the bounded artifact requested; an unsolicited end-of-task proposal awaits
   acceptance. The workflows add no automatic transcript capture, evidence
   promotion, workspace enrollment or profile change.
+- For starting, resuming, handing off, completing or cancelling a task, use
+  `docs/reference/task-lifecycle.md`. For a quiescent whole-project backup and
+  restore rehearsal, use `docs/reference/recovery.md`. Describe their trusted
+  prose and operational guidance honestly: the CLI has no task-owned handle and
+  the host supplies no automatic lifecycle, compaction, subagent or delivery gate.
 - When the question is about the adopter's own data (their units, their
   index, their verdicts), this skill is the wrong tool: point at
   `consult-project-memory` to search recorded memory and knowledge, or at

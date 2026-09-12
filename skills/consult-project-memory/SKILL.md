@@ -282,7 +282,9 @@ opt-in contract; no semantic-copy detector is implied.
 ## Resume an opted-in checked task
 
 **Unreleased after 2.3.0.** Follow the
-[task-resumption workflow and reusable handoff](../../docs/reference/everyday-workflow.md#resume-a-task)
+[shared task lifecycle and trusted handoff](../../docs/reference/task-lifecycle.md)
+and the checked
+[task-resumption workflow](../../docs/reference/everyday-workflow.md#resume-a-task)
 and [report contract](../../docs/reference/consultation.md#task-resumption-report).
 This adds no automatic skill trigger, scheduler or remote discovery.
 

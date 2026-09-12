@@ -7,6 +7,9 @@ run the existing validators.
 
 Prompt discovery does not authorize capture. A useful answer, repeated wording
 or an automatic match is never an instruction to save the conversation.
+Task completion or cancellation also performs no automatic capture. Keep pending
+proposals in the [trusted task handoff](task-lifecycle.md) until the user accepts
+them or explicitly requests retention.
 
 Use the [agent-memory contract](agent-memory.md) with the
 [maintain-agent-memory skill](../../skills/maintain-agent-memory/SKILL.md) for

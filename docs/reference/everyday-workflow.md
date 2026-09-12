@@ -11,6 +11,10 @@ can carry generated handles and run already authorized mechanical steps. A perso
 or explicitly attributed agent still judges evidence, applicability, correspondence
 and whether a changed report adequately reflects the conclusion.
 
+Use the shared [task lifecycle and trusted handoff](task-lifecycle.md) for task
+identity, status, compaction and bounded delegation. The checked template below
+adds consultation-specific fields to that shared handoff.
+
 ## Choose the next action
 
 | Trigger | Next action | What requires judgment |
