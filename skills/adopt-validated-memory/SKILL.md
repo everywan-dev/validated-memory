@@ -19,6 +19,10 @@ without deciding it first.
 - **Adoption has run and the request is about the managed instruction block**
   ("update the block", "refresh the CLAUDE.md section") -- do "Update the
   managed block" below, report, and stop.
+- **Adoption has run and the request is about agent integration** (show the
+  profile, change discovery or reliance, deactivate, or reactivate) -- go to
+  "Choose agent prompt discovery" below. Do not run `init` and do not re-ask
+  the repository, import, managed-block or view questions.
 - **Adoption has run and the request is something else** (importing existing
   knowledge, verifying the adoption, declaring an extension, registering
   probes, gating CI,
@@ -84,6 +88,7 @@ start still hold.
      /knowledge/
      /memory/
      /validated-memory.md
+     /validated-memory-profile.md
      /knowledge-extension.md
      /.validated-memory/
      /knowledge-index.md
@@ -177,6 +182,82 @@ touched):
 and is safe to re-run: it is idempotent and never overwrites a hand-edited
 file. See the reference's `init` section (docs/reference/cli.md) for the full contract, including
 `--harness-memory` below.
+
+## Choose agent prompt discovery (optional)
+
+This is the only branch that authors `validated-memory-profile.md`. It runs
+after the scaffold exists during a new adoption, or directly when an existing
+adopter asks to inspect, configure, change, deactivate or reactivate agent
+integration. It never edits `validated-memory.md`: that file has a closed schema
+and is also a checked-consultation input. It never changes evidence, prior use or
+any memory/knowledge record.
+
+First verify that `validated-memory.md`, `memory/` and `knowledge/` are ordinary
+nonsymlink paths at this exact project root. Then inspect configured intent with:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m validated_memory agent profile
+```
+
+This command is read-only and does not verify that the host delivered a hook.
+Handle the result before asking anything:
+
+- **Valid existing profile:** report `discovery`, `reliance`, exact root path,
+  shipped host support and `delivery_verification`. On repeat setup, preserve it
+  and ask nothing. If a change was requested, ask only for an unspecified axis;
+  changing one value keeps the other.
+- **Missing profile:** existing behavior is effective `discovery: off` and
+  `reliance: lightweight`. For a new setup, offer the two independent choices
+  below. The user may skip the optional integration, in which case write nothing.
+- **Unavailable profile:** stop this branch and report the bounded diagnostic.
+  Never replace a symlink, non-regular file, file over 8192 bytes, invalid UTF-8,
+  malformed frontmatter, duplicate or unknown key, wrong schema, or unsupported
+  value as if it were missing.
+
+Ask the two setup axes together. They are independent defaults, not packages:
+
+1. **Discovery:** `automatic` checks every submitted user prompt in this adopted
+   project. `explicit` checks only a whole prompt starting (after leading
+   whitespace, case-insensitively) with `Busca en VA:` or `Validated-memory:`.
+2. **Reliance:** `lightweight` presents candidates for ordinary evidence-aware
+   use. `reviewed` asks for a scoped inspection of evidence, support and
+   applicability before relying, using existing checked consultation when
+   enrolled.
+
+`off` is a later deactivation action, not a third setup profile. `reviewed` is a
+preference, not an evidence state, automatic challenge, truth guarantee or global
+gate. A lightweight project may review any selected item without changing its
+profile. Task-wide activation, subagent inheritance and automatic learning/review
+proposals are not P1 behavior.
+
+The completed choices authorize this one profile edit. Show the exact proposed
+diff for clarity, then apply it without asking for a second generic confirmation:
+
+```yaml
+---
+schema_version: 1
+discovery: explicit
+reliance: lightweight
+---
+```
+
+Use the selected closed literal values. Never interpolate either the user's
+prompt or profile text into a shell command, and never source or execute the
+profile. For a new file, refuse any existing unrecognized path at that name and
+create only a regular file at the exact root. For an update, acquire the existing
+file without following links, validate it with `agent profile`, retain its
+optional body byte for byte, and change only the selected `discovery` or
+`reliance` line. Recheck its identity and metadata immediately before replacement;
+if it changed, stop and re-inspect. Use a same-directory temporary regular file
+and no-follow replacement semantics. If the bytes already equal the proposal,
+perform no write and report a no-op. Never normalize or rewrite an optional body.
+
+A request to deactivate changes only `discovery` to `off`. A later reactivation
+asks only whether to restore `automatic` or `explicit` and preserves reliance.
+After any write, run `agent profile` again and report its exact successful JSON.
+Name `delivery_verification: not_checked` and give the selected mode's smoke
+prompt from [agent integration](../../docs/reference/agent-integration.md); do not
+claim the profile command proved host delivery.
 
 ## Import existing knowledge
 

@@ -10,6 +10,7 @@ import argparse
 import sys
 
 from . import (
+    agent,
     __version__,
     consultation,
     derive,
@@ -24,6 +25,7 @@ from . import (
 )
 
 SUBCOMMANDS = {
+    "agent": "Inspect the opted-in read-only prompt discovery profile or hook",
     "consultation": "Record and check opt-in consultation over registered adopters",
     "init": "Scaffold the validated-memory layout in an adopter project",
     "lint": "Lint the agent-memory layer: index sync, frontmatter, wikilinks, supersession",
@@ -66,6 +68,20 @@ def build_parser():
         subparser = subparsers.add_parser(name, help=help_text, description=help_text)
         if name == "consultation":
             consultation.parser(subparser)
+        if name == "agent":
+            agent_parser = subparser.add_subparsers(
+                dest="agent_operation", required=True, metavar="<operation>"
+            )
+            agent_parser.add_parser(
+                "profile", help="report the read-only discovery profile"
+            )
+            hook_parser = agent_parser.add_parser(
+                "hook", help="adapt a Claude Code UserPromptSubmit event"
+            )
+            hook_parser.add_argument(
+                "--host", choices=("claude-code",), required=True,
+                help="host adapter to run",
+            )
         if name == "validate":
             subparser.add_argument(
                 "path",
@@ -278,6 +294,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "consultation":
         return consultation.run(args, stdout=sys.stdout, stderr=sys.stderr)
+    if args.command == "agent":
+        if args.agent_operation == "profile":
+            return agent.profile(stdout=sys.stdout, stderr=sys.stderr)
+        return agent.hook(sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "validate":
         return validate.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "derive":

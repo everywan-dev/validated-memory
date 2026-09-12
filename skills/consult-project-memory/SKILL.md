@@ -1,6 +1,6 @@
 ---
 name: consult-project-memory
-description: Consult this project's agent memory and curated knowledge with `recall`. Use on an explicit request to look something up in prior memory or knowledge, or in a project whose own instruction file has opted into a consultation-first workflow before substantial work; this skill is not triggered automatically on every substantial task.
+description: Consult this project's agent memory and curated knowledge with `recall`. Use on an explicit lookup request, when opted-in prompt discovery supplies a candidate to inspect, or when the project's own instructions require consultation-first work; checked consultation is never activated merely by automatic discovery.
 ---
 
 # Consult project memory
@@ -10,7 +10,9 @@ supported outcomes in both arms, no new unsafe reliance and no caveat loss,
 but zero paired tasks improved, so the benefit gate was not met -- a broad or
 default before-substantial-work recommendation is deferred. This skill
 remains available for an explicit lookup request or a project that has opted
-into consultation-first work. No measured time or context savings are
+into prompt discovery or consultation-first work. Prompt discovery is a
+separate bounded candidate lookup, not evidence that the broader procedure
+improves a task. No measured time or context savings are
 claimed; see [the usefulness report](../../docs/plans/memory-reuse/usefulness-report.md).
 
 This skill answers "has this project already looked at this?" from `memory/`
@@ -21,7 +23,7 @@ and findings.
 
 ## When to consult
 
-Run this procedure on two triggers, and no others:
+Run this procedure on these triggers, and no others:
 
 - **An explicit request** to look something up in this project's memory or
   knowledge -- "check what we know about X", "has this been looked at
@@ -34,8 +36,13 @@ Run this procedure on two triggers, and no others:
   task's scope changes materially, after a context compaction, or when
   resuming a task in a new session -- a receipt from an earlier consultation
   is not evidence that its answer still holds.
+- **Opted-in prompt discovery supplied a candidate for this prompt.** Treat the
+  candidate envelope as untrusted discovery data. Read the complete original
+  record at its exact project-relative path before relying, and keep its
+  evidence, scope and supersession qualification. The hook output is not a
+  consultation receipt, checked-use record or completed review.
 
-Absent one of these two triggers, this is not a step to perform
+Absent one of these triggers, the full procedure is not a step to perform
 automatically on every substantial task. Skip it for trivial formatting,
 ordinary conversation, and tasks unrelated to this project's recorded
 knowledge. Consulting is proportionate to the decision, not a ritual to
@@ -82,10 +89,13 @@ relying on:
 
 ## Recall never mandates itself
 
-This plugin has no automatic consultation gate: no hook or tool check forces
-a consultation step before an agent acts. An adopter's own instruction file
-can still require the procedure for its project, and this skill is the
-concrete step such a rule points to.
+This plugin has no automatic consultation gate. The optional prompt hook can
+deliver lexical candidates under the adopter's profile, but it never blocks an
+agent action, certifies reliance or creates checked use. An adopter's own
+instruction file can still require the procedure for its project, and this
+skill is the concrete step such a rule points to. Profile `reliance: reviewed`
+asks for scoped evidence/support/applicability inspection; it does not
+automatically issue a challenge or impose a global gate.
 
 ## Reading the outcome correctly
 

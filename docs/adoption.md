@@ -3,7 +3,7 @@
 How to bring a project onto validated-memory: install the plugin, bootstrap
 the layout, import whatever knowledge the project already has, declare an
 extension, register probes, gate CI on the derived index, and optionally
-activate the HTML views. For the full command reference, see [the
+activate prompt discovery and the HTML views. For the full command reference, see [the
 reference](reference/cli.md). For a worked example end to end, see [the
 walkthrough](walkthrough.md).
 
@@ -14,7 +14,9 @@ manages plugins -- a marketplace, a local plugin path, or a checkout
 referenced directly). Once installed, its eight skills are discovered from
 `skills/*/SKILL.md` by directory convention, and its three startup hooks from
 `hooks/hooks.json` -- neither needs any registration inside the adopter
-project.
+project. The same manifest registers a separate `UserPromptSubmit` hook for
+optional prompt discovery; it is inert until an adopted project has a valid
+`validated-memory-profile.md` at its exact root.
 
 ## Updating the managed block in an existing adoption
 
@@ -29,7 +31,8 @@ diff, writes only on confirmation, reports, and stops there. It never re-runs
 `init`, never re-asks the versioning or HTML-view questions, and there is no
 unattended, automatic rewrite of the instruction file. Any other request in
 an adopted project -- importing knowledge, declaring an extension,
-registering probes, gating CI, activating the views -- goes to the step that
+registering probes, gating CI, activating the views, or configuring agent
+integration -- goes to the step that
 owns it below, without re-asking a decision the project already recorded.
 
 ## 2. Decide what this repository versions
@@ -60,6 +63,7 @@ the layout:
 /knowledge/
 /memory/
 /validated-memory.md
+/validated-memory-profile.md
 /knowledge-extension.md
 /.validated-memory/
 /knowledge-index.md
@@ -232,6 +236,74 @@ Skipping this step entirely is a supported answer: a project with no
 existing knowledge to import, and no wish for a block in its instruction
 file, adopts exactly as before.
 
+## Choose agent prompt discovery (optional)
+
+This choice is separate from `init` and from the managed instruction block.
+Existing adopters remain off until they choose it. The
+`adopt-validated-memory` skill asks two independent questions after the
+scaffold exists:
+
+1. **Discovery:** `automatic` checks each submitted user prompt in this
+   adopted project; `explicit` checks only a whole prompt beginning, after
+   optional leading whitespace and without regard to letter case, with
+   `Busca en VA:` or `Validated-memory:`.
+2. **Reliance:** `lightweight` presents qualified candidates for ordinary
+   evidence-aware use; `reviewed` asks for scoped inspection of evidence,
+   support and applicability before relying, using existing checked
+   consultation when enrolled.
+
+These are preferences, not product tiers. `reviewed` is not an evidence
+state, does not automatically challenge every knowledge unit and creates no
+global gate. A lightweight project can still review one selected candidate.
+Both choices retain the same integrity, uncertainty, scope and history rules.
+
+After the user chooses both values, the skill shows the exact change and writes
+this separate root file (with the selected values):
+
+```yaml
+---
+schema_version: 1
+discovery: explicit
+reliance: lightweight
+---
+```
+
+The body may contain a human rationale; the hook never injects or executes it.
+`validated-memory-profile.md` is neither a memory entry nor a knowledge unit,
+and changing it does not change prior evidence or checked use. It follows the
+repository's chosen versioning policy; the local-layout ignore list in step 2
+includes it. `init`, validation, recall and consultation do not create or alter
+it; see [ADR 0021](adr/0021-agent-policy-is-separate-from-knowledge-evidence.md).
+
+Inspect the configured intent without reading the corpus:
+
+```
+python3 -P -m validated_memory agent profile
+```
+
+A missing profile reports `configured: false`, effective discovery `off` and
+reliance `lightweight`. A valid existing profile is reported and preserved on
+repeat adoption without asking the two questions again. A request to change one
+axis keeps the other; a request to deactivate writes `discovery: off`, and a
+later request to reactivate asks only which active discovery mode to restore.
+Those explicit choices authorize the profile edit; the skill reports the exact
+change without adding a second generic confirmation.
+
+The skill refuses to write through a symlink or over a non-regular, oversized,
+malformed or unreadable profile. A safe update changes only the selected
+frontmatter values, preserves an optional body byte for byte, verifies that the
+file did not change between inspection and replacement, and is a no-op when the
+requested values already match. Move an unsafe file aside or repair malformed
+frontmatter deliberately before retrying; it is never silently replaced.
+
+Prompt discovery returns bounded, untrusted candidates. Read a candidate's
+complete original record and evidence before relying on it. It does not create
+a consultation receipt or checked-use record, and a clean zero-match is only a
+lexical result. Task-wide activation, subagent inheritance and automatic
+learning/review proposals are not implemented in this phase. See
+[Agent integration](reference/agent-integration.md) for exact triggers, limits,
+status, deactivation and the host delivery smoke test.
+
 ## 5. Declare an extension (optional)
 
 The base contract (see [Base contract](reference/curated-knowledge.md#base-contract)) is
@@ -396,3 +468,11 @@ start of every project; in one that has not adopted the method they do
 nothing at all, and in one that has, the first two act only on what the
 project asked for — a harness-memory symlink, an activated view — while the
 third only reports.
+
+Separately, `hooks/prompt-discovery.sh` runs on `UserPromptSubmit`. It is also
+fail-open, but it does nothing until this exact adopted root has opted in with a
+valid profile. Automatic mode evaluates each submitted prompt; explicit mode
+requires one of the two documented prefixes. Candidate delivery never blocks the
+prompt or establishes reviewed reliance. See
+[Agent integration](reference/agent-integration.md) for limits, diagnostics and
+the installed-host smoke test.

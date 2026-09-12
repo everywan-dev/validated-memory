@@ -8,6 +8,8 @@ root outputs that the ignore question actually covers -- every item `init`
 on a normal run, minus `journal.jsonl` -- so a new root artifact cannot
 appear without the skill and the adoption guide learning to ignore it, and a
 stale entry cannot linger after one is retired.
+The one extra entry is `validated-memory-profile.md`: the adoption skill writes
+it only after an agent-integration choice, while `init` must remain unaware of it.
 Not covered, on purpose: `journal.jsonl`, which `init` also writes at the
 root but which ADR 0008 keeps outside this question entirely -- it is always
 versioned and the skill deliberately never offers to ignore it, unlike
@@ -610,9 +612,22 @@ def test_the_hook_leaves_no_link_for_a_project_that_was_never_adopted(
 def test_the_skill_ignore_list_is_exactly_what_the_cli_creates_at_the_root(
     adopter_dir, tmp_path_factory, run_cli
 ):
-    assert _ignore_entries(ADOPT_SKILL) == _root_artifacts(
-        adopter_dir, tmp_path_factory, run_cli
-    )
+    # The profile is the one root policy file authored by the skill after an
+    # explicit integration choice. `init` must not create it, but a project
+    # that chose a local layout must not publish it when the skill later does.
+    expected = _root_artifacts(adopter_dir, tmp_path_factory, run_cli)
+    expected.add("/validated-memory-profile.md")
+    assert _ignore_entries(ADOPT_SKILL) == expected
+
+
+def test_init_does_not_opt_the_project_into_agent_discovery(tmp_path, run_cli):
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 0, result.stderr
+    assert not (adopter / "validated-memory-profile.md").exists()
 
 
 def test_the_adoption_guide_carries_the_same_ignore_list_as_the_skill():

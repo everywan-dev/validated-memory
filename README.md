@@ -59,7 +59,11 @@ after which the first maintains the harness-memory symlink (on first
 adoption it may absorb the harness's existing memory directory, parking the
 original as a `.bak`), the second refreshes any activated HTML views, and the
 third injects the project's current status into the session; what each writes
-is documented in [Startup hooks](docs/reference/hooks.md). And **updating is
+is documented in [Startup hooks](docs/reference/hooks.md). Installation also
+registers one fail-open `UserPromptSubmit` hook for optional prompt discovery.
+It reads no project corpus until that exact adopter root opts in with
+`validated-memory-profile.md`; see [Agent integration](docs/reference/agent-integration.md).
+And **updating is
 not automatic**: the plugin is pinned to its declared version, and picking up
 a fix means running `/plugin marketplace update validated-memory` (or
 enabling auto-update for this marketplace once).
@@ -141,6 +145,7 @@ project, CI gate included.
 | [`derive`](docs/reference/cli.md#derive) | Re-derive the knowledge index; `--check` gates CI against drift |
 | [`probe`](docs/reference/cli.md#probe) | Run freshness probes; append ternary verdicts to the log |
 | [`recall`](docs/reference/cli.md#recall) | Search memory and/or knowledge read-only; discovery, not validation |
+| [`agent`](docs/reference/cli.md#agent) | Inspect optional agent integration or serve the bounded Claude Code prompt hook |
 | [`consultation`](docs/reference/consultation.md) | Opt-in checked use of an exact consumer conclusion; retain receipts and check current eligibility |
 | [`render`](docs/reference/cli.md#render) | Write self-contained, inert HTML views of both layers |
 | [`status`](docs/reference/cli.md#status) | Read-only report: structural gates plus a reported (opt-in gated) freshness summary |
@@ -238,7 +243,8 @@ Eight skills make the method invocable from an agent session, each naming the
 exact CLI invocation and the data discipline to follow — never reimplementing
 a rule the CLI already enforces:
 
-- **`adopt-validated-memory`** — decide what the repository versions,
+- **`adopt-validated-memory`** — decide what the repository versions and how
+  optional agent prompt discovery behaves,
   bootstrap a project, import whatever knowledge it already has, offer the
   managed block for its instruction file, wire the symlink, verify with
   `validate` and `lint`.
@@ -249,11 +255,12 @@ a rule the CLI already enforces:
 - **`probe-freshness`** — probe, re-derive, read the ternary verdict.
 - **`maintain-agent-memory`** — record or supersede a memory fact, verify
   with `lint`.
-- **`ask-validated-memory`** — answer usage questions from the plugin's own
+- **`ask-validated-memory`** — answer usage and agent-integration questions from the plugin's own
   docs and `--help`, quoting exact invocations, never inventing a flag; points
   questions about the adopter's own data to `consult-project-memory`.
-- **`consult-project-memory`** — on an explicit lookup request, or in a
-  project that has opted into a consultation-first workflow, search this
+- **`consult-project-memory`** — on an explicit lookup request, after prompt
+  discovery supplies a candidate, or in a project that has opted into a
+  consultation-first workflow, search this
   project's own memory and knowledge with `recall`, read the sources behind a
   match, and tell an unavailable search apart from a clean zero-match one.
   An explicit checked-use opt-in adds final consumer acquisition, retained use
@@ -267,7 +274,8 @@ a rule the CLI already enforces:
 
 - **The v2 surface includes** every subcommand in the [CLI
   reference](docs/reference/cli.md), every skill listed above, all three
-  startup hooks, canonical static HTML views and an opt-in app. The version this clone ships is
+  startup hooks, the opt-in Claude Code prompt hook, canonical static HTML
+  views and an opt-in app. The version this clone ships is
   declared in `pyproject.toml` and the plugin manifest, not restated here.
 - **Python ≥ 3.11**, standard library only; pytest is the only development
   dependency.

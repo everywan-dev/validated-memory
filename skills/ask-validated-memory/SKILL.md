@@ -1,6 +1,6 @@
 ---
 name: ask-validated-memory
-description: Answer usage questions about validated-memory -- commands, flags, adoption steps, the method's rules -- from the plugin's own documentation, quoting exact invocations. Use when someone asks how validated-memory works or how to do something with it.
+description: Answer usage questions about validated-memory -- commands, flags, adoption and agent-integration steps, and the method's rules -- from the plugin's own documentation, quoting exact invocations. Use when someone asks how validated-memory works or how to do something with it.
 ---
 
 # Ask validated-memory
@@ -37,6 +37,17 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m vali
 
 - When the question is "why", answer from the ADR that records the
   decision and name it.
+- For prompt-discovery mode, profile status, exact prefixes, deactivation or
+  host verification, use `docs/reference/agent-integration.md`. Inspect the
+  configured intent with this read-only command:
+
+```
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -P -m validated_memory agent profile
+```
+
+  A successful profile result says what this exact adopter root requested. It
+  does not prove that Claude Code ran the hook. Never report automatic discovery
+  as covering task continuation, compaction or subagent prompts in P1.
 - When the question is about the adopter's own data (their units, their
   index, their verdicts), this skill is the wrong tool: point at
   `consult-project-memory` to search recorded memory and knowledge, or at

@@ -6,7 +6,8 @@ python3 -P -m validated_memory <command>
 
 Commands: [`init`](#init), [`lint`](#lint), [`validate`](#validate),
 [`derive`](#derive), [`probe`](#probe), [`recall`](#recall), [`render`](#render),
-[`status`](#status), [`journal`](#journal), [`consultation`](#consultation).
+[`status`](#status), [`journal`](#journal), [`consultation`](#consultation),
+[`agent`](#agent).
 
 Exit codes: `0` = clean run or WARNING-only findings (does not gate);
 `1` = ERROR (gates); `2` = usage error.
@@ -17,6 +18,53 @@ see [Installing](../installing.md). The plugin's own hooks resolve this
 themselves. `-P` is not optional: without it, the current working
 directory could resolve `validated_memory` ahead of `PYTHONPATH` — see
 [ADR 0006](../adr/0006-the-cli-is-always-invoked-with-python-p.md).
+
+### `agent`
+
+```
+python3 -P -m validated_memory agent profile
+python3 -P -m validated_memory agent hook --host claude-code
+```
+
+`agent profile` reads optional agent-integration intent from
+`validated-memory-profile.md` at the current exact project root. It emits one
+canonical, sorted JSON line. For a configured explicit/lightweight profile:
+
+```json
+{"configured":true,"discovery":"explicit","host_support":{"delivery_verification":"not_checked","shipped":["claude-code"]},"operation":"profile","profile_path":"validated-memory-profile.md","reliance":"lightweight","schema_version":1}
+```
+
+A missing file is a successful unconfigured result: `configured` is false,
+`discovery` is `off`, and `reliance` remains `lightweight`. A malformed,
+unreadable, unsafe or unsupported profile emits no stdout, one bounded English
+diagnostic on stderr and exit 1. Invalid arguments are usage exit 2.
+
+The operation is read-only: it performs no discovery, host launch, store access
+or write. `host_support.shipped` names the adapter included in the plugin;
+`delivery_verification: not_checked` means this status did not run or verify the
+installed host. See [Agent integration](agent-integration.md) for the closed
+profile, setup/change/deactivation flow and smoke test.
+
+`agent hook --host claude-code` is the machine-facing operation used by the
+`UserPromptSubmit` hook. It consumes one UTF-8 JSON object on stdin, at most
+65536 bytes, with `hook_event_name: UserPromptSubmit`, an absolute `cwd` string
+and a `prompt` string; extra host fields are allowed. Invalid CLI arguments are
+exit 2. Handled host input, configuration, acquisition and timeout failures are
+fail-open exit 0, with bounded diagnostics and safe `additionalContext` when the
+attempted lookup can be identified.
+
+Invoked discovery returns this host envelope, bounded to 8192 UTF-8 bytes:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"..."}}
+```
+
+There is no top-level blocking decision. Unconfigured/off, non-adopter and
+explicit-mode non-invocation produce no output and acquire no corpus. The hook
+never writes, records a prompt, certifies checked use or gates editing/delivery.
+The exact query grammar, lexical limits, result qualification and privacy rules
+are in [Agent integration](agent-integration.md); hook registration and failure
+policy are in [Hooks](hooks.md#prompt-discovery).
 
 ### `init`
 
@@ -37,7 +85,8 @@ stub (`knowledge-extension.md`). Right after `init` on an empty directory,
 `validate` and `lint` both pass clean -- the bootstrap is verified by the
 enforcement it bootstraps, not by inspection. (An empty `knowledge/`
 directory still reports its usual WARNING for having no units; that does not
-gate.)
+gate.) `init` does not create the optional `validated-memory-profile.md`;
+the adoption skill authors it only after the user's agent-integration choice.
 
 Each item is created only if missing. An existing item -- including one
 already hand-edited -- is never touched: `init` reports `init: created

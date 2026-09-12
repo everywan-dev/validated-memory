@@ -1,6 +1,17 @@
 {
   "description": "On every session start: restores the validated-memory --harness-memory symlink, refreshes whichever HTML views an adopter project has already activated, and injects the project's current validated-memory status into the session.",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/prompt-discovery.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [

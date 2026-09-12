@@ -31,9 +31,9 @@ def test_frontmatter_name_and_description_are_single_line():
     assert description_match, "frontmatter has no 'description'"
     description = description_match.group(1).strip()
     assert description, "description is empty"
-    assert "explicit request" in description
-    assert "opted into" in description
-    assert "not triggered automatically" in description
+    assert "explicit lookup request" in description
+    assert "opted-in prompt discovery" in description
+    assert "checked consultation is never activated" in description
     # A folded multiline YAML scalar (">" or "|") is not the existing style;
     # every other skill's description is one physical line.
     assert not description.startswith((">", "|")), (
@@ -134,11 +134,17 @@ def test_names_the_completed_p4_disposition_with_no_savings_claim():
     assert "usefulness-report.md" in text
 
 
-def test_two_triggers_scope_before_work_cadence_to_opt_in():
+def test_triggers_distinguish_prompt_discovery_from_checked_consultation():
     text = _normalized()
     assert "An explicit request" in text
     assert "A project that has opted into a consultation-first workflow" in text
-    assert (
-        "Absent one of these two triggers, this is not a step to perform "
-        "automatically on every substantial task." in text
-    )
+    assert "Opted-in prompt discovery supplied a candidate" in text
+    assert "the full procedure is not a step to perform automatically" in text
+    assert "not a consultation receipt, checked-use record or completed review" in text
+
+
+def test_reviewed_profile_is_not_an_automatic_gate_or_challenge():
+    text = _normalized()
+    assert "no automatic consultation gate" in text
+    assert "never blocks an agent action" in text
+    assert "does not automatically issue a challenge or impose a global gate" in text

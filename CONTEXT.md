@@ -95,6 +95,23 @@ project's agent memory. The plugin makes it a symlink into the project, so the
 data stays versioned in the repo while the harness reads it where it always
 did.
 
+### Agent interaction policy
+
+**Agent profile**:
+An adopter project's choice of discovery activation and default reliance workflow.
+It does not change the evidence supporting a claim or prevent review of an
+individual memory entry or knowledge unit.
+
+**Discovery mode**:
+The agent profile's rule for initiating a search: automatically from a submitted
+query, by explicit invocation, or disabled. Finding a candidate does not establish
+that it is applicable or correctly understood.
+
+**Reliance preference**:
+The agent profile's default choice of lightweight learning or reviewed reliance.
+It guides the effort spent checking material for a use, not whether uncertain
+learning may be retained or whether a claim is true.
+
 ### Checked consultation
 
 **Binding**:

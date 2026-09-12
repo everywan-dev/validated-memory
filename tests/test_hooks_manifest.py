@@ -135,3 +135,39 @@ def test_the_session_context_hook_has_no_matcher():
         "expected exactly one SessionStart entry naming session-context.sh"
     )
     assert "matcher" not in session_context_entries[0]
+
+
+def test_user_prompt_submit_registers_exactly_one_prompt_adapter():
+    manifest = json.loads(
+        (REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )
+    entries = manifest["hooks"]["UserPromptSubmit"]
+    commands = [
+        hook
+        for entry in entries
+        for hook in entry["hooks"]
+        if hook.get("type") == "command"
+    ]
+    assert len(commands) == 1
+    assert "prompt-discovery.sh" in commands[0]["command"]
+    assert commands[0]["timeout"] == 5
+
+
+def test_user_prompt_adapter_script_exists_and_is_shell_script():
+    script_path = REPO_ROOT / "hooks" / "prompt-discovery.sh"
+    assert script_path.is_file()
+    assert script_path.read_text(encoding="utf-8").startswith("#!/bin/bash")
+
+
+def test_every_registered_hook_command_points_at_a_file():
+    manifest = json.loads(
+        (REPO_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    )
+    for entries in manifest["hooks"].values():
+        for entry in entries:
+            for hook in entry.get("hooks", []):
+                if hook.get("type") != "command":
+                    continue
+                match = re.search(r"hooks/[\w.-]+", hook["command"])
+                assert match
+                assert (REPO_ROOT / match.group(0)).is_file()

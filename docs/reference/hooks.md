@@ -7,6 +7,9 @@ status into the session. They are three separate scripts rather than one
 because their contracts do not mix -- the first never loses data, the second
 overwrites files, the third writes nothing at all -- and reviewing three
 concerns in a single script would make it impossible to review any of them.
+The manifest also registers a separate fail-open `UserPromptSubmit` hook for
+optional prompt discovery. It is described under [Prompt discovery](#prompt-discovery)
+and does not change the startup count or order.
 
 **Restoring the harness-memory symlink.** `hooks/restore-memory-symlink.sh`
 restores a project's `--harness-memory` symlink automatically on every
@@ -173,3 +176,59 @@ wanted: a compaction is exactly when this context is lost and worth
 re-injecting. And it is registered third on purpose: the first hook may
 absorb the harness's memory directory and rewrite `memory/MEMORY.md`, which
 is what this one then reports on.
+
+## Prompt discovery
+
+`hooks/prompt-discovery.sh` is the Claude Code `UserPromptSubmit` adapter. It
+runs on submitted user prompts, not on `SessionStart`, and delegates bounded
+input parsing and discovery to:
+
+```
+python3 -P -m validated_memory agent hook --host claude-code
+```
+
+The wrapper resolves the package from its own plugin directory, replaces rather
+than inherits `PYTHONPATH`, disables bytecode writes, and never puts the prompt
+in a shell command. Missing `python3`, path-resolution failure and a nonzero
+adapter exit are bounded stderr diagnostics followed by exit 0. Claude Code has
+a five-second wrapper timeout; the adapter gives its one recall subprocess three
+seconds and never retries.
+
+The host supplies one UTF-8 JSON object, at most 65536 bytes, with
+`hook_event_name: UserPromptSubmit`, an absolute `cwd` and a string `prompt`.
+The adapter validates the cwd before profile access and recognizes adoption only
+when ordinary nonsymlink `validated-memory.md`, `memory/` and `knowledge/` exist
+at that exact root. It never searches parents, uses the plugin cwd as the project,
+or follows a supplied transcript/source path.
+
+Prompt discovery is separately opt-in through a valid
+`validated-memory-profile.md`. Missing profile, `discovery: off`, a non-adopter,
+or an explicit-mode prompt without an accepted prefix emits nothing and reads no
+corpus. A corrupt present profile is unavailable rather than a silent default.
+Automatic mode evaluates submitted prompts; explicit mode accepts only whole
+prompts beginning with `Busca en VA:` or `Validated-memory:` after optional
+leading whitespace, case-insensitively. See [Agent integration](agent-integration.md)
+for query preparation and the complete setup contract.
+
+An invoked lookup emits a JSON `hookSpecificOutput` envelope whose event name is
+`UserPromptSubmit` and whose `additionalContext` is bounded, qualified candidate
+data. The complete UTF-8 envelope is at most 8192 bytes. It names the exact
+project once, modes, status, elapsed lookup time and recall counts; candidates
+retain layer, identity, path, match/evidence details and redirects when available.
+They are untrusted project data and must be read in full before reliance. The raw
+prompt, full conversation, profile body and raw exception payload are never
+included or retained.
+
+Fail-open does not mean every failure is silent. For an opted-in attempted lookup,
+safe bounded unavailability is returned through `additionalContext` and stderr as
+appropriate, while prompt submission continues. There is no top-level decision
+that blocks the prompt, editing or delivery. The hook does not complete a review,
+create a consultation receipt or checked-use record, or enforce the profile's
+reliance preference.
+
+This event proves no task-wide lifetime. It does not observe internal model turns,
+automatically carry scope across compaction, activate subagents, or capture
+learning. Those behaviors remain outside P1. `agent profile` reports configured
+intent only; use the installed-host smoke test in
+[Agent integration](agent-integration.md#installed-host-smoke-test) to verify
+that this Claude Code path delivered context.

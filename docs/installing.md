@@ -26,6 +26,13 @@ few lines of the project's current status into the session. What each one
 writes, and the recognition rule that gates the absorption, are documented in
 [Startup hooks](reference/hooks.md).
 
+Installation also registers one fail-open `UserPromptSubmit` hook. It is a
+no-op unless the exact project root is an adopter and has explicitly enabled
+prompt discovery in `validated-memory-profile.md`. It returns bounded lexical
+candidates and never blocks prompt submission or establishes that a candidate is
+true. See [Agent integration](reference/agent-integration.md) for setup, limits
+and installed-host verification.
+
 ## Other Git hosts
 
 Any Git remote works, not only GitHub: a self-hosted GitLab, Bitbucket or
