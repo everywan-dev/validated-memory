@@ -87,6 +87,8 @@ def capsule(value):
     m.array(value['events'], 1, 10000)
     m.require(m.digest({k: v for k, v in value.items() if k != 'sha256'}) == value['sha256'], 'capsule digest mismatch')
     m.require(len((m.canonical(value) + '\n').encode('utf-8')) <= CAP, 'capsule exceeds 8 MiB limit')
+    for index, event in enumerate(value['events']):
+        m.require(type(event) is dict, f'transfer event {index} must be an object')
     m.require(sum(len(m.canonical(e.get('payload')).encode('utf-8')) for e in value['events']) <= 33554432,
               'source history exceeds 32 MiB')
 

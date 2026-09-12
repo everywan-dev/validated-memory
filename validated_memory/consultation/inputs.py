@@ -208,10 +208,13 @@ def capture(state, registrations=None, support_overrides=None, insertion=None):
                     budget[1] += candidate['size']
                     m.require(budget[0] <= 4096 and budget[1] <= 16777216, 'prospective input bound exceeded')
                     documents.append((candidate['path'], candidate['text']))
-                errors = [finding.render() for finding in validate_documents(documents, declared)
-                          if finding.severity == ERROR]
-                m.require(not errors, f'{location}: canonical validation failed: ' + '; '.join(errors) + '; repair canonical inputs')
-                states = effective_states(documents)
+                    errors = [finding.render() for finding in validate_documents(documents, declared)
+                              if finding.severity == ERROR]
+                    m.require(not errors, f'{location}: canonical validation failed: ' + '; '.join(errors) + '; repair canonical inputs')
+                    states = effective_states(documents)
+                else:
+                    # Parsed state is read-only below, so this alias is safe within one capture.
+                    states = before_states
                 units = {m.frontmatter(item['text'])['id']: item for item in knowledge}
                 units = {key: dict(file=units[key], data=data, state=status)
                          for key, (data, status) in states.items()}

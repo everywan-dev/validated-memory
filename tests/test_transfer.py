@@ -129,6 +129,85 @@ def test_capsule_shape_encoding_and_history_failures_are_atomic(tmp_path, run_cl
     assert (destination.store.read_bytes(), tree(destination.root)) == before
 
 
+@pytest.mark.parametrize('malformed', [None, [], 'scalar', 7])
+def test_non_object_transfer_event_has_bounded_actionable_refusal(tmp_path, run_cli, malformed):
+    source, _binding, receipt = bare_source(tmp_path, run_cli)
+    path = source.export(receipt, 'malformed-event.json')
+    capsule = json.loads(path.read_text())
+    capsule['events'][0] = malformed
+    path.write_text(seal(capsule))
+    destination = Workspace(tmp_path, run_cli, 'destination')
+    before = destination.store.read_bytes(), tree(destination.root)
+
+    result = raw(destination, 'import-transfer', str(path), *ATTR)
+
+    assert result.returncode == 1 and result.stdout == ''
+    assert 'transfer event 0 must be an object' in result.stderr
+    assert 'AttributeError' not in result.stderr and 'has no attribute' not in result.stderr
+    assert len(result.stderr.encode()) < 512
+    assert (destination.store.read_bytes(), tree(destination.root)) == before
+
+
+def test_malformed_event_keeps_capsule_digest_refusal_priority(tmp_path, run_cli):
+    source, _binding, receipt = bare_source(tmp_path, run_cli)
+    path = source.export(receipt, 'bad-digest-malformed-event.json')
+    capsule = json.loads(path.read_text())
+    capsule['events'][0] = None
+    path.write_text(encoded(capsule) + '\n')
+    destination = Workspace(tmp_path, run_cli, 'destination')
+    before = destination.store.read_bytes(), tree(destination.root)
+
+    result = raw(destination, 'import-transfer', str(path), *ATTR)
+
+    assert result.returncode == 1 and result.stdout == ''
+    assert 'capsule digest mismatch' in result.stderr
+    assert 'transfer event' not in result.stderr
+    assert (destination.store.read_bytes(), tree(destination.root)) == before
+
+
+@pytest.mark.parametrize('shape', ['missing', 'extra'])
+def test_object_event_still_requires_exact_full_history_shape(tmp_path, run_cli, shape):
+    source, _binding, receipt = bare_source(tmp_path, run_cli)
+    path = source.export(receipt, 'object-event-shape.json')
+    capsule = json.loads(path.read_text())
+    if shape == 'missing':
+        capsule['events'][0].pop('payload')
+    else:
+        capsule['events'][0]['unexpected'] = True
+    path.write_text(seal(capsule))
+    destination = Workspace(tmp_path, run_cli, 'destination')
+    before = destination.store.read_bytes(), tree(destination.root)
+
+    result = raw(destination, 'import-transfer', str(path), *ATTR)
+
+    assert result.returncode == 1 and result.stdout == ''
+    assert 'event 0 must be an object' not in result.stderr
+    assert (destination.store.read_bytes(), tree(destination.root)) == before
+
+
+def test_nested_capsule_checks_non_object_event_before_outer_history_replay(tmp_path, run_cli):
+    source, _binding, receipt = bare_source(tmp_path, run_cli, 'source')
+    inner_path = source.export(receipt, 'inner.json')
+    intermediary, _binding, intermediary_receipt = bare_source(tmp_path, run_cli, 'intermediary')
+    intermediary.import_(inner_path)
+    outer_path = intermediary.export(intermediary_receipt, 'outer.json')
+    outer = json.loads(outer_path.read_text())
+    imported = next(event for event in outer['events'] if event['kind'] == 'transfer-import')
+    inner = imported['payload']['capsule']
+    inner['events'][0] = None
+    inner['sha256'] = hashlib.sha256(encoded({k: v for k, v in inner.items() if k != 'sha256'}).encode()).hexdigest()
+    outer_path.write_text(seal(outer))
+    destination = Workspace(tmp_path, run_cli, 'destination')
+    before = destination.store.read_bytes(), tree(destination.root)
+
+    result = raw(destination, 'import-transfer', str(outer_path), *ATTR)
+
+    assert result.returncode == 1 and result.stdout == ''
+    assert 'transfer event 0 must be an object' in result.stderr
+    assert 'event digest mismatch' not in result.stderr
+    assert (destination.store.read_bytes(), tree(destination.root)) == before
+
+
 def test_nested_self_import_and_depth_are_explicit(tmp_path, run_cli):
     source, _binding, receipt = bare_source(tmp_path, run_cli, 'level0')
     cap = source.export(receipt, 'level0.json')
