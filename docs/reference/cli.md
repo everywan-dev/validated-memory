@@ -520,6 +520,18 @@ these additions; version 2.2.0 does not provide them. Schema 2 was an unreleased
 incorporation format; 2.3.0 creates and upgrades to schema 3. Payload and
 compatibility rules are in [incorporation storage](incorporation-storage.md).
 
+Unreleased after 2.3.0, `resume-use USE --scope KEY=VALUE [--scope KEY=VALUE ...]
+[--max-bytes N]` adds a read-only task resumption report. Requested scope is required
+and must exactly equal historical receipt scope; different scope requires a new
+complete consumer `read` and `record-use`. The one-line bounded JSON report exits
+0 for `current`, or 1 for `blocked` even when the report is complete; invalid
+arguments exit 2. The byte limit defaults to 65,536 (range 2,048–1,048,576), with no
+stdout on overflow. No event, receipt or inspection handle is created. It reports
+known origin review without checking external freshness or importing update files.
+Use the [trusted local update workflow](everyday-workflow.md#resume-a-task) and
+[report fields and limitations](consultation.md#task-resumption-report); unavailable
+or refused update inputs remain outstanding even after a `current` report.
+
 ### `render`
 
 ```

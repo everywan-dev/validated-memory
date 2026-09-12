@@ -146,8 +146,9 @@ approval or authenticated identity. Do not attribute an agent review to a human.
 3. Pass that returned handle to `record-use ALIAS:ID --receipt HANDLE`. Report
    `checked-use recorded`, with the exact consumer and scope. Reading alone does
    not create checked use; no operation establishes understanding or entailment.
-4. Before claiming current eligibility in a later session, use `check-use HANDLE`.
-   It is read-only and current only at invocation. `show HANDLE` is historical
+4. Before claiming current eligibility in a later session, use `check-use HANDLE`
+   at its historical scope, or the explicit task-resumption path below when
+   available. Both are read-only and current only at invocation. `show HANDLE` is historical
    inspection and cannot replace a current check. Unavailable means unavailable,
    never current. Direct source reading remains possible within authorized scope,
    but does not satisfy a refused checked-use operation.
@@ -244,3 +245,53 @@ successors inherit origins, including through unbound intermediates. An independ
 successor needs its attributed detach-transfer review; a retaining sibling remains
 binding at a merge. Ordinary unrelated unlinked knowledge remains outside this
 opt-in contract; no semantic-copy detector is implied.
+
+## Resume an opted-in checked task
+
+**Unreleased after 2.3.0.** Follow the
+[task-resumption workflow and reusable handoff](../../docs/reference/everyday-workflow.md#resume-a-task)
+and [report contract](../../docs/reference/consultation.md#task-resumption-report).
+This adds no automatic skill trigger, scheduler or remote discovery.
+
+1. Load the trusted local handoff: explicit store/workspace, consumer/use/receipt,
+   historical and requested task scope, actor and explicitly supplied/configured
+   local capsule routes. Before the first import, use historical `show USE` to
+   verify artifact kind and resolve its receipt, then `show RECEIPT` to check
+   `snapshot.workspace`, consumer root and receipt scope against the handoff.
+   Resolve mismatches before mutating the store. Historical identity verification
+   establishes no current eligibility or freshness. Later recheck workspace, IDs
+   and root against the report. Carry returned handles mechanically; do not ask
+   the user to transcribe hashes.
+2. Import each available authorized capsule with `import-transfer FILE --actor
+   ACTOR --reason REASON`. Preserve per-file outcomes, returned handles and
+   diagnostics. Stop on refusal: earlier successful imports remain committed,
+   and the failed and not-attempted files remain outstanding partial completion.
+   Retry the identical capsule after ambiguous output using existing idempotence.
+   Unknown routes and unavailable inputs stay visible; a foreign capsule's
+   historical `source_store_path` is not an update route.
+3. Run `resume-use USE --scope KEY=VALUE` with every intended task scope pair.
+   Parse the complete one-line JSON on exit 0 or 1. Exit 1 may be a complete
+   `blocked` report; exit 2 is a usage error. `--max-bytes` is 2,048–1,048,576,
+   default 65,536; overflow emits no stdout. This read-only report creates no
+   receipt, inspection handle or event and imports no files.
+4. Present current-check failures, requested-scope mismatch and known origin
+   review alongside the per-file update outcomes. An exit 0 `current` report
+   does not clear failed/unavailable inputs or unknown update routes. External
+   freshness remains not checked; every foreign origin has `live_origin:
+   not-checked`. Do not announce an unqualified ready-to-resume result. Retained
+   corrections remain visible when local inputs are missing; incomplete origin
+   analysis blocks resumption. A broad historical check may be current while
+   the requested narrow scope exposes a known narrow challenge. Different scope
+   always requires a new complete consumer `read` and `record-use`.
+5. Follow advisory action handles in dependency-first order where established;
+   otherwise inspect to establish ordering. Consume complete inspection material
+   before explicit, attributed semantic decisions. Never automatically create
+   correspondence, acceptance, independence, successor wording, challenge
+   dispositions or publication reflection from report statuses. After maintenance
+   or a changed root/revision/scope, acquire the complete final consumer receipt
+   through the two-line `read` protocol and record its new use. Preserve old
+   handles and history; subsequent operations revalidate their own inputs.
+
+The report carries statuses and handles, not complete foreign material. Selected
+agent-visible material remains follow-up work. No measured token or empirical
+usefulness improvement is claimed.

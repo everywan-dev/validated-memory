@@ -377,6 +377,7 @@ canonical validation errors gate; warnings do not.
 | `read ALIAS:ID --scope KEY=VALUE [--max-bytes N]` | Deliver the complete eligible transitive closure and support once each, then retain its receipt. Final acquisition uses the authored consumer as root. |
 | `record-use ALIAS:ID --receipt HANDLE` | Recheck the exact consumer/receipt root, complete enrolled snapshot and eligibility; retain a checked-use record. |
 | `check-use HANDLE` | Read-only current-use check of a historical use; no new receipt or persisted timestamp. |
+| `resume-use USE --scope KEY=VALUE [--scope KEY=VALUE ...] [--max-bytes N]` | Unreleased after 2.3.0: read-only task resumption report with exact requested scope and known origin review; see below. |
 | `show HANDLE` | Read-only historical artifact inspection, including retained predecessor bytes. Does not require current adopter availability. |
 | `checkpoint ALIAS --actor ACTOR --reason REASON` | Retain a content-only relocation baseline for the current registration. Stale bindings alone do not prevent a checkpoint. |
 | `relocate ALIAS ROOT --checkpoint HANDLE --actor ACTOR --reason REASON` | Retain an explicit new root after checking old-root unavailability and exact content equivalence with the latest checkpoint. |
@@ -396,6 +397,74 @@ revisions and `measured` or `verifiable`. There is no strength ordering between
 those states. Hypotheses refuse checked use. Shared dependencies are visited once;
 a true reference cycle refuses, while returning to another unit in the same
 project is allowed. Conflicts are explicitly declared, not inferred from text.
+
+### Task resumption report
+
+**Unreleased after 2.3.0.** From this checkout:
+
+```text
+PYTHONPATH=. python3 -P -m validated_memory consultation --store STORE resume-use USE --scope KEY=VALUE [--scope KEY=VALUE ...] [--max-bytes N]
+```
+
+`USE` is a retained checked-use handle, carried by the agent. At least one scope
+pair is required, with unique keys under the existing scope rules. Requested
+scope must equal the receipt scope exactly. A different scope blocks resumption
+and requires a new complete consumer `read` at the intended scope and `record-use`.
+The historical check still uses the receipt scope; origin statuses use the
+requested task scope. Thus a known narrow challenge remains visible even when
+the old broad use checks current.
+
+The command accepts no update files and performs no import or external freshness
+check. First follow the [trusted local update workflow](everyday-workflow.md#resume-a-task).
+It cannot attest that all routes were checked: unknown, unavailable or refused
+updates remain separately outstanding even if committed state checks current.
+Read-only access creates no event, receipt, inspection handle or adopter file;
+retained use/receipt forms supported by `check-use` need no implicit upgrade.
+
+One canonical JSON line is fully constructed and bounded before stdout. The
+`--max-bytes` default is 65,536; the range is 2,048–1,048,576 bytes. Output overflow
+refuses with no stdout, never a truncated report. Every report includes:
+
+| Field | Meaning |
+| --- | --- |
+| `schema_version`, `operation`, `status` | Envelope version `1`, operation `resume-use`, overall `current` or `blocked`. |
+| `workspace`, `id`, `receipt` | Workspace UUID, existing checked-use handle and its receipt handle. No new handle is created. |
+| `root` | Consumer `identity` (`project`, `unit`) and `unit_sha256`. |
+| `scope` | `historical` and `requested` scope objects, plus boolean `matches`. |
+| `historical_check` | Existing current-use check at historical scope: `status` (`current` or `blocked`) and `diagnostic` (string or null). |
+| `origin_analysis` | `complete`, requested `scope`, and `failures` with qualified `workspace`, `link` and `diagnostic`; unavailable identities are null. |
+| `origins` | Relevant origin workspace, `identity`, `unit_sha256`, qualified `link` (`workspace`, `id`), `disposition`, `membership`, `reviewed_head`, `known_head`, `statuses` and `live_origin`. |
+| `actions` | Advisory `action`, qualified `links`, `requires_semantic_judgment` and `diagnostic`. No executable shell text. |
+| `limitations` | External freshness not checked; report is not a receipt; subsequent operations revalidate their inputs. |
+
+Origins follow this receipt's dependencies and relevant canonical ancestry,
+including overridden historical paths; unrelated imports are excluded.
+`disposition` is `retain` or attributed `independent`. `membership` is `current`,
+`historical` or `undetermined`, separately from disposition. Scope mismatch or a
+failed current check leaves effective paths undetermined; overridden paths remain
+historical. Missing data never proves independence, and a retaining sibling
+remains visible when another path is independent. Null reviewed/known heads mean
+unavailable. Independent and historical rows preserve diagnostic context without
+themselves renewing upstream review obligations. Every foreign origin declares
+`live_origin: not-checked`.
+
+Retained known corrections are collected even if live adopter capture fails.
+Failures in required ancestry or a bounded branch analysis appear explicitly;
+incomplete analysis blocks resumption. Actions use `inspect-origin`,
+`inspect-and-reconsult`, `read-for-requested-scope`, and, when reliably identified,
+`restore-local-inputs`. Origin inspection is dependency-first where provable;
+otherwise its diagnostic states that ordering is unavailable. Handles identify
+what to inspect; the report invents no prerequisite IDs or semantic decisions.
+
+Exit **0** means `current`: scope matches, the historical check is current, and
+origin analysis is complete. It does not establish external freshness. Exit **1**
+can carry a complete `blocked` JSON report for scope mismatch, a failed historical
+check or incomplete analysis; inspect that report rather than discarding stdout.
+Invalid handles, stores or other refusals before report construction use existing
+refusal conventions. Exit **2** means invalid syntax or arguments. Existing
+`check-use` and `reconcile` behavior is unchanged: a complete `reconcile` report
+can exit 0 with unresolved work. Neither operation substitutes for the required
+complete inspection/read before new semantic decisions or a new receipt.
 
 ### Success output and retry
 

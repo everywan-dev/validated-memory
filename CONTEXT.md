@@ -114,6 +114,11 @@ consultation receipt. It does not establish perpetual validity or semantic truth
 An observation of whether a historical checked use remains eligible against the
 inputs available now. Earlier observations do not establish present eligibility.
 
+**Resumption report**:
+An observation combining a historical checked use, the requested task scope and
+known pending origin review. It does not establish external freshness or replace
+a consultation receipt.
+
 ### Incorporation and review
 
 **Contribution proposal**:

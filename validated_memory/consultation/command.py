@@ -27,7 +27,7 @@ def parser(parent):
     parent.add_argument('--store', action=_SingleValue, required=True, metavar='PATH')
     commands = parent.add_subparsers(dest='operation', required=True)
     for operation in ('register', 'checkpoint', 'relocate', 'bind', 'review-support',
-                      'conflict', 'choose', 'read', 'record-use', 'check-use', 'show', 'recover'):
+                      'conflict', 'choose', 'read', 'record-use', 'check-use', 'resume-use', 'show', 'recover'):
         sub = commands.add_parser(operation)
         if operation in ('register', 'relocate'):
             sub.add_argument('alias')
@@ -36,7 +36,7 @@ def parser(parent):
             sub.add_argument('alias')
         elif operation in ('bind', 'review-support', 'read', 'record-use'):
             sub.add_argument('target', metavar='ALIAS:ID')
-        elif operation in ('choose', 'show', 'check-use'):
+        elif operation in ('choose', 'show', 'check-use', 'resume-use'):
             sub.add_argument('handle', metavar='HANDLE')
         if operation == 'register':
             sub.add_argument('--source', action=_SingleValue, required=True)
@@ -54,12 +54,12 @@ def parser(parent):
             sub.add_argument('--replacement', action='append', default=[])
         if operation == 'choose':
             sub.add_argument('--candidate', action=_SingleValue, required=True)
-        if operation in ('bind', 'review-support', 'conflict', 'choose', 'read'):
+        if operation in ('bind', 'review-support', 'conflict', 'choose', 'read', 'resume-use'):
             sub.add_argument('--scope', action='append', required=True)
         if operation in ('checkpoint', 'relocate', 'bind', 'review-support', 'conflict', 'choose'):
             sub.add_argument('--actor', action=_SingleValue, required=True)
             sub.add_argument('--reason', action=_SingleValue, required=True)
-        if operation == 'read':
+        if operation in ('read', 'resume-use'):
             sub.add_argument('--max-bytes', action=_SingleValue, type=int, default=65536)
         if operation == 'record-use':
             sub.add_argument('--receipt', action=_SingleValue, required=True)
@@ -99,7 +99,7 @@ def normalize(args):
         m.require(2 <= len(args.candidate) <= 64 and len(set(args.candidate)) == len(args.candidate),
                   '--candidate requires 2..64 distinct identities')
         m.require(args.prior or not args.replacement, '--replacement requires --prior')
-    if args.operation == 'read':
+    if args.operation in ('read', 'resume-use'):
         m.integer(args.max_bytes, 2048, 1048576)
     for field in ('prior', 'checkpoint', 'receipt', 'handle'):
         if hasattr(args, field) and getattr(args, field) is not None:
@@ -390,6 +390,17 @@ def read(args, database, stdout):
     emit(stdout, final)
 
 
+def validate_use(state, root, receipt):
+    m.require(root == receipt['root'], f"{root}: receipt belongs to a different consumer {receipt['root']}; read the exact conclusion")
+    projects, snapshot = capture(state)
+    ls.gate(state, receipt['content'], receipt['scope'], receipt.get('review_frontier', []))
+    tp.check_receipt(state, receipt, projects)
+    ensure_snapshot(receipt['snapshot'], snapshot)
+    content = checks.content(state, projects, root, receipt['scope'])
+    m.require(content == receipt['content'], 'receipt content changed; inspect and reconsult')
+    recapture(state, snapshot)
+
+
 def use(args, database):
     state = database.state
     if args.operation == 'check-use':
@@ -400,14 +411,7 @@ def use(args, database):
         receipt_id = args.receipt
         root = state.resolve(args.target)
     receipt = state.event(receipt_id, ('receipt',))['payload']
-    m.require(root == receipt['root'], f"{root}: receipt belongs to a different consumer {receipt['root']}; read the exact conclusion")
-    projects, snapshot = capture(state)
-    ls.gate(state, receipt['content'], receipt['scope'], receipt.get('review_frontier', []))
-    tp.check_receipt(state, receipt, projects)
-    ensure_snapshot(receipt['snapshot'], snapshot)
-    content = checks.content(state, projects, root, receipt['scope'])
-    m.require(content == receipt['content'], 'receipt content changed; inspect and reconsult')
-    recapture(state, snapshot)
+    validate_use(state, root, receipt)
     if args.operation == 'check-use':
         return event, {}
     p = dict(version=1, root=root, receipt=receipt_id, snapshot_sha256=receipt['snapshot_sha256'],
@@ -431,10 +435,15 @@ def run(args, stdout, stderr):
             project = str(uuid.uuid4())
             inputs.capture(temporary, registrations={project: dict(project=project, root=root,
                            root_identity=node, alias=args.alias, source=args.source)})
-        readonly = args.operation in ('show', 'check-use', 'reconcile', 'export-transfer', 'show-transfer')
+        readonly = args.operation in ('show', 'check-use', 'resume-use', 'reconcile', 'export-transfer', 'show-transfer')
         database = store.Store(store_path, writable=not readonly,
                                create=args.operation == 'register' and missing_store, recover=args.operation == 'recover')
         with database:
+            if args.operation == 'resume-use':
+                from .resumption import report
+                wire, code = report(args, database.state)
+                emit(stdout, wire)
+                return code
             if args.operation in transfer_cli.OPERATIONS:
                 from .transfer_command import run as transfer_run
                 return transfer_run(args, database, stdout)
