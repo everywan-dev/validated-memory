@@ -511,12 +511,13 @@ exit codes. The [storage schema](consultation-storage.md) defines retained event
 `read` emits inspection content before committing its receipt and returning its
 `id` on a second JSON line; consume both lines and check exit 0 before using it.
 
-The unreleased source-tree [incorporation lifecycle](incorporation.md) adds
+Available since 2.3.0, the [incorporation lifecycle](incorporation.md) adds
 `upgrade`, `submit`, `challenge`, `inspect`, `decide`, `renew`, `incorporate`,
 `resolve`, `reconcile`, `address`, `track-publication` and `reflect` within
 `consultation`. Acceptance, canonical incorporation and downstream observations
 are separate retained outcomes. Schema 1 stores require explicit upgrade for
-these additions; published 2.2.0 does not provide them. Exact schema 2 and
+these additions; version 2.2.0 does not provide them. Schema 2 was an unreleased
+incorporation format; 2.3.0 creates and upgrades to schema 3. Payload and
 compatibility rules are in [incorporation storage](incorporation-storage.md).
 
 ### `render`
@@ -849,12 +850,12 @@ or with two of them, `--resolve` alongside the read-only `--check`, or an
 empty id, which reaches no transaction and would name none in a refusal
 either.
 
-## Unreleased portable transfer operations
+## Portable transfer operations (since 2.3.0)
 
-Source-tree schema 3 adds `export-transfer`, `import-transfer`, `show-transfer`,
-`link-transfer` and `detach-transfer` under consultation. Published 2.2.0 provides
-schema 1 checked consultation; incorporation/schema 2 and transfer/schema 3 are
-unreleased additions. Current fresh stores use 3; existing complete 1/2 stores
+Version 2.3.0 adds `export-transfer`, `import-transfer`, `show-transfer`,
+`link-transfer` and `detach-transfer` under consultation. Version 2.2.0 provides
+schema 1 checked consultation; schema 2 was an unreleased incorporation format.
+Version 2.3.0 includes incorporation and transfer. Fresh stores use 3; complete 1/2 stores
 keep ordinary consultation without implicit migration. Explicit upgrade preserves
 old event fields and moves 1/2 to 3; transfer writes require 3.
 

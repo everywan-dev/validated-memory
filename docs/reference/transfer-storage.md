@@ -1,8 +1,8 @@
 # Transfer storage schema
 
-**Unreleased source-tree addition.** Published 2.2.0 supports consultation schema 1.
-Incorporation introduced schema 2; portable historical contributions require
-schema 3. This reference describes the current source implementation, not a release.
+**Available since 2.3.0.** Version 2.2.0 supports consultation schema 1.
+Schema 2 was an unreleased incorporation format; version 2.3.0 includes
+incorporation and portable historical contributions with schema 3.
 [Transfer](transfer.md) documents commands, disclosure and an executable example.
 
 ## Compatibility and transaction boundary

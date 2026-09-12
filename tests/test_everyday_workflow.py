@@ -330,7 +330,7 @@ def test_complete_everyday_correction_lifecycle(tmp_path):
 def test_everyday_playbook_links_contracts_and_distinguishes_fixture_claims():
     path = REPO / 'docs/reference/everyday-workflow.md'
     text = path.read_text()
-    for phrase in ('Unreleased source-tree', '2.2.0', 'predetermined synthetic judgments',
+    for phrase in ('Available since 2.3.0', '2.2.0', 'predetermined synthetic judgments',
                    'whole-history', '8 MiB', '32 MiB', 'not model tokens'):
         assert phrase.lower() in ' '.join(text.lower().split())
     for target in re.findall(r'\]\(([^)]+)\)', text):

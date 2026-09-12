@@ -1,7 +1,9 @@
 # Consultation storage schema
 
 The schema 1 contract shipped with 2.2.0, including shared primitives used by
-[the unreleased schema 2 addition](incorporation-storage.md). This is the strict local storage contract for
+[incorporation storage](incorporation-storage.md). Incorporation and transfer are
+available since 2.3.0 with [schema 3](transfer-storage.md); schema 2 was an
+unreleased intermediate format. This reference preserves the strict schema 1 contract for
 [checked consultation](consultation.md), selected in
 [ADR 0017](../adr/0017-checked-consultation-retains-use-outside-canonical-authoring.md).
 Use `consultation show HANDLE` for historical inspection. This reference describes
@@ -100,10 +102,11 @@ all embedded handles. Roll back the entire operation on any failure.
 SQLite may leave transient rollback sidecars. A hot journal prevents read-only
 inspection until explicit recover succeeds; never delete sidecars manually.
 Recover opens existing paths with mode=rw and lets SQLite recover, then validates.
-In the released schema 1 implementation, an empty recovered database may be
-initialized as schema 1 without registration. In the unreleased schema 2 addition,
-fresh registration and explicit empty-store recovery create schema 2; complete
-schema 1 or 2 recovery preserves its existing version. Zero-length files
+In version 2.2.0, an empty recovered database may be initialized as schema 1
+without registration. Since 2.3.0, fresh registration and explicit empty-store
+recovery create schema 3; complete schema 1/2/3 recovery preserves its existing
+version. Schema 2 was an unreleased intermediate format. Explicit `upgrade` is
+required to move a complete schema 1/2 store to 3. Zero-length files
 are included in this explicit empty case. Any nonempty partial schema refuses.
 Existing files are never unlinked automatically. Initial creation/retry must inspect
 schema again after obtaining BEGIN IMMEDIATE; a concurrent initializer may have

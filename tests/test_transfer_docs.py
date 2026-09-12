@@ -13,6 +13,7 @@ SKILLS = [ROOT / 'skills' / name / 'SKILL.md' for name in
           ('consult-project-memory', 'create-knowledge-unit', 'supersede-knowledge')]
 ENTRY_POINTS = [ROOT / path for path in
                 ('README.md', 'docs/reference/cli.md', 'docs/reference/consultation.md',
+                 'docs/reference/consultation-storage.md',
                  'docs/reference/incorporation.md', 'docs/reference/incorporation-storage.md')]
 
 
@@ -28,9 +29,9 @@ def test_transfer_guidance_is_public_and_linked(path):
 
 
 @pytest.mark.parametrize('path', [REFERENCE, STORAGE, *ENTRY_POINTS])
-def test_transfer_entry_points_distinguish_unreleased_schema3(path):
+def test_transfer_entry_points_distinguish_released_schema3_from_legacy(path):
     text = path.read_text().lower()
-    assert 'unreleased' in text and '2.2.0' in text and 'schema 1' in text
+    assert '2.3.0' in text and '2.2.0' in text and 'schema 1' in text
     assert 'schema 3' in text and 'upgrade' in text
 
 
@@ -77,8 +78,8 @@ def test_transfer_storage_documents_exact_envelopes_and_replay_boundaries():
 @pytest.mark.parametrize('path', SKILLS)
 def test_transfer_skills_preserve_explicit_review_and_no_implicit_authorization(path):
     text = path.read_text()
-    assert 'transfer.md' in text and 'unreleased' in text
-    assert 'source-tree' in text and '2.2.0' in text
+    assert 'transfer.md' in text and '2.3.0' in text
+    assert 'schema 3' in text and '2.2.0' in text
     assert 'origin' in text and 'successor' in text
 
 

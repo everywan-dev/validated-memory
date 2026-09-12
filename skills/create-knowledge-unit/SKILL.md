@@ -95,8 +95,8 @@ docs/reference/curated-knowledge.md.
 ## Optional retained proposal
 
 When the task explicitly requests contribution review in a consultation workspace,
-follow [incorporation](../../docs/reference/incorporation.md). This lifecycle is an
-unreleased source-tree addition; published 2.2.0 does not provide it. Confirm the
+follow [incorporation](../../docs/reference/incorporation.md). This lifecycle is
+available since 2.3.0; version 2.2.0 does not provide it. Confirm the
 installed command surface before using it; existing schema 1 stores need explicit
 `upgrade`. Ordinary knowledge authoring remains available without participation.
 
@@ -119,8 +119,8 @@ person to copy them or edit SQLite.
 ## Candidates derived from portable contributions
 
 For explicitly requested foreign contribution reuse, follow
-[portable transfer](../../docs/reference/transfer.md), an unreleased schema-3
-source-tree addition unavailable in published 2.2.0. First inspect imported scope,
+[portable transfer](../../docs/reference/transfer.md), available since 2.3.0 with schema 3
+and unavailable in version 2.2.0. First inspect imported scope,
 selected canonical/support bytes, dependency mappings and known corrections.
 Import never authors a canonical unit or authorizes local use.
 

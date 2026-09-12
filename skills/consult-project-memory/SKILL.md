@@ -180,9 +180,10 @@ responses. Existing hooks remain fail-open.
 ## Optional challenge and incorporation history
 
 When the requested work includes contributions or correction effects, consult the
-[incorporation reference](../../docs/reference/incorporation.md). Its lifecycle and
-schema 2 are an unreleased source-tree addition; published 2.2.0 does not supply
-them. An existing schema 1 store requires explicit `upgrade`, never an implicit
+[incorporation reference](../../docs/reference/incorporation.md). Its lifecycle is
+available since 2.3.0; version 2.2.0 does not supply it. Schema 2 was an unreleased
+incorporation format; fresh stores use schema 3. An existing schema 1 store
+requires explicit `upgrade`, never an implicit
 migration during ordinary lookup. Preserve the task's authorized participation.
 
 Keep proposal acceptance, observed canonical incorporation, challenge resolution,
@@ -209,7 +210,7 @@ undeclared dependencies and unobserved external distribution as limitations.
 
 Use [portable transfer](../../docs/reference/transfer.md) only when the task
 explicitly includes export/import or reviewed reuse of foreign material. It is
-an unreleased schema-3 source-tree addition; published 2.2.0 does not provide it.
+available since 2.3.0 with schema 3; version 2.2.0 does not provide it.
 Existing schema 1/2 stores need explicit upgrade for transfer writes. Preserve
 ordinary lookup and the task's already authorized participation.
 

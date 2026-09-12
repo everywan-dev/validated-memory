@@ -23,16 +23,16 @@ def test_lifecycle_guidance_is_self_contained_and_links_resolve(path):
         assert (path.parent / target.split('#', 1)[0]).is_file(), target
 
 
-def test_public_entry_points_disclose_unreleased_lifecycle_and_upgrade():
+def test_public_entry_points_disclose_release_availability_and_upgrade():
     for relative in ('README.md', 'docs/reference/cli.md', 'docs/reference/consultation.md',
                      'docs/reference/incorporation.md', 'docs/reference/incorporation-storage.md'):
         text = (ROOT / relative).read_text(encoding='utf-8').lower()
-        assert 'unreleased' in text
+        assert '2.3.0' in text
         assert '2.2.0' in text and 'schema 1' in text
         assert 'upgrade' in text
     for path in SKILLS:
         text = path.read_text(encoding='utf-8')
-        assert 'incorporation.md' in text and 'unreleased' in text
+        assert 'incorporation.md' in text and '2.3.0' in text
 
 
 def test_public_workflow_has_complete_shell_blocks():

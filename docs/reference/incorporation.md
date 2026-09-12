@@ -1,10 +1,9 @@
 # Incorporation and correction effects
 
-**Unreleased source-tree addition.** Published 2.2.0 supports the original
-consultation commands and schema 1; it does not provide this lifecycle or schema 2.
-Use a source checkout containing this implementation for the commands below.
-Current source storage is schema 3 with [portable transfer](transfer.md); schema 2
-remains the earlier unreleased incorporation format.
+**Available since 2.3.0.** Version 2.2.0 supports the original consultation
+commands and schema 1; it does not provide this lifecycle. Version 2.3.0 creates
+schema 3 with [portable transfer](transfer.md). Schema 2 was an unreleased
+incorporation format and remains supported for compatibility.
 
 Use this opt-in lifecycle to retain a contribution, inspect it, accept or reject
 it, and observe whether its exact accepted content was incorporated. A challenge
@@ -415,7 +414,7 @@ measures behavior only; it does not establish usefulness or reduced maintenance.
 
 ## Proposals retaining transferred origins
 
-[Portable transfer](transfer.md) is an unreleased schema-3 addition. Inspect imported
+[Portable transfer](transfer.md) is available since 2.3.0 and requires schema 3 for writes. Inspect imported
 scope/material before local authoring. Link all applicable origins to the proposal
 before its final local inspection and decision; a foreign receipt or import is
 not local acceptance or incorporation. Mapped dependencies must already be

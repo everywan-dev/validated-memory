@@ -150,18 +150,20 @@ Exit codes: `0` = clean or WARNING-only findings; `1` = ERROR (gates);
 `2` = usage error. Full contracts in the
 **[CLI reference](docs/reference/cli.md)**.
 
-The source tree also includes an **unreleased** opt-in
-[incorporation and correction lifecycle](docs/reference/incorporation.md): retain
+Available since **2.3.0**, the opt-in
+[incorporation and correction lifecycle](docs/reference/incorporation.md) lets you retain
 proposals and challenges, inspect and decide, then separately observe canonical
 incorporation, addressed uses and changed tracked publications. Existing schema 1
 stores require explicit upgrade; published 2.2.0 does not include these commands.
 Canonical authoring and ordinary lookup remain separate.
 
-Unreleased [portable historical contributions](docs/reference/transfer.md) add
-explicit whole-history export/import and reviewed local origin mappings. Current
-source stores use schema 3; existing schema 1/2 stores require explicit upgrade
+[Portable historical contributions](docs/reference/transfer.md), available since 2.3.0, add
+explicit whole-history export/import and reviewed local origin mappings. Fresh
+stores created since 2.3.0 use schema 3; existing schema 1/2 stores require explicit upgrade
 for transfer writes. Exported historical evidence does not establish live origin
 freshness or local authorization. Assess disclosure and size before exporting.
+Schema 2 was an unreleased incorporation format; installing 2.3.0 does not
+implicitly upgrade existing stores or change adopter Markdown.
 
 The [everyday workflow](docs/reference/everyday-workflow.md) connects initial
 incorporation, routine checked reuse, corrected successors and downstream reports.
@@ -285,10 +287,10 @@ a rule the CLI already enforces:
 | **[Adoption guide](docs/adoption.md)** | The checklist for a real project, CI gate included |
 | **[Walkthrough](docs/walkthrough.md)** | Every layer end to end, with real file contents |
 | **[CLI reference](docs/reference/cli.md)** | The full contract of each subcommand |
-| **[Incorporation](docs/reference/incorporation.md)** | Unreleased proposals, challenge review, consumer effects and tracked publication observations |
-| **[Incorporation storage](docs/reference/incorporation-storage.md)** | Unreleased schema-2 lifecycle contracts preserved by schema 3 |
-| **[Portable transfer](docs/reference/transfer.md)** | Unreleased offline historical contributions and explicit local incorporation |
-| **[Transfer storage](docs/reference/transfer-storage.md)** | Unreleased schema 3, whole-history capsules and origin-aware current checks |
+| **[Incorporation](docs/reference/incorporation.md)** | Proposals since 2.3.0, challenge review, consumer effects and tracked publication observations |
+| **[Incorporation storage](docs/reference/incorporation-storage.md)** | Lifecycle storage since 2.3.0; historical schema-2 compatibility |
+| **[Portable transfer](docs/reference/transfer.md)** | Offline historical contributions since 2.3.0 and explicit local incorporation |
+| **[Transfer storage](docs/reference/transfer-storage.md)** | Schema 3 since 2.3.0, whole-history capsules and origin-aware current checks |
 | **[Curated knowledge](docs/reference/curated-knowledge.md)** | Base contract, adopter configuration, declared extension |
 | **[Agent memory](docs/reference/agent-memory.md)** | The memory layer's rules, identity, and supersession |
 | **[Startup hooks](docs/reference/hooks.md)** | What runs at session start, and what it writes |

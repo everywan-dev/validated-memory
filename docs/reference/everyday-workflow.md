@@ -1,9 +1,9 @@
 # Everyday checked reuse and correction
 
-**Unreleased source-tree workflow.** Published 2.2.0 supports checked consultation;
-the incorporation and portable-transfer lifecycle below requires the unreleased
-source tree. Fresh workspaces use schema 3; existing schema 1/2 stores need explicit
-`upgrade` for transfer writes. See [compatibility](transfer.md#store-compatibility).
+**Available since 2.3.0.** Version 2.2.0 supports checked consultation;
+version 2.3.0 adds the incorporation and portable-transfer lifecycle below.
+Fresh workspaces use schema 3; existing schema 1/2 stores need explicit `upgrade`
+for transfer writes. See [compatibility](transfer.md#store-compatibility).
 
 Use this workflow when a conclusion will be reused across sessions or projects
 and you need to trace a later correction to its consumers and reports. The agent

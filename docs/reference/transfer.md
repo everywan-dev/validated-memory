@@ -1,9 +1,10 @@
 # Portable historical contributions
 
-**Unreleased source-tree addition.** Published 2.2.0 provides checked consultation
-and schema 1. It does not provide incorporation (introduced with schema 2) or
-transfer (schema 3). Use a checkout containing these additions; this page does
-not announce a release or migrate an operational corpus.
+**Available since 2.3.0.** Version 2.2.0 provides checked consultation and schema 1;
+it does not provide incorporation or transfer. Version 2.3.0 includes both and
+creates schema 3. Schema 2 was an unreleased incorporation format. Existing
+schema 1/2 stores require explicit `upgrade` for transfer writes; installing the
+release does not implicitly migrate a workspace or alter adopter Markdown.
 
 Transfer carries receipt-selected historical material **and complete recorded
 workspace history**. It supports offline inspection and explicit local
@@ -154,7 +155,7 @@ an existing local retaining path.
 
 ## Store compatibility
 
-Fresh registration and explicit empty-store recovery in this source tree create
+Fresh registration and explicit empty-store recovery in version 2.3.0 create
 schema 3. Existing complete schema 1/2 stores retain ordinary consultation without
 implicit migration. Incorporation requires at least 2; transfer writes require 3.
 `upgrade` explicitly changes a complete 1/2 store to 3 in one transaction,

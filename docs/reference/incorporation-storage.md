@@ -1,10 +1,11 @@
 # Incorporation storage schema
 
-**Unreleased source-tree addition.** Published 2.2.0 supports the original
-consultation commands and schema 1; it does not provide this lifecycle or schema 2.
-Current source storage is schema 3; [Transfer storage](transfer-storage.md)
-supersedes current creation/upgrade behavior and adds origin projection. The
-schema-2 shapes and layout below remain the incorporation compatibility contract.
+**Available since 2.3.0.** Version 2.2.0 supports the original consultation
+commands and schema 1; it does not provide this lifecycle. Schema 2 was an
+unreleased incorporation format. Version 2.3.0 creates schema 3;
+[Transfer storage](transfer-storage.md) defines current creation/upgrade behavior
+and origin projection. The schema-2 shapes and layout below remain the
+incorporation compatibility contract.
 
 Schema version 2 extends [consultation storage](consultation-storage.md) with
 retained proposals, challenges, inspections, dispositions and downstream
@@ -418,4 +419,4 @@ old logical rows or receipt1/2 inspection strings. Incorporation still requires
 at least 2; transfer writes require 3. See [Transfer storage](transfer-storage.md)
 for new kinds, receipt3 lineage/frontier/origin summaries, source histories and
 post-link proposal eligibility. Existing lifecycle payloads above stay closed and
-unchanged. Source-tree schema 2 and 3 remain unreleased relative to published 2.2.0.
+unchanged. Schema 2 was never released; schema 3 is available since 2.3.0.

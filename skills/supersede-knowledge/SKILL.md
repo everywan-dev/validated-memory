@@ -53,8 +53,8 @@ active units.
 ## Optional challenge and correction effects
 
 For explicitly requested retained correction review, follow
-[incorporation](../../docs/reference/incorporation.md). It is an unreleased
-source-tree addition, unavailable in published 2.2.0; an existing schema 1 store
+[incorporation](../../docs/reference/incorporation.md). It is available since
+2.3.0, unavailable in version 2.2.0; an existing schema 1 store
 requires explicit `upgrade`. This does not replace the normal authoring steps.
 
 A factual or policy `challenge` records a question about an exact retained bound
@@ -79,8 +79,8 @@ consumers, publications or evidence history.
 
 ## Successors with retained foreign origins
 
-[Portable transfer](../../docs/reference/transfer.md) is an unreleased schema-3
-source-tree addition unavailable in published 2.2.0. Its origin obligations follow
+[Portable transfer](../../docs/reference/transfer.md) is available since 2.3.0 with
+schema 3, unavailable in version 2.2.0. Its origin obligations follow
 explicit local supersedes ancestry, including unbound intermediate canonical
 units. Authoring a successor cannot silently shed a retained origin.
 

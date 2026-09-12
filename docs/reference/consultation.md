@@ -12,13 +12,12 @@ the conclusion remains a separate operation: a refusal can leave authored
 Markdown without a checked-use record. Normal validation, discovery and rendering
 do not acquire an implicit publication gate.
 
-The [incorporation lifecycle](incorporation.md) is an unreleased source-tree
-addition for proposals, challenges and correction effects. Its schema 2 requires
-explicit `upgrade` for existing schema 1 stores; published 2.2.0 does not provide
-those commands. Current source registration creates schema 3 with unreleased
-[portable transfer](transfer.md), while ordinary consultation on complete schema
-1/2 stores remains available without migration. Existing stores require explicit
-upgrade to 3 for transfer writes; incorporation requires at least 2.
+The [incorporation lifecycle](incorporation.md) and [portable transfer](transfer.md)
+are available since 2.3.0. Version 2.2.0 provides only schema 1 consultation;
+schema 2 was an unreleased incorporation format. Version 2.3.0 registration
+creates schema 3, while ordinary consultation on complete schema 1/2 stores
+remains available without migration. Existing stores require explicit `upgrade`
+to 3 for transfer writes; incorporation requires at least 2.
 
 For the complete correction-to-report lifecycle, see the
 [everyday workflow](everyday-workflow.md).
@@ -476,7 +475,7 @@ ancestors. Support cannot escape its registered root. All enrolled configuration
 declared schemas, complete knowledge membership/bytes, support of active bound
 units and current semantic declaration heads participate in snapshot invalidation.
 Receipts, checked-use records and checkpoints do not invalidate themselves.
-In schema 2, matching accepted challenges additionally gate current use and
+In schema 2/3, matching accepted challenges additionally gate current use and
 enter a receipt review frontier; resolution or reversal does not revive older
 affected receipts. See [correction eligibility](incorporation.md#inspection-retries-and-current-eligibility).
 Operational outputs, memory, indexes and verdict logs are excluded unless an
@@ -490,5 +489,5 @@ Recovery does not remove corrupt semantic rows or migrate unknown schemas. Never
 manually delete sidecars or force-break a live lock. Retained canonical/support
 text and inspection content consume the store bound; there is no automatic
 compaction or history-pruning command. Explicit [whole-history transfer](transfer.md)
-is available in the unreleased source tree. Event hashes detect accidental
+is available since 2.3.0. Event hashes detect accidental
 corruption, not an attacker able to rewrite rows and recompute hashes.
