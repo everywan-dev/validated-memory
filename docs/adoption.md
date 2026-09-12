@@ -299,10 +299,25 @@ frontmatter deliberately before retrying; it is never silently replaced.
 Prompt discovery returns bounded, untrusted candidates. Read a candidate's
 complete original record and evidence before relying on it. It does not create
 a consultation receipt or checked-use record, and a clean zero-match is only a
-lexical result. Task-wide activation, subagent inheritance and automatic
-learning/review proposals are not implemented in this phase. See
+lexical result. Task-wide activation and subagent inheritance are not
+implemented. Requested learning uses ordinary authoring and is never inferred
+from discovery. See
 [Agent integration](reference/agent-integration.md) for exact triggers, limits,
 status, deactivation and the host delivery smoke test.
+
+## Retain or review a lesson when requested
+
+After adoption, a user can explicitly ask to retain an experience or review one
+selected record. This needs no new mode or workspace: durable experience uses an
+indexed memory entry, while a claim needing explicit evidence/freshness uses a
+curated knowledge unit. A lightweight profile can review one item without
+changing its preferences.
+
+The request authorizes that bounded artifact without a second generic
+confirmation. An agent-originated end-of-task proposal still waits for acceptance.
+No workflow archives the transcript, promotes evidence automatically or captures
+every useful answer. Follow [Requested learning and selective review](reference/learning.md)
+for routing, outcome retention, interruption recovery and an executable example.
 
 ## 5. Declare an extension (optional)
 

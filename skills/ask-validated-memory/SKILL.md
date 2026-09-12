@@ -48,6 +48,12 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}${PYTHONPATH:+:$PYTHO
   A successful profile result says what this exact adopter root requested. It
   does not prove that Claude Code ran the hook. Never report automatic discovery
   as covering task continuation, compaction or subagent prompts in P1.
+- For requested learning capture, selective review, outcome routing,
+  cross-layer attribution or interrupted authoring, use
+  `docs/reference/learning.md`. Explain that explicit capture authorizes only
+  the bounded artifact requested; an unsolicited end-of-task proposal awaits
+  acceptance. The workflows add no automatic transcript capture, evidence
+  promotion, workspace enrollment or profile change.
 - When the question is about the adopter's own data (their units, their
   index, their verdicts), this skill is the wrong tool: point at
   `consult-project-memory` to search recorded memory and knowledge, or at

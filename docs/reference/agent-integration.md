@@ -5,10 +5,12 @@ material into a Claude Code prompt's context. It returns lexical candidates for
 inspection. It does not validate a claim, complete a review, create checked use,
 or decide what the agent should do.
 
-P1 covers one submitted user prompt at a time. It does not cover an agent's
-internal turns, task-wide activation, compaction recovery, subagent inheritance,
-automatic learning capture or protected-action enforcement. Those task and
-learning workflows remain later work.
+Prompt discovery covers one submitted user prompt at a time. It does not cover an
+agent's internal turns, task-wide activation, compaction recovery, subagent
+inheritance or protected-action enforcement. Requested learning and selective
+review use existing authoring skills; prompt discovery performs no automatic
+learning capture and is not a transcript collector. See
+[Requested learning and selective review](learning.md).
 
 ## Project profile
 
@@ -61,6 +63,10 @@ automatically issue a challenge. A lightweight project can review one selected
 item without changing its profile. The preference changes candidate guidance,
 not enforcement. Both values retain the same integrity,
 uncertainty, scope and history rules.
+
+The reliance choice does not control whether one requested lesson may be
+captured or one selected record reviewed. Either profile can use the learning
+workflow, and that work leaves both profile axes unchanged.
 
 `discovery: off` disables this prompt lookup only. It does not uninstall the
 plugin or disable the three existing `SessionStart` hooks.

@@ -57,6 +57,23 @@ For checked use, read [the consultation reference](../../docs/reference/consulta
 and follow the additional path at the end of this skill. Preserve established
 project scope and authorization; ask only about unresolved material judgments.
 
+A request to review one retained lesson uses the selective review workflow in
+[Requested learning and selective review](../../docs/reference/learning.md).
+Identify its exact layer, canonical identity, locator, claim and intended scope;
+read the complete original and relevant evidence, then report `supported`,
+`qualified`, `unresolved` or `contradicted` as an ordinary-language conclusion.
+This works under a lightweight profile and changes neither profile axis nor
+unrelated records. It is separate from checked-use enrollment.
+
+Retain every non-superseding outcome as a normally indexed `feedback` memory
+entry unless an existing enrolled support review already records the same
+assessment. If meaning changes or current advice must retire, create a successor
+in the reviewed item's own layer and put the assessment, evidence and limits in
+that successor; a duplicate feedback entry is optional. Preserve a conditional
+observation under condition A when a later success occurs under condition B:
+record both and do not invent a supersession edge. Cross-layer references name
+the layer, identity and ordinary path, never a wikilink or `supersedes` edge.
+
 ## Run recall
 
 Resolved against the plugin, never against a same-named file in the current

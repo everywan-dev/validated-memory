@@ -63,6 +63,9 @@ is documented in [Startup hooks](docs/reference/hooks.md). Installation also
 registers one fail-open `UserPromptSubmit` hook for optional prompt discovery.
 It reads no project corpus until that exact adopter root opts in with
 `validated-memory-profile.md`; see [Agent integration](docs/reference/agent-integration.md).
+When a user asks to retain a lesson or review one selected record, the existing
+memory and knowledge skills keep that work scoped and attributable; see
+[Requested learning and selective review](docs/reference/learning.md).
 And **updating is
 not automatic**: the plugin is pinned to its declared version, and picking up
 a fix means running `/plugin marketplace update validated-memory` (or
@@ -249,12 +252,12 @@ a rule the CLI already enforces:
   managed block for its instruction file, wire the symlink, verify with
   `validate` and `lint`.
 - **`create-knowledge-unit`** — write a unit field by field, with the
-  evidence-state discipline.
+  evidence-state discipline; requested tentative learning remains a hypothesis.
 - **`supersede-knowledge`** — correct knowledge with a successor, never by
   editing the superseded unit.
 - **`probe-freshness`** — probe, re-derive, read the ternary verdict.
-- **`maintain-agent-memory`** — record or supersede a memory fact, verify
-  with `lint`.
+- **`maintain-agent-memory`** — record or supersede a memory fact, or retain an
+  indexed experience/review when requested, then verify with `lint`.
 - **`ask-validated-memory`** — answer usage and agent-integration questions from the plugin's own
   docs and `--help`, quoting exact invocations, never inventing a flag; points
   questions about the adopter's own data to `consult-project-memory`.
@@ -301,6 +304,7 @@ a rule the CLI already enforces:
 | **[Transfer storage](docs/reference/transfer-storage.md)** | Schema 3 since 2.3.0, whole-history capsules and origin-aware current checks |
 | **[Curated knowledge](docs/reference/curated-knowledge.md)** | Base contract, adopter configuration, declared extension |
 | **[Agent memory](docs/reference/agent-memory.md)** | The memory layer's rules, identity, and supersession |
+| **[Requested learning](docs/reference/learning.md)** | Scoped capture, selective review, outcome retention and interruption recovery |
 | **[Startup hooks](docs/reference/hooks.md)** | What runs at session start, and what it writes |
 | **[Journal](docs/reference/journal.md)** | The append-only record of what adoption did, and the `journal` subcommand |
 | **[Recall](docs/reference/recall.md)** | The `recall` command's full field reference, exit codes and known limitations |

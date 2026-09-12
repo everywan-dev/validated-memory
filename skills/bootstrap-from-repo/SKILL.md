@@ -109,7 +109,7 @@ moves become knowledge units under `knowledge/`.
 
 | Shape | Recognized by | Becomes |
 |---|---|---|
-| Hypothesis register | a document listing identified hypotheses (`H-1`, `H-A`, ...) each with a state such as confirmed / discarded / superseded, often as a table inside an instruction or context file | one knowledge unit per *closed* hypothesis, `verifiable`, with the document (and the query or command it cites) as provenance; a hypothesis marked as replaced yields a successor unit carrying `supersedes` |
+| Hypothesis register | a document listing identified hypotheses (`H-1`, `H-A`, ...) each with a state such as confirmed / discarded / superseded, often as a table inside an instruction or context file | one knowledge unit per *closed* register item, using the evidence state its inspected support establishes, with the document (and the query or command it cites) as provenance; a hypothesis marked as replaced yields a successor unit carrying `supersedes` |
 | Research report / validation record | a dated document under a research, validations, findings or analysis directory that states a verdict | one unit per verdict, `verifiable`, `provenance` naming the file and the commit read |
 | Verification query | `.sql` or script files under a verification or queries directory | never a unit of its own; `provenance` for the units that cite it |
 | Agent memory | Markdown files whose frontmatter carries `name`, `description` and `metadata.type` -- the shape `lint` enforces: a per-agent memory directory, a parked `.bak` of the harness memory, a memory directory of a sibling project | one proposal **per file**, keyed on the filename, which is the memory identity. A filename already present in `memory/` with the same claim is a duplicate by identity and is skipped by name in the report; a differing claim under an existing filename is a contradiction and yields **two changes**. This skill never absorbs the harness's own memory directory -- that is `init --harness-memory`'s job, done by the first startup hook -- and never copies a directory as a whole |
@@ -118,6 +118,12 @@ moves become knowledge units under `knowledge/`.
 
 Anything outside these shapes is reported under "not recognized" with its
 path, and is not proposed.
+
+“Closed” describes the source register's workflow status; it does not prove the
+claim or force `verifiable` evidence. Requested capture of an open hypothesis is
+still available through `create-knowledge-unit` with `evidence: hypothesis`.
+That single-item authoring path does not reopen this skill's bulk-import scan or
+authorize an automatic import.
 
 ## `measured` is earned by executing, never by citing
 

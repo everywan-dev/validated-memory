@@ -10,6 +10,12 @@ frontmatter carrying the base contract. Write the file directly (or via your
 usual editing tools) -- there is no `validated_memory` subcommand that
 creates one; `validate` only checks what you wrote.
 
+An explicit request to retain a scoped claim authorizes this bounded authoring
+work. Show the exact unit before writing, but do not add a redundant generic
+confirmation. An end-of-task suggestion is not yet a request: propose the
+distilled claim and wait for acceptance. Never save a raw transcript or promote
+evidence merely because an answer sounded convincing.
+
 ## The base contract, field by field
 
 <!-- canonical-base-contract -->
@@ -60,6 +66,10 @@ rationale:                      # optional; how this conclusion was chosen
   - Provenance is *not* probed: it records where the native artifact (a
     query, a document, a conversation) lives, for a human to go look. Put a
     link or a citation there, not something you expect a probe to check.
+    When provenance includes agent memory, name the `memory` layer, canonical
+    identity and ordinary repository-relative path such as
+    `memory/failed-retry.md`. Do not use a cross-layer wikilink and never put a
+    memory identity in knowledge `supersedes`.
 - **`rationale`** -- optional; most units are measurements and record no
   choice between alternatives. When present: a `question`, at least two
   `options`, and exactly one `disposition: chosen`. Option `label`s must be
@@ -91,6 +101,15 @@ If the project declares an extension (`knowledge-extension.md`), your unit
 may also carry the fields it declares, on top of the base contract; an
 undeclared field is an ERROR. See the "Declared extension" section of
 docs/reference/curated-knowledge.md.
+
+For a requested lesson, keep the attributed observation, tentative
+interpretation, applicable conditions, sources actually inspected and next useful
+check distinguishable in body prose. `hypothesis` is a valid retained result when
+support is unavailable. A later semantic correction is a new same-layer unit
+through `supersede-knowledge`, with the assessment and limits retained in the
+successor; a separate feedback entry is optional when it would add distinct
+history. Read [Requested learning and selective review](../../docs/reference/learning.md)
+for routing and the end-to-end example.
 
 ## Optional retained proposal
 
