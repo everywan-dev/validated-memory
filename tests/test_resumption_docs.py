@@ -90,6 +90,7 @@ def test_task_scope_and_semantic_judgments_remain_explicit(path):
                      "`record-use`", "correspondence", "acceptance", "independence",
                      "successor wording", "challenge disposition", "publication reflection",
                      "dependency-first", "complete", "two-line `read`", "preserve old",
-                     "selected agent-visible material remains follow-up work",
+                     "show-transfer import --origin project_uuid:unit_id --material",
+                     "selection_closures", "context-binding", "before proposal authoring",
                      "empirical usefulness improvement"):
         assert required in text

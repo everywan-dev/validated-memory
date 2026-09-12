@@ -82,8 +82,15 @@ Pending decisions: <evidence, applicability and downstream changes to resolve>
    narrow scope reveals a known narrow challenge. Different scope always requires
    a new complete consumer `read` and `record-use`. Missing local inputs do not
    hide retained known corrections; incomplete origin analysis blocks resumption.
-6. Perform explicitly decided semantic maintenance dependency-first where the
-   report establishes that order; otherwise inspect to establish the order.
+6. For imported material, before proposal authoring select the relevant receipt member with
+   `show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID --material`. Inspect its
+   complete selected semantic material, exact `selection_closures` membership and
+   known correction context. Additional `context-binding` declarations can be
+   earlier or later than the selected receipt. Missing proof or overflow refuses
+   without truncation; this view is not a receipt or inspection handle. Perform
+   explicitly decided maintenance dependency-first where the report establishes
+   order; otherwise inspect to establish it. Keep the mandatory complete two-line
+   `link-transfer`, `inspect` and `read` protocols at their normal stages.
    Inspect complete material before deciding correspondence, acceptance,
    independence, successor wording, challenge disposition or publication reflection.
    No report automatically makes those decisions. After maintenance or a changed
@@ -94,9 +101,12 @@ Pending decisions: <evidence, applicability and downstream changes to resolve>
 The report carries handles and statuses, not full foreign content. It does not
 replace complete `inspect` or two-line `read` protocols. Its actions are advisory
 data, never executable shell text; subsequent operations revalidate their inputs.
-No scheduler, remote discovery or automatic acceptance is provided. Selected
-agent-visible material remains follow-up work; this workflow makes no measured
-token or empirical usefulness improvement claim. See the
+No scheduler, remote discovery or automatic acceptance is provided. The
+[selected material view](transfer.md#selected-material-before-proposal-authoring)
+is unreleased after 2.3.0 and opens no foreign paths. Whole history remains in
+transport/storage; the selected view is not a replay capsule and does not establish
+external freshness. This workflow makes no measured token or empirical usefulness
+improvement claim. See the
 [report contract](consultation.md#task-resumption-report).
 
 ## A complete example: cutoff versus departure

@@ -362,3 +362,96 @@ pass before append.
 Historical resolutions remain recorded; later source support drift requires updated
 mapping/review. Local actor attribution and internally consistent hashes never
 prove source truth, live freshness or semantic sufficiency.
+
+## Selected material view
+
+**Unreleased after 2.3.0.** This additive `show-transfer --origin ... --material`
+report changes no storage schema, capsule or existing inventory/inspection bytes.
+The [command reference](transfer.md#selected-material-before-proposal-authoring)
+defines paired selector flags and refusal behavior. The selected identity must be
+an exact member of the original import's receipt.
+
+The single canonical JSON line has the existing `schema_version: 1`,
+`operation: show-transfer`, `status: historical` and
+original import `id`, plus these required fields:
+
+```text
+selection = {workspace, receipt, identity, unit_sha256, binding, scope}
+known_heads = [{workspace, head}]
+selection_closures = [{workspace, receipt, root: {project, unit}, scope,
+                      bindings: [binding_or_support_review_handle],
+                      via_links: [{workspace, id}]}]
+material = {units, support, bindings, predecessor_files, corrections, links}
+audit_reference_policy = <explicit qualified audit-reference boundary>
+limitations = <historical material and authorization/freshness limitations>
+```
+
+`selection_closures` records exact receipt-selected binding membership for the
+initial selected closure and every transitive source receipt closure reached by
+retaining transfer links. Each binding handle belongs to that row's workspace;
+its full unchanged event appears in `material.bindings`. Empty `via_links` marks
+the initial selection. Equivalent closures are deduplicated and their qualified
+`via_links` merged, with deterministic ordering. Additional context declarations
+remain in `material.bindings` without acquiring receipt-selected membership.
+
+Units and predecessor rows contain `workspace`, `identity`, complete `file` and
+`roles`; supports are `{workspace, project, file}`, with complete file bytes.
+`material.units` holds bound revisions, including predecessors with a `predecessor`
+role. `material.predecessor_files` holds only canonical predecessor revisions
+without a retained binding. Complete predecessor material is the union of the
+predecessor roles across both arrays; do not inspect only `predecessor_files`.
+Bindings, corrections and links contain workspace-qualified complete original
+events. Roles are `selected`, `dependency`, `predecessor`, `successor`,
+`context-binding` and `transitive`; an exact qualified file can have multiple roles.
+`context-binding` means an additional retained declaration, whether earlier or
+later than a selection. Original event chronology decides its age. Support identity
+includes SHA as well as path: changed support bytes at the same path never
+silently replace an earlier review. Distinct canonical revisions stay distinct.
+
+Initial binding seeds are the selected receipt member and its exact receipt-bound
+dependency closure. For reached identities, retain all binding/support-review
+declarations from the newest compatible imported history. Additional declarations
+resolve dependencies by exact identity and unit hash, including every matching
+retained binding/review when no receipt selects one. Do not invent a binding
+selection that a declaration never made. Missing or ambiguous required canonical
+proof refuses; multiple reviews of identical canonical bytes are retained context,
+not canonical revision ambiguity.
+
+Recursively retain canonical predecessors from positive canonical observations,
+including those without receipts. Follow canonical successors across the connected
+supersession family, including sibling successors, their full declared support and
+dependencies. A new correction successor without binding/support evidence
+refuses rather than hiding a correction. Follow effective retaining transfer links
+using the destination's newest compatible origin registry, preserving relevant
+independent and overridden dispositions as historical context.
+
+Complete correction events include matching proposals, challenges, incorporation
+observations and conflicts for reached identities, plus transitively referring
+decisions, resolutions and choices. Proposed bytes never become canonical proof.
+Known canonical remedies enter the same full material closure. Unselected conflict
+candidates retain their full declarations, without claiming their evidence was
+included or inspected.
+
+`audit_reference_policy` explicitly permits historical prior pointers, inspection
+handles, snapshot heads, registration/relocation IDs and unrelated conflict
+candidates to remain qualified opaque audit references. Required declared
+dependencies and canonical remedy/successor material are not audit exceptions.
+Do not recursively embed entire inspection, snapshot or capsule events just to
+close audit references. This is complete selected semantic material under this
+closure, not complete chronology or a self-contained replay capsule. Whole history
+remains retained and disclosed by whole-history export.
+
+One shared 128-node/512-edge budget covers the entire selected view, including
+nested origins; helpers do not reset it. Output defaults to 1,048,576 bytes, with
+`--max-bytes` range 2,048–1,048,576. Construct and bound the complete line before
+stdout: missing proof, ambiguity, cyclic canonical ancestry or graph/byte overflow
+refuse with no stdout, never truncation. Valid later reference cycles remain
+inspectable as finite historical context even when a fresh read refuses them.
+Original canonical predecessors can lack bindings; the requirement for a new
+correction successor declaration does not reclassify that retained ancestry.
+Known ineligibility alone permits historical inspection.
+The view opens no foreign paths, creates no store event/receipt/inspection handle,
+and performs no implicit upgrade. No result proves live freshness, semantic
+acceptance or authenticated origin. Mandatory complete two-line link/inspect/read
+protocols remain separate; `transfer_links.source_material`, `inspection_text`
+serialization and chronological replay bytes remain unchanged.

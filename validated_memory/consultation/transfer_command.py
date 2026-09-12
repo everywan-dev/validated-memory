@@ -196,8 +196,12 @@ def run(args, database, stdout):
     if args.operation == 'export-transfer':
         export(args, database, stdout)
     elif args.operation == 'show-transfer':
-        wire = m.line('show-transfer', 'historical; live origin not checked', id=args.handle, inventory=inventory(database.state, args.handle))
-        m.require(len(wire.encode('utf-8')) <= args.max_bytes, 'complete transfer inventory exceeds --max-bytes')
+        if args.material is not None:
+            from .transfer_material import report
+            wire = report(args, database.state)
+        else:
+            wire = m.line('show-transfer', 'historical; live origin not checked', id=args.handle, inventory=inventory(database.state, args.handle))
+            m.require(len(wire.encode('utf-8')) <= args.max_bytes, 'complete transfer inventory exceeds --max-bytes')
         emit(stdout, wire)
     else:
         m.require(database.version == 3, 'transfer writes require schema 3; run consultation upgrade explicitly')

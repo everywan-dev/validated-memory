@@ -40,11 +40,13 @@ Current reads propagate their requested scope, including a narrower scope, throu
 the reached origins. Local acceptance does not bypass an applicable origin gate
 when the read scope is narrowed.
 
-Full material remains in historical `show IMPORT`. Use bounded read-only JSON
-selection, as below, to inspect the selected bytes without sending an entire
-capsule into routine agent context. Do not edit capsule JSON, construct event
-hashes, or manufacture acceptance. Author destination Markdown and local support
-files through the normal authorized workflow.
+Full history remains in historical `show IMPORT`. The selected material view
+below (unreleased after 2.3.0) returns complete retained semantic material for a
+receipt member before local proposal authoring, without displaying the whole
+capsule. Keep inventory for known statuses and `resume-use` for task resumption.
+Do not edit capsule JSON, construct event hashes, or manufacture acceptance.
+Author destination Markdown and local support files through the normal authorized
+workflow; the view cannot replace required complete review inspections.
 
 ## Commands and returned material
 
@@ -57,6 +59,7 @@ an authenticated person or evidence of human approval.
 | `export-transfer RECEIPT --include-workspace-history [--max-bytes N] [--assess]` | Read-only historical export. Assess returns counts, exact bytes, disclosure and `supported`; actual export emits only canonical capsule JSON plus newline. |
 | `import-transfer FILE --actor ACTOR --reason REASON` | Validate and recapture a safe local capsule, then retain one import. Return `id` and compact `inventory`; no foreign root is opened. |
 | `show-transfer IMPORT [--max-bytes N]` | Read-only bounded inventory with scope, mapping material, known statuses, affected local revisions and dependency-first recovery instructions. |
+| `show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID --material [--max-bytes N]` | Unreleased after 2.3.0: complete selected semantic material and known correction context, with exact receipt-selected binding membership. |
 | `link-transfer PROPOSAL --import IMPORT --origin PROJECT_UUID:ID [--dependency ORIGIN_PROJECT:ID=DEST_ALIAS:ID] [--predecessor ORIGIN_PROJECT:ID=DEST_ALIAS:ID] [--origin-only-predecessor ORIGIN_PROJECT:ID] [--prior LINK] [--max-bytes N] --actor ACTOR --reason REASON` | Inspect complete relevant source material and retain explicit correspondence to the local proposal. Mapping flags are repeatable. |
 | `detach-transfer PROPOSAL --from LINK [--prior LINK] [--max-bytes N] --actor ACTOR --reason REASON` | Inspect inherited material/corrections and record an attributed independent canonical successor. It cannot detach the identical local revision in place. |
 
@@ -94,6 +97,103 @@ validation. Relinking changed upstream context requires the exact `--prior` and
 fresh local inspection/decision. Changed attribution alone does not create another
 import or equivalent link. A shorter compatible capsule cannot roll back a newer
 known origin; divergent histories refuse rather than silently choosing a fork.
+
+## Selected material before proposal authoring
+
+**Unreleased after 2.3.0.** The agent selects an exact member of the imported
+receipt by its returned project UUID and unit ID:
+
+```text
+PYTHONPATH=. python3 -P -m validated_memory consultation --store STORE show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID --material [--max-bytes N]
+```
+
+`--origin` and `--material` must occur together, once each. Neither flag changes
+plain `show-transfer IMPORT`: it still returns the existing inventory. The member
+must belong to this import's selected receipt, not merely appear somewhere in its
+history. Scope and original binding come from that receipt. A newer canonical
+successor can appear as correction context without becoming the selected origin.
+
+The one-line canonical JSON view retains full unit and support bytes, exact binding
+and support-review declarations, recursive canonical predecessors, known bound
+successors and relevant correction events with attribution. It follows retaining
+transfer links into transitive source receipt closures and preserves inherited
+independent and overridden link context. A connected supersession family can
+include sibling successors; it is not restricted to one preferred successor.
+Proposed text stays visibly proposed rather than proving canonical installation.
+Unrelated root content is excluded; full conflict candidate declarations may
+still name unselected candidates whose full evidence is not included.
+
+Read `selection` for the original workspace, receipt, identity, unit revision,
+binding and scope. `selection_closures` identifies the exact selected binding
+handles for the initial and transitive source receipts, with qualified `via_links`
+for transitive selection. Full original events appear in `material.bindings`.
+Additional declarations have `context-binding` roles whether earlier or later
+than a selection; their chronology remains in the events. A changed support file
+at the same path retains both revisions by hash. Bound predecessor revisions
+appear in `material.units` with a `predecessor` role; `predecessor_files` holds
+canonical predecessors without retained bindings. Read both arrays for ancestry. Do not treat all displayed
+bindings as receipt-selected or as current justification. `known_heads` identifies
+the newest compatible histories available locally. See the
+[complete output shape](transfer-storage.md#selected-material-view).
+
+Historical prior pointers, inspection handles, snapshot heads, registration or
+relocation IDs and unrelated conflict candidates may remain qualified opaque
+audit references. Required dependencies and canonical remedy/successor material
+cannot be omitted as audit references. This is complete selected semantic material
+under the documented closure, not a self-contained replay capsule or complete
+chronology. Whole history remains in transport and storage; export disclosure and
+storage limits are unchanged.
+
+The default output bound is 1,048,576 bytes; `--max-bytes` accepts 2,048–1,048,576.
+One shared 128-node/512-edge budget spans dependencies, supersession and nested
+origins. Missing or ambiguous required proof, cyclic canonical ancestry and
+byte/graph overflow refuse the entire view before stdout, without truncation.
+A valid later reference cycle can remain inspectable as finite historical context
+even when a fresh read refuses it. Known ineligibility alone does not prevent
+historical inspection. Original canonical predecessors may lack bindings; a
+new unsupported correction successor requires its declared evidence. Exit 0 returns historical material;
+exit 1 means unavailable, inconsistent or over-bound material; exit 2 means invalid
+arguments, including unpaired or duplicate selector flags.
+
+No foreign paths are opened, including `source_store_path`. The operation is
+read-only, creates no event, receipt or inspection handle, and performs no implicit
+upgrade. It establishes neither live origin freshness, authenticated identity nor
+semantic acceptance. Use it before proposal authoring when the required retained
+material is available; resolve a refusal rather than constructing a partial usable
+view. Then consume the mandatory complete two-line `link-transfer`, `inspect` and
+`read` outputs at their normal stages. Existing inspection serialization and replay
+bytes remain unchanged; this view cannot authorize those stages or replace them.
+
+### Measured synthetic output
+
+Two runs of the public fixtures in
+[`tests/test_transfer_material.py`](../../tests/test_transfer_material.py)
+measured complete UTF-8 wire outputs. Each column compares outputs for the same
+imported state:
+
+| Output | Unrelated-history fixture, bytes | Three-workspace correction fixture, bytes |
+| --- | ---: | ---: |
+| Historical `show IMPORT` | 51,434 | 87,309 |
+| Exported whole-history capsule | 50,976 | 86,857 |
+| Selected material view | 3,321 | 43,153 |
+
+The unrelated-history selected view retained one unit, one support file and one
+binding event; this fixture had no predecessor files, corrections or links. Its
+test pins the exact selected canonical text and binding and excludes the unrelated
+canonical sentinel.
+
+The `test_complete_everyday_handoff_material_matches_nested_history_and_measures_wire`
+case retained six units, five support files, six bindings, fifteen correction
+events, two links and three `selection_closures`. Its bound predecessors are among
+the units; there are no separate predecessor-file rows. The test compares every
+material file and event with the original nested capsules, pins exact selected
+binding membership and verifies that all three stores and adopters remain unchanged.
+
+These are observed fixture sizes, not fixed output sizes or a guarantee that
+every selected view is smaller. Retained path lengths affect wire sizes. Connected
+supersession families and full event payloads can increase output or exceed its
+bounds. Bytes are not model tokens, and this comparison does not establish
+empirical usefulness or scaling.
 
 ## Local mappings and origin changes
 
@@ -284,39 +384,47 @@ retain imported b import-transfer "$transfer_demo/contribution.json" "${actor[@]
 invoke b 0 show-transfer "$imported"
 ```
 
-Select only the receipt's bounded content from the retained import for inspection.
-The selector below reads JSON and writes stdout only; it never extracts archive
-paths or runs imported text. The next authoring block explicitly creates local
-support and candidate files, adapting the predecessor disposition without creating
-a foreign supersession edge. The CLI generates all mechanical hashes and handles.
+The next stage uses the selected material view, unreleased after 2.3.0. The agent
+reads the origin identity from the returned inventory and acquires complete
+selected material before creating a local proposal. It writes only explicitly
+chosen local paths; imported paths are never executed or automatically extracted.
+The CLI generates mechanical hashes and handles.
 
 ```bash
-invoke b 0 show "$imported" > /dev/null
-python3 - "$(cat "$transfer_demo/last-output")" <<'PY' > "$transfer_demo/selected.json"
+origin_project=$(python3 - "$(cat "$transfer_demo/last-output")" <<'PYCODE'
 import json, sys
 from pathlib import Path
-capsule = json.loads(Path(sys.argv[1]).read_text())['artifact']['payload']['capsule']
-receipt = next(event for event in capsule['events'] if event['id'] == capsule['receipt'])
-content = receipt['payload']['content']
-encoded = json.dumps(content, ensure_ascii=False).encode('utf-8')
-assert len(encoded) + 1 <= 1048576, 'selected inspection exceeds 1 MiB'
-sys.stdout.buffer.write(encoded + b'\n')
-PY
-cat "$transfer_demo/selected.json"
-origin_project=$(python3 - "$transfer_demo/selected.json" <<'PY'
-import json, sys
-from pathlib import Path
-content = json.loads(Path(sys.argv[1]).read_text())
-print(next(unit['identity']['project'] for unit in content['units'] if unit['identity']['unit'] == 'kb-a2'))
-PY
+inventory = json.loads(Path(sys.argv[1]).read_text())['inventory']
+print(next(unit['identity']['project'] for unit in inventory['units'] if unit['identity']['unit'] == 'kb-a2'))
+PYCODE
 )
+invoke b 0 show-transfer "$imported" --origin "$origin_project:kb-a2" --material > /dev/null
+cp "$(cat "$transfer_demo/last-output")" "$transfer_demo/selected.json"
+python3 - "$transfer_demo/selected.json" <<'PYCODE'
+import json, sys
+from pathlib import Path
+encoded = Path(sys.argv[1]).read_bytes().removesuffix(b'\n')
+assert len(encoded) + 1 <= 1048576, 'selected inspection exceeds 1 MiB'
+view = json.loads(encoded)
+assert view['operation'] == 'show-transfer'
+assert view['status'] == 'historical'
+assert view['selection']['identity']['unit'] == 'kb-a2'
+initial, = [row for row in view['selection_closures'] if not row['via_links']]
+assert view['selection']['binding'] in initial['bindings']
+# Display the entire view, including selected membership and correction context.
+sys.stdout.buffer.write(encoded + b'\n')
+PYCODE
 python3 - <<'PY'
 import json, os
 from pathlib import Path
 root = Path(os.environ['transfer_demo'])
-content = json.loads((root / 'selected.json').read_text())
+view = json.loads((root / 'selected.json').read_text())
+content = view['material']
 for filename in ('basis', 'a2'):
-    support = next(item for item in content['support'] if item['path'] == f'support/{filename}.txt')
+    support = next(item['file'] for item in content['support']
+                   if item['workspace'] == view['selection']['workspace']
+                   and item['project'] == view['selection']['identity']['project']
+                   and item['file']['path'] == f'support/{filename}.txt')
     (root / 'b/support' / (filename + '.txt')).write_text(support['text'], encoding='utf-8', newline='')
 (root / 'basis-candidate.md').write_text('---\nid: kb-local-basis\nevidence: verifiable\n---\nThis local exercise counts sealed training boxes.\n')
 (root / 'plan-candidate.md').write_text('---\nid: kb-local-plan\nevidence: verifiable\n---\nThis local exercise admits twelve sealed training boxes.\n')

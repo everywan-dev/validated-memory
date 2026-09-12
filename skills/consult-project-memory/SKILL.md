@@ -222,9 +222,15 @@ Never export an actual operational corpus merely to demonstrate the command.
 A supported capsule is historical evidence with live origin not checked.
 
 After import, use show-transfer for scope, dependencies, predecessor availability,
-known corrections and affected-link recovery. Use bounded read-only JSON selection
-from historical show for complete selected bytes, as in the public example; do
-not inject the entire capsule into routine context or edit its mechanical JSON.
+known corrections and affected-link recovery. Unreleased after 2.3.0, use
+`show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID --material` before proposal
+authoring for complete selected semantic material, as in the public example. Both
+selector flags are required together, once each; the origin must be an exact
+member of this import's selected receipt. No foreign paths are opened. Preserve
+`selection_closures`: they identify exact original/transitive receipt-selected
+bindings. Additional `context-binding` declarations may be earlier or later; do
+not treat all displayed reviews as selected. Use the returned material and known
+correction context without injecting an entire capsule or editing mechanical JSON.
 Local scope must equal the selected receipt scope. Copying evidence does not create
 independent corroboration or authenticated attribution.
 
@@ -283,7 +289,9 @@ This adds no automatic skill trigger, scheduler or remote discovery.
    analysis blocks resumption. A broad historical check may be current while
    the requested narrow scope exposes a known narrow challenge. Different scope
    always requires a new complete consumer `read` and `record-use`.
-5. Follow advisory action handles in dependency-first order where established;
+5. Before proposal authoring, use the selected material view above when complete
+   retained material is available; keep inventory and `resume-use` for statuses.
+   Follow advisory action handles in dependency-first order where established;
    otherwise inspect to establish ordering. Consume complete inspection material
    before explicit, attributed semantic decisions. Never automatically create
    correspondence, acceptance, independence, successor wording, challenge
@@ -292,6 +300,15 @@ This adds no automatic skill trigger, scheduler or remote discovery.
    through the two-line `read` protocol and record its new use. Preserve old
    handles and history; subsequent operations revalidate their own inputs.
 
-The report carries statuses and handles, not complete foreign material. Selected
-agent-visible material remains follow-up work. No measured token or empirical
-usefulness improvement is claimed.
+The resumption report carries statuses and handles, not complete foreign material.
+The selected material view supplies a separate bounded historical closure, including
+connected supersession family and sibling successors, with qualified opaque audit
+references. It is not a self-contained replay capsule; whole history remains in
+transport/storage. Missing proof, ambiguity or overflow refuses before stdout
+without truncation. Limits are 2,048–1,048,576 bytes, default 1,048,576, with one
+shared 128-node/512-edge budget across nested origins. Exit 0 returns historical
+material, 1 refuses acquisition and 2 reports invalid arguments. No receipt, event
+or inspection handle is created, and no live freshness or semantic acceptance is
+established. Mandatory complete two-line `link-transfer`, `inspect` and `read`
+protocols remain unchanged. No measured token or empirical usefulness improvement
+is claimed.

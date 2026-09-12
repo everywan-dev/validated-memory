@@ -14,6 +14,9 @@ def parser(commands, single):
             sub.add_argument('--assess', action='store_true')
         if operation != 'import-transfer':
             sub.add_argument('--max-bytes', action=single, type=int, default=tv.CAP if operation == 'export-transfer' else tv.WIRE)
+        if operation == 'show-transfer':
+            sub.add_argument('--origin', action=single)
+            sub.add_argument('--material', action=single, nargs=0)
         if operation == 'link-transfer':
             sub.add_argument('--import', dest='import_id', action=single, required=True)
             sub.add_argument('--origin', action=single, required=True)
@@ -44,6 +47,10 @@ def normalize(args):
             m.sha(getattr(args, field))
     if hasattr(args, 'max_bytes'):
         m.integer(args.max_bytes, 2048, tv.CAP if args.operation == 'export-transfer' else tv.WIRE)
+    if args.operation == 'show-transfer':
+        m.require((args.origin is not None) == (args.material is not None), '--origin and --material must be supplied together')
+        if args.origin is not None:
+            args.origin = parse_origin(args.origin)
     if args.operation == 'link-transfer':
         args.origin = parse_origin(args.origin)
         for field in ('dependency', 'predecessor'):

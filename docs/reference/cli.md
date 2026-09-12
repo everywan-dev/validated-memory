@@ -877,3 +877,19 @@ import or foreign receipt is never local checked-use authorization. Link/detach
 outputs complete source material before its committed handle; local proposal
 inspection/acceptance/incorporation remains separate. [Transfer storage](transfer-storage.md)
 defines closed capsules, prefix-compatible origins and receipt3 current-use gates.
+
+
+Unreleased after 2.3.0, `show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID
+--material [--max-bytes N]` returns complete selected semantic material before
+proposal authoring. Both selector flags are required together, once each; with
+neither, inventory output is unchanged. The origin must be an exact member of
+the import's selected receipt. The one-line historical JSON includes
+`selection_closures` for exact original/transitive receipt binding membership;
+additional `context-binding` declarations may be earlier or later. Full history
+remains in transport/storage; this view is not a replay capsule, acceptance or an
+inspection handle. No foreign paths are opened and no store mutation occurs.
+Default output bound is 1,048,576 bytes (range 2,048–1,048,576), with one shared
+128-node/512-edge budget. Missing proof or overflow refuses before stdout, never
+truncates. Exit 0 returns historical material, 1 refuses material acquisition,
+and 2 reports invalid arguments. See [selected material](transfer.md#selected-material-before-proposal-authoring)
+for closure, audit references and the mandatory complete two-line review protocols.
