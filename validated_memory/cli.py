@@ -53,6 +53,20 @@ def _max_bytes_range(value):
     return parsed
 
 
+def _timeout_seconds(value):
+    try:
+        parsed = float(value)
+    except ValueError:
+        parsed = float("nan")
+    # NaN fails every comparison, and infinity exceeds the maximum.
+    if not 0 < parsed <= probe.MAX_TIMEOUT_SECONDS:
+        raise argparse.ArgumentTypeError(
+            "--timeout must be a number of seconds above 0 and at most "
+            f"{probe.MAX_TIMEOUT_SECONDS:g}"
+        )
+    return parsed
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="validated-memory",
@@ -128,6 +142,18 @@ def build_parser():
                 help=(
                     "unit file or directory to probe "
                     f"(default: {validate.DEFAULT_KNOWLEDGE_DIR}/)"
+                ),
+            )
+            subparser.add_argument(
+                "--timeout",
+                type=_timeout_seconds,
+                default=probe.DEFAULT_TIMEOUT_SECONDS,
+                metavar="SECONDS",
+                help=(
+                    "deadline for each probe command, above 0 and at most "
+                    f"{probe.MAX_TIMEOUT_SECONDS:g}; an expired command is "
+                    "killed and reads unknown "
+                    f"(default: {probe.DEFAULT_TIMEOUT_SECONDS:g})"
                 ),
             )
         if name == "init":
@@ -307,7 +333,9 @@ def main(argv=None):
     if args.command == "lint":
         return lint.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
     if args.command == "probe":
-        return probe.run(args.path, stdout=sys.stdout, stderr=sys.stderr)
+        return probe.run(
+            args.path, stdout=sys.stdout, stderr=sys.stderr, timeout=args.timeout
+        )
     if args.command == "recall":
         if args.map and args.query is not None:
             args._recall_subparser.error("--map is mutually exclusive with a supplied query")

@@ -386,7 +386,7 @@ finding (source validation, or a `--check` mismatch); `2` a usage error.
 ### `probe`
 
 ```
-python3 -P -m validated_memory probe [PATH]
+python3 -P -m validated_memory probe [PATH] [--timeout SECONDS]
 ```
 
 Runs freshness probes over the anchors of every *active* curated-knowledge
@@ -419,13 +419,58 @@ registered command is split with `shlex.split` and run **without a shell**.
 Any failure falls back to `unknown`, with a note explaining why, and never
 aborts the run: no probe registered for the anchor's `kind` (or no
 `validated-memory.md` at all), a command that cannot be run (parse failure,
-executable not found), a non-zero exit, stdout that does not parse as JSON,
-or a verdict outside the three-value domain. Each such fallback is reported
-to stderr as a WARNING finding, in the usual shape:
+executable not found), a command still running at its deadline, a non-zero
+exit, stdout that cannot be decoded or does not parse as JSON, or a verdict
+outside the three-value domain. Each such fallback is reported to stderr as a
+WARNING finding, in the usual shape:
 
 ```
 WARNING: <unit>: anchors[<i>]: <message>
 ```
+
+**The deadline.** `--timeout SECONDS` bounds how long each registered
+command may run, separately for every anchor. It defaults to `60` seconds,
+which leaves room above the bundled `git_ref` probe's own 30-second limit;
+pass a larger value to allow slower probes. It accepts a finite number above
+`0` and at most `3600`; any other value is a usage error (exit `2`) reported
+before validation, probing or any write. A command that reaches its deadline
+is killed and its anchor records `unknown` with a `null` detail, with a
+WARNING naming the timeout, and the run continues with the next anchor. There
+is no retry. On POSIX the command runs in its own session, and on expiry its
+whole process group is killed and the command itself reaped; a descendant
+that moved to another process group escapes that cleanup. On other platforms
+only the command itself is killed and reaped: its descendants are not
+contained. After a command exits normally, nothing it left running is killed.
+The same cleanup runs when the run is interrupted, before the interruption
+propagates.
+
+Cleanup never waits indefinitely. If the kill fails for any reason other
+than the command having already exited, the WARNING says so, and on POSIX the
+command itself is then killed directly -- its descendants may survive.
+Reaping waits at most 5 seconds after the kill; a command still not reaped is
+named in the WARNING and left behind. For example:
+
+```
+WARNING: kb-0001: anchors[0]: probe command '<cmd>' timed out after 60 second(s); it was not reaped within 5 second(s)
+```
+
+The deadline covers the command, not the run: validation, starting the
+process, filesystem or kernel stalls, and cleanup are outside it, so a run
+with many anchors may take far longer than `--timeout`. It is not a sandbox
+and bounds no resource other than time.
+
+The command's stdin, stdout and stderr are anonymous temporary files, created
+where Python's `tempfile` module puts them: the directory named by `TMPDIR`,
+`TEMP` or `TMP`, or otherwise the platform default. A caller who points one
+of those variables inside the adopter project puts the files there. They have
+no lasting name and are never product state: on most POSIX systems they are
+unlinked as they are created, and elsewhere they are deleted when closed.
+Output volume is not limited. The files can grow until the command exits or
+reaches its deadline, and a descendant that survives the command while still
+holding stdout or stderr can keep writing to them after that; their storage
+is released only when every process holding them has closed them. Because
+they are files and not pipes, such a descendant does not keep the run
+waiting once the command itself has exited.
 
 **The verdict log.** Every anchor probed -- successful or fallen back --
 appends one JSON line to `verdicts.jsonl` in the current working directory,
@@ -482,7 +527,7 @@ probe: 3 anchor(s) probed across 1 unit(s): 1 current, 1 drifted, 1 unknown
 Exit codes: `0` clean, or WARNING-only findings -- **a `drifted` or
 `unknown` verdict is data, not a finding, and never gates `probe`**; `1` an
 ERROR (source validation, or the verdict log could not be written); `2` a
-usage error.
+usage error, including an invalid `--timeout`.
 
 #### The bundled `git_ref` probe
 
