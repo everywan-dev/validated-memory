@@ -768,7 +768,7 @@ command that mutates the thing it reports on is not a status command.
 It computes one internal pass over the curated layer, the agent-memory
 layer, the derived index and the verdict log -- the same rules `validate`,
 `lint` and `derive --check` already enforce, reused rather than re-run, and
-the log read once -- and reports four sections:
+the log read once -- and reports five sections:
 
 - **`validate:`** the curated layer against the base contract plus the
   adopter's declared extension, exactly like `validate`.
@@ -786,6 +786,19 @@ the log read once -- and reports four sections:
   **`--fail-on drifted`** and/or **`--fail-on unknown`** (repeatable): an
   active unit carrying that verdict then becomes a gating ERROR naming the
   unit.
+- **`coverage:`** five lines after freshness and any age summary, before the overall
+  line: total, active and superseded units, then, for each evidence state
+  (`measured`, `verifiable`, `hypothesis`, in that order), its active units
+  split into `anchorless` (missing or empty `anchors`), `never-recorded`,
+  `partially-recorded` and `fully-recorded`. A unit is fully recorded when
+  every current anchor key `(unit, system, kind, payload)` has a record in the
+  log, partially when only some do. Superseded units appear only in the
+  totals. Recorded means a matching verdict record exists, whatever its verdict:
+  this does not mean the anchor is current. A payload change creates a different
+  key, so an old record does not count unless the log also contains a record
+  matching the new key. Counts only, never gated, no flag changes them. Omitted
+  entirely when source validation reports an error or the verdict log cannot
+  be read; a missing log is an empty one.
 
 **Verdict age** (see
 [ADR 0004](../adr/0004-verdict-age-belongs-to-status-never-to-the-derived-index.md)):
@@ -811,6 +824,11 @@ status: lint: 3 memory file(s) checked, 0 error(s), 0 warning(s)
 status: index: up to date
 status: freshness: 2 active unit(s): 1 current, 1 drifted, 0 unknown
 status: age: 1 aged, 0 age-unknown (max 30 day(s))
+status: coverage: 2 unit(s): 2 active, 0 superseded
+status: coverage: measured: 1 active unit(s): 0 anchorless, 0 never-recorded, 0 partially-recorded, 1 fully-recorded
+status: coverage: verifiable: 1 active unit(s): 0 anchorless, 0 never-recorded, 1 partially-recorded, 0 fully-recorded
+status: coverage: hypothesis: 0 active unit(s): 0 anchorless, 0 never-recorded, 0 partially-recorded, 0 fully-recorded
+status: coverage: recorded means a matching verdict exists, not that it is current
 status: 0 error(s), 0 warning(s) overall
 ```
 

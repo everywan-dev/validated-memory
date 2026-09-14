@@ -647,6 +647,368 @@ def test_age_check_excludes_a_superseded_units_anchor(adopter_dir, write_unit, r
     assert "status: age: 0 aged, 0 age-unknown (max 10 day(s))" in result.stdout
 
 
+# --- coverage: counts from the same documents and verdict snapshot ----------
+
+COVERAGE_NOTE = (
+    "status: coverage: recorded means a matching verdict exists, not that it is current"
+)
+
+
+def _coverage_unit(unit_id, evidence, anchors=None, supersedes=(),
+                   captured_at="2026-08-01T00:00:00Z"):
+    """Unit frontmatter; `anchors` lists `(system, ref)` pairs, `None` omits
+    the field, and a `None` ref writes an empty payload."""
+    lines = [f"id: {unit_id}", f"evidence: {evidence}"]
+    if supersedes:
+        lines.append("supersedes:")
+        lines.extend(f"  - {target}" for target in supersedes)
+    if anchors is not None and not anchors:
+        lines.append("anchors: []")
+    elif anchors:
+        lines.append("anchors:")
+        for system, ref in anchors:
+            lines.extend(
+                [f"  - system: {system}", "    kind: git_ref",
+                 f"    captured_at: {captured_at}"]
+            )
+            lines.extend(
+                ["    payload: {}"] if ref is None
+                else ["    payload:", f"      ref: {ref}"]
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _coverage_record(adopter_dir, unit, system, verdict="current", payload=None):
+    _write_record(
+        adopter_dir,
+        recorded_at="2026-08-01T00:00:00Z",
+        unit=unit,
+        system=system,
+        kind="git_ref",
+        payload={} if payload is None else payload,
+        verdict=verdict,
+        detail=None,
+    )
+
+
+def _coverage_lines(total, active, superseded, measured, verifiable, hypothesis):
+    lines = [f"status: coverage: {total} unit(s): {active} active, {superseded} superseded"]
+    for evidence, (anchorless, never, partial, full) in (
+        ("measured", measured),
+        ("verifiable", verifiable),
+        ("hypothesis", hypothesis),
+    ):
+        lines.append(
+            f"status: coverage: {evidence}: {anchorless + never + partial + full} "
+            f"active unit(s): {anchorless} anchorless, {never} never-recorded, "
+            f"{partial} partially-recorded, {full} fully-recorded"
+        )
+    return lines + [COVERAGE_NOTE]
+
+
+def _assert_no_coverage(stdout):
+    assert "status: coverage:" not in stdout
+    assert stdout.splitlines()[-1].endswith(" overall")
+
+
+def test_coverage_crosses_every_evidence_state_with_every_class(
+    adopter_dir, write_unit, run_cli
+):
+    run_cli("init", cwd=adopter_dir)
+    number = 0
+    for evidence in ("measured", "verifiable", "hypothesis"):
+        for coverage in ("anchorless", "never", "partial", "full"):
+            number += 1
+            unit_id = f"kb-{number:04d}"
+            anchors = {
+                "anchorless": [],
+                "never": [("repo-a", None)],
+                "partial": [("repo-a", None), ("repo-b", None)],
+                "full": [("repo-a", None), ("repo-b", None)],
+            }[coverage]
+            write_unit(f"{unit_id}.md", _coverage_unit(unit_id, evidence, anchors))
+            if coverage in ("partial", "full"):
+                _coverage_record(adopter_dir, unit_id, "repo-a")
+            if coverage == "full":
+                _coverage_record(adopter_dir, unit_id, "repo-b")
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "status: validate: 12 unit(s) checked, 0 error(s), 3 warning(s)",
+        "status: lint: 0 memory file(s) checked, 0 error(s), 0 warning(s)",
+        "status: index: skipped (--skip-index)",
+        "status: freshness: 12 active unit(s): 3 current, 0 drifted, 9 unknown",
+        "status: coverage: 12 unit(s): 12 active, 0 superseded",
+        "status: coverage: measured: 4 active unit(s): 1 anchorless, 1 never-recorded, "
+        "1 partially-recorded, 1 fully-recorded",
+        "status: coverage: verifiable: 4 active unit(s): 1 anchorless, 1 never-recorded, "
+        "1 partially-recorded, 1 fully-recorded",
+        "status: coverage: hypothesis: 4 active unit(s): 1 anchorless, 1 never-recorded, "
+        "1 partially-recorded, 1 fully-recorded",
+        COVERAGE_NOTE,
+        "status: 0 error(s), 3 warning(s) overall",
+    ]
+
+
+def test_coverage_of_an_empty_corpus_reports_zero_counts(adopter_dir, run_cli):
+    run_cli("init", cwd=adopter_dir)
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-6:-1] == _coverage_lines(
+        0, 0, 0, (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)
+    )
+
+
+def test_missing_and_empty_anchors_are_both_anchorless(adopter_dir, write_unit, run_cli):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", _coverage_unit("kb-0001", "measured"))
+    write_unit("kb-0002.md", _coverage_unit("kb-0002", "measured", []))
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-6:-1] == _coverage_lines(
+        2, 2, 0, (2, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)
+    )
+
+
+def test_superseded_units_count_only_in_the_totals(adopter_dir, write_unit, run_cli):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", _coverage_unit("kb-0001", "hypothesis", [("repo-a", None)]))
+    write_unit("kb-0002.md", _coverage_unit("kb-0002", "hypothesis", []))
+    write_unit(
+        "kb-0003.md",
+        _coverage_unit(
+            "kb-0003", "verifiable", [("repo-c", None)], supersedes=("kb-0001", "kb-0002")
+        ),
+    )
+    _coverage_record(adopter_dir, "kb-0001", "repo-a")
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-6:-1] == _coverage_lines(
+        3, 1, 2, (0, 0, 0, 0), (0, 1, 0, 0), (0, 0, 0, 0)
+    )
+
+
+def test_recorded_counts_any_verdict_not_only_current(adopter_dir, write_unit, run_cli):
+    run_cli("init", cwd=adopter_dir)
+    write_unit(
+        "kb-0001.md",
+        _coverage_unit(
+            "kb-0001", "measured", [("repo-a", None), ("repo-b", None), ("repo-c", None)]
+        ),
+    )
+    write_unit("kb-0002.md", _coverage_unit("kb-0002", "measured", [("repo-a", None)]))
+    _coverage_record(adopter_dir, "kb-0001", "repo-a", "current")
+    _coverage_record(adopter_dir, "kb-0001", "repo-b", "drifted")
+    _coverage_record(adopter_dir, "kb-0001", "repo-c", "unknown")
+    _coverage_record(adopter_dir, "kb-0002", "repo-a", "unknown")
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert "status: freshness: 2 active unit(s): 0 current, 1 drifted, 1 unknown" in lines
+    assert lines[-6:-1] == _coverage_lines(
+        2, 2, 0, (0, 0, 0, 2), (0, 0, 0, 0), (0, 0, 0, 0)
+    )
+
+
+def test_a_changed_payload_or_legacy_record_is_not_recorded(
+    adopter_dir, write_unit, run_cli
+):
+    # kb-0001's payload moved on since its record; kb-0002's only record
+    # predates payloads; kb-0003 matches one of two anchors. kb-0004's
+    # captured_at is not identity, so its record still matches.
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", _coverage_unit("kb-0001", "verifiable", [("repo-a", "new")]))
+    write_unit("kb-0002.md", _coverage_unit("kb-0002", "verifiable", [("repo-a", None)]))
+    write_unit(
+        "kb-0003.md",
+        _coverage_unit("kb-0003", "verifiable", [("repo-a", "main"), ("repo-a", "dev")]),
+    )
+    write_unit(
+        "kb-0004.md",
+        _coverage_unit(
+            "kb-0004", "verifiable", [("repo-a", "main")], captured_at="2020-01-01T00:00:00Z"
+        ),
+    )
+    _coverage_record(adopter_dir, "kb-0001", "repo-a", payload={"ref": "old"})
+    _write_record(
+        adopter_dir,
+        recorded_at="2026-08-01T00:00:00Z",
+        unit="kb-0002",
+        system="repo-a",
+        kind="git_ref",
+        verdict="current",
+        detail=None,
+    )
+    _coverage_record(adopter_dir, "kb-0003", "repo-a", payload={"ref": "main"})
+    _coverage_record(adopter_dir, "kb-0003", "repo-a", payload={"ref": "stale"})
+    _coverage_record(adopter_dir, "kb-0004", "repo-a", payload={"ref": "main"})
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-6:-1] == _coverage_lines(
+        4, 4, 0, (0, 0, 0, 0), (0, 2, 1, 1), (0, 0, 0, 0)
+    )
+
+
+def test_an_invalid_source_omits_coverage(adopter_dir, write_unit, run_cli):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", _coverage_unit("kb-0001", "measured", [("repo-a", None)]))
+    write_unit("kb-0002.md", "id: kb-0002\nevidence: probable\nanchors: []\n")
+    _coverage_record(adopter_dir, "kb-0001", "repo-a")
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: knowledge/kb-0002.md: evidence: " in result.stderr
+    _assert_no_coverage(result.stdout)
+
+
+def test_an_invalid_verdict_log_omits_coverage(adopter_dir, write_unit, run_cli):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", _coverage_unit("kb-0001", "measured", [("repo-a", None)]))
+    _coverage_record(adopter_dir, "kb-0001", "repo-a")
+    with (adopter_dir / VERDICT_LOG).open("a", encoding="utf-8") as handle:
+        handle.write("not json\n")
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: verdicts.jsonl:2: " in result.stderr
+    _assert_no_coverage(result.stdout)
+
+
+def test_an_absent_log_is_an_empty_snapshot_for_coverage(
+    adopter_dir, write_unit, run_cli
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", _coverage_unit("kb-0001", "hypothesis", [("repo-a", None)]))
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-6:-1] == _coverage_lines(
+        1, 1, 0, (0, 0, 0, 0), (0, 0, 0, 0), (0, 1, 0, 0)
+    )
+    assert not (adopter_dir / VERDICT_LOG).exists()
+
+
+def test_lint_and_index_errors_do_not_hide_coverage(
+    adopter_dir, write_unit, write_memory, write_index, run_cli
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", _coverage_unit("kb-0001", "measured", [("repo-a", None)]))
+    _coverage_record(adopter_dir, "kb-0001", "repo-a")
+    for folder, name in (("alpha", "shared"), ("beta", "different")):
+        write_memory(f"{folder}/shared.md",
+                     f"name: {name}\ndescription: A fact\nmetadata:\n  type: project\n")
+    write_index("- [Alpha](alpha/shared.md)\n- [Beta](beta/shared.md)\n")
+
+    result = run_cli("status", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert "ERROR: memory/beta/shared.md: name:" in result.stderr
+    assert f"ERROR: {INDEX_FILENAME}: index: file not found" in result.stderr
+    assert result.stdout.splitlines()[-6:-1] == _coverage_lines(
+        1, 1, 0, (0, 0, 0, 1), (0, 0, 0, 0), (0, 0, 0, 0)
+    )
+
+
+def test_coverage_leaves_the_flags_and_existing_lines_unchanged(
+    adopter_dir, write_unit, run_cli
+):
+    run_cli("init", cwd=adopter_dir)
+    write_unit("kb-0001.md", ONE_ANCHOR_UNIT)
+    _write_record(
+        adopter_dir,
+        recorded_at="2026-08-01T00:00:00Z",
+        unit="kb-0001",
+        system="repo-a",
+        kind="git_ref",
+        payload={},
+        verdict="drifted",
+        detail=None,
+    )
+
+    result = run_cli(
+        "status",
+        "--skip-index",
+        "--fail-on",
+        "drifted",
+        "--max-verdict-age",
+        "10",
+        "--fail-on-aged",
+        "--as-of",
+        AS_OF,
+        cwd=adopter_dir,
+    )
+
+    assert result.returncode == 1
+    assert "ERROR: kb-0001: verdict: active unit's verdict is 'drifted'" in result.stderr
+    assert "ERROR: kb-0001: repo-a/git_ref: verdict is 20 day(s) old" in result.stderr
+    assert result.stdout.splitlines() == [
+        "status: validate: 1 unit(s) checked, 0 error(s), 0 warning(s)",
+        "status: lint: 0 memory file(s) checked, 0 error(s), 0 warning(s)",
+        "status: index: skipped (--skip-index)",
+        "status: freshness: 1 active unit(s): 0 current, 1 drifted, 0 unknown",
+        "status: age: 1 aged, 0 age-unknown (max 10 day(s))",
+        *_coverage_lines(1, 1, 0, (0, 0, 0, 1), (0, 0, 0, 0), (0, 0, 0, 0)),
+        "status: 2 error(s), 0 warning(s) overall",
+    ]
+
+
+def test_coverage_is_deterministic_read_only_and_never_probes(
+    adopter_dir, write_document, write_unit, write_probe, run_cli
+):
+    marker = adopter_dir / "probe-ran.marker"
+    run_cli("init", cwd=adopter_dir)
+    probe_cmd = write_probe(
+        "probes/marker_probe.py",
+        "import json, pathlib, sys\n"
+        "sys.stdin.read()\n"
+        f"pathlib.Path({str(marker)!r}).write_text('ran')\n"
+        "print(json.dumps({'verdict': 'current'}))\n",
+    )
+    write_document("validated-memory.md", f"probes:\n  git_ref: {probe_cmd}\n")
+    write_unit(
+        "kb-0001.md", _coverage_unit("kb-0001", "measured", [("repo-a", None), ("repo-b", None)])
+    )
+    _coverage_record(adopter_dir, "kb-0001", "repo-a")
+    assert run_cli("derive", cwd=adopter_dir).returncode == 0
+
+    def snapshot():
+        return {
+            path.relative_to(adopter_dir).as_posix(): (
+                None if path.is_dir() else path.read_bytes()
+            )
+            for path in sorted(adopter_dir.rglob("*"))
+        }
+
+    before = snapshot()
+    first = run_cli("status", cwd=adopter_dir)
+    second = run_cli("status", cwd=adopter_dir)
+
+    assert first.returncode == 0, first.stderr
+    assert (second.returncode, second.stdout, second.stderr) == (
+        first.returncode, first.stdout, first.stderr
+    )
+    assert first.stdout.splitlines()[-6:-1] == _coverage_lines(
+        1, 1, 0, (0, 0, 1, 0), (0, 0, 0, 0), (0, 0, 0, 0)
+    )
+    assert snapshot() == before
+    assert not marker.exists()
+
+
 # --- the verdict log's own read contract (shared with derive) --------------
 
 

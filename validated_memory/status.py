@@ -108,8 +108,8 @@ def _check_derived_state(
     findings,
     summaries,
 ):
-    """The index, freshness and age sections: everything that needs the
-    verdict log and a valid curated source. Appends to `findings` and
+    """The index, freshness, age and coverage sections: everything that
+    needs the verdict log and a valid curated source. Appends to `findings` and
     `summaries` in place; nothing here runs when validation gates.
     """
     try:
@@ -174,6 +174,71 @@ def _check_derived_state(
             f"status: age: {aged_count} aged, {unknown_count} age-unknown "
             f"(max {max_verdict_age} day(s))"
         )
+
+    summaries.extend(_coverage_summaries(states, log.latest))
+
+
+# The fixed order the coverage section reports evidence states and anchor
+# coverage classes in.
+COVERAGE_EVIDENCE = ("measured", "verifiable", "hypothesis")
+COVERAGE_CLASSES = (
+    "anchorless",
+    "never-recorded",
+    "partially-recorded",
+    "fully-recorded",
+)
+
+
+def _coverage_summaries(states, latest):
+    """The coverage section: deterministic counts from the same validated
+    states and verdict snapshot the freshness section reads.
+
+    Superseded units count only in the totals. Each active unit falls in one
+    evidence state and one class by its distinct current anchor keys
+    (`verdicts.anchor_key`): none (missing or empty anchors) is anchorless;
+    otherwise the number of those keys present in `latest` decides between
+    never, partially and fully recorded. A recorded key says a verdict
+    record exists, whatever that verdict is.
+    """
+    active = 0
+    counts = {
+        evidence: dict.fromkeys(COVERAGE_CLASSES, 0) for evidence in COVERAGE_EVIDENCE
+    }
+    for unit_id, (data, state) in states.items():
+        if state != "active":
+            continue
+        active += 1
+        keys = {
+            verdicts_module.anchor_key(
+                unit_id, anchor.get("system"), anchor.get("kind"), anchor.get("payload")
+            )
+            for anchor in data.get("anchors") or []
+        }
+        recorded = sum(1 for key in keys if key in latest)
+        if not keys:
+            coverage = "anchorless"
+        elif recorded == 0:
+            coverage = "never-recorded"
+        elif recorded < len(keys):
+            coverage = "partially-recorded"
+        else:
+            coverage = "fully-recorded"
+        counts[data["evidence"]][coverage] += 1
+
+    lines = [
+        f"status: coverage: {len(states)} unit(s): {active} active, "
+        f"{len(states) - active} superseded"
+    ]
+    for evidence in COVERAGE_EVIDENCE:
+        classes = counts[evidence]
+        lines.append(
+            f"status: coverage: {evidence}: {sum(classes.values())} active unit(s): "
+            + ", ".join(f"{classes[name]} {name}" for name in COVERAGE_CLASSES)
+        )
+    lines.append(
+        "status: coverage: recorded means a matching verdict exists, not that it is current"
+    )
+    return lines
 
 
 def _age_findings(states, active_units, latest, as_of, max_verdict_age, fail_on_aged):
