@@ -100,6 +100,27 @@ def _run(command, cwd, env, stdin=None):
     return {"exit": proc.returncode, "stdout": proc.stdout.decode("utf-8", "replace"), "stderr": proc.stderr.decode("utf-8", "replace"), "duration_seconds": round(time.monotonic()-started, 6), "error": None}
 
 
+def _resolve_package_root(path):
+    detail = "must contain an ordinary in-root validated_memory/__init__.py"
+    try:
+        root = path.resolve(strict=True)
+        package = root / "validated_memory"
+        entry = package / "__init__.py"
+        if (
+            not root.is_dir()
+            or package.is_symlink()
+            or not package.is_dir()
+            or entry.is_symlink()
+            or not entry.is_file()
+            or not package.resolve(strict=True).is_relative_to(root)
+            or not entry.resolve(strict=True).is_relative_to(package)
+        ):
+            raise ValueError(detail)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(detail) from exc
+    return root
+
+
 def _failure(kind, detail):
     execution = kind in {"timeout", "unexpected-exit"}
     return {"status": "execution-failure" if execution else "invalid-output", "payload": None, "integrity": "failure", "failure": {"kind": kind, "detail": detail}}
@@ -238,7 +259,12 @@ def main(argv=None):
         print(json.dumps({"valid":False,"error":str(exc)},sort_keys=True),file=sys.stderr); return 1
     if args.validate_only:
         print(json.dumps({"valid":True,"development":12,"held-out":6},sort_keys=True)); return 0
-    families = [run_family(f,args.package_root.resolve(),args.repetitions) for f in data["families"] if f["split"] == args.split]
+    try:
+        package_root = _resolve_package_root(args.package_root)
+    except ValueError as exc:
+        print(json.dumps({"error": f"package root {exc}"}, sort_keys=True), file=sys.stderr)
+        return 1
+    families = [run_family(f,package_root,args.repetitions) for f in data["families"] if f["split"] == args.split]
     rendered = json.dumps({"schema_version":1,"split":args.split,"families":families,"scored_semantics":False},ensure_ascii=True,indent=2,sort_keys=True)+"\n"
     args.output.write_text(rendered,encoding="utf-8") if args.output else print(rendered,end="")
     failed = any(f.get("error") or not f.get("fixture_unchanged") or any(r["integrity"] == "failure" for v in f.get("variants",[]) for rep in v["repetitions"] for r in rep.values()) for f in families)

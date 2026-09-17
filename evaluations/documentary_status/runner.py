@@ -338,6 +338,27 @@ def _run(command, cwd, env):
     return {"argv": argv, "exit": proc.returncode, "stdout": proc.stdout.decode("utf-8", "replace"), "stderr": proc.stderr.decode("utf-8", "replace"), "duration_seconds": round(time.monotonic() - started, 6), "error": None}
 
 
+def _resolve_package_root(path):
+    detail = "must contain an ordinary in-root validated_memory/__init__.py"
+    try:
+        root = path.resolve(strict=True)
+        package = root / "validated_memory"
+        entry = package / "__init__.py"
+        if (
+            not root.is_dir()
+            or package.is_symlink()
+            or not package.is_dir()
+            or entry.is_symlink()
+            or not entry.is_file()
+            or not package.resolve(strict=True).is_relative_to(root)
+            or not entry.resolve(strict=True).is_relative_to(package)
+        ):
+            raise ValueError(detail)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(detail) from exc
+    return root
+
+
 def _failure(kind, detail):
     return {"integrity": "failure", "failure": {"kind": kind, "detail": detail}, "delivery": None, "expectation": {"status": "not-evaluated", "mismatches": []}}
 
@@ -527,7 +548,12 @@ def main(argv=None):
     if not selected:
         print(json.dumps({"error": "no variants selected"}, sort_keys=True), file=sys.stderr)
         return 2
-    results = [run_variant(f, v, args.package_root.resolve()) for f, v in selected]
+    try:
+        package_root = _resolve_package_root(args.package_root)
+    except ValueError as exc:
+        print(json.dumps({"error": f"package root {exc}"}, sort_keys=True), file=sys.stderr)
+        return 1
+    results = [run_variant(f, v, package_root) for f, v in selected]
     report = {
         "schema_version": 1, "selection": args.split, "executed_splits": sorted(splits), "variants": results,
         "scored_semantics": False, "agent_behavior_observed": False,

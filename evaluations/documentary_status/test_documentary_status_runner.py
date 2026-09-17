@@ -307,4 +307,21 @@ def test_init_symlink_escape_is_a_structured_failure_that_writes_nothing_outside
 def test_runner_surfaces_subprocess_setup_failure(tmp_path):
     result = run_runner("--family", "R1", "--package-root", tmp_path)
     assert result.returncode == 1
-    assert json.loads(result.stdout)["variants"][0]["error"] == "init failed"
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": "package root must contain an ordinary in-root validated_memory/__init__.py"
+    }
+
+
+def test_runner_rejects_symlinked_package_entry_before_execution(tmp_path):
+    source = tmp_path / "source.py"
+    source.write_text("", encoding="utf-8")
+    package = tmp_path / "validated_memory"
+    package.mkdir()
+    (package / "__init__.py").symlink_to(source)
+
+    result = run_runner("--family", "R1", "--package-root", tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "ordinary in-root validated_memory/__init__.py" in json.loads(result.stderr)["error"]
