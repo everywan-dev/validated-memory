@@ -18,14 +18,14 @@ anchor's `kind` (or no configuration at all), a command that cannot be run,
 a non-zero exit, a command still running at its deadline, unparseable stdout,
 or a verdict outside the domain.
 
-Each command runs under its own deadline. Its streams are anonymous temporary
-files in `tempfile`'s configured directory, not pipes, so a descendant that
-inherits stdout or stderr cannot keep the run waiting for EOF. On expiry the
-invocation is killed -- on POSIX its whole process group, elsewhere only the
-direct child -- and reaped within a bounded wait; a kill or reap that fails is
-named in the WARNING. The deadline is not a sandbox: it bounds neither output
-volume nor a descendant that leaves the group, and a command that succeeds may
-leave descendants running.
+Each command runs under its own deadline and may emit at most 1,048,576 raw
+bytes across stdout and stderr. Both pipes are drained while it runs. Overflow
+and expiry kill the invocation -- on POSIX its whole process group, on Windows
+only the direct child -- and reap it within a bounded wait; a kill or reap that
+fails is named in the WARNING. Output collection supports POSIX and Windows;
+another runtime platform fails the invocation explicitly. These bounds are not
+a subprocess sandbox: a descendant that leaves its process group can escape
+cleanup, and a command that succeeds may leave descendants running.
 
 Every anchor probed is appended to `verdicts.jsonl` (see `verdicts`), one
 JSON line per anchor, regardless of the outcome.
@@ -34,10 +34,12 @@ JSON line per anchor, regardless of the outcome.
 import json
 import locale
 import os
+import selectors
 import shlex
 import signal
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,13 +51,25 @@ from .findings import EXIT_ERROR, EXIT_OK, WARNING, Finding
 
 DEFAULT_TIMEOUT_SECONDS = 60.0
 MAX_TIMEOUT_SECONDS = 3600.0
+OUTPUT_LIMIT_BYTES = 1_048_576
 _REAP_SECONDS = 5.0
+_READ_BYTES = 64 * 1024
+_POLL_SECONDS = 0.05
 
-_POSIX = os.name == "posix"
+_PLATFORM = os.name
+_POSIX = _PLATFORM == "posix"
 
 
 class _Expired(Exception):
     """A command reached its deadline; `problems` names any failed cleanup."""
+
+    def __init__(self, problems):
+        super().__init__(problems)
+        self.problems = problems
+
+
+class _OutputOverflow(Exception):
+    """A command exceeded its output budget; `problems` names failed cleanup."""
 
     def __init__(self, problems):
         super().__init__(problems)
@@ -156,6 +170,18 @@ def _dispatch(anchor, registry, timeout):
 
     try:
         returncode, output, errors = _execute(argv, envelope, timeout)
+    except _OutputOverflow as overflow:
+        return (
+            verdicts_module.UNKNOWN,
+            None,
+            "; ".join(
+                [
+                    "probe output exceeded the 1,048,576-byte aggregate "
+                    "stdout/stderr limit",
+                    *overflow.problems,
+                ]
+            ),
+        )
     except _Expired as expired:
         return (
             verdicts_module.UNKNOWN,
@@ -208,21 +234,24 @@ def _execute(argv, envelope, timeout):
     Returns `(returncode, stdout bytes, stderr bytes)`; raises `_Expired` when
     the deadline expired and the invocation was killed.
     """
-    with (
-        tempfile.TemporaryFile() as stdin,
-        tempfile.TemporaryFile() as stdout,
-        tempfile.TemporaryFile() as stderr,
-    ):
+    if _PLATFORM not in {"posix", "nt"}:
+        raise OSError(
+            f"probe output collection is unsupported on platform '{_PLATFORM}'"
+        )
+
+    with tempfile.TemporaryFile() as stdin:
         stdin.write(envelope.encode(locale.getpreferredencoding(False)))
         stdin.seek(0)
         process = subprocess.Popen(
-            argv, stdin=stdin, stdout=stdout, stderr=stderr,
+            argv, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=_POSIX,
         )
         try:
-            returncode = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            raise _Expired(_kill(process)) from None
+            if _PLATFORM == "posix":
+                return _collect_posix(process, timeout)
+            return _collect_windows(process, timeout)
+        except (_Expired, _OutputOverflow):
+            raise
         except BaseException:
             # Cleanup is best-effort on an exceptional exit. In particular,
             # it must never replace the exception that interrupted the probe.
@@ -231,9 +260,165 @@ def _execute(argv, envelope, timeout):
             except BaseException:
                 pass
             raise
-        stdout.seek(0)
-        stderr.seek(0)
-        return returncode, stdout.read(), stderr.read()
+
+
+def _accept_output(buffers, stream, chunk, total):
+    """Retain `chunk` within the shared limit; return `(total, overflowed)`."""
+    remaining = OUTPUT_LIMIT_BYTES - total
+    if len(chunk) > remaining:
+        return total, True
+    buffers[stream].extend(chunk)
+    return total + len(chunk), False
+
+
+def _collect_posix(process, timeout):
+    """Collect both pipes without blocking on a surviving descendant's EOF."""
+    import array
+    import fcntl
+    import termios
+
+    streams = {process.stdout: bytearray(), process.stderr: bytearray()}
+    selector = selectors.DefaultSelector()
+    deadline = time.monotonic() + timeout
+    total = 0
+    try:
+        for stream in streams:
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ)
+
+        while True:
+            remaining_time = deadline - time.monotonic()
+            events = selector.select(max(0.0, min(_POLL_SECONDS, remaining_time)))
+            for key, _ in events:
+                stream = key.fileobj
+                remaining = OUTPUT_LIMIT_BYTES - total
+                chunk = os.read(stream.fileno(), min(_READ_BYTES, remaining + 1))
+                if not chunk:
+                    selector.unregister(stream)
+                    continue
+                total, overflowed = _accept_output(streams, stream, chunk, total)
+                if overflowed:
+                    raise _OutputOverflow(_kill(process))
+
+            returncode = process.poll()
+            if returncode is not None:
+                # Snapshot bytes already buffered when the direct child exits.
+                # A surviving descendant may keep writing, so do not chase a
+                # moving ready set or wait for inherited descriptors to close.
+                pending = {}
+                for stream in streams:
+                    count = array.array("i", [0])
+                    fcntl.ioctl(stream.fileno(), termios.FIONREAD, count, True)
+                    pending[stream] = count[0]
+                for stream, count in pending.items():
+                    while count:
+                        remaining = OUTPUT_LIMIT_BYTES - total
+                        chunk = os.read(
+                            stream.fileno(),
+                            min(count, _READ_BYTES, remaining + 1),
+                        )
+                        if not chunk:
+                            break
+                        count -= len(chunk)
+                        total, overflowed = _accept_output(
+                            streams, stream, chunk, total
+                        )
+                        if overflowed:
+                            raise _OutputOverflow(_kill(process))
+                return returncode, bytes(streams[process.stdout]), bytes(
+                    streams[process.stderr]
+                )
+
+            if time.monotonic() >= deadline:
+                raise _Expired(_kill(process))
+    finally:
+        selector.close()
+        process.stdout.close()
+        process.stderr.close()
+
+
+def _collect_windows(process, timeout):
+    """Collect Windows anonymous pipes without waiting for inherited EOF."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    streams = {process.stdout: bytearray(), process.stderr: bytearray()}
+    deadline = time.monotonic() + timeout
+    total = 0
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.PeekNamedPipe.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    )
+    kernel32.PeekNamedPipe.restype = wintypes.BOOL
+    available = ctypes.c_ulong()
+
+    def pending(stream):
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        available.value = 0
+        ok = kernel32.PeekNamedPipe(
+            handle, None, 0, None, ctypes.byref(available), None
+        )
+        if ok:
+            return available.value
+        error = ctypes.get_last_error()
+        if error == 109:  # ERROR_BROKEN_PIPE: every writer has closed.
+            return 0
+        raise ctypes.WinError(error)
+
+    try:
+        while True:
+            returncode = process.poll()
+            if returncode is not None:
+                # Freeze one snapshot per pipe. A surviving descendant may
+                # keep writing, so bytes arriving after this point are outside
+                # this completed direct-child invocation.
+                snapshot = {stream: pending(stream) for stream in streams}
+                for stream, count in snapshot.items():
+                    while count:
+                        remaining = OUTPUT_LIMIT_BYTES - total
+                        chunk = os.read(
+                            stream.fileno(),
+                            min(count, _READ_BYTES, remaining + 1),
+                        )
+                        if not chunk:
+                            break
+                        count -= len(chunk)
+                        total, overflowed = _accept_output(
+                            streams, stream, chunk, total
+                        )
+                        if overflowed:
+                            raise _OutputOverflow(_kill(process))
+                return returncode, bytes(streams[process.stdout]), bytes(
+                    streams[process.stderr]
+                )
+
+            read_any = False
+            for stream in streams:
+                count = pending(stream)
+                if not count:
+                    continue
+                read_any = True
+                remaining = OUTPUT_LIMIT_BYTES - total
+                chunk = os.read(
+                    stream.fileno(), min(count, _READ_BYTES, remaining + 1)
+                )
+                total, overflowed = _accept_output(streams, stream, chunk, total)
+                if overflowed:
+                    raise _OutputOverflow(_kill(process))
+
+            if time.monotonic() >= deadline:
+                raise _Expired(_kill(process))
+            if not read_any:
+                time.sleep(min(_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+    finally:
+        process.stdout.close()
+        process.stderr.close()
 
 
 def _kill(process):

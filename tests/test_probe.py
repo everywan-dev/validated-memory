@@ -402,6 +402,7 @@ def test_the_record_carries_the_payload_that_was_probed(
 # probe leaves behind records its pid for the test to kill.
 
 WATCHDOG_SECONDS = 20
+OUTPUT_LIMIT_BYTES = 1_048_576
 # Well below the watchdog, so a deadline that did not fire fails an
 # assertion instead of reaching it.
 PROMPT_SECONDS = 10
@@ -506,6 +507,24 @@ def _registry(**commands):
     )
 
 
+def _output_probe(stdout_bytes, stderr_bytes=0, exit_code=0, delay=0):
+    """Bounded fixture source emitting exact byte counts without large literals."""
+    verdict = b'{"verdict":"current"}'
+    if stdout_bytes and stdout_bytes < len(verdict):
+        raise ValueError("stdout_bytes cannot hold the verdict fixture")
+    return (
+        "import sys, time\n"
+        "sys.stdin.buffer.read()\n"
+        f"time.sleep({delay!r})\n"
+        f"verdict = {verdict!r}\n"
+        f"sys.stdout.buffer.write(verdict + b' ' * ({stdout_bytes} - len(verdict)))\n"
+        "sys.stdout.buffer.flush()\n"
+        f"sys.stderr.buffer.write(b'e' * {stderr_bytes})\n"
+        "sys.stderr.buffer.flush()\n"
+        f"sys.exit({exit_code})\n"
+    )
+
+
 def _stall_probe(pids):
     return (
         "import os, time\n"
@@ -553,6 +572,356 @@ def test_the_help_states_the_sixty_second_default_and_the_bounds(adopter_dir):
     assert "--timeout SECONDS" in text
     assert "at most 3600" in text
     assert "(default: 60)" in text
+    assert "output-limit" not in text
+
+
+@pytest.mark.parametrize(
+    ("stdout_bytes", "stderr_bytes", "expected_verdict"),
+    [
+        (OUTPUT_LIMIT_BYTES, 0, "current"),
+        (0, OUTPUT_LIMIT_BYTES, "unknown"),
+        (700_000, OUTPUT_LIMIT_BYTES - 700_000, "current"),
+    ],
+)
+def test_exactly_the_aggregate_output_limit_is_not_overflow(
+    adopter_dir, write_document, write_unit, write_probe,
+    stdout_bytes, stderr_bytes, expected_verdict
+):
+    source = (
+        _output_probe(stdout_bytes, stderr_bytes)
+        if stdout_bytes
+        else "import sys\nsys.stdin.buffer.read()\n"
+        f"sys.stderr.buffer.write(b'e' * {stderr_bytes})\n"
+    )
+    command = write_probe("probes/boundary_probe.py", source)
+    write_document("validated-memory.md", _registry(boundary=command))
+    write_unit("kb-0001.md", _anchors("boundary"))
+
+    result, elapsed = _run_guarded("probe", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < PROMPT_SECONDS
+    assert "output exceeded" not in result.stderr
+    [record] = _records(adopter_dir)
+    assert (record["verdict"], record["detail"]) == (expected_verdict, None)
+
+
+@pytest.mark.parametrize(
+    ("stdout_bytes", "stderr_bytes"),
+    [
+        (OUTPUT_LIMIT_BYTES + 1, 0),
+        (0, OUTPUT_LIMIT_BYTES + 1),
+        (700_000, OUTPUT_LIMIT_BYTES - 700_000 + 1),
+    ],
+)
+def test_the_next_aggregate_output_byte_overflows(
+    adopter_dir, write_document, write_unit, write_probe,
+    stdout_bytes, stderr_bytes
+):
+    source = (
+        _output_probe(stdout_bytes, stderr_bytes)
+        if stdout_bytes
+        else "import sys\nsys.stdin.buffer.read()\n"
+        f"sys.stderr.buffer.write(b'e' * {stderr_bytes})\n"
+    )
+    command = write_probe("probes/overflow_probe.py", source)
+    write_document("validated-memory.md", _registry(overflow=command))
+    write_unit("kb-0001.md", _anchors("overflow"))
+
+    result, elapsed = _run_guarded("probe", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < PROMPT_SECONDS
+    assert result.stderr == (
+        "WARNING: kb-0001: anchors[0]: probe output exceeded the "
+        "1,048,576-byte aggregate stdout/stderr limit\n"
+    )
+    assert result.stdout == (
+        "probe: 1 anchor(s) probed across 1 unit(s): "
+        "0 current, 0 drifted, 1 unknown\n"
+    )
+    [record] = _records(adopter_dir)
+    assert (record["verdict"], record["detail"]) == ("unknown", None)
+
+
+def test_overflow_never_parses_a_valid_prefix_or_exposes_nonzero_stderr(
+    adopter_dir, write_document, write_unit, write_probe
+):
+    command = write_probe(
+        "probes/prefix_probe.py",
+        _output_probe(OUTPUT_LIMIT_BYTES, 1, exit_code=7),
+    )
+    write_document("validated-memory.md", _registry(prefix=command))
+    write_unit("kb-0001.md", _anchors("prefix"))
+
+    result, _ = _run_guarded("probe", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "output exceeded the 1,048,576-byte aggregate stdout/stderr limit" in (
+        result.stderr
+    )
+    assert "exited 7" not in result.stderr
+    assert "eeee" not in result.stderr
+    [record] = _records(adopter_dir)
+    assert (record["verdict"], record["detail"]) == ("unknown", None)
+
+
+def test_overflow_continues_to_later_anchors_and_preserves_log_history(
+    adopter_dir, write_document, write_unit, write_probe
+):
+    prior = b'{"prior":"bytes stay exact"}\n'
+    (adopter_dir / VERDICT_LOG).write_bytes(prior)
+    overflow = write_probe(
+        "probes/overflow_probe.py", _output_probe(OUTPUT_LIMIT_BYTES + 1)
+    )
+    current = write_probe("probes/current_probe.py", CURRENT_PROBE)
+    write_document("validated-memory.md", _registry(overflow=overflow, fast=current))
+    write_unit("kb-0001.md", _anchors("overflow", "fast"))
+
+    result, elapsed = _run_guarded("probe", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < PROMPT_SECONDS
+    assert result.stdout == (
+        "probe: 2 anchor(s) probed across 1 unit(s): "
+        "1 current, 0 drifted, 1 unknown\n"
+    )
+    log = (adopter_dir / VERDICT_LOG).read_bytes()
+    assert log.startswith(prior)
+    records = [json.loads(line) for line in log[len(prior):].splitlines()]
+    assert [(record["verdict"], record["detail"]) for record in records] == [
+        ("unknown", None), ("current", None)
+    ]
+
+
+def test_concurrent_stdout_and_stderr_are_drained_without_deadlock(
+    adopter_dir, write_document, write_unit, write_probe
+):
+    command = write_probe(
+        "probes/alternating_probe.py",
+        "import sys\n"
+        "sys.stdin.buffer.read()\n"
+        "for _ in range(129):\n"
+        "    sys.stdout.buffer.write(b'o' * 4096)\n"
+        "    sys.stdout.buffer.flush()\n"
+        "    sys.stderr.buffer.write(b'e' * 4096)\n"
+        "    sys.stderr.buffer.flush()\n",
+    )
+    write_document("validated-memory.md", _registry(alternating=command))
+    write_unit("kb-0001.md", _anchors("alternating"))
+
+    result, elapsed = _run_guarded("probe", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < PROMPT_SECONDS
+    assert "output exceeded the 1,048,576-byte aggregate stdout/stderr limit" in (
+        result.stderr
+    )
+
+
+def test_immediate_exit_keeps_all_buffered_direct_child_output(
+    adopter_dir, write_document, write_unit, write_probe
+):
+    payload = b'{"verdict":"current","detail":"buffered before exit"}'
+    command = write_probe(
+        "probes/immediate_probe.py",
+        "import os, sys\n"
+        "sys.stdin.buffer.read()\n"
+        f"os.write(1, {payload!r})\n"
+        "os._exit(0)\n",
+    )
+    write_document("validated-memory.md", _registry(immediate=command))
+    write_unit("kb-0001.md", _anchors("immediate"))
+
+    result, elapsed = _run_guarded("probe", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < PROMPT_SECONDS
+    assert result.stderr == ""
+    [record] = _records(adopter_dir)
+    assert (record["verdict"], record["detail"]) == (
+        "current", "buffered before exit"
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows pipe snapshot behavior")
+def test_windows_collection_ignores_writes_after_the_direct_child_exits(
+    adopter_dir, write_document, write_unit, write_probe
+):
+    pid_path = adopter_dir / "surviving-writer.pid"
+    started_path = adopter_dir / "surviving-writer.started"
+    writer_source = (
+        "import os, sys, time\n"
+        "os.write(sys.stderr.fileno(), b'started')\n"
+        f"open({str(started_path)!r}, 'w').close()\n"
+        "try:\n"
+        "    while True:\n"
+        "        os.write(sys.stderr.fileno(), b'x' * 65536)\n"
+        "except OSError:\n"
+        f"    time.sleep({STALL_SECONDS})\n"
+    )
+    command = write_probe(
+        "probes/windows_descendant_probe.py",
+        "import json, subprocess, sys, time\n"
+        "sys.stdin.buffer.read()\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {writer_source!r}])\n"
+        f"open({str(pid_path)!r}, 'w').write(str(child.pid))\n"
+        f"while not __import__('os').path.exists({str(started_path)!r}):\n"
+        "    time.sleep(0.001)\n"
+        "print(json.dumps({'verdict': 'current'}), flush=True)\n",
+    )
+    write_document("validated-memory.md", _registry(descendant=command))
+    write_unit("kb-0001.md", _anchors("descendant"))
+
+    try:
+        result, elapsed = _run_guarded("probe", cwd=adopter_dir)
+        # The former moving-pending loop kept finding the continuously
+        # refilled stderr pipe and overflowed. A frozen post-exit snapshot
+        # returns the parent's valid stdout without chasing later writes.
+        assert result.returncode == 0, result.stderr
+        assert elapsed < PROMPT_SECONDS
+        assert result.stderr == ""
+        [record] = _records(adopter_dir)
+        assert (record["verdict"], record["detail"]) == ("current", None)
+        pid = int(pid_path.read_text(encoding="utf-8"))
+        assert _running(pid), "the writer did not survive ordinary success"
+    finally:
+        if pid_path.exists():
+            pid = int(pid_path.read_text(encoding="utf-8"))
+            if _running(pid):
+                os.kill(pid, signal.SIGTERM)
+            assert _gone_within(pid, 5), "the fixture writer was not terminated"
+
+
+def test_unsupported_probe_platform_fails_explicitly_and_continues(
+    adopter_dir, write_document, write_unit, write_probe
+):
+    marker = adopter_dir / "probe-launched"
+    command = write_probe(
+        "probes/marker_probe.py",
+        f"open({str(marker)!r}, 'w').close()\n"
+        "print('{\"verdict\": \"current\"}')\n",
+    )
+    write_document(
+        "validated-memory.md", _registry(first=command, second=command)
+    )
+    write_unit("kb-0001.md", _anchors("first", "second"))
+    shim = adopter_dir / "unsupported-platform"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import validated_memory.probe as probe_module\n"
+        "probe_module._PLATFORM = 'injected-unsupported'\n",
+        encoding="utf-8",
+    )
+    python_path = os.environ.get("PYTHONPATH", str(REPO_ROOT))
+
+    result, elapsed = _run_guarded(
+        "probe",
+        cwd=adopter_dir,
+        extra_env={"PYTHONPATH": os.pathsep.join([str(shim), python_path])},
+    )
+
+    diagnostic = (
+        f"probe command '{command}' could not be run: probe output collection "
+        "is unsupported on platform 'injected-unsupported'"
+    )
+    assert result.returncode == 0, result.stderr
+    assert elapsed < PROMPT_SECONDS
+    assert result.stderr == (
+        f"WARNING: kb-0001: anchors[0]: {diagnostic}\n"
+        f"WARNING: kb-0001: anchors[1]: {diagnostic}\n"
+    )
+    assert len(result.stderr.encode("utf-8")) < 2048
+    assert "Traceback" not in result.stderr
+    assert not marker.exists()
+    assert result.stdout == (
+        "probe: 2 anchor(s) probed across 1 unit(s): "
+        "0 current, 0 drifted, 2 unknown\n"
+    )
+    outcomes = [
+        (record["verdict"], record["detail"])
+        for record in _records(adopter_dir)
+    ]
+    assert outcomes == [("unknown", None), ("unknown", None)]
+
+
+@pytest.mark.skipif(not POSIX, reason="injected POSIX descriptor fault")
+def test_output_snapshot_failure_is_unknown_without_a_traceback(
+    adopter_dir, write_document, write_unit, write_probe
+):
+    command = write_probe("probes/current_probe.py", CURRENT_PROBE)
+    write_document("validated-memory.md", _registry(current=command))
+    write_unit("kb-0001.md", _anchors("current"))
+    fault_dir = adopter_dir / "snapshot-fault"
+    fault_dir.mkdir()
+    (fault_dir / "sitecustomize.py").write_text(
+        "import fcntl\n"
+        "def failing_ioctl(*args, **kwargs):\n"
+        "    raise OSError(5, 'injected snapshot failure')\n"
+        "fcntl.ioctl = failing_ioctl\n",
+        encoding="utf-8",
+    )
+    python_path = os.environ.get("PYTHONPATH", str(REPO_ROOT))
+
+    result, elapsed = _run_guarded(
+        "probe",
+        cwd=adopter_dir,
+        extra_env={
+            "PYTHONPATH": os.pathsep.join([str(fault_dir), python_path])
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < PROMPT_SECONDS
+    assert "Traceback" not in result.stderr
+    assert "could not be run: [Errno 5] injected snapshot failure" in result.stderr
+    [record] = _records(adopter_dir)
+    assert (record["verdict"], record["detail"]) == ("unknown", None)
+
+
+def test_timeout_observed_before_output_overflow_remains_the_primary_reason(
+    adopter_dir, write_document, write_unit, write_probe
+):
+    command = write_probe(
+        "probes/late_output_probe.py",
+        _output_probe(OUTPUT_LIMIT_BYTES + 1, delay=2),
+    )
+    write_document("validated-memory.md", _registry(late=command))
+    write_unit("kb-0001.md", _anchors("late"))
+
+    result, _ = _run_guarded("probe", "--timeout", "0.25", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "timed out after 0.25 second(s)" in result.stderr
+    assert "output exceeded" not in result.stderr
+
+
+@pytest.mark.skipif(not POSIX, reason="process-group cleanup is POSIX-only")
+def test_overflow_cleanup_fault_is_appended_without_changing_the_outcome(
+    adopter_dir, write_document, write_unit, write_probe
+):
+    command = write_probe(
+        "probes/overflow_probe.py", _output_probe(OUTPUT_LIMIT_BYTES + 1)
+    )
+    write_document("validated-memory.md", _registry(overflow=command))
+    write_unit("kb-0001.md", _anchors("overflow"))
+    fault = _failing_killpg(
+        adopter_dir, "    raise PermissionError(1, 'injected refusal')\n"
+    )
+
+    result, elapsed = _run_guarded(
+        "probe", cwd=adopter_dir, extra_env=fault
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < PROMPT_SECONDS
+    assert result.stderr == (
+        "WARNING: kb-0001: anchors[0]: probe output exceeded the "
+        "1,048,576-byte aggregate stdout/stderr limit; killing its process "
+        "group failed: [Errno 1] injected refusal\n"
+    )
+    [record] = _records(adopter_dir)
+    assert (record["verdict"], record["detail"]) == ("unknown", None)
 
 
 def test_an_expired_probe_reads_unknown_and_later_anchors_still_run(
@@ -701,6 +1070,41 @@ def _reaped_checker(pids):
     )
 
 
+@pytest.mark.skipif(not POSIX, reason="process-group cleanup is POSIX-only")
+def test_overflow_kills_the_invocation_group_and_reaps_the_direct_child(
+    adopter_dir, write_document, write_unit, write_probe, leftover_pids
+):
+    child_source = (
+        "import sys, time; "
+        f"sys.stdout.buffer.write(b'x' * {OUTPUT_LIMIT_BYTES + 1}); "
+        "sys.stdout.buffer.flush(); time.sleep(45)"
+    )
+    command = write_probe(
+        "probes/descendant_overflow_probe.py",
+        "import os, subprocess, sys, time\n"
+        "sys.stdin.buffer.read()\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child_source!r}])\n"
+        f"open({str(leftover_pids / 'descendant')!r}, 'w').write(str(child.pid))\n"
+        f"open({str(leftover_pids / 'stalled')!r}, 'w').write(str(os.getpid()))\n"
+        f"time.sleep({STALL_SECONDS})\n",
+    )
+    checker = write_probe("probes/checker_probe.py", _reaped_checker(leftover_pids))
+    write_document("validated-memory.md", _registry(noisy=command, checker=checker))
+    write_unit("kb-0001.md", _anchors("noisy", "checker"))
+
+    result, elapsed = _run_guarded("probe", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < PROMPT_SECONDS
+    assert "anchors[0]: probe output exceeded" in result.stderr
+    records = _records(adopter_dir)
+    assert [(record["verdict"], record["detail"]) for record in records] == [
+        ("unknown", None), ("current", None)
+    ]
+    descendant = int((leftover_pids / "descendant").read_text(encoding="utf-8"))
+    assert _gone_within(descendant, 5), "the overflowing descendant survived"
+
+
 def _failing_killpg(adopter_dir, body):
     """Environment whose `sitecustomize` replaces `os.killpg` in every Python.
 
@@ -815,7 +1219,7 @@ print(json.dumps({"verdict": "current", "detail": json.dumps(links)}))
 @pytest.mark.skipif(
     not Path("/proc/self/fd").is_dir(), reason="inspects descriptors through /proc"
 )
-def test_probe_streams_are_deleted_files_in_the_configured_temporary_directory(
+def test_probe_stdin_is_a_deleted_file_and_output_uses_live_pipes(
     adopter_dir, write_document, write_unit, write_probe
 ):
     # The streams follow `tempfile`'s configuration, even into the adopter
@@ -834,9 +1238,10 @@ def test_probe_streams_are_deleted_files_in_the_configured_temporary_directory(
     [record] = _records(adopter_dir)
     links = json.loads(record["detail"])
     assert len(links) == 3
-    for link in links:
-        assert link.endswith(" (deleted)"), link
-        assert Path(link.removesuffix(" (deleted)")).parent == temporary.resolve()
+    assert links[0].endswith(" (deleted)"), links[0]
+    assert Path(links[0].removesuffix(" (deleted)")).parent == temporary.resolve()
+    assert links[1].startswith("pipe:["), links[1]
+    assert links[2].startswith("pipe:["), links[2]
     assert list(temporary.iterdir()) == []
 
 
