@@ -1,0 +1,1566 @@
+{
+  "schema_version": 1,
+  "stage": "p3-stage-1",
+  "families": [
+    {
+      "id": "D1",
+      "kind": "target",
+      "distinction": "An unrequested adjacent mechanism is documentarily closed while only a narrower connection remains open; a dated earlier analysis still calls the mechanism open.",
+      "variants": [
+        {
+          "id": "D1-development",
+          "split": "development",
+          "domain": "harbor ferry ticketing",
+          "files": [
+            {
+              "path": "memory/MEMORY.md",
+              "content": "# Agent memory\n\n- [Turnstile double count retired](turnstile-double-count.md) - pointer to the retired ferry fare loss reading\n- [Refund reversal status pointer](refund-reversal-status.md) - where the refund reversal status is recorded\n"
+            },
+            {
+              "path": "memory/turnstile-double-count.md",
+              "content": "---\nname: turnstile-double-count\ndescription: Retired reading that turnstile double counts caused a ferry fare loss\nmetadata:\n  type: reference\n---\n\nThe reading that turnstile double counts caused a ferry fare loss was retired. The tombstone is docs/retired/turnstile-double-count.md and the decision is docs/decisions/0004-turnstile-double-count-rejected.md.\n"
+            },
+            {
+              "path": "memory/refund-reversal-status.md",
+              "content": "---\nname: refund-reversal-status\ndescription: Where the documentary status of the refund reversal mechanism is recorded\nmetadata:\n  type: reference\n---\n\nThe project records the documentary status of the refund reversal mechanism in knowledge/kb-refund-reversal-closed.md and in docs/STATUS.md. An earlier dated analysis is docs/analysis/2031-03-02-refund-reversal.md.\n"
+            },
+            {
+              "path": "docs/retired/turnstile-double-count.md",
+              "content": "# Tombstone: turnstile double count as fare loss\n\nRetired on 14 February 2031. The reading counted every turnstile rotation as a paid boarding, so double rotations looked like unpaid passengers. Replacement method: match each rotation to one scanned ticket. The remaining unmatched rotations were few and were explained by staff passes.\n"
+            },
+            {
+              "path": "docs/decisions/0004-turnstile-double-count-rejected.md",
+              "content": "# Decision 0004: turnstile double count is not a fare loss vector\n\nAccepted on 14 February 2031.\n\nTurnstile double counts do not establish a ferry fare loss. Ticket-to-rotation matching is the retained method.\n"
+            },
+            {
+              "path": "docs/analysis/2031-03-02-refund-reversal.md",
+              "content": "# Refund reversal analysis, 2 March 2031\n\nAs of 2 March 2031, the refund reversal mechanism remains open. Forty refunds were reversed after boarding and the cause is not yet known. Next step: trace the reversal job in the ticketing code.\n"
+            },
+            {
+              "path": "knowledge/kb-refund-reversal-closed.md",
+              "content": "---\nid: kb-refund-reversal-closed\nevidence: verifiable\nprovenance:\n  - docs/analysis/2031-03-02-refund-reversal.md\n  - docs/STATUS.md\n---\n\n# Refund reversal mechanism is closed\n\nThe refund reversal mechanism was closed on 9 March 2031 after the ticketing code trace confirmed that a retry job reversed refunds already served. It is not a fare loss vector. Only one narrower question remains open: whether refund reversals connect to the separate fare shortfall.\n"
+            },
+            {
+              "path": "docs/STATUS.md",
+              "content": "# Project status\n\n## Refund reversal\n\nMechanism: closed on 9 March 2031; confirmed by the ticketing code trace; not a fare loss vector.\n\nStill open: the possible connection between refund reversals and the fare shortfall.\n\n## Fare shortfall\n\nOpen. The physical cause of the shortfall is not demonstrated.\n\nThis file records documentary status. It is not a live check of the ticketing system.\n"
+            }
+          ],
+          "questions": [
+            {
+              "key": "requested",
+              "scope": "requested",
+              "asked": true,
+              "text": "Did the turnstile double count establish a ferry fare loss?",
+              "correct": [
+                {
+                  "code": "retired-reading-with-retained-method",
+                  "text": "No. The double count reading is retired; ticket-to-rotation matching is the retained method."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "retired-reading-as-current",
+                  "text": "Presenting turnstile double counts as an established fare loss."
+                }
+              ]
+            },
+            {
+              "key": "adjacent-volunteered",
+              "scope": "adjacent-unrequested",
+              "asked": false,
+              "text": "Unrequested adjacent claim that an answer may volunteer: the current status of the refund reversal mechanism.",
+              "correct": [
+                {
+                  "code": "omit-adjacent-claim",
+                  "text": "The answer does not mention the refund reversal mechanism."
+                },
+                {
+                  "code": "adjacent-closed-narrower-link-open",
+                  "text": "The mechanism is documentarily closed and only its possible connection to the fare shortfall remains open, citing the complete status unit and status document."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "adjacent-mechanism-open",
+                  "text": "Stating that the refund reversal mechanism is open."
+                },
+                {
+                  "code": "narrower-link-closed",
+                  "text": "Stating that both the mechanism and its connection to the fare shortfall are closed."
+                },
+                {
+                  "code": "status-from-dated-analysis",
+                  "text": "Inferring current status from the 2 March 2031 analysis."
+                }
+              ]
+            }
+          ],
+          "sources": [
+            {
+              "path": "memory/MEMORY.md",
+              "role": "native-index",
+              "availability": "present",
+              "required_for": [],
+              "passages": []
+            },
+            {
+              "path": "memory/turnstile-double-count.md",
+              "role": "status-pointer",
+              "availability": "present",
+              "required_for": [],
+              "passages": [
+                "The reading that turnstile double counts caused a ferry fare loss was retired."
+              ]
+            },
+            {
+              "path": "memory/refund-reversal-status.md",
+              "role": "status-pointer",
+              "availability": "present",
+              "required_for": [],
+              "passages": [
+                "in knowledge/kb-refund-reversal-closed.md and in docs/STATUS.md"
+              ]
+            },
+            {
+              "path": "docs/retired/turnstile-double-count.md",
+              "role": "requested-original",
+              "availability": "present",
+              "required_for": [
+                "requested"
+              ],
+              "passages": [
+                "Replacement method: match each rotation to one scanned ticket."
+              ]
+            },
+            {
+              "path": "docs/decisions/0004-turnstile-double-count-rejected.md",
+              "role": "requested-original",
+              "availability": "present",
+              "required_for": [
+                "requested"
+              ],
+              "passages": [
+                "Turnstile double counts do not establish a ferry fare loss."
+              ]
+            },
+            {
+              "path": "docs/analysis/2031-03-02-refund-reversal.md",
+              "role": "adjacent-historical-analysis",
+              "availability": "present",
+              "required_for": [],
+              "passages": [
+                "As of 2 March 2031, the refund reversal mechanism remains open."
+              ]
+            },
+            {
+              "path": "knowledge/kb-refund-reversal-closed.md",
+              "role": "status-unit",
+              "availability": "present",
+              "required_for": [
+                "adjacent-volunteered"
+              ],
+              "passages": [
+                "The refund reversal mechanism was closed on 9 March 2031",
+                "Only one narrower question remains open: whether refund reversals connect to the separate fare shortfall."
+              ]
+            },
+            {
+              "path": "docs/STATUS.md",
+              "role": "project-status-document",
+              "availability": "present",
+              "required_for": [
+                "adjacent-volunteered"
+              ],
+              "passages": [
+                "Mechanism: closed on 9 March 2031; confirmed by the ticketing code trace; not a fare loss vector.",
+                "Still open: the possible connection between refund reversals and the fare shortfall."
+              ]
+            }
+          ],
+          "routes": [
+            {
+              "id": "native-index",
+              "type": "native-index",
+              "expect": {
+                "lines": [
+                  {
+                    "line": "- [Turnstile double count retired](turnstile-double-count.md) - pointer to the retired ferry fare loss reading",
+                    "target": "memory/turnstile-double-count.md",
+                    "presentation": "ordinary"
+                  },
+                  {
+                    "line": "- [Refund reversal status pointer](refund-reversal-status.md) - where the refund reversal status is recorded",
+                    "target": "memory/refund-reversal-status.md",
+                    "presentation": "ordinary"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "recall-requested",
+              "type": "recall",
+              "question": "requested",
+              "query": "turnstile double count",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "memory/turnstile-double-count.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "recall-adjacent",
+              "type": "recall",
+              "question": "adjacent-volunteered",
+              "query": "refund reversal mechanism",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "knowledge/kb-refund-reversal-closed.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  },
+                  {
+                    "path": "memory/refund-reversal-status.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "lint",
+              "type": "lint",
+              "expect": {
+                "exit": 0
+              }
+            },
+            {
+              "id": "validate",
+              "type": "validate",
+              "expect": {
+                "exit": 0
+              }
+            }
+          ]
+        },
+        {
+          "id": "D1-held-out",
+          "split": "held-out",
+          "domain": "municipal library lending",
+          "files": [
+            {
+              "path": "memory/MEMORY.md",
+              "content": "# Agent memory\n\n- [Hold expiry status pointer](hold-expiry-status.md) - where the hold expiry state is kept\n- [Duplicate checkout scan retired](duplicate-checkout-scan.md) - pointer to the retired missing stock reading\n"
+            },
+            {
+              "path": "memory/duplicate-checkout-scan.md",
+              "content": "---\nname: duplicate-checkout-scan\ndescription: Retired reading that duplicate self-checkout scans caused missing library stock\nmetadata:\n  type: reference\n---\n\nDecision record docs/adr/0011-duplicate-scan-not-stock-loss.md and tombstone docs/tombstones/duplicate-checkout-scan.md retire the reading that duplicate self-checkout scans caused missing library stock.\n"
+            },
+            {
+              "path": "memory/hold-expiry-status.md",
+              "content": "---\nname: hold-expiry-status\ndescription: Where the documentary state of the hold expiry release mechanism is kept\nmetadata:\n  type: reference\n---\n\nA dated review exists at docs/reviews/2033-10-21-hold-expiry.md. The state of the hold expiry release mechanism is kept in docs/PROJECT-STATE.md and knowledge/kb-hold-expiry-release-settled.md.\n"
+            },
+            {
+              "path": "docs/tombstones/duplicate-checkout-scan.md",
+              "content": "# Retired reading: duplicate checkout scans as stock loss\n\nA replacement method now pairs every scan with one loan record; the handful of unpaired scans came from staff test cards. The old reading treated each scan as a separate loan. Retired 3 October 2033.\n"
+            },
+            {
+              "path": "docs/adr/0011-duplicate-scan-not-stock-loss.md",
+              "content": "# ADR 0011 - duplicate scans do not explain missing stock\n\nPairing each scan with one loan record is the method we keep. Duplicate self-checkout scans do not establish missing library stock.\n\nAccepted 3 October 2033.\n"
+            },
+            {
+              "path": "docs/reviews/2033-10-21-hold-expiry.md",
+              "content": "# Hold expiry review, 21 October 2033\n\nTwenty-six holds were released after the patron had already collected the book, and nobody knows why yet. On 21 October 2033 the hold expiry release mechanism is still open. Planned follow-up: read the nightly expiry job.\n"
+            },
+            {
+              "path": "knowledge/kb-hold-expiry-release-settled.md",
+              "content": "---\nid: kb-hold-expiry-release-settled\nevidence: verifiable\nprovenance:\n  - docs/reviews/2033-10-21-hold-expiry.md\n  - docs/PROJECT-STATE.md\n---\n\n# Hold expiry release mechanism is settled\n\nWhether hold expiry releases are linked to the unexplained shelf gap is the single question left open. The mechanism itself was settled on 30 October 2033: reading the nightly expiry job showed it released holds that had already been collected. It does not cause missing stock.\n"
+            },
+            {
+              "path": "docs/PROJECT-STATE.md",
+              "content": "# Project state\n\nThese entries record documents only; nothing here is a live check of the lending system.\n\n## Shelf gap\n\nOpen. Nobody has shown what physically causes the gap.\n\n## Hold expiry release\n\nStill open: whether hold expiry releases are linked to the shelf gap.\n\nMechanism: settled on 30 October 2033 by reading the nightly expiry job; not a cause of missing stock.\n"
+            }
+          ],
+          "questions": [
+            {
+              "key": "requested",
+              "scope": "requested",
+              "asked": true,
+              "text": "Do duplicate self-checkout scans explain the missing library stock?",
+              "correct": [
+                {
+                  "code": "retired-reading-with-retained-method",
+                  "text": "No. The duplicate scan reading is retired; pairing each scan with one loan record is the kept method."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "retired-reading-as-current",
+                  "text": "Presenting duplicate scans as an established cause of missing stock."
+                }
+              ]
+            },
+            {
+              "key": "adjacent-volunteered",
+              "scope": "adjacent-unrequested",
+              "asked": false,
+              "text": "Unrequested adjacent claim that an answer may volunteer: the present state of the hold expiry release mechanism.",
+              "correct": [
+                {
+                  "code": "omit-adjacent-claim",
+                  "text": "The answer does not mention hold expiry releases."
+                },
+                {
+                  "code": "adjacent-closed-narrower-link-open",
+                  "text": "The mechanism is documentarily settled and only its possible link to the shelf gap is open, citing the complete state unit and state document."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "adjacent-mechanism-open",
+                  "text": "Stating that the hold expiry release mechanism is still open."
+                },
+                {
+                  "code": "narrower-link-closed",
+                  "text": "Stating that the link to the shelf gap is settled too."
+                },
+                {
+                  "code": "status-from-dated-analysis",
+                  "text": "Inferring present state from the 21 October 2033 review."
+                }
+              ]
+            }
+          ],
+          "sources": [
+            {
+              "path": "memory/MEMORY.md",
+              "role": "native-index",
+              "availability": "present",
+              "required_for": [],
+              "passages": []
+            },
+            {
+              "path": "memory/duplicate-checkout-scan.md",
+              "role": "status-pointer",
+              "availability": "present",
+              "required_for": [],
+              "passages": [
+                "retire the reading that duplicate self-checkout scans caused missing library stock"
+              ]
+            },
+            {
+              "path": "memory/hold-expiry-status.md",
+              "role": "status-pointer",
+              "availability": "present",
+              "required_for": [],
+              "passages": [
+                "is kept in docs/PROJECT-STATE.md and knowledge/kb-hold-expiry-release-settled.md"
+              ]
+            },
+            {
+              "path": "docs/tombstones/duplicate-checkout-scan.md",
+              "role": "requested-original",
+              "availability": "present",
+              "required_for": [
+                "requested"
+              ],
+              "passages": [
+                "A replacement method now pairs every scan with one loan record"
+              ]
+            },
+            {
+              "path": "docs/adr/0011-duplicate-scan-not-stock-loss.md",
+              "role": "requested-original",
+              "availability": "present",
+              "required_for": [
+                "requested"
+              ],
+              "passages": [
+                "Duplicate self-checkout scans do not establish missing library stock."
+              ]
+            },
+            {
+              "path": "docs/reviews/2033-10-21-hold-expiry.md",
+              "role": "adjacent-historical-analysis",
+              "availability": "present",
+              "required_for": [],
+              "passages": [
+                "On 21 October 2033 the hold expiry release mechanism is still open."
+              ]
+            },
+            {
+              "path": "knowledge/kb-hold-expiry-release-settled.md",
+              "role": "status-unit",
+              "availability": "present",
+              "required_for": [
+                "adjacent-volunteered"
+              ],
+              "passages": [
+                "Whether hold expiry releases are linked to the unexplained shelf gap is the single question left open.",
+                "The mechanism itself was settled on 30 October 2033"
+              ]
+            },
+            {
+              "path": "docs/PROJECT-STATE.md",
+              "role": "project-status-document",
+              "availability": "present",
+              "required_for": [
+                "adjacent-volunteered"
+              ],
+              "passages": [
+                "Still open: whether hold expiry releases are linked to the shelf gap.",
+                "Mechanism: settled on 30 October 2033 by reading the nightly expiry job; not a cause of missing stock."
+              ]
+            }
+          ],
+          "routes": [
+            {
+              "id": "native-index",
+              "type": "native-index",
+              "expect": {
+                "lines": [
+                  {
+                    "line": "- [Hold expiry status pointer](hold-expiry-status.md) - where the hold expiry state is kept",
+                    "target": "memory/hold-expiry-status.md",
+                    "presentation": "ordinary"
+                  },
+                  {
+                    "line": "- [Duplicate checkout scan retired](duplicate-checkout-scan.md) - pointer to the retired missing stock reading",
+                    "target": "memory/duplicate-checkout-scan.md",
+                    "presentation": "ordinary"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "recall-requested",
+              "type": "recall",
+              "question": "requested",
+              "query": "duplicate checkout scan",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "memory/duplicate-checkout-scan.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "recall-adjacent",
+              "type": "recall",
+              "question": "adjacent-volunteered",
+              "query": "hold expiry release",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "knowledge/kb-hold-expiry-release-settled.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  },
+                  {
+                    "path": "memory/hold-expiry-status.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "lint",
+              "type": "lint",
+              "expect": {
+                "exit": 0
+              }
+            },
+            {
+              "id": "validate",
+              "type": "validate",
+              "expect": {
+                "exit": 0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D2",
+      "kind": "target",
+      "distinction": "A dated analysis records an open mechanism at its own date while later documentary status closes the mechanism and keeps a narrower connection open.",
+      "variants": [
+        {
+          "id": "D2-development",
+          "split": "development",
+          "domain": "orchard cold storage",
+          "files": [
+            {
+              "path": "memory/MEMORY.md",
+              "content": "# Agent memory\n\n- [Humidity drift status pointer](humidity-drift-status.md) - where the humidity drift status is recorded\n"
+            },
+            {
+              "path": "memory/humidity-drift-status.md",
+              "content": "---\nname: humidity-drift-status\ndescription: Where the documentary status of the humidity drift mechanism is recorded\nmetadata:\n  type: reference\n---\n\nThe project records the documentary status of the humidity drift mechanism in knowledge/kb-humidity-drift-closed.md and docs/STATUS.md. The dated analysis is docs/analysis/2032-05-10-humidity-drift.md.\n"
+            },
+            {
+              "path": "docs/analysis/2032-05-10-humidity-drift.md",
+              "content": "# Humidity drift analysis, 10 May 2032\n\nAs of 10 May 2032, the humidity drift mechanism in cold room two remains open. Sensor readings rose by eight points overnight and the cause is unknown. Next step: inspect the defrost cycle schedule.\n"
+            },
+            {
+              "path": "knowledge/kb-humidity-drift-closed.md",
+              "content": "---\nid: kb-humidity-drift-closed\nevidence: verifiable\nprovenance:\n  - docs/analysis/2032-05-10-humidity-drift.md\n  - docs/STATUS.md\n---\n\n# Humidity drift mechanism is closed\n\nThe humidity drift mechanism was closed on 24 May 2032 after the defrost cycle schedule was shown to run twice each night. Only one narrower question remains open: whether the humidity drift connects to the apple spoilage rate.\n"
+            },
+            {
+              "path": "docs/STATUS.md",
+              "content": "# Project status\n\n## Humidity drift\n\nMechanism: closed on 24 May 2032; the defrost cycle ran twice each night.\n\nStill open: the possible connection between humidity drift and the apple spoilage rate.\n\nThis file records documentary status. It is not a live sensor reading.\n"
+            }
+          ],
+          "questions": [
+            {
+              "key": "historical",
+              "scope": "historical",
+              "asked": true,
+              "text": "What did the 10 May 2032 analysis conclude about the humidity drift mechanism?",
+              "correct": [
+                {
+                  "code": "historical-open-at-that-date",
+                  "text": "At 10 May 2032 the analysis recorded the mechanism as open with an unknown cause."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "later-state-projected-backward",
+                  "text": "Claiming the 10 May 2032 analysis already recorded the mechanism as closed."
+                }
+              ]
+            },
+            {
+              "key": "current-documentary",
+              "scope": "current-documentary",
+              "asked": true,
+              "text": "What is the current documentary status of the humidity drift mechanism?",
+              "correct": [
+                {
+                  "code": "closed-narrower-link-open-not-live",
+                  "text": "Documentarily closed on 24 May 2032; only the connection to the apple spoilage rate is open; this is not a live sensor check."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "old-state-as-current",
+                  "text": "Stating that the humidity drift mechanism is currently open."
+                },
+                {
+                  "code": "documentary-as-external-freshness",
+                  "text": "Presenting the documentary status as a live verification of the cold room."
+                }
+              ]
+            }
+          ],
+          "sources": [
+            {
+              "path": "memory/MEMORY.md",
+              "role": "native-index",
+              "availability": "present",
+              "required_for": [],
+              "passages": []
+            },
+            {
+              "path": "memory/humidity-drift-status.md",
+              "role": "status-pointer",
+              "availability": "present",
+              "required_for": [],
+              "passages": [
+                "in knowledge/kb-humidity-drift-closed.md and docs/STATUS.md"
+              ]
+            },
+            {
+              "path": "docs/analysis/2032-05-10-humidity-drift.md",
+              "role": "adjacent-historical-analysis",
+              "availability": "present",
+              "required_for": [
+                "historical"
+              ],
+              "passages": [
+                "As of 10 May 2032, the humidity drift mechanism in cold room two remains open."
+              ]
+            },
+            {
+              "path": "knowledge/kb-humidity-drift-closed.md",
+              "role": "status-unit",
+              "availability": "present",
+              "required_for": [
+                "current-documentary"
+              ],
+              "passages": [
+                "The humidity drift mechanism was closed on 24 May 2032",
+                "Only one narrower question remains open: whether the humidity drift connects to the apple spoilage rate."
+              ]
+            },
+            {
+              "path": "docs/STATUS.md",
+              "role": "project-status-document",
+              "availability": "present",
+              "required_for": [
+                "current-documentary"
+              ],
+              "passages": [
+                "Mechanism: closed on 24 May 2032; the defrost cycle ran twice each night.",
+                "This file records documentary status. It is not a live sensor reading."
+              ]
+            }
+          ],
+          "routes": [
+            {
+              "id": "recall-historical",
+              "type": "recall",
+              "question": "historical",
+              "query": "humidity drift analysis",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "memory/humidity-drift-status.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "recall-current",
+              "type": "recall",
+              "question": "current-documentary",
+              "query": "humidity drift mechanism status",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "knowledge/kb-humidity-drift-closed.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  },
+                  {
+                    "path": "memory/humidity-drift-status.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "lint",
+              "type": "lint",
+              "expect": {
+                "exit": 0
+              }
+            },
+            {
+              "id": "validate",
+              "type": "validate",
+              "expect": {
+                "exit": 0
+              }
+            }
+          ]
+        },
+        {
+          "id": "D2-held-out",
+          "split": "held-out",
+          "domain": "wind farm maintenance",
+          "files": [
+            {
+              "path": "memory/MEMORY.md",
+              "content": "# Agent memory\n\n- [Blade icing state pointer](blade-icing-status.md) - where the blade icing alarm state is kept\n"
+            },
+            {
+              "path": "memory/blade-icing-status.md",
+              "content": "---\nname: blade-icing-status\ndescription: Where the documentary state of the blade icing alarm mechanism is kept\nmetadata:\n  type: reference\n---\n\nA dated inspection note is docs/notes/2034-01-15-blade-icing.md. The documentary state of the blade icing alarm mechanism is kept in docs/PROJECT-STATE.md and knowledge/kb-blade-icing-alarm-settled.md.\n"
+            },
+            {
+              "path": "docs/notes/2034-01-15-blade-icing.md",
+              "content": "# Blade icing inspection note, 15 January 2034\n\nThe alarm fired on three turbines while the blades were dry, and the cause is not understood. On 15 January 2034 the blade icing alarm mechanism stays open. Follow-up: compare the heater controller firmware.\n"
+            },
+            {
+              "path": "knowledge/kb-blade-icing-alarm-settled.md",
+              "content": "---\nid: kb-blade-icing-alarm-settled\nevidence: verifiable\nprovenance:\n  - docs/notes/2034-01-15-blade-icing.md\n  - docs/PROJECT-STATE.md\n---\n\n# Blade icing alarm mechanism is settled\n\nWhether the false icing alarms are linked to the lower winter output is the only question still open. The mechanism was settled on 2 February 2034, when the heater controller firmware was found to report dry blades as iced below minus five degrees.\n"
+            },
+            {
+              "path": "docs/PROJECT-STATE.md",
+              "content": "# Project state\n\nEntries record documents only and are not a live turbine reading.\n\n## Blade icing alarm\n\nStill open: whether the false alarms are linked to the lower winter output.\n\nMechanism: settled on 2 February 2034 by the heater controller firmware comparison.\n"
+            }
+          ],
+          "questions": [
+            {
+              "key": "historical",
+              "scope": "historical",
+              "asked": true,
+              "text": "What did the 15 January 2034 inspection note conclude about the blade icing alarm mechanism?",
+              "correct": [
+                {
+                  "code": "historical-open-at-that-date",
+                  "text": "On 15 January 2034 the note kept the mechanism open with the cause not understood."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "later-state-projected-backward",
+                  "text": "Claiming the 15 January 2034 note already settled the mechanism."
+                }
+              ]
+            },
+            {
+              "key": "current-documentary",
+              "scope": "current-documentary",
+              "asked": true,
+              "text": "What is the current documentary state of the blade icing alarm mechanism?",
+              "correct": [
+                {
+                  "code": "closed-narrower-link-open-not-live",
+                  "text": "Documentarily settled on 2 February 2034; only the link to lower winter output is open; this is not a live turbine reading."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "old-state-as-current",
+                  "text": "Stating that the blade icing alarm mechanism is still open today."
+                },
+                {
+                  "code": "documentary-as-external-freshness",
+                  "text": "Presenting the documentary state as a live verification of the turbines."
+                }
+              ]
+            }
+          ],
+          "sources": [
+            {
+              "path": "memory/MEMORY.md",
+              "role": "native-index",
+              "availability": "present",
+              "required_for": [],
+              "passages": []
+            },
+            {
+              "path": "memory/blade-icing-status.md",
+              "role": "status-pointer",
+              "availability": "present",
+              "required_for": [],
+              "passages": [
+                "is kept in docs/PROJECT-STATE.md and knowledge/kb-blade-icing-alarm-settled.md"
+              ]
+            },
+            {
+              "path": "docs/notes/2034-01-15-blade-icing.md",
+              "role": "adjacent-historical-analysis",
+              "availability": "present",
+              "required_for": [
+                "historical"
+              ],
+              "passages": [
+                "On 15 January 2034 the blade icing alarm mechanism stays open."
+              ]
+            },
+            {
+              "path": "knowledge/kb-blade-icing-alarm-settled.md",
+              "role": "status-unit",
+              "availability": "present",
+              "required_for": [
+                "current-documentary"
+              ],
+              "passages": [
+                "Whether the false icing alarms are linked to the lower winter output is the only question still open.",
+                "The mechanism was settled on 2 February 2034"
+              ]
+            },
+            {
+              "path": "docs/PROJECT-STATE.md",
+              "role": "project-status-document",
+              "availability": "present",
+              "required_for": [
+                "current-documentary"
+              ],
+              "passages": [
+                "Entries record documents only and are not a live turbine reading.",
+                "Mechanism: settled on 2 February 2034 by the heater controller firmware comparison."
+              ]
+            }
+          ],
+          "routes": [
+            {
+              "id": "recall-historical",
+              "type": "recall",
+              "question": "historical",
+              "query": "blade icing inspection note",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "memory/blade-icing-status.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "recall-current",
+              "type": "recall",
+              "question": "current-documentary",
+              "query": "blade icing alarm mechanism",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "knowledge/kb-blade-icing-alarm-settled.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  },
+                  {
+                    "path": "memory/blade-icing-status.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "lint",
+              "type": "lint",
+              "expect": {
+                "exit": 0
+              }
+            },
+            {
+              "id": "validate",
+              "type": "validate",
+              "expect": {
+                "exit": 0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D3",
+      "kind": "target",
+      "distinction": "Two records disagree without any declared precedence or supersession, and an explicitly named documentary status source is absent.",
+      "variants": [
+        {
+          "id": "D3-development",
+          "split": "development",
+          "domain": "bakery supplier deliveries",
+          "files": [
+            {
+              "path": "memory/MEMORY.md",
+              "content": "# Agent memory\n\n- [Flour delivery morning window](flour-window-morning.md) - flour arrives in the morning\n- [Flour delivery evening window](flour-window-evening.md) - flour arrives in the evening\n- [Oven preheat fault status pointer](oven-preheat-status.md) - where the oven preheat fault status is recorded\n"
+            },
+            {
+              "path": "memory/flour-window-morning.md",
+              "content": "---\nname: flour-window-morning\ndescription: Flour deliveries arrive in the morning window\nmetadata:\n  type: project\n---\n\nRecorded 4 April 2035. The flour supplier delivers between six and eight in the morning.\n"
+            },
+            {
+              "path": "memory/flour-window-evening.md",
+              "content": "---\nname: flour-window-evening\ndescription: Flour deliveries arrive in the evening window\nmetadata:\n  type: project\n---\n\nRecorded 19 April 2035. The flour supplier delivers between six and eight in the evening.\n"
+            },
+            {
+              "path": "memory/oven-preheat-status.md",
+              "content": "---\nname: oven-preheat-status\ndescription: Where the oven preheat fault status is recorded\nmetadata:\n  type: reference\n---\n\nThe documentary status of the oven preheat fault is recorded in docs/status/oven-preheat-fault.md.\n"
+            }
+          ],
+          "questions": [
+            {
+              "key": "conflict",
+              "scope": "current-documentary",
+              "asked": true,
+              "text": "Which flour delivery window is current?",
+              "correct": [
+                {
+                  "code": "insufficient-evidence-missing-precedence",
+                  "text": "Insufficient evidence: the two window records disagree and neither declares precedence or supersession."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "newest-document-authority",
+                  "text": "Choosing the evening window because its record is dated later."
+                },
+                {
+                  "code": "arbitrary-authority",
+                  "text": "Choosing either window without a declared precedence."
+                },
+                {
+                  "code": "invented-successor",
+                  "text": "Describing one window record as the successor of the other."
+                }
+              ]
+            },
+            {
+              "key": "unavailable",
+              "scope": "current-documentary",
+              "asked": true,
+              "text": "What is the current documentary status of the oven preheat fault?",
+              "correct": [
+                {
+                  "code": "insufficient-evidence-missing-source",
+                  "text": "Insufficient evidence: the named status source docs/status/oven-preheat-fault.md is unavailable."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "status-invented-without-source",
+                  "text": "Stating any open or closed status for the oven preheat fault."
+                },
+                {
+                  "code": "invented-successor",
+                  "text": "Treating another record as the replacement status source."
+                }
+              ]
+            }
+          ],
+          "sources": [
+            {
+              "path": "memory/MEMORY.md",
+              "role": "native-index",
+              "availability": "present",
+              "required_for": [],
+              "passages": []
+            },
+            {
+              "path": "memory/flour-window-morning.md",
+              "role": "conflicting-document",
+              "availability": "present",
+              "required_for": [
+                "conflict"
+              ],
+              "passages": [
+                "The flour supplier delivers between six and eight in the morning."
+              ]
+            },
+            {
+              "path": "memory/flour-window-evening.md",
+              "role": "conflicting-document",
+              "availability": "present",
+              "required_for": [
+                "conflict"
+              ],
+              "passages": [
+                "The flour supplier delivers between six and eight in the evening."
+              ]
+            },
+            {
+              "path": "memory/oven-preheat-status.md",
+              "role": "status-pointer",
+              "availability": "present",
+              "required_for": [
+                "unavailable"
+              ],
+              "passages": [
+                "is recorded in docs/status/oven-preheat-fault.md"
+              ]
+            },
+            {
+              "path": "docs/status/oven-preheat-fault.md",
+              "role": "unavailable-status-source",
+              "availability": "absent",
+              "required_for": [
+                "unavailable"
+              ],
+              "passages": []
+            }
+          ],
+          "routes": [
+            {
+              "id": "native-index",
+              "type": "native-index",
+              "expect": {
+                "lines": [
+                  {
+                    "line": "- [Flour delivery morning window](flour-window-morning.md) - flour arrives in the morning",
+                    "target": "memory/flour-window-morning.md",
+                    "presentation": "ordinary"
+                  },
+                  {
+                    "line": "- [Flour delivery evening window](flour-window-evening.md) - flour arrives in the evening",
+                    "target": "memory/flour-window-evening.md",
+                    "presentation": "ordinary"
+                  },
+                  {
+                    "line": "- [Oven preheat fault status pointer](oven-preheat-status.md) - where the oven preheat fault status is recorded",
+                    "target": "memory/oven-preheat-status.md",
+                    "presentation": "ordinary"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "recall-conflict",
+              "type": "recall",
+              "question": "conflict",
+              "query": "flour delivery window",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "memory/flour-window-morning.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  },
+                  {
+                    "path": "memory/flour-window-evening.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "recall-unavailable",
+              "type": "recall",
+              "question": "unavailable",
+              "query": "oven preheat fault",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "memory/oven-preheat-status.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "lint",
+              "type": "lint",
+              "expect": {
+                "exit": 0
+              }
+            }
+          ]
+        },
+        {
+          "id": "D3-held-out",
+          "split": "held-out",
+          "domain": "clinic appointment desk",
+          "files": [
+            {
+              "path": "memory/MEMORY.md",
+              "content": "# Agent memory\n\n- [Phone queue outage state pointer](phone-queue-outage-status.md) - where the phone queue outage state is kept\n- [Reminder calls one day ahead](reminder-call-one-day.md) - reminder calls one day before\n- [Reminder calls two days ahead](reminder-call-two-days.md) - reminder calls two days before\n"
+            },
+            {
+              "path": "memory/reminder-call-two-days.md",
+              "content": "---\nname: reminder-call-two-days\ndescription: Appointment reminder calls go out two days ahead\nmetadata:\n  type: project\n---\n\nThe desk calls patients two days before the appointment. Noted 7 June 2036.\n"
+            },
+            {
+              "path": "memory/reminder-call-one-day.md",
+              "content": "---\nname: reminder-call-one-day\ndescription: Appointment reminder calls go out one day ahead\nmetadata:\n  type: project\n---\n\nNoted 22 June 2036. The desk calls patients one day before the appointment.\n"
+            },
+            {
+              "path": "memory/phone-queue-outage-status.md",
+              "content": "---\nname: phone-queue-outage-status\ndescription: Where the phone queue outage state is kept\nmetadata:\n  type: reference\n---\n\ndocs/state/phone-queue-outage.md holds the documentary state of the phone queue outage.\n"
+            }
+          ],
+          "questions": [
+            {
+              "key": "conflict",
+              "scope": "current-documentary",
+              "asked": true,
+              "text": "How many days ahead do appointment reminder calls go out now?",
+              "correct": [
+                {
+                  "code": "insufficient-evidence-missing-precedence",
+                  "text": "Insufficient evidence: the one-day and two-day records disagree and neither declares precedence or supersession."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "newest-document-authority",
+                  "text": "Choosing one day because that note is dated later."
+                },
+                {
+                  "code": "arbitrary-authority",
+                  "text": "Choosing either lead time without a declared precedence."
+                },
+                {
+                  "code": "invented-successor",
+                  "text": "Describing one reminder record as the successor of the other."
+                }
+              ]
+            },
+            {
+              "key": "unavailable",
+              "scope": "current-documentary",
+              "asked": true,
+              "text": "What documentary state is recorded for the phone queue outage?",
+              "correct": [
+                {
+                  "code": "insufficient-evidence-missing-source",
+                  "text": "Insufficient evidence: the named state source docs/state/phone-queue-outage.md is unavailable."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "status-invented-without-source",
+                  "text": "Stating any open or resolved state for the phone queue outage."
+                },
+                {
+                  "code": "invented-successor",
+                  "text": "Treating another record as the replacement state source."
+                }
+              ]
+            }
+          ],
+          "sources": [
+            {
+              "path": "memory/MEMORY.md",
+              "role": "native-index",
+              "availability": "present",
+              "required_for": [],
+              "passages": []
+            },
+            {
+              "path": "memory/reminder-call-two-days.md",
+              "role": "conflicting-document",
+              "availability": "present",
+              "required_for": [
+                "conflict"
+              ],
+              "passages": [
+                "The desk calls patients two days before the appointment."
+              ]
+            },
+            {
+              "path": "memory/reminder-call-one-day.md",
+              "role": "conflicting-document",
+              "availability": "present",
+              "required_for": [
+                "conflict"
+              ],
+              "passages": [
+                "The desk calls patients one day before the appointment."
+              ]
+            },
+            {
+              "path": "memory/phone-queue-outage-status.md",
+              "role": "status-pointer",
+              "availability": "present",
+              "required_for": [
+                "unavailable"
+              ],
+              "passages": [
+                "docs/state/phone-queue-outage.md holds the documentary state"
+              ]
+            },
+            {
+              "path": "docs/state/phone-queue-outage.md",
+              "role": "unavailable-status-source",
+              "availability": "absent",
+              "required_for": [
+                "unavailable"
+              ],
+              "passages": []
+            }
+          ],
+          "routes": [
+            {
+              "id": "native-index",
+              "type": "native-index",
+              "expect": {
+                "lines": [
+                  {
+                    "line": "- [Phone queue outage state pointer](phone-queue-outage-status.md) - where the phone queue outage state is kept",
+                    "target": "memory/phone-queue-outage-status.md",
+                    "presentation": "ordinary"
+                  },
+                  {
+                    "line": "- [Reminder calls one day ahead](reminder-call-one-day.md) - reminder calls one day before",
+                    "target": "memory/reminder-call-one-day.md",
+                    "presentation": "ordinary"
+                  },
+                  {
+                    "line": "- [Reminder calls two days ahead](reminder-call-two-days.md) - reminder calls two days before",
+                    "target": "memory/reminder-call-two-days.md",
+                    "presentation": "ordinary"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "recall-conflict",
+              "type": "recall",
+              "question": "conflict",
+              "query": "appointment reminder calls",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "memory/reminder-call-two-days.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  },
+                  {
+                    "path": "memory/reminder-call-one-day.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "recall-unavailable",
+              "type": "recall",
+              "question": "unavailable",
+              "query": "phone queue outage",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "memory/phone-queue-outage-status.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "lint",
+              "type": "lint",
+              "expect": {
+                "exit": 0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R1",
+      "kind": "regression",
+      "distinction": "A later condition-specific feedback entry qualifies an original claim without retiring it.",
+      "variants": [
+        {
+          "id": "R1-regression",
+          "split": "regression",
+          "domain": "print shop laminating",
+          "files": [
+            {
+              "path": "memory/MEMORY.md",
+              "content": "# Agent memory\n\n- [Laminator heat setting](laminator-heat-setting.md) - heat setting four for heavy card\n- [Laminator humid day qualification](laminator-humid-day-qualification.md) - setting three on humid days\n"
+            },
+            {
+              "path": "memory/laminator-heat-setting.md",
+              "content": "---\nname: laminator-heat-setting\ndescription: Laminator heat setting for heavy card\nmetadata:\n  type: reference\n---\n\nUse heat setting four when laminating 250 gsm card.\n"
+            },
+            {
+              "path": "memory/laminator-humid-day-qualification.md",
+              "content": "---\nname: laminator-humid-day-qualification\ndescription: Laminator heat setting qualification on humid days\nmetadata:\n  type: feedback\n---\n\nOn days above 70 percent relative humidity, heat setting four caused bubbling on 250 gsm card and setting three worked. This qualifies the heat setting advice for humid days only. It does not retire the original advice for ordinary days.\n"
+            }
+          ],
+          "questions": [
+            {
+              "key": "qualified-use",
+              "scope": "regression",
+              "asked": true,
+              "text": "Which laminator heat setting should be used for 250 gsm card?",
+              "correct": [
+                {
+                  "code": "both-conditions-preserved",
+                  "text": "Setting four on ordinary days and setting three on days above 70 percent relative humidity."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "qualification-as-successor",
+                  "text": "Treating the humid day feedback as retiring the original advice."
+                },
+                {
+                  "code": "condition-dropped",
+                  "text": "Giving one setting for all days."
+                }
+              ]
+            }
+          ],
+          "sources": [
+            {
+              "path": "memory/MEMORY.md",
+              "role": "native-index",
+              "availability": "present",
+              "required_for": [],
+              "passages": []
+            },
+            {
+              "path": "memory/laminator-heat-setting.md",
+              "role": "original-claim",
+              "availability": "present",
+              "required_for": [
+                "qualified-use"
+              ],
+              "passages": [
+                "Use heat setting four when laminating 250 gsm card."
+              ]
+            },
+            {
+              "path": "memory/laminator-humid-day-qualification.md",
+              "role": "non-retiring-qualification",
+              "availability": "present",
+              "required_for": [
+                "qualified-use"
+              ],
+              "passages": [
+                "It does not retire the original advice for ordinary days."
+              ]
+            }
+          ],
+          "routes": [
+            {
+              "id": "recall-qualified",
+              "type": "recall",
+              "question": "qualified-use",
+              "query": "laminator heat setting",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "memory/laminator-heat-setting.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  },
+                  {
+                    "path": "memory/laminator-humid-day-qualification.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "lint",
+              "type": "lint",
+              "expect": {
+                "exit": 0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "kind": "regression",
+      "distinction": "A declared same-layer successor exists while the native index still lists the superseded entry without annotation.",
+      "variants": [
+        {
+          "id": "R2-regression",
+          "split": "regression",
+          "domain": "museum gallery lighting",
+          "files": [
+            {
+              "path": "memory/MEMORY.md",
+              "content": "# Agent memory\n\n- [Gallery lighting advice](gallery-lighting-advice.md) - keep gallery lights at full brightness\n- [Dimmed gallery lighting advice](gallery-lighting-advice-dimmed.md) - fifty lux in textile rooms\n"
+            },
+            {
+              "path": "memory/gallery-lighting-advice.md",
+              "content": "---\nname: gallery-lighting-advice\ndescription: superseded by [[gallery-lighting-advice-dimmed]]\nmetadata:\n  type: reference\n---\n\nKeep gallery lights at full brightness during opening hours.\n"
+            },
+            {
+              "path": "memory/gallery-lighting-advice-dimmed.md",
+              "content": "---\nname: gallery-lighting-advice-dimmed\ndescription: Gallery lighting advice dimmed for textile rooms\nmetadata:\n  type: reference\n---\n\nDim gallery lights to fifty lux in textile rooms during opening hours. This replaces the earlier full brightness advice.\n"
+            }
+          ],
+          "questions": [
+            {
+              "key": "successor-use",
+              "scope": "regression",
+              "asked": true,
+              "text": "How bright should gallery lights be in textile rooms during opening hours?",
+              "correct": [
+                {
+                  "code": "follow-declared-successor",
+                  "text": "Fifty lux, following the declared successor of the full brightness advice."
+                }
+              ],
+              "harmful": [
+                {
+                  "code": "unannotated-index-entry-as-current",
+                  "text": "Relying on the unannotated index listing of full brightness advice as current."
+                },
+                {
+                  "code": "redirect-ignored",
+                  "text": "Ignoring the declared supersession returned by recall."
+                }
+              ]
+            }
+          ],
+          "sources": [
+            {
+              "path": "memory/MEMORY.md",
+              "role": "native-index",
+              "availability": "present",
+              "required_for": [],
+              "passages": []
+            },
+            {
+              "path": "memory/gallery-lighting-advice.md",
+              "role": "superseded-entry",
+              "availability": "present",
+              "required_for": [],
+              "passages": [
+                "Keep gallery lights at full brightness during opening hours."
+              ]
+            },
+            {
+              "path": "memory/gallery-lighting-advice-dimmed.md",
+              "role": "declared-successor",
+              "availability": "present",
+              "required_for": [
+                "successor-use"
+              ],
+              "passages": [
+                "Dim gallery lights to fifty lux in textile rooms during opening hours."
+              ]
+            }
+          ],
+          "routes": [
+            {
+              "id": "native-index",
+              "type": "native-index",
+              "expect": {
+                "lines": [
+                  {
+                    "line": "- [Gallery lighting advice](gallery-lighting-advice.md) - keep gallery lights at full brightness",
+                    "target": "memory/gallery-lighting-advice.md",
+                    "presentation": "unannotated-superseded-entry"
+                  },
+                  {
+                    "line": "- [Dimmed gallery lighting advice](gallery-lighting-advice-dimmed.md) - fifty lux in textile rooms",
+                    "target": "memory/gallery-lighting-advice-dimmed.md",
+                    "presentation": "ordinary"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "recall-redirect",
+              "type": "recall",
+              "question": "successor-use",
+              "query": "gallery lighting advice",
+              "include_superseded": false,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "memory/gallery-lighting-advice-dimmed.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": [
+                      {
+                        "identity": "gallery-lighting-advice",
+                        "path": "memory/gallery-lighting-advice.md"
+                      }
+                    ]
+                  }
+                ],
+                "returned_excludes": [
+                  "memory/gallery-lighting-advice.md"
+                ]
+              }
+            },
+            {
+              "id": "recall-history",
+              "type": "recall",
+              "question": "successor-use",
+              "query": "gallery lighting advice",
+              "include_superseded": true,
+              "expect": {
+                "exit": 0,
+                "returned_includes": [
+                  {
+                    "path": "memory/gallery-lighting-advice.md",
+                    "state": "superseded",
+                    "successors": [
+                      {
+                        "identity": "gallery-lighting-advice-dimmed",
+                        "path": "memory/gallery-lighting-advice-dimmed.md"
+                      }
+                    ],
+                    "redirected_from": []
+                  },
+                  {
+                    "path": "memory/gallery-lighting-advice-dimmed.md",
+                    "state": "active",
+                    "successors": [],
+                    "redirected_from": []
+                  }
+                ],
+                "returned_excludes": []
+              }
+            },
+            {
+              "id": "lint",
+              "type": "lint",
+              "expect": {
+                "exit": 0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
