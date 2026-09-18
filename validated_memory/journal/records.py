@@ -223,7 +223,7 @@ def read(root=Path(), durability=REPO):
     by name, and an adopter who keeps the file in a store outside the
     project has a working adoption. A BROKEN symlink reads as absent, which
     is honest -- there is nothing to read through it -- and it is
-    `_bootstrap` that must not then install over the link, where the
+    journal creation that must not then install over the link, where the
     replacement it would destroy actually happens.
     """
     path = journal_path(root, durability)
@@ -356,7 +356,7 @@ def is_inside_path(path):
     same rule to a record before it is written. The filesystem question --
     whether the path resolves below the root once symlinks are followed --
     is asked where something is about to be touched: `authorise` again,
-    before every write and every record, and `_state_of` before a read.
+    before every write and every record, and reconciliation before a read.
     """
     candidate = Path(path)
     return not candidate.is_absolute() and ".." not in candidate.parts

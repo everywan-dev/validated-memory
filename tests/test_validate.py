@@ -570,6 +570,82 @@ def test_the_closing_fence_stops_the_scan_before_the_document_body(
     assert "rationale." not in result.stderr
 
 
+def test_a_list_item_the_parser_reads_as_a_scalar_is_not_a_quoting_finding(
+    adopter_dir, write_unit, run_cli
+):
+    # `- reason:x` has no space after the colon, so the parser reads the
+    # item as the scalar 'reason:x', not as a `reason` key: there is no
+    # unquoted value to report, only an option that is not a mapping.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        "  options:\n    - reason:x\n"
+        '    - label: "A"\n      disposition: chosen\n      reason: "R"\n'
+        '    - label: "B"\n      disposition: rejected\n      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert (
+        "ERROR: knowledge/kb-0001.md: rationale.options[0]: "
+        "'reason:x' is not a mapping" in result.stderr
+    )
+    assert "value is not quoted" not in result.stderr
+
+
+def test_a_key_whose_remainder_is_only_a_comment_opens_a_block_not_a_value(
+    adopter_dir, write_unit, run_cli
+):
+    # The parser drops the comment, finds no inline value and reads the
+    # indented lines as the key's block: `question` is a mapping, which is
+    # the finding, and the comment is not an unquoted value.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: # comment\n'
+        '    text: "Q?"\n'
+        '  options:\n    - label: "A"\n      disposition: chosen\n'
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    assert (
+        "ERROR: knowledge/kb-0001.md: rationale.question: "
+        "a mapping is not a non-empty string" in result.stderr
+    )
+    assert "value is not quoted" not in result.stderr
+
+
+def test_a_misplaced_key_and_an_empty_collection_are_quoting_findings_in_order(
+    adopter_dir, write_unit, run_cli
+):
+    # The rule reads the three names anywhere under the block, not only
+    # where the envelope puts them: `reason` under an unknown key still
+    # loses everything from ' #' onward. `[]` does not begin with a quote.
+    # The field names the key, not its path, and the findings follow the
+    # document.
+    write_unit(
+        "kb-0001.md",
+        'id: kb-0001\nevidence: measured\nrationale:\n  question: "Q?"\n'
+        "  extra:\n    reason: misplaced\n"
+        "  options:\n    - label: []\n      disposition: chosen\n"
+        '      reason: "R"\n    - label: "B"\n      disposition: rejected\n'
+        '      reason: "R"\n',
+    )
+
+    result = run_cli("validate", cwd=adopter_dir)
+
+    assert result.returncode == 1
+    misplaced = "ERROR: knowledge/kb-0001.md:7: rationale.reason: value is not quoted"
+    empty = "ERROR: knowledge/kb-0001.md:9: rationale.label: value is not quoted"
+    assert misplaced in result.stderr
+    assert empty in result.stderr
+    assert result.stderr.index(misplaced) < result.stderr.index(empty)
+
+
 def test_missing_frontmatter_is_an_error(adopter_dir, run_cli):
     path = adopter_dir / "knowledge" / "no-frontmatter.md"
     path.parent.mkdir(parents=True, exist_ok=True)

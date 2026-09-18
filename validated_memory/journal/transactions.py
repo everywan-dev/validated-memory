@@ -6,11 +6,11 @@ a recovery acts on and `journal --check` reports. Also the two frozen
 results a caller renders: what recovery did with one transaction, and what
 an operator's resolution did.
 
-Not everything that knows the file's shape is here. `Run._complete` and
-`Run._restore` read its `intention`, `preimage`, `postimage`,
-`preimage_blob`, `mode`, `prior_bytes` and `run` fields directly, because
-they rebuild the records the crashed run would have written; closing that
-leak is a design change, not a move.
+Not everything that knows the file's shape is here. Recovery completion and
+restoration read its `intention`, `preimage`, `postimage`, `preimage_blob`,
+`mode`, `prior_bytes` and `run` fields directly, because they rebuild the
+records the crashed run would have written; closing that leak is a design
+change, not a move.
 """
 
 import json
@@ -80,12 +80,11 @@ def transaction_artifact(transaction_id):
 def _write_transaction_file(root, transaction_id, entry):
     """Write `entry` as the whole of one transaction file, fsynced in place.
 
-    Temporary, fsync, `install` -- the same durability shape every other
-    atomic write in this package uses (`_bootstrap`, `_park_preimage`,
-    `Run._publish`): the bytes are flushed and fsynced before the rename,
-    and `install` fsyncs the directory after it, so the file this call
-    leaves behind is exactly as durable whether it is the first write of a
-    new transaction or a rewrite of `stage` on an existing one.
+    Temporary, fsync, `install` -- the same durability shape journal creation,
+    preimage parking, and publication use: the bytes are flushed and fsynced
+    before the rename, and `install` fsyncs the directory after it, so the file
+    this call leaves behind is exactly as durable whether it is the first write
+    of a new transaction or a rewrite of `stage` on an existing one.
     """
     directory = _transactions_dir(root)
     directory.mkdir(parents=True, exist_ok=True)
@@ -596,11 +595,11 @@ def classify(root, item, adoption=None):
 def no_such_transaction(transaction_id):
     """The refusal for an id nothing in the log carries.
 
-    One sentence, in two places: `_run_resolve` asks the question before it
-    opens a `Run`, so a tree with no adoption at all is not given one by a
-    command that then says it changed nothing; the resolver asks it again
-    under the lock, where a file can have gone since. Two spellings of it
-    would drift, and this one is what `docs/reference/cli.md` prints.
+    One sentence, in two places: the command handler asks the question before
+    it opens a `Run`, so a tree with no adoption at all is not given one by a
+    command that then says it changed nothing; the resolver asks it again under
+    the lock, where a file can have gone since. Two spellings of it would drift,
+    and this one is what `docs/reference/cli.md` prints.
     """
     return (
         f"there is no unresolved transaction {transaction_id}; "

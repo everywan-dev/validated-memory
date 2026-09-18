@@ -29,8 +29,9 @@ ignored.
 This module decides and writes; it does not report. `write_entry` hands its
 executor `Outcome` back rather than reading it, because whether a `noop` is
 possible is a fact about the caller's own preconditions and not about the
-ignore file (`init._refusal`), and nothing here prints: `init` owns the run's
-narration and prints every line of it from one place.
+ignore file; the caller therefore also decides how that outcome is reported.
+Nothing here prints: `init` owns the run's narration and prints every line of
+it from one place.
 """
 
 from pathlib import Path

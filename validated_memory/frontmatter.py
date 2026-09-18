@@ -38,52 +38,52 @@ class _Line:
 
 
 def unquoted_values(text, block, keys):
-    """Which of `keys` carry an unquoted scalar inside the top-level `block`.
+    """Which of `keys` carry an unquoted value inside the top-level `block`.
 
     Returns `[(key, lineno)]`, in document order. `parse` cannot answer this:
     it returns the same string for `reason: "x"` and `reason: x`, so a rule
-    that requires the quoted form has to read the source -- and reading the
-    source is this module's job. The two grammars below are the parser's own:
-    where a key ends and a comment or block begins is `_cut_comment`'s rule,
-    and spaces-only indentation with blank and comment-only lines skipped is
-    `_tokenize`'s.
+    that requires the quoted form has to ask about the source -- and reading
+    the source is this module's job.
 
-    Only lines indented under the block are examined, and the scan stops at
-    the closing fence, so nothing in the document body is read. Lines are
-    numbered from `text.split("\\n")`, the way `parse` numbers them.
+    The answer comes from the traversal `parse` itself performs, so a key is
+    exactly what the parser reads as a mapping entry, at any depth under
+    `block`: the first line of a list item that opens a mapping counts, a
+    list item read as a scalar holds no key, and a key whose remainder is only
+    a comment opens a block rather than carrying a value. An empty inline
+    collection is an unquoted value. Lines are numbered from
+    `text.split("\\n")`, the way `parse` numbers them, and nothing after the
+    closing fence is read.
+
+    `text` must be a document `parse` accepts: anything it rejects raises the
+    same `FrontmatterError` here. These facts stay private to this module;
+    ADR 0023 records why there is no path or metadata interface.
     """
-    block_start = re.compile(r"^" + re.escape(block) + r"\s*:(\s|$|#)")
-    key_line = re.compile(
-        r"^\s*(?:-\s+)?(" + "|".join(re.escape(key) for key in keys) + r")\s*:\s*(\S.*)$"
-    )
+    entries = []
+    _parse_document(text, entries)
     found = []
-    delimiters = 0
     inside = False
-    for number, line in enumerate(text.split("\n"), start=1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        if indent == 0 and stripped == FENCE:
-            delimiters += 1
-            if delimiters == 2:
-                break
-            continue
-        if indent == 0:
-            inside = bool(block_start.match(stripped))
-            continue
-        if not inside:
-            continue
-        match = key_line.match(line)
-        if match is None:
-            continue
-        if match.group(2)[0] not in "\"'":
-            found.append((match.group(1), number))
+    # Column 0 is the document's own mapping and nothing else: every nested
+    # block and every list item sits to the right of the line that opens it.
+    for column, key, lineno, unquoted in entries:
+        if column == 0:
+            inside = key == block
+        elif inside and unquoted and key in keys:
+            found.append((key, lineno))
     return found
 
 
 def parse(text):
     """Parse the frontmatter of a document and return it as a mapping."""
+    return _parse_document(text)
+
+
+def _parse_document(text, entries=None):
+    """Return the mapping; append `(column, key, lineno, unquoted)` to `entries`.
+
+    Given a list, every mapping entry the traversal reads is appended to it in
+    document order; `unquoted` is true only for an inline value that does not
+    begin with a quote character. Without one, nothing is recorded.
+    """
     lines = text.split("\n")
     if not lines or lines[0].rstrip() != FENCE:
         raise FrontmatterError(
@@ -104,7 +104,7 @@ def parse(text):
         raise FrontmatterError("empty frontmatter", 1)
     if tokens[0].indent != 0:
         raise FrontmatterError("frontmatter must start at column 0", tokens[0].lineno)
-    data = _parse_block(tokens)
+    data = _parse_block(tokens, entries)
     if not isinstance(data, dict):
         raise FrontmatterError("frontmatter must be a mapping", tokens[0].lineno)
     return data
@@ -125,14 +125,14 @@ def _tokenize(raw_lines, first_lineno):
     return tokens
 
 
-def _parse_block(lines):
+def _parse_block(lines, entries):
     base = lines[0].indent
     for line in lines:
         if line.indent < base:
             raise FrontmatterError("inconsistent indentation", line.lineno)
     if lines[0].text.startswith("-"):
-        return _parse_list(lines, base)
-    return _parse_mapping(lines, base)
+        return _parse_list(lines, base, entries)
+    return _parse_mapping(lines, base, entries)
 
 
 def _split_entries(lines, base):
@@ -145,7 +145,7 @@ def _split_entries(lines, base):
     return chunks
 
 
-def _parse_mapping(lines, base):
+def _parse_mapping(lines, base, entries):
     result = {}
     for chunk in _split_entries(lines, base):
         head = chunk[0]
@@ -162,6 +162,11 @@ def _parse_mapping(lines, base):
         if key in result:
             raise FrontmatterError(f"duplicate key '{key}'", head.lineno)
         value_text = _cut_comment(remainder, head.lineno)
+        if entries is not None:
+            # Appended before a block value is descended into, so the entries
+            # stay in document order.
+            unquoted = bool(value_text) and value_text[0] not in "\"'"
+            entries.append((base, key, head.lineno, unquoted))
         if value_text:
             # The scalar is parsed first so that unsupported syntax is reported
             # where it appears, not as a side effect of the lines below it.
@@ -173,7 +178,7 @@ def _parse_mapping(lines, base):
                 )
             result[key] = value
         elif len(chunk) > 1:
-            result[key] = _parse_block(chunk[1:])
+            result[key] = _parse_block(chunk[1:], entries)
         else:
             raise FrontmatterError(
                 f"key '{key}' has no value; write '[]' or '{{}}' for an empty "
@@ -183,7 +188,7 @@ def _parse_mapping(lines, base):
     return result
 
 
-def _parse_list(lines, base):
+def _parse_list(lines, base, entries):
     items = []
     for chunk in _split_entries(lines, base):
         head = chunk[0]
@@ -196,13 +201,15 @@ def _parse_list(lines, base):
         if not content or content.startswith("#"):
             if len(chunk) == 1:
                 raise FrontmatterError("empty list item", head.lineno)
-            items.append(_parse_block(chunk[1:]))
+            items.append(_parse_block(chunk[1:], entries))
             continue
         if len(chunk) == 1 and not ENTRY_PATTERN.match(content):
             items.append(_parse_scalar(_cut_comment(content, head.lineno), head.lineno))
             continue
         column = base + 1 + (len(remainder) - len(remainder.lstrip(" ")))
-        items.append(_parse_block([_Line(column, content, head.lineno)] + chunk[1:]))
+        items.append(
+            _parse_block([_Line(column, content, head.lineno)] + chunk[1:], entries)
+        )
     return items
 
 

@@ -65,12 +65,11 @@ def run(check, resolve, resolution, stdout, stderr):
         # one pass is what lets the summary below count everything actually
         # read even when one of them is later refused.
         transactions = open_transactions(root)
-        # The id the journals themselves carry, taken in the order
-        # `_adoption_id` prefers them (the repository journal first, since
-        # `records` is filled in `DURABILITIES` order) and never minted: a
-        # tree whose journals are empty has no adoption to compare a
-        # transaction file against, and a fresh id invented here would call
-        # every one of them foreign.
+        # The id the journals themselves carry, taken in the order `records`
+        # preserves (the repository journal first, since it is filled in
+        # `DURABILITIES` order) and never minted: a tree whose journals are
+        # empty has no adoption to compare a transaction file against, and a
+        # fresh id invented here would call every one of them foreign.
         adoption = records[0]["adoption"] if records else None
     except JournalError as error:
         where = error.artifact or JOURNAL_FILENAME
@@ -163,8 +162,8 @@ def _run_resolve(root, transaction_id, resolution, stdout, stderr):
         # Asked before a `Run` is built, which is why it is not the
         # resolver's own answer: building one adopts the tree. Two writes,
         # not one -- `Lock` creates `.validated-memory/` for its lock file
-        # and `_bootstrap` installs `journal.jsonl` -- so a lazier
-        # `_bootstrap` would not make this question removable.
+        # and constructing the run installs `journal.jsonl` -- so deferring
+        # journal installation would not make this question removable.
         outcome = missing_resolution(root, transaction_id, resolution)
         if outcome is None:
             outcome = Run(root).resolve_transaction(transaction_id, resolution)

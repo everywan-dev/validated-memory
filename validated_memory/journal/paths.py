@@ -205,8 +205,8 @@ def authorise(root, path, durability):
     would file it into the versioned journal as a fact about a tree whose
     bytes were never inside it.
 
-    Deliberately NOT called from `_record`: that helper builds both halves
-    of a mutation, and `execute` appends the two together AFTER publication.
+    Deliberately NOT called while building the prepared and committed halves
+    of a mutation: `execute` appends the two together AFTER publication.
     Asking the resolved question there would refuse a mutation that has
     already happened, which is not a refusal at all -- it is a published
     write with no record, the one state this protocol exists to rule out.
@@ -289,9 +289,9 @@ def well_formed_state(state):
     The kind, and the type of every field a kind carries. A transaction
     file is data
     (docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md
-    §7), and every reader downstream of this one -- `satisfies`,
-    `describe`, `_restore`, which puts a mode back and reads a `target`
-    -- assumes types nothing had checked: a `digest` that is a number
+    §7), and every reader downstream of this one -- `satisfies`, `describe`,
+    and recovery restoration, which puts a mode back and reads a `target` --
+    assumes types nothing had checked: a `digest` that is a number
     matches no state and silently diverges, a `target` that is a list
     reaches `symlink_to`, and `"mode": true` is not a mode.
     `bool` is excluded from `int` for the reason `FIELD_TYPES` gives.

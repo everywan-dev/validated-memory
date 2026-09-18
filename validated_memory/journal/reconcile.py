@@ -21,10 +21,10 @@ UNKNOWN = "unknown"
 # What both halves of one mutation must say identically. `at` is excluded
 # because the two records are written in one `append` but stamped
 # separately, `stage` because it is what tells them apart, and `run`,
-# `adoption`, `schema` and `version` because `_record` fills them in from
+# `adoption`, `schema` and `version` because record construction fills them from
 # one source for both. What is left is everything the mutation itself
 # decided -- `purpose` included, which is the tag every reader groups a
-# mutation under and which `_record` takes from the intention for both
+# mutation under and which record construction takes from the intention for both
 # halves -- and a `committed` half that disagrees with its `prepared` half
 # describes a mutation nobody performed.
 PAIRED_FIELDS = (

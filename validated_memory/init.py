@@ -237,7 +237,7 @@ def run(harness_memory, view, stdout, stderr, app=False):
             # it -- and an open transaction on `.gitignore` itself is
             # settled before the new `.gitignore` intention is formed. A
             # transaction it cannot account for is an ERROR that gates that
-            # ONE path (`journal.Run._survey`), not the run.
+            # ONE path in the recovery report, not the run.
             findings.extend(_report_recovery(session, stdout))
             # First, because it is what keeps the vault out of the
             # repository, and the vault is written to from here on.
