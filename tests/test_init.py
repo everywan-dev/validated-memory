@@ -955,6 +955,82 @@ def test_a_corrupt_journal_still_restores_the_harness_symlink(
     assert "could not be recorded" in result.stderr, result.stderr
 
 
+@pytest.mark.parametrize("gate", ("corrupt-journal", "unignored-vault"))
+@pytest.mark.parametrize("link_state", ("missing", "correct", "stale"))
+def test_a_whole_run_gate_still_restores_external_harness_symlinks(
+    adopter_dir, run_cli, gate, link_state
+):
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    harness_memory = _external_harness_path(adopter_dir)
+    harness_memory.parent.mkdir(parents=True)
+    if link_state == "correct":
+        harness_memory.symlink_to(
+            (adopter_dir / "memory").resolve(), target_is_directory=True
+        )
+    elif link_state == "stale":
+        stale = harness_memory.parent / "stale-target"
+        stale.mkdir()
+        harness_memory.symlink_to(stale, target_is_directory=True)
+
+    if gate == "corrupt-journal":
+        journal = adopter_dir / "journal.jsonl"
+        journal.write_text(
+            journal.read_text(encoding="utf-8") + "{not json\n",
+            encoding="utf-8",
+        )
+        gate_reason = "not valid JSON"
+    else:
+        ignore_file = adopter_dir / ".gitignore"
+        ignore_file.unlink()
+        target = adopter_dir / "unignored-target"
+        target.write_text("adopter-owned bytes\n", encoding="utf-8")
+        ignore_file.symlink_to(target.name)
+        gate_reason = "vault's ignore entry"
+
+    adopter_before = _tree_snapshot(adopter_dir)
+    local_history = adopter_dir / ".validated-memory" / "local.jsonl"
+    local_before = local_history.read_bytes() if local_history.exists() else None
+
+    first = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+
+    assert first.returncode == 1
+    assert gate_reason in first.stderr
+    assert "Traceback" not in first.stderr
+    assert harness_memory.is_symlink()
+    assert harness_memory.resolve() == (adopter_dir / "memory").resolve()
+    assert os.readlink(harness_memory) == str(
+        (adopter_dir / "memory").resolve()
+    )
+    assert _tree_snapshot(adopter_dir) == adopter_before
+    assert (
+        local_history.read_bytes() if local_history.exists() else None
+    ) == local_before
+    verb = {
+        "missing": "created symlink",
+        "correct": "kept symlink",
+        "stale": "re-pointed symlink",
+    }[link_state]
+    assert verb in first.stdout
+    assert "adopted" not in first.stdout
+    assert "parked" not in first.stdout
+
+    second = run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
+    )
+    assert second.returncode == 1
+    assert gate_reason in second.stderr
+    assert "kept symlink" in second.stdout
+    assert os.readlink(harness_memory) == str(
+        (adopter_dir / "memory").resolve()
+    )
+    assert _tree_snapshot(adopter_dir) == adopter_before
+    assert (
+        local_history.read_bytes() if local_history.exists() else None
+    ) == local_before
+
+
 @pytest.mark.skipif(
     os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
 )

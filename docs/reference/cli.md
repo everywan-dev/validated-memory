@@ -213,6 +213,14 @@ journal cannot be written at all, or refuses, the link is restored anyway
 and a WARNING carries the reason and the previous target, because giving a
 session its memory back is the `SessionStart` hook's only job.
 
+That fail-open restoration after either whole-run gate -- an unavailable or
+corrupt journal, or a vault whose ignore entry could not be established --
+never absorbs or parks a real directory at PATH. Only a missing path or an
+existing symlink can be restored after the gate. A real directory is left
+byte-for-byte in place with the warning that absorbing it would move the
+adopter's data; healthy initialization can recognize and absorb it on a later
+run.
+
 Computing PATH from the harness's own layout and calling `init
 --harness-memory PATH` automatically on every session start is the plugin's
 startup hook (`hooks/restore-memory-symlink.sh`, wired as `SessionStart` in

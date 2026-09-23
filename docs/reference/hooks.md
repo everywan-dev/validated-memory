@@ -26,26 +26,34 @@ against a directory the harness never reads, and the memory simply never
 shows up -- so the rule is pinned by a test rather than left to the
 substitution being "obviously" about slashes.
 
-This hook is fail-open throughout, matching `init`'s own contract: no
+This hook is fail-open throughout, matching `init`'s own contract. No
 `$CLAUDE_PROJECT_DIR`, a project that has not adopted validated-memory (no
-`validated-memory.md`, or no `memory/`, at its root), no `python3` on
-`PATH`, or any other problem along the way is a clean no-op -- it never
-gates or breaks session startup, and it never deletes data.
+`validated-memory.md`, or no `memory/`, at its root), or no `python3` on
+`PATH` is a clean no-op. Once the hook invokes `init`, a problem still never
+gates or breaks session startup, but it is not necessarily a no-op: fail-open
+handling may create or re-point the external harness symlink so the session can
+reach project memory. It never deletes data.
 
-Because it runs unattended, it is also where [Absorbing an existing harness memory
-directory](cli.md#absorbing-an-existing-harness-memory-directory) normally
-happens: the first session after a
-project adopts the plugin merges the harness's pre-existing memory into the
-project and parks the original as a `.bak`. That merge is deliberately part
-of `init` rather than a flag the hook passes, so it happens once, by itself,
-on the deployment path -- gated by the recognition rule, which is what keeps
-it from touching anything that is not agent memory. See [the adoption
+Because it runs unattended, it is also where [Absorbing an existing harness
+memory directory](cli.md#absorbing-an-existing-harness-memory-directory)
+normally happens on a healthy `init` run: the first session after a project
+adopts the plugin merges the harness's pre-existing memory into the project and
+parks the original as a `.bak`. An unavailable or corrupt journal, or a vault
+whose ignore entry could not be established, gates that take-over; fail-open
+handling may restore a missing or stale symlink, but leaves a real directory
+unabsorbed and unparked. The healthy merge is deliberately part of `init`
+rather than a flag the hook passes, so it happens once, by itself, on the
+deployment path -- gated by the recognition rule, which is what keeps it from
+touching anything that is not agent memory. See [the adoption
 guide](../adoption.md) ("The startup hooks") for the adopter-facing summary.
 
-Every `init` run this hook makes -- what it created, what it found
-already there, the symlink it wrote or re-pointed -- is recorded the same
-way any other `init` run is: see [Journal](journal.md). The hook itself
-never calls `journal`; it only makes the `init` calls that fill it.
+On a healthy `init` run, what the hook created, what it found already there and
+the symlink it wrote or re-pointed are recorded the same way as any other
+`init` run: see [Journal](journal.md). After either whole-run gate, a symlink
+restored by fail-open handling cannot be recorded; `init` emits the documented
+stderr warning naming why. The hook suppresses only `init`'s stdout, so that
+warning remains visible. The hook itself never calls `journal`; it only makes
+the `init` calls that fill it when recording is available.
 
 **Activating and refreshing the HTML views.** Activation of `knowledge.html`,
 `memory.html` and the optional `knowledge-app.html` is the presence of the

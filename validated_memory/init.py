@@ -34,7 +34,9 @@ but it does not take the symlink with it: the harness half runs outside the
 journalled part of the run, and the record it could not write is reported as
 a WARNING naming what was lost. So `init` can exit 1 while the link is back,
 which is why the `SessionStart` hook reports success whatever the exit code
-(`hooks/restore-memory-symlink.sh`).
+(`hooks/restore-memory-symlink.sh`). This fail-open path restores only missing
+or existing symlinks. A real harness directory is never absorbed or parked
+after the journal gate, because that moves data rather than restoring a link.
 
 `init` also puts the vault's line in the repository's ignore file, first
 and before anything else it does. What that line is, which shapes of ignore
@@ -55,7 +57,8 @@ hook. Its record is the one that could only live in the vault, which is
 precisely what is exposed, so it is not written and the loss is a WARNING
 -- exactly the treatment a journal that cannot be written already gets. A
 gated run ends with the link back, an ERROR naming the ignore file, and
-exit 1.
+exit 1. As with a journal failure, this exception never absorbs or parks a
+real directory.
 
 With `--view`, `init` also creates `knowledge.html` and `memory.html` --
 once each. The views are optional, and activation is the presence of the
@@ -195,14 +198,16 @@ def run(harness_memory, view, stdout, stderr, app=False):
     0008). What it gates is the journalled part of the run -- the scaffold,
     which must not mutate the adopter tree while nothing can record what it
     did. The harness symlink is not part of that: it runs afterwards, on its
-    own, and reports the record it could not write.
+    own, and reports the record it could not write. A real harness directory
+    is not a symlink restoration and remains untouched after this gate.
 
     The vault's ignore entry is the other ERROR that is not about a single
     item (`_ensure_ignored`), and it gates the same journalled part plus the
     views: nothing that writes into the vault, into the adopter tree, or
     into a directory the adopter owns runs after it. The harness symlink
     still does, without its record, because restoring a link moves no data
-    and the `SessionStart` hook has no other job.
+    and the `SessionStart` hook has no other job. As with a journal failure,
+    this exception never absorbs or parks a real directory.
 
     What that ordering guarantees, stated exactly: no `local` transaction
     file and no preimage is written while the vault is unignored. A `local`
@@ -307,8 +312,9 @@ def run(harness_memory, view, stdout, stderr, app=False):
         kept += view_kept
         findings.extend(view_findings)
 
-    # Neither of the two whole-run ERRORs reached the symlink inside the
-    # block, and both leave it to be restored here: the journal is the
+    # Neither of the two whole-run ERRORs reached the harness path inside
+    # the block, and both leave an existing or missing link to be restored
+    # here: the journal is the
     # record of what `init` did, not what a session needs to keep working,
     # and an unignored vault is a reason not to write a record, not a reason
     # to leave the harness pointing at a project it no longer names. Outside
@@ -325,7 +331,7 @@ def run(harness_memory, view, stdout, stderr, app=False):
                 # The take-over moves the adopter's own data, so it belongs
                 # to the run that gated, not to the promise that survives
                 # it: a real directory at the harness path is left alone.
-                absorb=not unignored,
+                absorb=False,
                 unrecorded=UNRECORDED_VAULT if unignored else UNRECORDED_JOURNAL,
             )
         )

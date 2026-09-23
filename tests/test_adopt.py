@@ -8,6 +8,11 @@ absorbs it into this project's `memory/`, parks the original alongside as a
 overwritten, and `lint` must pass clean on the merged result.
 """
 
+import os
+import stat
+
+import pytest
+
 MEMORY_FRONTMATTER = (
     "name: {name}\ndescription: {description}\nmetadata:\n  type: user\n"
 )
@@ -15,6 +20,28 @@ MEMORY_FRONTMATTER = (
 
 def _external_harness_root(adopter_dir):
     return adopter_dir.parent / f"{adopter_dir.name}-harness"
+
+
+def _tree_snapshot(root):
+    snapshot = {}
+
+    def visit(path, relative):
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            snapshot[relative] = ("symlink", os.readlink(path))
+            return
+        if stat.S_ISDIR(mode):
+            snapshot[relative] = ("directory",)
+            for child in sorted(path.iterdir(), key=lambda item: item.name):
+                visit(child, relative / child.name)
+            return
+        if stat.S_ISREG(mode):
+            snapshot[relative] = ("file", path.read_bytes())
+            return
+        snapshot[relative] = ("other", stat.S_IFMT(mode))
+
+    visit(root, root.relative_to(root))
+    return snapshot
 
 
 def write_native(directory, name, description="A fact.", body="Memory body.\n"):
@@ -440,3 +467,69 @@ def test_re_running_after_absorption_keeps_the_symlink_and_absorbs_nothing(
         encoding="utf-8"
     ) == index_after_first
     assert not (_external_harness_root(adopter_dir) / "memory.bak.1").exists()
+
+
+@pytest.mark.parametrize("gate", ("corrupt-journal", "unignored-vault"))
+def test_a_whole_run_gate_never_absorbs_or_parks_native_harness_memory(
+    adopter_dir, run_cli, gate
+):
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    project_memory = adopter_dir / "memory" / "project-only.md"
+    project_memory.write_text(
+        "---\nname: project-only\ndescription: Project version.\n"
+        "metadata:\n  type: project\n---\n\nProject bytes.\n",
+        encoding="utf-8",
+    )
+    project_index = adopter_dir / "memory" / "MEMORY.md"
+    project_index.write_text(
+        "# Agent memory\n\n"
+        "- [Project only](project-only.md) — project version\n",
+        encoding="utf-8",
+    )
+    native = _external_harness_root(adopter_dir) / "memory"
+    write_native(native, "harness-only", "Harness version.", "Harness bytes.\n")
+    write_native_index(
+        native, "- [Harness only](harness-only.md) — harness version"
+    )
+
+    if gate == "corrupt-journal":
+        journal = adopter_dir / "journal.jsonl"
+        journal.write_text(
+            journal.read_text(encoding="utf-8") + "{not json\n",
+            encoding="utf-8",
+        )
+        gate_reason = "not valid JSON"
+    else:
+        ignore_file = adopter_dir / ".gitignore"
+        ignore_file.unlink()
+        target = adopter_dir / "unignored-target"
+        target.write_text("adopter-owned bytes\n", encoding="utf-8")
+        ignore_file.symlink_to(target.name)
+        gate_reason = "vault's ignore entry"
+
+    before_adopter = _tree_snapshot(adopter_dir)
+    before_harness = _tree_snapshot(native.parent)
+    warning = (
+        f"WARNING: {native}: symlink: already exists and is not a symlink; "
+        "absorbing it moves the adopter's own data, which a run that gated "
+        "may not do, so it was left untouched"
+    )
+
+    for _ in range(2):
+        result = run_cli(
+            "init", "--harness-memory", str(native), cwd=adopter_dir
+        )
+
+        assert result.returncode == 1
+        assert gate_reason in result.stderr
+        assert warning in result.stderr.splitlines()
+        assert "Traceback" not in result.stderr
+        assert "symlink" not in result.stdout
+        assert _tree_snapshot(adopter_dir) == before_adopter
+        assert _tree_snapshot(native.parent) == before_harness
+        assert native.is_dir() and not native.is_symlink()
+        assert not list(native.parent.glob("memory.bak*"))
+        assert not (adopter_dir / "memory" / "harness-only.md").exists()
+        assert project_memory.read_text(encoding="utf-8").endswith(
+            "Project bytes.\n"
+        )
