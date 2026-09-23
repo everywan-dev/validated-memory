@@ -49,15 +49,17 @@ def reconcile(root=Path()):
     say the same thing, and `(message, record)` pairs for the ids that are
     not a pair at all.
 
-    An id-carrying record is a half of exactly one act, and there are two
-    ways a history can say otherwise. A `committed` half with no `prepared`
-    half before it describes a mutation whose write-ahead half was never
-    written or has been removed -- no writer in this package produces one,
-    so it is a hand edit or a torn merge, and it was accepted in silence. A
-    transaction recorded more than twice is the doubled record recovery
-    exists to avoid appending: the id is minted per mutation, so a third
-    line under it is a mutation counted twice in a file nothing takes back.
-    Both are reported, neither is repaired.
+    An id-carrying record is a half of exactly one act, and there are three
+    ways the histories can say otherwise. One id in both artifacts describes
+    two durability acts and receives one project-wide anomaly. A `committed`
+    half with no `prepared` half before it describes a mutation whose
+    write-ahead half was never written or has been removed -- no writer in
+    this package produces one, so it is a hand edit or a torn merge, and it
+    was accepted in silence. A transaction recorded more than twice in one
+    artifact is the doubled record recovery exists to avoid appending: the id
+    is minted per mutation, so a third line under it is a mutation counted
+    twice in a file nothing takes back. All are reported, none is repaired;
+    cross-artifact reuse replaces the multiplicity anomaly for the same id.
 
     Pairing is by TRANSACTION ID wherever both records carry one, which is
     every mutation the executor has written since it took over the protocol:
@@ -94,6 +96,36 @@ def reconcile(root=Path()):
     unfinished = []
     disagreements = []
     anomalies = []
+    histories = {
+        durability: read(root, durability) for durability in DURABILITIES
+    }
+    # Transaction identity is project-wide even though each mutation belongs
+    # to exactly one durability artifact. Inventory both histories before the
+    # existing per-artifact reconciliation so reuse across them has one direct
+    # diagnosis and takes precedence over a local multiplicity count.
+    global_by_id = {}
+    for durability in DURABILITIES:
+        for entry in histories[durability]:
+            transaction = entry.get("transaction")
+            if isinstance(transaction, str):
+                global_by_id.setdefault(transaction, []).append(
+                    (durability, entry)
+                )
+    cross_artifact_ids = {
+        transaction
+        for transaction, occurrences in global_by_id.items()
+        if len({durability for durability, _ in occurrences}) > 1
+    }
+    anomalies.extend(
+        (
+            f"transaction {transaction} is recorded across repo and local "
+            "histories",
+            occurrences[0][1],
+        )
+        for transaction, occurrences in global_by_id.items()
+        if transaction in cross_artifact_ids
+    )
+
     for durability in DURABILITIES:
         open_by_id = {}
         open_by_key = {}
@@ -101,7 +133,7 @@ def reconcile(root=Path()):
         # whether the id names one act, and the first of them is what an
         # anomaly about the id as a whole is reported against.
         by_id = {}
-        for entry in read(root, durability):
+        for entry in histories[durability]:
             transaction = entry.get("transaction")
             if isinstance(transaction, str):
                 by_id.setdefault(transaction, []).append(entry)
@@ -130,7 +162,10 @@ def reconcile(root=Path()):
             elif entry["stage"] == COMMITTED and open_by_key.get(key):
                 open_by_key[key].pop(0)
         for transaction, entries in by_id.items():
-            if len(entries) > len(STAGES):
+            if (
+                transaction not in cross_artifact_ids
+                and len(entries) > len(STAGES)
+            ):
                 anomalies.append(
                     (
                         f"transaction {transaction} is recorded "

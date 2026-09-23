@@ -603,12 +603,14 @@ nothing to prepare.
 A `prepared` record with no matching `committed` is an **unfinished
 transaction**. `journal.reconcile()` pairs the two halves **by their
 `transaction` id** wherever both carry one -- the id is minted per mutation,
-so it says which `committed` closes which `prepared` with no inference at
-all. Records without the field, which is everything a history written before
-the executor holds, keep the older rule: file order within a `(run, path)`,
-so a `committed` record closes the one `prepared` record it immediately
-follows for that pair, never every `prepared` record that happens to share
-it.
+so it says which `committed` closes which `prepared` with no inference at all.
+That identity is project-wide across both histories: one intention has one
+durability, so the same id appearing in both `journal.jsonl` and
+`.validated-memory/local.jsonl` is an ERROR rather than a pair spanning the
+artifacts. Records without the field, which is everything a history written
+before the executor holds, keep the older rule: file order within a `(run,
+path)`, so a `committed` record closes the one `prepared` record it immediately
+follows for that pair, never every `prepared` record that happens to share it.
 
 A pair that agrees on nothing but its id is not a pair. These fields must
 say the same thing in both halves, and a disagreement is reported as its own
@@ -622,7 +624,15 @@ stamped separately; `stage` because it is what tells them apart; and `run`,
 `adoption`, `schema` and `version` because both halves are filled in from
 one source.
 
-**An id is a half of exactly one act**, and two shapes say otherwise.
+**An id is a half of exactly one act**, and three shapes say otherwise. The
+same id in both permanent histories is one project-wide identity violation,
+reported once against its first record even if either artifact also carries
+more than two lines under it:
+
+```
+ERROR: .gitignore: journal: transaction 5e2da6723399541b is recorded across repo and local histories
+```
+
 Nothing in this package writes a `committed` record without the `prepared`
 one before it -- the executor appends both in one call, and recovery
 rebuilds both -- so a lone one is a hand edit or a torn merge, and it is
@@ -640,7 +650,7 @@ idempotency rule exists to avoid appending:
 ERROR: .gitignore: journal: transaction e85966eeb6de80ef is recorded 4 times
 ```
 
-Both are reported and neither is repaired, like every other finding here.
+All three are reported and none is repaired, like every other finding here.
 
 For each unfinished transaction, `reconcile()` reads the current bytes at
 `path` and reports one of four states -- it never guesses between them, and
@@ -871,15 +881,17 @@ journal: 1 record(s), 1 error(s)
 There are five shapes of finding. In order: a `prepared` record with no
 matching `committed` twin, with which of the four states its bytes are in; a
 closed pair whose halves disagree on a field the mutation itself decided; an
-id that is not a pair at all, which has two messages -- a `committed` half
-with no `prepared` half, and a transaction recorded more than twice; an
-open transaction, with its file's own stage in brackets and the verdict from
-the [recovery table](#recovery); and a transaction file too damaged to name
-a path, which is named by its own file instead.
+id that is not a pair at all, which has three messages -- a `committed` half
+with no `prepared` half, a transaction recorded more than twice in one
+artifact, and one id recorded across both histories; an open transaction,
+with its file's own stage in brackets and the verdict from the [recovery
+table](#recovery); and a transaction file too damaged to name a path, which
+is named by its own file instead.
 
 ```
 ERROR: validated-memory.md: journal: unfinished transaction from run 6815e8b2323e4886: the path is applied
 ERROR: knowledge: journal: records of transaction 7901cd24a8758b62 disagree on note
+ERROR: .gitignore: journal: transaction 5e2da6723399541b is recorded across repo and local histories
 ERROR: .gitignore: journal: records of transaction 1ed016d9e88b5435: committed without a prepared half
 ERROR: .gitignore: journal: transaction e85966eeb6de80ef is recorded 4 times
 ERROR: .gitignore: journal: open transaction 56eeba099c335aaa (published) on .gitignore: diverged

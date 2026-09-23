@@ -5764,6 +5764,213 @@ def _rewrite(path, lines):
     )
 
 
+def _seed_repository_and_local_histories(run_cli, tmp_path):
+    """Create one adopter with ordinary valid records in both histories."""
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    harness = tmp_path / "harness" / "memory"
+    result = run_cli(
+        "init", "--harness-memory", str(harness), cwd=adopter
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    repository = adopter / "journal.jsonl"
+    local = adopter / ".validated-memory" / "local.jsonl"
+    return adopter, repository, local
+
+
+def _complete_pair(records, *, fields=()):
+    """Return one prepared/committed ID pair carrying every named field."""
+    by_id = {}
+    for entry in records:
+        transaction = entry.get("transaction")
+        if transaction:
+            by_id.setdefault(transaction, []).append(entry)
+    for entries in by_id.values():
+        if (
+            [entry["stage"] for entry in entries] == ["prepared", "committed"]
+            and all(field in entry for field in fields for entry in entries)
+        ):
+            return entries
+    raise AssertionError(f"no complete transaction pair carrying {fields}")
+
+
+def test_journal_check_rejects_one_id_in_both_complete_histories(
+    run_cli, tmp_path
+):
+    """One project-wide transaction ID cannot name two durability acts."""
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    repository_records = _records(repository)
+    local_records = _records(local)
+    repository_pair = _complete_pair(repository_records)
+    local_pair = _complete_pair(local_records)
+    shared = repository_pair[0]["transaction"]
+    _rewrite(
+        local,
+        [
+            {**entry, "transaction": shared}
+            if entry in local_pair
+            else entry
+            for entry in local_records
+        ],
+    )
+    repository_before = repository.read_bytes()
+    local_before = local.read_bytes()
+    total = len(repository_records) + len(local_records)
+
+    plain = run_cli("journal", cwd=adopter)
+    checked = run_cli("journal", "--check", cwd=adopter)
+
+    message = (
+        f"transaction {shared} is recorded across repo and local histories"
+    )
+    assert plain.returncode == 0, (plain.stdout, plain.stderr)
+    assert plain.stdout == f"journal: {total} record(s)\n"
+    assert plain.stderr == ""
+    assert checked.returncode == 1, (checked.stdout, checked.stderr)
+    assert checked.stderr.count(message) == 1, checked.stderr
+    assert checked.stderr.startswith(
+        f"ERROR: {repository_pair[0]['path']}: journal: {message}\n"
+    ), checked.stderr
+    assert f"journal: {total} record(s), 1 error(s)" in checked.stdout
+    assert repository.read_bytes() == repository_before
+    assert local.read_bytes() == local_before
+
+
+def test_journal_check_reports_split_cross_history_halves(run_cli, tmp_path):
+    """Split halves retain truthful local findings beside global ID reuse."""
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    repository_records = _records(repository)
+    local_records = _records(local)
+    repository_pair = _complete_pair(repository_records)
+    local_pair = _complete_pair(local_records)
+    shared = repository_pair[0]["transaction"]
+    split_repository = [
+        entry for entry in repository_records if entry is not repository_pair[1]
+    ]
+    split_local = [
+        {**entry, "transaction": shared}
+        if entry is local_pair[1]
+        else entry
+        for entry in local_records
+        if entry not in local_pair or entry is local_pair[1]
+    ]
+    _rewrite(repository, split_repository)
+    _rewrite(local, split_local)
+    total = len(split_repository) + len(split_local)
+
+    result = run_cli("journal", "--check", cwd=adopter)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stderr.count(
+        f"transaction {shared} is recorded across repo and local histories"
+    ) == 1, result.stderr
+    assert "unfinished transaction from run" in result.stderr, result.stderr
+    assert (
+        f"records of transaction {shared}: committed without a prepared half"
+        in result.stderr
+    ), result.stderr
+    assert f"journal: {total} record(s), 3 error(s)" in result.stdout
+
+
+def test_distinct_transaction_ids_across_histories_remain_clean(
+    run_cli, tmp_path
+):
+    """Ordinary repo and local pairs remain independent when IDs differ."""
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    repository_ids = {
+        entry["transaction"]
+        for entry in _records(repository)
+        if entry.get("transaction")
+    }
+    local_ids = {
+        entry["transaction"]
+        for entry in _records(local)
+        if entry.get("transaction")
+    }
+    assert repository_ids.isdisjoint(local_ids)
+
+    result = run_cli("journal", "--check", cwd=adopter)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stderr == ""
+    assert "0 error(s)" in result.stdout
+
+
+def test_cross_history_reuse_precedes_same_artifact_multiplicity(
+    run_cli, tmp_path
+):
+    """Global ID reuse replaces, rather than duplicates, the count anomaly."""
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    repository_records = _records(repository)
+    local_records = _records(local)
+    repository_pair = _complete_pair(repository_records)
+    local_pair = _complete_pair(local_records)
+    shared = repository_pair[0]["transaction"]
+    _rewrite(repository, repository_records + repository_pair)
+    _rewrite(
+        local,
+        [
+            {**entry, "transaction": shared}
+            if entry in local_pair
+            else entry
+            for entry in local_records
+        ],
+    )
+
+    result = run_cli("journal", "--check", cwd=adopter)
+
+    message = (
+        f"transaction {shared} is recorded across repo and local histories"
+    )
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stderr.count(message) == 1, result.stderr
+    assert f"transaction {shared} is recorded 4 times" not in result.stderr
+    assert "1 error(s)" in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("field", ("preimage", "postimage"))
+def test_journal_check_reports_exact_state_field_disagreement(
+    run_cli, tmp_path, field
+):
+    """Each state field independently binds the two halves of one act."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    journal = tmp_path / "journal.jsonl"
+    records = _records(journal)
+    prepared, committed = _complete_pair(
+        records, fields=("preimage", "postimage")
+    )
+    replacement = "sha256:" + ("7" if field == "preimage" else "8") * 64
+    assert committed[field] != replacement
+    forged = {**committed, field: replacement}
+    ordinary_fields = set(prepared) | set(forged)
+    assert {
+        key
+        for key in ordinary_fields
+        if key not in {"at", "stage"} and prepared.get(key) != forged.get(key)
+    } == {field}
+    _rewrite(
+        journal,
+        [forged if entry is committed else entry for entry in records],
+    )
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert (
+        f"records of transaction {prepared['transaction']} disagree on {field}"
+        in result.stderr
+    ), result.stderr
+    assert "1 error(s)" in result.stdout, result.stdout
+
+
 def test_journal_check_reports_a_committed_half_with_no_prepared_half(
     run_cli, tmp_path
 ):
