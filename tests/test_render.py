@@ -1266,11 +1266,15 @@ def test_a_non_string_description_does_not_raise(
 def test_hostile_memory_content_never_becomes_live_markup(
     run_cli, adopter_dir, write_unit, write_memory, write_index, page_events
 ):
-    """Escape hostile memory body and description; metadata escaping is untested."""
+    """Escape hostile memory body, description and displayed metadata."""
     _scaffold(run_cli, adopter_dir, write_unit)
+    hostile_type = (
+        't1-meta-<t1-metadata onmouseover="t1()"> & "double" \'single\''
+    )
     write_memory(
         "coffee.md",
-        'name: coffee\ndescription: \'a "quoted" <tag>\'\nmetadata:\n  type: user\n',
+        "name: coffee\ndescription: 'a \"quoted\" <tag>'\nmetadata:\n"
+        f"  type: {hostile_type}\n",
         "# Title\n\n<script>alert(1)</script>\n",
     )
     write_index("- [Coffee](coffee.md) — hostile\n")
@@ -1282,10 +1286,14 @@ def test_hostile_memory_content_never_becomes_live_markup(
     assert "<script>alert(1)</script>" not in page
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
     assert 'a "quoted" &lt;tag&gt;' in page
-    assert "user" in page
+    assert hostile_type not in page
+    assert (
+        't1-meta-&lt;t1-metadata onmouseover="t1()"&gt; &amp; "double" \'single\''
+    ) in page
 
     elements = _assert_self_contained(page, page_events)
     assert not [tag for tag, _ in elements if tag == "script"]
+    assert not [tag for tag, _ in elements if tag == "t1-metadata"]
 
 
 def test_a_null_recorded_at_reads_as_absent_in_the_list_and_the_strip_alike(
@@ -2201,17 +2209,22 @@ def test_only_existing_is_fail_open_on_an_invalid_corpus(
 
 
 def test_only_existing_with_neither_artifact_present_is_a_clean_no_op(
-    run_cli, adopter_dir, write_unit
+    run_cli, adopter_dir, write_unit, write_document
 ):
-    """With no active views, return 0 without stderr or creating either page."""
+    """With no active views, return before reading an invalid required input."""
     _scaffold(run_cli, adopter_dir, write_unit)
+    write_document(
+        "validated-memory.md",
+        "extension:\n  schema: missing-extension.md\n  version: \"1\"\n",
+    )
 
     result = run_cli("render", "--only-existing", cwd=adopter_dir)
 
     assert result.returncode == 0
+    assert result.stdout == ""
     assert result.stderr == ""
-    assert not (adopter_dir / "knowledge.html").exists()
-    assert not (adopter_dir / "memory.html").exists()
+    for name in ("knowledge.html", "memory.html", "knowledge-app.html"):
+        assert not (adopter_dir / name).exists()
 
 
 def test_only_existing_is_fail_open_on_a_corrupt_verdict_log(
@@ -2278,22 +2291,41 @@ def test_an_extension_that_cannot_be_loaded_stops_render_and_writes_nothing(
 def test_a_corpus_with_a_declared_extension_still_renders(
     run_cli, adopter_dir, write_unit, write_document
 ):
-    """A valid declared extension renders successfully with the unit id present."""
+    """Extension fields validate input but do not alter rendered presentation."""
     run_cli("init", cwd=adopter_dir)
+    owner = "t1-extension-owner-sentinel-9f3d"
     write_document(
         "knowledge-extension.md",
         "fields:\n  - name: owner\n    type: string\n",
     )
     write_unit(
         "kb-0001.md",
-        "id: kb-0001\nevidence: measured\nowner: platform-team\n",
+        f"id: kb-0001\nevidence: measured\nowner: {owner}\n",
         "# A claim\n",
     )
 
-    result = run_cli("render", cwd=adopter_dir)
+    first = run_cli("render", cwd=adopter_dir)
+    assert first.returncode == 0, first.stderr
+    page = adopter_dir / "knowledge.html"
+    before = page.read_bytes()
+    stamp = page.stat().st_mtime_ns
 
-    assert result.returncode == 0, result.stderr
-    assert "kb-0001" in (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    write_document("knowledge-extension.md", "fields: []\n")
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\n",
+        "# A claim\n",
+    )
+    second = run_cli("render", cwd=adopter_dir)
+
+    assert second.returncode == 0, second.stderr
+    assert "render: unchanged knowledge.html" in second.stdout.splitlines()
+    assert page.read_bytes() == before
+    assert page.stat().st_mtime_ns == stamp
+    rendered = page.read_text(encoding="utf-8")
+    assert "kb-0001" in rendered
+    assert "owner" not in rendered
+    assert owner not in rendered
 
 
 def _overview_fixture(run_cli, adopter_dir, write_unit):

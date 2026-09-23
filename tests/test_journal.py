@@ -22,6 +22,39 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _final_tree_snapshot(root):
+    """Capture the final namespace, content and modes without following links.
+
+    Inode and time fields are deliberately absent. Equality proves exact final
+    tree preservation, including transaction bytes, not that no transient read
+    or write occurred while the command ran.
+    """
+    snapshot = []
+
+    def visit(directory):
+        with os.scandir(directory) as entries:
+            children = sorted(entries, key=lambda entry: entry.name)
+        for entry in children:
+            path = Path(entry.path)
+            relative = path.relative_to(root).as_posix()
+            info = entry.stat(follow_symlinks=False)
+            mode = stat.S_IMODE(info.st_mode)
+            if stat.S_ISLNK(info.st_mode):
+                snapshot.append((relative, "symlink", os.readlink(path), mode))
+            elif stat.S_ISREG(info.st_mode):
+                snapshot.append((relative, "file", path.read_bytes(), mode))
+            elif stat.S_ISDIR(info.st_mode):
+                snapshot.append((relative, "directory", mode))
+                visit(path)
+            else:
+                snapshot.append(
+                    (relative, "other", stat.S_IFMT(info.st_mode), mode)
+                )
+
+    visit(root)
+    return snapshot
+
+
 def _external_harness_path(adopter, *parts):
     return adopter.parent / f"{adopter.name}-harness" / Path(*parts)
 
@@ -4378,6 +4411,7 @@ def test_a_lock_whose_owner_is_alive_is_never_broken(run_cli, tmp_path):
         ancient = time.time() - 100 * 300
         os.utime(lock, (ancient, ancient))
         before = lock.stat().st_ino
+        tree_before = _final_tree_snapshot(tmp_path)
 
         result = run_cli("init", cwd=tmp_path)
 
@@ -4399,6 +4433,7 @@ def test_a_lock_whose_owner_is_alive_is_never_broken(run_cli, tmp_path):
         # The holder's own file, untouched: same inode, same pid inside.
         assert lock.stat().st_ino == before
         assert lock.read_text(encoding="ascii").strip() == pid
+        assert _final_tree_snapshot(tmp_path) == tree_before
         # The refused run created neither the journal nor the ignore file.
         assert not (tmp_path / "journal.jsonl").exists()
         assert not (tmp_path / ".gitignore").exists()
@@ -4729,6 +4764,7 @@ def test_a_creation_does_not_build_the_parent_the_same_run_refused_to_create(
         postimage={"kind": "directory"},
     )
     before = _records(tmp_path / "journal.jsonl")
+    tree_before = _final_tree_snapshot(tmp_path)
 
     result = run_cli("init", cwd=tmp_path)
 
@@ -4747,6 +4783,7 @@ def test_a_creation_does_not_build_the_parent_the_same_run_refused_to_create(
     assert [entry["transaction"] for entry in _transactions(tmp_path)] == [
         "8888888888888888"
     ], _transactions(tmp_path)
+    assert _final_tree_snapshot(tmp_path) == tree_before
 
 
 def test_recovery_leaves_a_transaction_it_cannot_account_for_untouched(
@@ -4806,10 +4843,7 @@ def test_only_the_path_a_transaction_names_is_gated(
 def test_journal_check_says_what_recovery_would_do_with_each_transaction(
     run_cli, tmp_path
 ):
-    """Report recoverable, diverged, unknown and damaged for four residues.
-
-    Assertions preserve journal bytes and transaction count, but do not compare
-    transaction-file bytes or distinguish recovery actions within one class."""
+    """Report four residue classes without changing any final tree state."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
     # `published`, and the path is the postimage: recovery completes it.
     _transaction_file(
@@ -4845,6 +4879,7 @@ def test_journal_check_says_what_recovery_would_do_with_each_transaction(
         "{not json", encoding="utf-8"
     )
     before = (tmp_path / "journal.jsonl").read_text(encoding="utf-8")
+    tree_before = _final_tree_snapshot(tmp_path)
 
     result = run_cli("journal", "--check", cwd=tmp_path)
 
@@ -4870,6 +4905,7 @@ def test_journal_check_says_what_recovery_would_do_with_each_transaction(
         for entry in (tmp_path / ".validated-memory" / "transactions").iterdir()
     )
     assert len(left) == 4, left
+    assert _final_tree_snapshot(tmp_path) == tree_before
 
 
 def test_an_aborted_transaction_is_reported_and_removed(run_cli, tmp_path):
@@ -6599,6 +6635,7 @@ def test_resolving_an_id_nothing_carries_is_the_same_refusal_in_an_adopted_tree(
     """An adopted tree gets the unknown-ID refusal with journal text unchanged."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
     before = (tmp_path / "journal.jsonl").read_text(encoding="utf-8")
+    tree_before = _final_tree_snapshot(tmp_path)
 
     result = run_cli(
         "journal", "--resolve", "deadbeefdeadbeef", "--abandon", cwd=tmp_path
@@ -6609,6 +6646,7 @@ def test_resolving_an_id_nothing_carries_is_the_same_refusal_in_an_adopted_tree(
         "there is no unresolved transaction deadbeefdeadbeef" in result.stderr
     ), result.stderr
     assert (tmp_path / "journal.jsonl").read_text(encoding="utf-8") == before
+    assert _final_tree_snapshot(tmp_path) == tree_before
 
 
 def test_sqlite_connections_belong_only_to_consultation_store():
