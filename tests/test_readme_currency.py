@@ -17,6 +17,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 README = REPO_ROOT / "README.md"
 SKILLS_DIR = REPO_ROOT / "skills"
@@ -77,12 +79,15 @@ HOOK_COUNT_FILES = (
     REPO_ROOT / "docs" / "adoption.md",
     REPO_ROOT / "docs" / "reference" / "hooks.md",
 )
-# "two `SessionStart` hooks", "its three startup hooks", "all three startup
-# hooks". The optional middle group lets an adjective or two sit between the
-# number and the noun without letting the match run across a sentence.
+# Numeric startup claims may call the registrations hooks, entries or commands.
+# Plain plural hook claims such as "other two hooks" also state a count even
+# without naming SessionStart. The bounded middle group permits adjectives but
+# does not let a match run across a sentence.
 HOOK_COUNT_PATTERN = re.compile(
-    r"\b(one|two|three|four|five|six|seven|eight|nine|ten)\b"
-    r"(?:\s+\S+){0,2}?\s+(?:`SessionStart`|SessionStart|startup)\s+hooks\b",
+    r"\b(?:other\s+)?(one|two|three|four|five|six|seven|eight|nine|ten)\b"
+    r"(?:\s+\S+){0,2}?\s+"
+    r"(?:(?:`SessionStart`|SessionStart|startup)\s+"
+    r"(?:hooks|entries|commands)|hooks)\b",
     re.IGNORECASE,
 )
 # "both hooks", "both startup hooks", "Both are fail-open" -- a count of two
@@ -100,26 +105,56 @@ def _registered_hook_count():
     )
 
 
+def _assert_hook_count_claims_match(text, count, label):
+    matches = list(HOOK_COUNT_PATTERN.finditer(text))
+    assert matches, (
+        f"{label} no longer states the hook count; "
+        "if that is deliberate, drop it from HOOK_COUNT_FILES"
+    )
+    for match in matches:
+        word = match.group(1)
+        stated = NUMBER_WORDS[word.lower()]
+        is_relative = re.match(r"other\s", match.group(0), re.IGNORECASE)
+        expected_count = count - 1 if is_relative else count
+        assert stated == expected_count, (
+            f"{label} says {match.group(0)!r}; hooks.json registers {count}"
+        )
+
+
+def test_hook_count_pattern_covers_startup_claims_without_matching_a_singular_hook():
+    positive = {
+        "Three `SessionStart` hooks run in order.": "Three",
+        "Four SessionStart entries are registered.": "Four",
+        "There are two startup commands.": "two",
+        "The other two hooks remain unchanged.": "two",
+        "All three ordered startup hooks are fail-open.": "three",
+    }
+    negative = (
+        "One UserPromptSubmit hook performs discovery.",
+        "Four transfer entries are retained.",
+        "SessionStart runs during startup.",
+    )
+
+    for text, count_word in positive.items():
+        assert HOOK_COUNT_PATTERN.findall(text) == [count_word]
+    for text in negative:
+        assert HOOK_COUNT_PATTERN.findall(text) == []
+
+    with pytest.raises(AssertionError, match="hooks.json registers 3"):
+        _assert_hook_count_claims_match(
+            "Four SessionStart entries are registered.", 3, "mutant.md"
+        )
+
+
 def test_every_prose_statement_of_the_hook_count_matches_the_manifest():
     # The count lives in `hooks/hooks.json` and is restated in four prose
     # files. Nothing updates those at registration time, so they drift -- and
     # a reader who is told "two" while three run has been told something
     # false about what installing the plugin does to their machine.
     count = _registered_hook_count()
-    expected = {value for value, number in NUMBER_WORDS.items() if number == count}
     for path in HOOK_COUNT_FILES:
         text = path.read_text(encoding="utf-8")
-        matches = HOOK_COUNT_PATTERN.findall(text)
-        assert matches, (
-            f"{path.relative_to(REPO_ROOT)} no longer states the hook count; "
-            "if that is deliberate, drop it from HOOK_COUNT_FILES"
-        )
-        for word in matches:
-            assert word.lower() in expected, (
-                f"{path.relative_to(REPO_ROOT)} says '{word}' "
-                f"{('startup' if 'startup' in text else 'SessionStart')} hooks; "
-                f"hooks.json registers {count}"
-            )
+        _assert_hook_count_claims_match(text, count, path.relative_to(REPO_ROOT))
         if count != 2:
             leftover = BOTH_HOOKS_PATTERN.search(text)
             assert leftover is None, (

@@ -108,26 +108,25 @@ fi
 # stdout ahead of it: only a line shaped like a summary ever reaches stdout.
 status_lines="$(printf '%s\n' "$status_lines" | grep '^status: ' || true)"
 
-# The record entries, as positional parameters: `$#` is always defined under
-# `set -u`, which an empty array is not on every bash this hook may meet.
+# Collect record entries into arrays. The `+word` expansion is deliberate:
+# Bash 3.2 under `set -u` does not safely expand every empty-array spelling.
 shopt -s nullglob
-set -- "$project_dir"/memory/source-*.md
+entries=("$project_dir"/memory/source-*.md)
 shopt -u nullglob
 
-# Drop anything that is not a regular file, rotating the rest back into
-# place. A directory handed to awk aborts it before its END rule runs, which
-# would drop the counts line for every other entry as well. A symlink is
-# dropped too, even one that resolves to a regular file: a symlink named
-# like a record entry must not be able to pull a file from outside
-# `memory/` into the count.
-remaining=$#
-while [ "$remaining" -gt 0 ]; do
-  entry="$1"
-  shift
+# Drop anything that is not a regular file. Some awk implementations (mawk
+# and BusyBox awk) abort on a directory before their END rule runs, while GNU
+# awk can warn, skip it and run END. Filtering here makes the result consistent
+# across implementations. A symlink is dropped too, even one that resolves to
+# a regular file: a symlink named like a record entry must not be able to pull
+# a file from outside `memory/` into the count.
+files=()
+file_count=0
+for entry in ${entries[@]+"${entries[@]}"}; do
   if [ -f "$entry" ] && [ ! -L "$entry" ]; then
-    set -- "$@" "$entry"
+    files[$file_count]="$entry"
+    file_count=$((file_count + 1))
   fi
-  remaining=$((remaining - 1))
 done
 
 # One line of counts, computed here rather than by the CLI, so that no text
@@ -151,7 +150,7 @@ done
 # key exactly the way `validated_memory/frontmatter.py` reads it, and counts
 # accordingly.
 counts_line=""
-if [ "$#" -gt 0 ]; then
+if [ "$file_count" -gt 0 ]; then
   counts_line="$(awk '
     # Mirror `_cut_comment` in the frontmatter parser on the value of a
     # `description` entry. A plain value runs to a ` #`, which starts a
@@ -216,7 +215,7 @@ if [ "$#" -gt 0 ]; then
     END {
       printf "knowledge sources: %d imported, %d declared not scanned, %d found not imported, %d not located\n", n_imported, n_declared, n_found, n_missing
     }
-  ' "$@" 2>/dev/null)"
+  ' ${files[@]+"${files[@]}"} 2>/dev/null)"
   counts_code=$?
   if [ "$counts_code" -ne 0 ] || [ -z "$counts_line" ]; then
     degraded=1

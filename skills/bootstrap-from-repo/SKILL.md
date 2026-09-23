@@ -181,6 +181,11 @@ a database section, environment templates (`.env.example` and the like;
 clauses name the tables the project actually reads. The lookup is part of
 the scan, under the same packet.
 
+Before generating the report, refuse a database alias equal to `source` or
+beginning `source-`. Its `<alias>-definition.md` would otherwise enter the
+`source-*` record namespace and could collide with another source's record;
+ordinary source aliases keep the general grammar.
+
 Found, the definition becomes one ordinary `reference` memory entry named
 `<alias>-definition.md`. It is **not** a `source-*` record entry, and that is
 deliberate: it states what the database is, not what happened to a source, so

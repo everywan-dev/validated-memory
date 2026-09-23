@@ -739,6 +739,27 @@ def _normalized_skill():
     return " ".join(ADOPT_SKILL.read_text(encoding="utf-8").split())
 
 
+def _normalized_import_section():
+    raw = ADOPT_SKILL.read_text(encoding="utf-8")
+    start = raw.index("## Import existing knowledge")
+    end = raw.index("\n## ", start + 1)
+    return " ".join(raw[start:end].split())
+
+
+RENDEZVOUS_TAIL = (
+    "With Q2 = Yes there is no Q3 left to ask, so the questionnaire proceeds "
+    "straight to the instruction-file step below while the scan runs. "
+    "Whichever question was the last one, and whether the scan ran in a "
+    "subagent or inline, there is a single rendezvous: the report is presented "
+    "once the scan has returned **and** the instruction-file step is done. The "
+    "instruction-file step never waits for the scan, and nothing from the "
+    "report is written before that rendezvous. Close the phase by naming what "
+    "was imported and what was left, in counts. Every source seen has its "
+    "`memory/source-<alias>.md` record entry, written with its "
+    "`memory/MEMORY.md` line like any other memory entry."
+)
+
+
 def test_the_skill_imports_after_init_and_before_verify():
     # `init` has to have run (the layout must exist to import into), and the
     # answers have to be recorded before Verify reports on them.
@@ -821,7 +842,7 @@ def test_the_skill_says_why_those_resolutions_are_refused():
 
 
 def test_the_skill_names_both_engine_modes_the_subagent_and_the_rendezvous():
-    text = _normalized_skill()
+    text = _normalized_import_section()
     assert "`bootstrap-from-repo` in mode `declared+repo`" in text
     assert "`bootstrap-from-repo` in mode `repo`" in text
     assert "read-only subagent" in text
@@ -831,8 +852,10 @@ def test_the_skill_names_both_engine_modes_the_subagent_and_the_rendezvous():
     # Q2 = Yes leaves no Q3, so the questionnaire must be told where to go
     # next -- and where the two threads meet again.
     assert "there is no Q3 left to ask" in text
-    assert "there is a single rendezvous" in text
-    assert "The instruction-file step never waits for the scan" in text
+    assert text.count("there is a single rendezvous") == 1
+    assert text.endswith(RENDEZVOUS_TAIL), (
+        "the import phase no longer ends with its single rendezvous and close"
+    )
 
 
 def test_verify_lists_the_sources_that_are_still_pending():
@@ -846,12 +869,22 @@ def test_verify_lists_the_sources_that_are_still_pending():
     assert "declared and consented to again" in section
 
 
-def test_the_alias_must_be_unique():
-    text = _normalized_skill()
-    assert (
-        "An alias must be unique among the sources declared and the active "
-        "`source-*` entries already in `memory/`; a duplicate is refused "
-        "before anything else happens." in text
+def test_every_alias_is_revalidated_before_approval():
+    text = _normalized_import_section()
+    validation_flow = (
+        "Before asking for approval, validate every proposed or user-supplied "
+        "alias against that grammar and for uniqueness among the sources "
+        "declared and the active `source-*` entries already in `memory/`; a "
+        "duplicate is refused before anything else happens. For databases "
+        "only, also refuse the alias `source` and every alias beginning "
+        "`source-`. Its `<alias>-definition.md` would otherwise enter the "
+        "`source-*` record namespace and could collide with another source's "
+        "record; ordinary source aliases keep the general grammar. If the "
+        "user supplies or changes an alias, rerun all of these checks. Ask "
+        "the user to approve it only after every check passes."
+    )
+    assert validation_flow in text, (
+        "alias validation, revalidation and approval are no longer ordered"
     )
 
 
@@ -1014,7 +1047,7 @@ def test_the_caller_checks_coverage_against_an_inventory_it_obtains_itself():
     Markdown files were never inventoried. The caller now has to contradict
     the ledger with a listing the scan did not produce.
     """
-    text = _normalized_skill()
+    text = _normalized_import_section()
     assert text.index("check the returned report first, and present it only "
                       "if it passes") < text.index(
         "Check the report's coverage ledger against an inventory you obtain "
@@ -1057,7 +1090,7 @@ def test_the_two_skills_agree_on_the_coverage_vocabulary():
     """
     engine = REPO_ROOT / "skills" / "bootstrap-from-repo" / "SKILL.md"
     engine_text = " ".join(engine.read_text(encoding="utf-8").split())
-    caller_text = _normalized_skill()
+    caller_text = _normalized_import_section()
     for shared in (
         "`discovered = classified + excluded + oversized + unreadable`",
         "repository-remainder partition",

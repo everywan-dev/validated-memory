@@ -31,6 +31,7 @@ Three properties carry most of the weight:
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -49,6 +50,8 @@ FIXED_SENTENCE = (
 DEGRADED_NOTE = (
     "session-context: could not compute part of the session context; continuing"
 )
+
+HARNESS_OUTPUT_CAP = 10_000
 
 # The `description` grammar's whole domain. Compared exactly against both the
 # skill and the hook below, so a fifth status cannot be added to one alone.
@@ -312,16 +315,45 @@ def test_the_context_is_plain_text_that_never_starts_a_json_envelope(tmp_path):
 
 def test_the_context_stays_far_under_the_harness_output_cap(tmp_path):
     # The harness caps hook output at 10,000 characters, spilling the rest to
-    # a file. This context is bounded by construction, not by luck.
+    # a file. A high-cardinality inventory proves the hook aggregates rather
+    # than emitting one line per entry, and leaves at least half the cap free.
     project_dir = _init_adopter(tmp_path / "project")
-    _write_source_entry(
-        project_dir, "source-alpha.md", "knowledge source alpha: imported"
+    statuses = (
+        "imported",
+        "declared, not scanned",
+        "found, not imported",
+        "not located",
+    )
+    index_lines = []
+    per_status = 128
+    for status_number, status in enumerate(statuses):
+        for entry_number in range(per_status):
+            alias = f"s{status_number}-{entry_number:03d}"
+            filename = f"source-{alias}.md"
+            path = project_dir / "memory" / filename
+            path.write_text(
+                _source_entry(
+                    f"source-{alias}", f"knowledge source {alias}: {status}"
+                ),
+                encoding="utf-8",
+            )
+            index_lines.append(
+                f"- [source-{alias}]({filename}) — record entry\n"
+            )
+    index = project_dir / "memory" / "MEMORY.md"
+    index.write_text(
+        index.read_text(encoding="utf-8") + "".join(index_lines),
+        encoding="utf-8",
     )
 
     result = _run_hook_checked(project_dir)
 
     assert result.stdout.splitlines()[0] == FIXED_SENTENCE
-    assert len(result.stdout) < 10000
+    assert _counts_line(result) == (
+        "knowledge sources: 128 imported, 128 declared not scanned, "
+        "128 found not imported, 128 not located"
+    )
+    assert len(result.stdout) < HARNESS_OUTPUT_CAP // 2
 
 
 def test_the_context_is_the_fixed_sentence_followed_by_the_status_summary(tmp_path):
@@ -535,12 +567,10 @@ def test_the_counts_line_counts_each_status_into_its_own_field(tmp_path):
     )
 
 
-def test_the_superseded_guard_is_defence_in_depth(tmp_path):
-    # A retired entry's `description` is `superseded by [[...]]`, which
-    # matches no status literal and would therefore count nowhere even
-    # without the explicit guard. The guard is kept, and tested, because it
-    # states the rule where a reader looks for it rather than leaving it as
-    # an accident of the four patterns.
+def test_a_retired_entry_counts_nowhere_alongside_its_active_successor(tmp_path):
+    # This pins only the public outcome. The explicit superseded guard in the
+    # hook is retained as readable defence in depth, but it is observationally
+    # equivalent to falling through the four active status branches.
     project_dir = _init_adopter(tmp_path / "project")
     _write_source_entry(
         project_dir, "source-alpha-2.md", "knowledge source alpha: imported"
@@ -738,17 +768,36 @@ def test_crlf_entries_are_counted(tmp_path):
 
 
 def test_a_source_entry_that_is_a_directory_is_skipped(tmp_path):
-    # This is the case the hook's `[ -f "$entry" ]` filter exists for: awk
-    # given a directory aborts before its END rule runs, and the counts line
-    # would vanish for every other entry too. The real entry must still be
-    # counted.
+    # This is the case the hook's `[ -f "$entry" ]` filter exists for: mawk
+    # and BusyBox awk abort on a directory before END, while GNU awk can warn,
+    # skip it and run END. The prefilter makes every implementation count the
+    # real entry consistently.
     project_dir = _init_adopter(tmp_path / "project")
     _write_source_entry(
         project_dir, "source-real.md", "knowledge source real: imported"
     )
-    (project_dir / "memory" / "source-fake.md").mkdir()
+    directory = project_dir / "memory" / "source-fake.md"
+    directory.mkdir()
+    wrapper_bin = tmp_path / "wrapper-bin"
+    wrapper_bin.mkdir()
+    real_awk = shutil.which("awk")
+    assert real_awk is not None
+    wrapper = wrapper_bin / "awk"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        "for argument do\n"
+        '  if [ -d "$argument" ]; then\n'
+        "    exit 97\n"
+        "  fi\n"
+        "done\n"
+        f"exec {shlex.quote(real_awk)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
 
-    result = _run_hook_checked(project_dir)
+    result = _run_hook_checked(
+        project_dir, PATH=f"{wrapper_bin}:{os.environ.get('PATH', '')}"
+    )
 
     assert _counts_line(result) == (
         "knowledge sources: 1 imported, 0 declared not scanned, "
@@ -763,6 +812,14 @@ def test_the_counts_line_is_absent_without_any_source_entry(tmp_path):
 
     assert result.stdout.splitlines()[0] == FIXED_SENTENCE
     assert _counts_line(result) is None
+
+
+def test_the_source_filter_uses_a_linear_bash_array_and_safe_empty_expansion():
+    hook = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert 'set -- "$@" "$entry"' not in hook
+    assert "files=()" in hook
+    assert '${files[@]+"${files[@]}"}' in hook
 
 
 # --- read-only, and never shadowed --------------------------------------------

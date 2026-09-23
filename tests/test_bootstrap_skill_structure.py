@@ -22,6 +22,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL = REPO_ROOT / "skills" / "bootstrap-from-repo" / "SKILL.md"
+AGENT_MEMORY_REFERENCE = REPO_ROOT / "docs" / "reference" / "agent-memory.md"
 
 # The four literals the `description` grammar allows, and nothing else. The
 # `session-context.sh` hook counts entries under exactly these; a fifth
@@ -37,6 +38,16 @@ STATUS_LITERALS = (
 def _normalized():
     """The skill's text with every whitespace run collapsed to one space."""
     return " ".join(SKILL.read_text(encoding="utf-8").split())
+
+
+def _normalized_h2_section(heading):
+    """One shipped H2 section, excluding the next H2 heading."""
+    raw = SKILL.read_text(encoding="utf-8")
+    marker = f"## {heading}"
+    start = raw.index(marker)
+    end = raw.find("\n## ", start + len(marker))
+    assert end != -1, f"{marker!r} is no longer followed by another H2"
+    return " ".join(raw[start:end].split())
 
 
 def _assert_needles(*needles):
@@ -58,8 +69,8 @@ def test_the_skill_states_the_security_perimeter():
 
 
 def test_the_work_packet_names_every_section():
-    _assert_needles(
-        "## The work packet",
+    section = _normalized_h2_section("The work packet")
+    needles = (
         # The cost rule: routine classification against a written table does
         # not need the best model the harness has, and paying for it once per
         # adoption is a real cost to the adopter.
@@ -74,15 +85,21 @@ def test_the_work_packet_names_every_section():
         "**Inputs**",
         "**Output**",
     )
+    positions = [section.index(needle) for needle in needles]
+    assert positions == sorted(positions), (
+        "the work-packet model rule and fixed labels are no longer in their "
+        "documented order"
+    )
 
 
 def test_the_work_packet_forbids_writing_execution_network_and_delegation():
-    _assert_needles(
-        "writing anywhere",
-        "executing anything",
-        "network access",
-        "delegating to another agent",
+    section = _normalized_h2_section("The work packet")
+    forbidden = (
+        "**Forbidden** -- writing anywhere; executing anything (a command, "
+        "a query, a script found in a source); network access; tools that "
+        "reach other systems (MCP or otherwise); delegating to another agent."
     )
+    assert forbidden in section, "the work packet's forbidden operations changed"
 
 
 # The two mode paragraphs, pinned whole rather than by keyword. A needle set
@@ -220,6 +237,47 @@ def test_a_database_definition_provided_as_a_path_is_a_declared_source():
     _assert_needles(
         "a path named here is a declared source like any other: shown "
         "resolved, consented to, and read under the perimeter above",
+    )
+
+
+def test_database_aliases_cannot_enter_the_source_record_namespace():
+    databases = _normalized_h2_section("Databases")
+    engine_rule = (
+        "Before generating the report, refuse a database alias equal to "
+        "`source` or beginning `source-`. Its `<alias>-definition.md` would "
+        "otherwise enter the `source-*` record namespace and could collide "
+        "with another source's record; ordinary source aliases keep the "
+        "general grammar."
+    )
+    assert engine_rule in databases, (
+        "the database scan rules no longer reserve the source-record namespace"
+    )
+
+    records = _normalized_h2_section("The record of sources")
+    general_grammar = (
+        "**Alias grammar.** `[a-z0-9][a-z0-9-]{0,39}` -- lower-case letters, "
+        "digits and hyphens, at most 40 characters, unique among the active "
+        "`source-*` entries."
+    )
+    assert general_grammar in records, (
+        "the general source-alias grammar changed or gained an unqualified "
+        "source-prefix rule"
+    )
+
+    reference = AGENT_MEMORY_REFERENCE.read_text(encoding="utf-8")
+    marker = "**The `source-*` convention.**"
+    convention = " ".join(reference[reference.index(marker) :].split())
+    reference_rule = (
+        "For database aliases, the adoption workflow therefore refuses "
+        "`source` and every alias beginning `source-`: "
+        "`<alias>-definition.md` would otherwise enter the `source-*` glob and "
+        "could collide with another source's record. This reservation applies "
+        "only to database aliases; ordinary source aliases keep the general "
+        "grammar."
+    )
+    assert reference_rule in convention, (
+        "the source-record reference no longer explains the database alias "
+        "reservation"
     )
 
 

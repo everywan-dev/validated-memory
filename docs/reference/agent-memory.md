@@ -142,4 +142,8 @@ the same thing. The convention lives in the skills, and the startup hook
 `hooks/session-context.sh` counts the active entries by status at every
 session start. A database's definition is *not* one of these: it is
 an ordinary `reference` entry named `<alias>-definition.md`, carrying no
-status and outside the `source-*` glob.
+status and outside the `source-*` glob. For database aliases, the adoption
+workflow therefore refuses `source` and every alias beginning `source-`:
+`<alias>-definition.md` would otherwise enter the `source-*` glob and could
+collide with another source's record. This reservation applies only to
+database aliases; ordinary source aliases keep the general grammar.

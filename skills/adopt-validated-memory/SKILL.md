@@ -276,11 +276,17 @@ repository), context files, and databases."
 Collect the answer **as text and nothing more**: nothing is resolved, opened
 or looked up at this point. For each source named, propose an **alias** --
 the last path component, or the database's name, normalized to the alias
-grammar `[a-z0-9][a-z0-9-]{0,39}` -- and let the user approve or change it.
-An alias must be unique among the sources declared and the active
-`source-*` entries already in `memory/`; a duplicate is refused before
-anything else happens. The alias is how the source is recorded; a path is
-recorded only when it lies inside the repository.
+grammar `[a-z0-9][a-z0-9-]{0,39}`. Before asking for approval, validate every
+proposed or user-supplied alias against that grammar and for uniqueness among
+the sources declared and the active `source-*` entries already in `memory/`;
+a duplicate is refused before anything else happens. For databases only,
+also refuse the alias `source` and every alias beginning `source-`. Its
+`<alias>-definition.md` would otherwise enter the `source-*` record namespace
+and could collide with another source's record; ordinary source aliases keep
+the general grammar. If the user supplies or changes an alias, rerun all of
+these checks. Ask the user to approve it only after every check passes. The
+alias is how the source is recorded; a path is recorded only when it lies
+inside the repository.
 
 **Q2 -- Scan the declared sources.** Asked only when Q1 named at least one
 source. Before asking, show, per declared path: the realpath it resolves to
