@@ -5609,23 +5609,67 @@ def test_journal_resolve_refuses_an_id_no_transaction_carries(run_cli, tmp_path)
 
 
 def test_journal_resolve_needs_exactly_one_of_the_three_flags(run_cli, tmp_path):
-    """Resolve requires one nonblank ID and exactly one resolution flag."""
+    """Journal's product-authored usage errors follow their validation order."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
+    before = _final_tree_snapshot(tmp_path)
+    cases = (
+        (
+            ("--resolve", "aaaaaaaaaaaaaaaa"),
+            "--resolve requires exactly one of --accept, --restore or --abandon",
+        ),
+        (
+            ("--resolve", "aaaaaaaaaaaaaaaa", "--accept", "--abandon"),
+            "--resolve requires exactly one of --accept, --restore or --abandon",
+        ),
+        (("--accept",), "--accept requires --resolve"),
+        # RESOLUTIONS order, not command-line order, selects the first error.
+        (("--abandon", "--restore"), "--restore requires --resolve"),
+        (
+            ("--check", "--resolve", "aaaaaaaaaaaaaaaa", "--accept"),
+            "--resolve may not be combined with --check, which is read-only",
+        ),
+        # A blank resolve ID precedes both check and resolution-count errors.
+        (
+            ("--resolve", "", "--check", "--accept", "--abandon"),
+            "--resolve requires the id of a transaction",
+        ),
+        (
+            ("--resolve", "   ", "--accept"),
+            "--resolve requires the id of a transaction",
+        ),
+        # Repair conflicts precede its blank-ID check in implemented order.
+        (
+            (
+                "--repair", "", "--resolve", "aaaaaaaaaaaaaaaa", "--check",
+                "--accept",
+            ),
+            "--repair may not be combined with --resolve",
+        ),
+        (
+            ("--repair", "", "--check", "--accept"),
+            "--repair may not be combined with --check",
+        ),
+        (
+            ("--repair", "", "--accept"),
+            "--repair may not be combined with a resolution flag",
+        ),
+        (("--repair", ""), "--repair requires the id of a transaction"),
+    )
 
-    for arguments in (
-        ("--resolve", "aaaaaaaaaaaaaaaa"),
-        ("--resolve", "aaaaaaaaaaaaaaaa", "--accept", "--abandon"),
-        ("--accept",),
-        ("--check", "--resolve", "aaaaaaaaaaaaaaaa", "--accept"),
-        # An empty id reaches no transaction and names none in the refusal
-        # either, so it is a malformed command line and not a fact about
-        # the project: exit 2, like every other way of mistyping this.
-        ("--resolve", "", "--accept"),
-        ("--resolve", "   ", "--accept"),
-    ):
+    for arguments, expected in cases:
         result = run_cli("journal", *arguments, cwd=tmp_path)
         assert result.returncode == 2, (arguments, result.stdout, result.stderr)
-        assert "usage: validated-memory journal" in result.stderr, arguments
+        assert result.stdout == "", (arguments, result.stdout)
+        lines = result.stderr.splitlines()
+        assert lines[0].startswith("usage: validated-memory journal "), (
+            arguments,
+            result.stderr,
+        )
+        assert lines[-1] == f"validated-memory journal: error: {expected}", (
+            arguments,
+            result.stderr,
+        )
+        assert _final_tree_snapshot(tmp_path) == before, arguments
 
 
 def test_a_missing_preimage_blob_for_a_closed_record_is_never_an_error(

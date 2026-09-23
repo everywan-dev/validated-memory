@@ -13,11 +13,42 @@ test_derive.py does.
 """
 
 import json
+import os
+import stat
+from pathlib import Path
 
 import pytest
 
 INDEX_FILENAME = "knowledge-index.md"
 VERDICT_LOG = "verdicts.jsonl"
+
+
+def _final_tree_snapshot(root):
+    """Capture final node kinds, contents, link targets and modes without following."""
+    snapshot = []
+
+    def visit(directory):
+        with os.scandir(directory) as entries:
+            children = sorted(entries, key=lambda entry: entry.name)
+        for entry in children:
+            path = Path(entry.path)
+            relative = path.relative_to(root).as_posix()
+            info = entry.stat(follow_symlinks=False)
+            mode = stat.S_IMODE(info.st_mode)
+            if stat.S_ISLNK(info.st_mode):
+                snapshot.append((relative, "symlink", os.readlink(path), mode))
+            elif stat.S_ISREG(info.st_mode):
+                snapshot.append((relative, "file", path.read_bytes(), mode))
+            elif stat.S_ISDIR(info.st_mode):
+                snapshot.append((relative, "directory", mode))
+                visit(path)
+            else:
+                snapshot.append(
+                    (relative, "other", stat.S_IFMT(info.st_mode), mode)
+                )
+
+    visit(root)
+    return snapshot
 
 
 def test_memory_identity_concessions_now_gate_status(
@@ -1178,16 +1209,49 @@ def test_fail_on_aged_without_max_verdict_age_is_a_usage_error(adopter_dir, run_
     result = run_cli("status", "--fail-on-aged", cwd=adopter_dir)
 
     assert result.returncode == 2
-    assert "--fail-on-aged" in result.stderr
-    assert "--max-verdict-age" in result.stderr
+    assert result.stdout == ""
+    assert result.stderr.splitlines()[0].startswith("usage: validated-memory status ")
+    assert result.stderr.splitlines()[-1] == (
+        "validated-memory status: error: --fail-on-aged requires "
+        "--max-verdict-age"
+    )
 
 
 def test_as_of_without_max_verdict_age_is_a_usage_error(adopter_dir, run_cli):
     result = run_cli("status", "--as-of", AS_OF, cwd=adopter_dir)
 
     assert result.returncode == 2
-    assert "--as-of" in result.stderr
-    assert "--max-verdict-age" in result.stderr
+    assert result.stdout == ""
+    assert result.stderr.splitlines()[0].startswith("usage: validated-memory status ")
+    assert result.stderr.splitlines()[-1] == (
+        "validated-memory status: error: --as-of requires --max-verdict-age"
+    )
+
+
+def test_fail_on_aged_precedes_as_of_and_project_acquisition(
+    adopter_dir, run_cli
+):
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    (adopter_dir / "validated-memory.md").write_bytes(
+        b"\xff invalid required configuration\n"
+    )
+    (adopter_dir / "unrelated.bin").write_bytes(b"\x00\xffunrelated sentinel\n")
+    before = _final_tree_snapshot(adopter_dir)
+
+    result = run_cli(
+        "status", "--fail-on-aged", "--as-of", AS_OF, cwd=adopter_dir
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.splitlines()[0].startswith("usage: validated-memory status ")
+    assert result.stderr.splitlines()[-1] == (
+        "validated-memory status: error: --fail-on-aged requires "
+        "--max-verdict-age"
+    )
+    assert "validated-memory.md" not in result.stderr
+    assert "ERROR:" not in result.stderr
+    assert _final_tree_snapshot(adopter_dir) == before
 
 
 def test_status_help_exits_clean(adopter_dir, run_cli):
