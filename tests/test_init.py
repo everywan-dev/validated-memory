@@ -608,9 +608,9 @@ def test_a_repointed_symlink_records_its_previous_target_before_losing_it(
 
     The link is never absent between two runs either, by construction
     rather than by measurement: publication builds the new link under a
-    pid-named temporary and renames it over the path (`journal.Run._publish`
-    for the recorded path, `init._sync_symlink.relink` for the fail-open
-    one), and nothing on either path unlinks anything. A test cannot
+    pid-named temporary and renames it over the path (the journal executor
+    does this for the recorded path, `init._sync_symlink.relink` for the
+    fail-open one), and nothing on either path unlinks anything. A test cannot
     observe a window that does not exist; reading the two code paths is how
     this is checked.
     """

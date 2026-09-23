@@ -260,6 +260,14 @@ def build_parser():
                 ),
             )
             subparser.add_argument(
+                "--repair",
+                metavar="TRANSACTION_ID",
+                help=(
+                    "repair one torn history append from a WAL proof "
+                    "(writes history; get ID from journal --check)"
+                ),
+            )
+            subparser.add_argument(
                 "--accept",
                 action="store_true",
                 help=(
@@ -365,12 +373,20 @@ def main(argv=None):
             stderr=sys.stderr,
         )
     if args.command == "journal":
-        # Resolution requires an ID, exactly one action, and no --check.
+        # Resolution and repair each require an ID and are mutually exclusive.
         chosen = [
             name
             for name in journal.RESOLUTIONS
             if getattr(args, name.replace("-", "_"))
         ]
+        if args.repair is not None and args.resolve is not None:
+            args._journal_subparser.error("--repair may not be combined with --resolve")
+        if args.repair is not None and args.check:
+            args._journal_subparser.error("--repair may not be combined with --check")
+        if args.repair is not None and chosen:
+            args._journal_subparser.error("--repair may not be combined with a resolution flag")
+        if args.repair is not None and not args.repair.strip():
+            args._journal_subparser.error("--repair requires the id of a transaction")
         if args.resolve is None:
             if chosen:
                 args._journal_subparser.error(f"--{chosen[0]} requires --resolve")
@@ -394,6 +410,7 @@ def main(argv=None):
             args.check,
             args.resolve,
             chosen[0] if chosen else None,
+            args.repair,
             stdout=sys.stdout,
             stderr=sys.stderr,
         )

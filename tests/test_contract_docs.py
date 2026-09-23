@@ -78,3 +78,24 @@ def test_the_extension_stub_names_every_base_field():
         assert f"`{field}`" in prose.group(1), (
             f"the extension stub does not mention the base field '{field}'"
         )
+
+
+def test_journal_repair_synopsis_and_writing_modes_are_documented():
+    cli = (REPO_ROOT / "docs" / "reference" / "cli.md").read_text(
+        encoding="utf-8"
+    )
+    journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(
+        encoding="utf-8"
+    )
+    command = (REPO_ROOT / "validated_memory" / "journal" / "command.py").read_text(
+        encoding="utf-8"
+    )
+    synopsis = "python3 -P -m validated_memory journal --repair TRANSACTION_ID"
+    assert synopsis in cli
+    assert synopsis in journal
+    for text in (cli, journal, command):
+        assert "`--resolve` is the third mode and the only one that writes" not in text
+        assert "`--resolve` is the third mode and the\nonly one that writes" not in text
+    assert "--resolve` and `--repair`" in cli
+    assert "--resolve` and `--repair`" in journal
+    assert "`--resolve` and `--repair` are the two targeted modes" in command

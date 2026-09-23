@@ -866,6 +866,7 @@ usage error.
 ```
 python3 -P -m validated_memory journal [--check]
 python3 -P -m validated_memory journal --resolve ID (--accept | --restore | --abandon)
+python3 -P -m validated_memory journal --repair TRANSACTION_ID
 ```
 
 Reports the append-only record of what adoption did to this project --
@@ -877,8 +878,8 @@ write, and the harness take-over `init --harness-memory` performs when the
 path it names is a real directory.
 [Journal](journal.md#what-is-recorded-and-what-is-not-yet) names both and
 the plan that records them. Read-only in both reporting modes: neither runs
-`probe` and neither writes to either file. `--resolve` is the third mode
-and the only one that writes.
+`probe` and neither writes to either file. `--resolve` and `--repair` are
+the two targeted modes that write.
 
 Without `--check`, it reports the combined record count and never gates on
 what it finds -- a reader can inspect a project's history without gating a
@@ -954,6 +955,17 @@ here destroys bytes without leaving a copy:
 ```
 journal: resolved 56eeba099c335aaa (--restore); the discarded bytes are kept at .validated-memory/preimages/896206210afdc58bebda73324b1601db00749e6b365c8055352d4a85f45ffa1f
 ```
+
+A `--repair TRANSACTION_ID` operation is the explicit proof-carrying path for
+a torn final history append. It requires an existing history and a current
+WAL claim, publishes the complete claimed snapshot atomically, and preserves
+the evidence on any confirmation failure. It is mutually exclusive with
+`--check`, `--resolve`, and resolution flags. Success is exit 0; project-state
+refusals and persistence failures are exit 1; empty or invalid combinations
+are exit 2.
+
+`journal --check` enumerates retained residue; targeted repair leaves
+unclaimed residue untouched.
 
 A refusal is an ERROR and exit 1, not a traceback and not a usage error: the
 id was well formed and the flags were legal, and what could not be done is a

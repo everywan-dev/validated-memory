@@ -13,13 +13,21 @@ records the crashed run would have written; closing that leak is a design
 change, not a move.
 """
 
+import errno
+import re
+import stat
 import json
 import os
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from .. import __version__
-from .durable import fsync_directory, install
+from .durable import (
+    VisibilityUnconfirmed,
+    ensure_owned_directory,
+    install_bytes,
+    remove_name,
+)
 from .operations import INTENTION_OPS
 from .paths import own_directory, well_formed_state, current_state, satisfies
 from .records import (
@@ -46,6 +54,18 @@ TRANSACTIONS_DIRNAME = "transactions"
 PUBLISHED = "published"
 ABORTED = "aborted"
 TRANSACTION_STAGES = (PREPARED, PUBLISHED, ABORTED)
+TARGET_UNCONFIRMED = "target"
+HISTORY_UNCONFIRMED = "history"
+HISTORY_CLAIM_UNCONFIRMED = "history-claim"
+CLEANUP_UNCONFIRMED = "cleanup"
+RESTORE_UNCONFIRMED = "restore"
+UNCONFIRMED_PHASES = (
+    TARGET_UNCONFIRMED,
+    HISTORY_UNCONFIRMED,
+    HISTORY_CLAIM_UNCONFIRMED,
+    CLEANUP_UNCONFIRMED,
+    RESTORE_UNCONFIRMED,
+)
 
 
 def _transactions_dir(root):
@@ -87,18 +107,10 @@ def _write_transaction_file(root, transaction_id, entry):
     of a new transaction or a rewrite of `stage` on an existing one.
     """
     directory = _transactions_dir(root)
-    directory.mkdir(parents=True, exist_ok=True)
+    ensure_owned_directory(directory, Path(root))
     path = _transaction_path(root, transaction_id)
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        install(temporary, path)
-    except OSError:
-        temporary.unlink(missing_ok=True)
-        raise
+    data = (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
+    install_bytes(path, data)
 
 
 def open_transaction(
@@ -144,7 +156,7 @@ def open_transaction(
     describes have already been appended to by the time recovery runs.
 
     `postimage` is not derived here: an `APPEND`'s digest needs the bytes
-    already on disk, which only the caller (`Run.execute`) has read.
+    already on disk, which only the adopting session has read.
     `intention.expected` is the caller's precondition, not this file's
     `preimage` -- the two usually agree, but the transaction records what
     the state actually was, not what the caller hoped to find.
@@ -185,21 +197,83 @@ def open_transaction(
     return transaction_id
 
 
-def mark_published(root, transaction_id):
+def mark_published(root, transaction_id, published_mode=None):
     """Record, fsynced, that publication completed.
 
-    Not decoration: a `replace` whose new bytes equal the old, an `append`
-    of empty content, and every no-bytes intention (`create` of a
-    directory, `link`) satisfy the preimage and postimage states at once,
-    so recovery cannot always tell from the filesystem alone whether the
-    mutation happened. This marker, fsynced after publication, is what
-    turns that inference into a fact
-    (docs/design/2026-09-01-the-journal-core.md §3).
+    Executor-created no-ops open no transaction. A prepared transaction whose
+    target has the exact postimage is therefore recoverable after a hard crash
+    before this marker. The marker remains useful after later divergence: it
+    proves publication happened before another writer changed the target.
     """
     path = _transaction_path(root, transaction_id)
     entry = json.loads(path.read_text(encoding="utf-8"))
     entry["stage"] = PUBLISHED
+    if published_mode is not None:
+        entry["published_mode"] = published_mode
+    entry.pop("unconfirmed", None)
+    entry.pop("unconfirmed_reason", None)
     _write_transaction_file(root, transaction_id, entry)
+
+
+def mark_history_append(root, transaction_id, claim):
+    """Durably attach the exact history append proof to a published WAL."""
+    path = _transaction_path(root, transaction_id)
+    if "history-claim" in {
+        item.strip()
+        for item in os.environ.get("VALIDATED_MEMORY_PERSISTENCE_FAULT", "").split(",")
+        if item.strip()
+    }:
+        raise OSError(errno.EIO, "injected history-claim persistence failure", os.fspath(path))
+    entry = json.loads(path.read_text(encoding="utf-8"))
+    if "history_append" in entry:
+        raise OSError(
+            errno.EINVAL,
+            f"transaction {transaction_id} already carries a history append proof",
+            os.fspath(path),
+        )
+    entry["history_append"] = claim
+    entry["history_timestamps"] = list(claim.get("timestamps", ()))
+    _write_transaction_file(root, transaction_id, entry)
+    return entry
+
+
+def mark_temporary_claim(root, transaction_id, claim):
+    """Durably record one target-adjacent staging claim before creation."""
+    path = _transaction_path(root, transaction_id)
+    entry = json.loads(path.read_text(encoding="utf-8"))
+    if "temporary" in entry:
+        raise OSError(errno.EINVAL, "transaction already carries a temporary claim", os.fspath(path))
+    entry["temporary"] = claim
+    _write_transaction_file(root, transaction_id, entry)
+    return entry
+
+
+def mark_unconfirmed(root, transaction_id, phase, reason):
+    """Persist which visible effect needs a fresh recovery operation."""
+    if phase not in UNCONFIRMED_PHASES:
+        raise ValueError(f"unknown unconfirmed phase '{phase}'")
+    path = _transaction_path(root, transaction_id)
+    entry = json.loads(path.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = phase
+    entry["unconfirmed_reason"] = str(reason)
+    _write_transaction_file(root, transaction_id, entry)
+    requested = {
+        item.strip()
+        for item in os.environ.get(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
+        ).split(",")
+        if item.strip()
+    }
+    if f"fact:{phase}" in requested or "fact:*" in requested:
+        error = OSError(
+            errno.EIO,
+            "injected recovery-fact barrier failure",
+            os.fspath(path),
+        )
+        raise VisibilityUnconfirmed(
+            path, "failure-fact", True, error
+        ) from error
+    return entry
 
 
 def abort_transaction(root, transaction_id, reason):
@@ -219,8 +293,14 @@ def remove_transaction_file(root, transaction_id):
     itself, on its own successful run) has no further use for it.
     """
     path = _transaction_path(root, transaction_id)
-    path.unlink(missing_ok=True)
-    fsync_directory(path.parent)
+    entry = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        remove_name(path)
+    except VisibilityUnconfirmed:
+        # The unlink is visible. Re-establish the exact recovery artifact
+        # through a fresh confirmed install before reporting uncertainty.
+        _write_transaction_file(root, transaction_id, entry)
+        raise
 
 
 def open_transactions(root):
@@ -250,45 +330,178 @@ def open_transactions(root):
             continue
         transaction_id = name[: -len(".json")]
         path = directory / name
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError as error:
-            results.append({"id": transaction_id, "damaged": str(error)})
-            continue
-        except ValueError as error:
-            # Bytes that are not text at all. `read_text` raises
-            # `UnicodeDecodeError`, which is a `ValueError` and not an
-            # `OSError`, so the handler above does not see it.
-            results.append(
-                {"id": transaction_id, "damaged": f"it is not valid UTF-8: {error}"}
-            )
-            continue
-        try:
-            entry = json.loads(text)
-        except json.JSONDecodeError as error:
-            results.append(
-                {"id": transaction_id, "damaged": f"not valid JSON: {error.msg}"}
-            )
-            continue
-        except ValueError as error:
-            # Everything else the decoder refuses by value rather than by
-            # syntax -- a nesting depth it will not follow, a number it
-            # will not build. The same answer: this file is not a
-            # transaction, and saying so is not a traceback.
-            results.append(
-                {"id": transaction_id, "damaged": f"it could not be decoded: {error}"}
-            )
-            continue
-        if not isinstance(entry, dict):
-            results.append(
-                {"id": transaction_id, "damaged": "record is not a JSON object"}
-            )
-            continue
-        entry = dict(entry)
-        entry["id"] = transaction_id
-        results.append(entry)
+        results.append(_read_transaction(path, transaction_id))
     results.sort(key=lambda item: (item.get("at", ""), item["id"]))
     return results
+
+
+def retained_residue(root):
+    """Report private entries that are not canonical transaction artifacts."""
+    results = []
+    for name in (TRANSACTIONS_DIRNAME, "preimages"):
+        directory = Path(root) / VAULT_DIRNAME / name
+        try:
+            entries = list(directory.iterdir())
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            results.append((f"{VAULT_DIRNAME}/{name}", str(error)))
+            continue
+        for entry in entries:
+            if name == TRANSACTIONS_DIRNAME and entry.name.endswith(".json"):
+                continue
+            if name == "preimages" and re.fullmatch(r"[0-9a-f]{64}", entry.name):
+                continue
+            results.append(
+                (
+                    entry.relative_to(Path(root)).as_posix(),
+                    "retained private residue; ownership was not proven",
+                )
+            )
+    return results
+
+
+def claimed_temporary_residue(root, item):
+    """Return a claimed target staging entry without scanning target trees."""
+    claim = item.get("temporary")
+    intention = item.get("intention")
+    if not isinstance(claim, dict) or not isinstance(intention, dict):
+        return []
+    target_name = claim.get("target")
+    name = claim.get("name")
+    if not isinstance(target_name, str) or not isinstance(name, str):
+        return [(transaction_artifact(item["id"]), "temporary claim is malformed")]
+    if intention.get("durability") == REPO and not is_inside_path(target_name):
+        return [(transaction_artifact(item["id"]), "temporary claim leaves the adopter root")]
+    target = Path(root) / target_name if intention.get("durability") == REPO else Path(target_name)
+    if Path(name).name != name or not name.startswith(f".{target.name}.") or not name.endswith(".tmp"):
+        return [(transaction_artifact(item["id"]), "temporary claim uses an unsafe staging name")]
+    candidate = target.parent / name
+    try:
+        candidate.lstat()
+    except FileNotFoundError:
+        return []
+    return [(candidate.as_posix(), "claimed target staging residue is retained until exact cleanup proof")]
+
+
+def cleanup_private_duplicates(root):
+    """Remove only exact regular-file duplicates of canonical private artifacts."""
+    removed = []
+    for dirname, pattern in ((TRANSACTIONS_DIRNAME, re.compile(r"^\.(.+)\.([0-9a-f]{32})\.tmp$")), ("preimages", re.compile(r"^\.([0-9a-f]{64})\.([0-9a-f]{32})\.tmp$"))):
+        directory = Path(root) / VAULT_DIRNAME / dirname
+        try:
+            entries = list(directory.iterdir())
+        except (FileNotFoundError, OSError):
+            continue
+        for candidate in entries:
+            match = pattern.fullmatch(candidate.name)
+            if not match:
+                continue
+            canonical = directory / (match.group(1) if dirname == TRANSACTIONS_DIRNAME else match.group(1) + "")
+            if dirname == TRANSACTIONS_DIRNAME and not canonical.name.endswith(".json"):
+                canonical = directory / f"{match.group(1)}"
+            try:
+                cinfo = canonical.lstat()
+                info = candidate.lstat()
+                if not stat.S_ISREG(cinfo.st_mode) or not stat.S_ISREG(info.st_mode):
+                    continue
+                if stat.S_IMODE(cinfo.st_mode) != stat.S_IMODE(info.st_mode) or canonical.read_bytes() != candidate.read_bytes():
+                    continue
+                remove_name(candidate)
+                removed.append(candidate.relative_to(Path(root)).as_posix())
+            except (FileNotFoundError, OSError):
+                continue
+    return removed
+
+
+def historyless_transactions_message(items):
+    """Explain why WAL artifacts cannot establish a missing adoption history."""
+    identities = sorted(
+        {
+            item["adoption"]
+            for item in items
+            if isinstance(item.get("adoption"), str)
+        }
+    )
+    damaged = sorted(item["id"] for item in items if "damaged" in item)
+    details = []
+    if identities:
+        details.append(
+            "artifact adoption id(s): " + ", ".join(identities)
+        )
+    if damaged:
+        details.append("damaged artifact(s): " + ", ".join(damaged))
+    suffix = f" ({'; '.join(details)})" if details else ""
+    return (
+        "transaction artifacts exist while neither permanent history "
+        "establishes an adoption identity; WAL evidence cannot mint one"
+        f"{suffix}. restore repository or local history carrying the matching "
+        "identity, then retry; every transaction artifact was left unchanged"
+    )
+
+
+def read_transaction(root, transaction_id):
+    """Read exactly one transaction, or return None when its file is absent.
+
+    This is the targeted counterpart to `open_transactions`. Resolution uses
+    it under its lock, and damaged files decode exactly as enumeration does.
+    """
+    path = _target_transaction_path(root, transaction_id)
+    if path is None or not os.path.lexists(path):
+        return None
+    return _read_transaction(path, transaction_id)
+
+
+def has_transaction(root, transaction_id):
+    """Whether the exact transaction name exists, without reading its bytes."""
+    path = _target_transaction_path(root, transaction_id)
+    return path is not None and os.path.lexists(path)
+
+
+def _target_transaction_path(root, transaction_id):
+    """The targeted transaction path, or None for a path-bearing id.
+
+    Transaction ids are filename stems, not paths. They remain otherwise
+    unrestricted: historical and hand-written safe stems need not be hex.
+    Both the unlocked probe and the locked reader come through this function
+    before `_transactions_dir` is asked for a name.
+    """
+    if (
+        Path(transaction_id).is_absolute()
+        or PureWindowsPath(transaction_id).drive
+        or "/" in transaction_id
+        or "\\" in transaction_id
+    ):
+        return None
+    return _transaction_path(root, transaction_id)
+
+
+def _read_transaction(path, transaction_id):
+    """Decode one known transaction path into the shared reader shape."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        return {"id": transaction_id, "damaged": str(error)}
+    except ValueError as error:
+        # Bytes that are not text at all. `read_text` raises
+        # `UnicodeDecodeError`, which is a `ValueError` and not an
+        # `OSError`, so the handler above does not see it.
+        return {"id": transaction_id, "damaged": f"it is not valid UTF-8: {error}"}
+    try:
+        entry = json.loads(text)
+    except json.JSONDecodeError as error:
+        return {"id": transaction_id, "damaged": f"not valid JSON: {error.msg}"}
+    except ValueError as error:
+        # Everything else the decoder refuses by value rather than by
+        # syntax -- a nesting depth it will not follow, a number it will
+        # not build. The same answer: this file is not a transaction, and
+        # saying so is not a traceback.
+        return {"id": transaction_id, "damaged": f"it could not be decoded: {error}"}
+    if not isinstance(entry, dict):
+        return {"id": transaction_id, "damaged": "record is not a JSON object"}
+    entry = dict(entry)
+    entry["id"] = transaction_id
+    return entry
 
 
 # --- recovery: what a run does with what an earlier run left open -------------
@@ -322,7 +535,19 @@ RECOVERY_PROBLEMS = (PROBLEM_DIVERGED, PROBLEM_UNKNOWN, PROBLEM_DAMAGED)
 VERDICT_COMPLETE = "complete"
 VERDICT_DISCARD = "discard"
 VERDICT_REMOVE = "remove"
-_RECOVERABLE_VERDICTS = (VERDICT_COMPLETE, VERDICT_DISCARD, VERDICT_REMOVE)
+VERDICT_TARGET_UNCONFIRMED = "confirm-target"
+VERDICT_HISTORY_UNCONFIRMED = "confirm-history"
+VERDICT_CLEANUP_UNCONFIRMED = "confirm-cleanup"
+VERDICT_RESTORE_UNCONFIRMED = "confirm-restore"
+_RECOVERABLE_VERDICTS = (
+    VERDICT_COMPLETE,
+    VERDICT_DISCARD,
+    VERDICT_REMOVE,
+    VERDICT_TARGET_UNCONFIRMED,
+    VERDICT_HISTORY_UNCONFIRMED,
+    VERDICT_CLEANUP_UNCONFIRMED,
+    VERDICT_RESTORE_UNCONFIRMED,
+)
 RECOVERABLE = "recoverable"
 
 
@@ -450,6 +675,7 @@ def classify(root, item, adoption=None):
         "preimage_blob": None,
         "prior_bytes": None,
         "mode": None,
+        "unconfirmed": item.get("unconfirmed"),
     }
 
     def damaged(reason):
@@ -549,6 +775,16 @@ def classify(root, item, adoption=None):
     reason = item.get("reason")
     facts["abort_reason"] = reason if isinstance(reason, str) else None
 
+    unconfirmed = item.get("unconfirmed")
+    has_unconfirmed_reason = "unconfirmed_reason" in item
+    unconfirmed_reason = item.get("unconfirmed_reason")
+    if unconfirmed is not None and unconfirmed not in UNCONFIRMED_PHASES:
+        return damaged(f"it names unknown unconfirmed phase '{unconfirmed}'")
+    if unconfirmed is not None and not isinstance(unconfirmed_reason, str):
+        return damaged("its unconfirmed phase has no recorded reason")
+    if unconfirmed is None and has_unconfirmed_reason:
+        return damaged("it records an unconfirmed reason without a phase")
+
     stage = item.get("stage")
     if stage == ABORTED:
         return VERDICT_REMOVE, facts
@@ -567,6 +803,23 @@ def classify(root, item, adoption=None):
     facts["preimage"] = preimage
     facts["postimage"] = postimage
 
+    if unconfirmed == HISTORY_UNCONFIRMED:
+        if stage != PUBLISHED:
+            return damaged("history uncertainty requires a published transaction")
+        facts["actual"] = postimage
+        return VERDICT_HISTORY_UNCONFIRMED, facts
+    if unconfirmed == HISTORY_CLAIM_UNCONFIRMED:
+        facts["problem_reason"] = (
+            "the exact history append proof was not durably recorded; "
+            "history cannot be completed from this transaction"
+        )
+        return PROBLEM_UNKNOWN, facts
+    if unconfirmed == CLEANUP_UNCONFIRMED:
+        if stage != PUBLISHED:
+            return damaged("cleanup uncertainty requires a published transaction")
+        facts["actual"] = postimage
+        return VERDICT_CLEANUP_UNCONFIRMED, facts
+
     try:
         actual = current_state(root, facts["path"])
     except OSError as error:
@@ -577,6 +830,22 @@ def classify(root, item, adoption=None):
         return PROBLEM_UNKNOWN, facts
     facts["actual"] = actual
     matches_post = satisfies(actual, postimage)
+    if unconfirmed == RESTORE_UNCONFIRMED:
+        if satisfies(actual, preimage):
+            return VERDICT_RESTORE_UNCONFIRMED, facts
+        facts["problem_reason"] = (
+            "the path no longer has the exact restored preimage whose "
+            "durability was unconfirmed"
+        )
+        return PROBLEM_UNKNOWN, facts
+    if unconfirmed == TARGET_UNCONFIRMED:
+        if matches_post:
+            return VERDICT_TARGET_UNCONFIRMED, facts
+        facts["problem_reason"] = (
+            "the target no longer has the exact postimage whose durability "
+            "was unconfirmed"
+        )
+        return PROBLEM_UNKNOWN, facts
     if stage == PUBLISHED:
         return (VERDICT_COMPLETE if matches_post else PROBLEM_DIVERGED), facts
     if matches_post and satisfies(actual, preimage):
@@ -595,11 +864,10 @@ def classify(root, item, adoption=None):
 def no_such_transaction(transaction_id):
     """The refusal for an id nothing in the log carries.
 
-    One sentence, in two places: the command handler asks the question before
-    it opens a `Run`, so a tree with no adoption at all is not given one by a
-    command that then says it changed nothing; the resolver asks it again under
-    the lock, where a file can have gone since. Two spellings of it would drift,
-    and this one is what `docs/reference/cli.md` prints.
+    One sentence for the resolver's probe before its materializing lock and
+    its authoritative read under that lock, where a file can have gone since.
+    Two spellings would drift, and this one is what `docs/reference/cli.md`
+    prints.
     """
     return (
         f"there is no unresolved transaction {transaction_id}; "
@@ -654,27 +922,3 @@ class Resolution:
     location: str
     message: str | None = None
     kept: str | None = None
-
-
-def missing_resolution(root, transaction_id, resolution):
-    """The refusal for an id no transaction file carries, or None to proceed.
-
-    Asked before a `Run` exists, because building one adopts the tree: its
-    lock creates `.validated-memory/` and its bootstrap installs
-    `journal.jsonl`. An unknown id must not adopt a project under a refusal
-    whose own last sentence says nothing has been changed. `lexists`, so a
-    transaction file that is there but unreadable still reaches the
-    resolver, which has a `damaged` answer for it.
-
-    Where the file lives, and what the refusal says, stay inside this
-    module: the caller asks whether there is anything to resolve, not how a
-    transaction is stored.
-    """
-    if os.path.lexists(_transaction_path(root, transaction_id)):
-        return None
-    return Resolution(
-        transaction_id,
-        resolution,
-        transaction_artifact(transaction_id),
-        no_such_transaction(transaction_id),
-    )

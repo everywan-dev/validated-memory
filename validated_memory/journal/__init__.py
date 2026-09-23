@@ -39,7 +39,7 @@ from the ones before it:
 - `lock` -- the per-adopter exclusive lock, and where it lives.
 - `transactions` -- the local write-ahead log: its four stages, its reader,
   and the classification a recovery acts on.
-- `executor` -- the preimage store, journal bootstrap, and `Run`.
+- `executor` -- adopting runs, targeted resolution and shared mechanics.
 - `reconcile` -- the two histories read against each other and the tree.
 - `command` -- the `journal` subcommand.
 
@@ -48,13 +48,15 @@ This file is the facade, and it is deliberately narrow: exactly the names
 somebody wants it. Everything else -- the raw line-writer, the atomic
 install, the record builder, the bootstrap, the transaction file's own
 stages -- is the journal's own, and a caller that reaches one is
-reimplementing the protocol `Run.execute` exists to own. A module of this
+reimplementing the protocol the adopting session exists to own. A module of this
 package is not a door either: it is imported whole, and reached by
-attribute.
+attribute. The one non-session write is `repair_harness_link`: a high-level
+fail-open operation used only when the journal cannot serve the startup hook.
+It exposes neither persistence primitives nor their exception types and turns
+post-visibility uncertainty into a gating `JournalError`.
 """
 
-from .executor import Run
-from .lock import Lock
+from .executor import adopting_run, repair_harness_link, resolve_transaction
 from .operations import (
     OUTCOME_APPLIED,
     OUTCOME_NOOP,
@@ -82,20 +84,21 @@ __all__ = [
     "JOURNAL_FILENAME",
     "JournalError",
     "LOCAL",
-    "Lock",
     "OUTCOME_APPLIED",
     "OUTCOME_NOOP",
     "OUTCOME_REFUSED",
     "RECOVERED",
     "REPO",
     "RESOLUTIONS",
-    "Run",
     "SYMLINK",
     "VAULT_DIRNAME",
+    "adopting_run",
     "append_to_file",
     "create_directory",
     "create_file",
     "digest",
     "link_to",
+    "repair_harness_link",
+    "resolve_transaction",
     "run",
 ]

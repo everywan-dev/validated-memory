@@ -71,6 +71,7 @@ simply creates nothing this run.
 """
 
 import os
+import tempfile
 from pathlib import Path
 
 from . import adopt, ignore, journal, render
@@ -221,16 +222,13 @@ def run(harness_memory, view, stdout, stderr, app=False):
     unignored = False
 
     # Everything that journals -- the scaffold and the harness symlink --
-    # runs under one lock for the whole run: `init` is deliberately
-    # re-runnable at session start, and this is what serialises the work
-    # `journal.Run` does not lock on its own, above all the harness
-    # take-over in `_sync_symlink`, which moves an adopter's directory and
-    # is not journalled at all. `journal.Lock` is re-entrant, so the lock
-    # `journal.Run()` takes around its own reads is this one.
+    # runs in one adopting scope: `init` is deliberately re-runnable at
+    # session start, and the scope serialises the whole run, above all the
+    # harness take-over in `_sync_symlink`, which moves an adopter's
+    # directory and is not journalled at all.
     journal_failure = None
     try:
-        with journal.Lock():
-            session = journal.Run()
+        with journal.adopting_run() as session:
             # Before anything this run intends: recovery only completes or
             # closes what an EARLIER run began, and unlinks the files that
             # said so, so it reduces what is on disk rather than adding to
@@ -646,18 +644,11 @@ def _sync_symlink(
         module exactly this: that it can publish that one symlink
         atomically and nothing else.
         """
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        temporary.unlink(missing_ok=True)
-        try:
-            os.symlink(target, temporary)
-            os.replace(temporary, path)
-        except OSError:
-            temporary.unlink(missing_ok=True)
-            raise
+        journal.repair_harness_link(path, target, Path())
 
     try:
         if was_symlink and path.resolve() == target:
+            relink()
             print(f"init: kept symlink {location}", file=stdout)
             return []
         # A real path that is not a symlink: `adopt` decides whether it holds
@@ -677,6 +668,13 @@ def _sync_symlink(
         verb = "re-pointed" if was_symlink else "created"
         print(f"init: {verb} symlink {location} -> {target}", file=stdout)
         return findings
+    except journal.JournalError as error:
+        if getattr(error, "visibility_unconfirmed", False):
+            if session is not None:
+                raise
+            return [Finding(ERROR, location, "symlink", error.message)]
+        message = f"could not be linked to '{target}': {error}; session unaffected"
+        return [Finding(WARNING, location, "symlink", message)]
     except OSError as error:
         message = f"could not be linked to '{target}': {error}; session unaffected"
         return [Finding(WARNING, location, "symlink", message)]
@@ -754,6 +752,8 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
                 )
             )
         except (OSError, journal.JournalError) as error:
+            if getattr(error, "visibility_unconfirmed", False):
+                raise
             unrecorded = getattr(error, "message", None) or str(error)
         else:
             # `noop` cannot be reached from here -- the caller returns
@@ -841,7 +841,11 @@ def _ensure_views(stdout, app=False):
             continue
         if name not in artifacts:
             continue
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
         try:
             temporary.write_text(artifacts[name], encoding="utf-8")
             os.replace(temporary, path)

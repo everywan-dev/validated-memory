@@ -215,14 +215,19 @@ Each file holds:
 | `prior_bytes` | An `append`'s prior length, or `null` for every other op. |
 | `stage` | `prepared`, `published` or `aborted`. |
 | `reason` | Present only once `stage` is `aborted`: why it will never publish. |
+| `unconfirmed` | Present only after a reported post-visibility failure: `target`, `history-claim`, `history`, `cleanup` or `restore`. |
+| `unconfirmed_reason` | The I/O failure and phase context retained for recovery. |
 
 `prepared` means the entry was fsynced and nothing has been published.
 `published` means publication completed and the history had not been
-appended yet -- it is not decoration: a `replace` whose new bytes equal the
-old, an `append` of nothing, and every mutation with no bytes at all satisfy
-both states at once, so without that marker the filesystem alone cannot say
-whether the mutation ran. `aborted` is closed: it published nothing, it is
-never inverted by a reversal, and it disappears with its file.
+appended yet. Executor-created no-ops open no transaction, so a `prepared`
+transaction at its exact postimage remains recoverable after a hard crash
+before the marker. The marker proves publication after a later writer makes
+the target diverge. `aborted` is closed: it published nothing, it is never
+inverted by a reversal, and it disappears with its file. `unconfirmed` is a
+local recovery fact, never a permanent-history field: recovery performs a
+fresh namespace operation appropriate to that phase instead of treating a
+second bare `fsync` as proof about the first one.
 
 `prior_bytes` is in the file for recovery alone. The inverse of an `append`
 is "truncate to the recorded prior length", and recovery, rebuilding that
@@ -282,8 +287,18 @@ same class of defect this core exists to remove:
   names and this step does not
   build](../design/2026-09-01-the-journal-core.md#6-preconditions-what-they-can-and-cannot-promise).
 
-**Publication is atomic and durable**, in one of four shapes chosen by what
-is expected to be there rather than by the op's name. A directory is
+**Publication is atomic, with conditional power-loss durability**, in one of
+four shapes chosen by what is expected to be there rather than by the op's
+name. On a platform and filesystem that supports directory barriers, success
+means the file and every required carrying directory barrier completed. A
+known unsupported directory barrier preserves atomic visibility but does not
+promise that the name survives power loss. An unexpected directory open or
+sync error gates instead; it is never treated as unsupported. A failure before
+visibility may say nothing was published. A failure after visibility says the
+state is visible or may be visible and that durability is unconfirmed; it does
+not claim rollback. Windows, where this implementation cannot open directories
+for a barrier, is the narrow known-unsupported platform case; access or I/O
+errors on supported POSIX filesystems still gate. A directory is
 `os.mkdir`, never with `parents=True` -- creating an ancestor nobody asked
 for would be a second mutation with no intention and no record, so a missing
 parent is a refusal that names it. A creation over an absent name is
@@ -294,10 +309,25 @@ beside the path and renamed over it, so the link is never absent for an
 instant; it is the one shape that still creates its parent, because the
 only link this plugin publishes is the harness one, whose path is absolute
 and outside the adopter root by construction, so the directory it goes in
-is the harness's rather than a mutation of this project. Every shape ends with an `fsync` of the directory
-that now carries the name, and a failure anywhere leaves the target as it
-was: the temporary is removed, a partial creation is unlinked, and the
-aborted transaction is the only trace.
+is the harness's rather than a mutation of this project. Each journal-owned
+directory chain is confirmed from its leaf back to the adopter root before a
+durable child is trusted. A missing external harness-parent chain is likewise
+created and confirmed before a link transaction is opened. Its durability
+anchor is the lexical common ancestor of the adopter root and the supplied
+harness path (or the target volume root when those paths are on different
+Windows drives), not the nearest directory that happens to exist. The anchor
+therefore remains stable if a failed run leaves part of the chain visible,
+while creation remains confined to the supplied harness-parent chain. If a
+later mkdir fails after an earlier ancestor became visible, the run reports
+partial visibility rather than claiming that nothing was written; the
+documented fail-open link repair still applies. That repair uses the same
+private persistence path for ancestry and atomic link replacement. A later run
+that finds the correct link republishes it and reconfirms the full chain to the
+stable anchor, so visible residue cannot become an unconfirmed clean no-op.
+Unexpected post-visibility confirmation failure is an ERROR even on this
+fail-open path; an ordinary failure before the link becomes visible remains a
+WARNING. Every
+publication then requests a barrier on the directory that carries its name.
 
 **Metadata means the mode, and nothing else.** A replacement copies the
 target's mode onto the temporary before the rename, so an adopter's 0640
@@ -348,7 +378,7 @@ two. Both are declared in the design and pinned by name in
 
 | Write | By | Why it is an exception |
 |---|---|---|
-| the fail-open repair of the harness symlink | `init.relink` | The contract requires the link back when the journal cannot be read or written **at all** -- that is the `SessionStart` hook's only job -- and an executor that requires a working journal cannot serve it. The record goes through the executor whenever the journal is healthy; only the repair survives when it is not, with a WARNING naming the previous target. |
+| the fail-open repair of the harness symlink | `init.relink` | The contract requires the link back when the journal cannot be read or written **at all** -- that is the `SessionStart` hook's only job -- and an executor that requires a working journal cannot serve it. The record goes through the executor whenever the journal is healthy; only the repair survives when it is not. The repair creates only the supplied parent chain, republishes the link atomically and requests the same durability barriers. A pre-visibility failure remains a WARNING naming the previous target; a visible effect whose barrier fails is an ERROR and cannot become a clean retry. |
 | the harness take-over | `adopt.take_over`, and its `_absorb`, `_reconcile_index` and `_park` | It recognises a tree, copies conditionally, reconciles an index and renames the source, and its published contract tolerates a per-file conflict and continues. That needs its own planner before the executor can apply it. |
 
 **Not recorded at all**, because what is written is not adopter data: a
@@ -627,9 +657,12 @@ ERROR: .validated-memory/transactions/5555555555555555.json: journal: damaged tr
 ERROR: .validated-memory/transactions/6666666666666666.json: journal: damaged transaction 6666666666666666: it is not valid UTF-8: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
 ```
 
-`adoption` is compared only when the journals say what this project's id
-is: a tree whose history is gone has none to compare against, and inventing
-one there would call every transaction foreign.
+`adoption` is compared only when the journals say what this project's id is.
+When both permanent histories are empty, any transaction artifact instead
+gates `init` and `journal --check` before a new identity or scaffold write.
+The artifact is restoration evidence, not authority to reconstruct missing
+append-only history: restore matching repository or local history, then rerun
+normal recovery. A surviving history in either location remains authoritative.
 
 **Exactly one pair of records per mutation, whatever happens.** Completing a
 transaction appends only the records that are not already there, checked by
@@ -680,6 +713,16 @@ An id no unresolved transaction has is refused before anything is opened,
 so the refusal's own last sentence is true of the tree as well as of the
 log: a directory that had never been adopted is left without a
 `journal.jsonl` and without a `.validated-memory/`.
+
+Resolution never establishes an adoption identity. The exact transaction
+artifact is checked before the filesystem lock is acquired, because acquiring
+that lock creates its parent directory. When the artifact is present it is
+read again under the lock, and both histories must already establish the one
+adoption it belongs to. An artifact with neither repository nor local adoption
+history is contradictory residue: it is refused, left byte-for-byte unchanged,
+and no `journal.jsonl` is created from it. Only `init`'s adopting run may create
+that opening history. Resolution reads only the named artifact and never
+recovers another transaction in the same operation.
 
 - **`--accept`** -- the state the path is in is what the user wants. It
   writes **one `observe`** whose note says it was accepted after divergence
@@ -740,12 +783,14 @@ its states, and nothing there says the mutation ever ran.
 ```
 python3 -P -m validated_memory journal [--check]
 python3 -P -m validated_memory journal --resolve ID (--accept | --restore | --abandon)
+python3 -P -m validated_memory journal --repair TRANSACTION_ID
 ```
 
 Read-only in both reporting modes -- neither runs `probe`, neither writes to
 either journal file, and their own record-reading failures are the only
-thing they can report on themselves. `--resolve` is the third mode and the
-only one that writes.
+thing they can report on themselves. `--resolve` and `--repair` are the two
+targeted modes that write: `--resolve` records an operator's decision, and
+`--repair` performs a proof-carrying history-tail repair.
 
 **Without `--check`**, it reads both artifacts (`journal.jsonl` and
 `.validated-memory/local.jsonl`) and reports the combined count. It never
@@ -838,7 +883,7 @@ id, which reaches no transaction and names none in a refusal either.
 
 ## The fault-injection seam
 
-One environment variable exists, for tests: **`VALIDATED_MEMORY_FAULT`**.
+The hard-crash environment variable is **`VALIDATED_MEMORY_FAULT`**.
 Set to the name of a protocol seam, the process dies there with `os._exit`
 -- no `finally` clause runs, no lock is released, no temporary is cleaned
 up, which is what a real crash looks like and what makes an assertion about
@@ -856,3 +901,87 @@ function reads it, nothing else in the package may, and a test asserts that
 two `init` runs -- one with the variable set to an unreached point, one
 without -- produce byte-identical output and, the per-run ids aside
 (`at`, `adoption`, `run`, `transaction`), identical journals.
+
+Tests of ordinary I/O errors use the separate private
+`VALIDATED_MEMORY_PERSISTENCE_FAULT` seam. It raises a caught directory
+open/sync or post-visibility barrier error without imitating process death;
+`unsupported` simulates only the explicitly recognised missing capability.
+Comma-separated points can model a protected effect and a recovery-fact
+barrier failing in one run; `fact:target`, `fact:history`, `fact:cleanup` and
+`fact:restore` address only that retained local fact. It is not part of the
+crash-point vocabulary above.
+
+Storage-only crash tests use the separate private
+`VALIDATED_MEMORY_STORAGE_CRASH` seam. `history-prefix:N` writes and fsyncs
+exactly the selected byte prefix before `os._exit`, while
+`staged-before-install:NAME` stops after a staging file or link is fsynced and
+before its atomic install. The seam is inert unless explicitly selected and
+does not add a fifth protocol crash point.
+
+## Recovery after an unconfirmed barrier
+
+A target barrier failure retains the WAL and writes no permanent history.
+Recovery requires the exact postimage, republishes that state through a fresh
+namespace operation, confirms it, then completes the history exactly once. A
+changed or unreadable target remains gated. File bytes are digested and checked
+again together with regular-file kind and applicable mode immediately before
+the validated snapshot is installed. A same-byte symlink or mode change is not
+the state the recovery validated. Because a
+directory postimage records kind but not membership, a directory that acquired
+a child after the failure remains gated instead of being replaced. An empty
+directory is recovered only after a separate staging directory and its carrying
+entry are confirmed, deepest first. Windows does not provide this implementation
+with a portable atomic empty-directory replacement, so automatic recovery stays
+gated there with the WAL and an actionable unsupported-recovery diagnostic. If an
+exclusive file creation fails while writing its content, absence is claimed
+only after removal of the visible name and its carrying-directory barrier are
+confirmed; uncertain cleanup retains a target-phase WAL instead.
+
+A history barrier failure also retains the WAL. Recovery requires the
+append-only history to remain present, readable and internally consistent. It
+adds a missing stage idempotently where possible, then atomically republishes
+the exact complete, readable byte snapshot after verifying the pathname did not
+change before installation. The pair's stage order and field agreement are
+validated from the same final records-and-bytes snapshot that is republished;
+a later valid JSONL snapshot lacking the pair remains gated. It never reconstructs a lost
+history from one WAL, and it never treats a torn tail as an incomplete pair;
+torn-tail repair belongs to a separate maintenance operation.
+
+A cleanup barrier failure occurs only after target and history confirmation.
+The WAL is republished as recovery evidence when its first removal is
+unconfirmed; the next run repeats cleanup without duplicating the history
+pair. An operator restore uses the same rule for its exact restored preimage.
+If retaining the phase fact is itself unconfirmed, the diagnostic reports both
+failures and promises only that every artifact still available was kept.
+
+## Explicit repair of a torn history append
+
+History is strict JSONL: a non-empty file whose final byte is not `LF` is
+malformed. Reporting, `init`, and `journal --check` refuse it without writes;
+`init` never repairs it implicitly. A mutation WAL records one proof-carrying
+`history_append` claim before its append: the selected artifact, exact prefix
+length and SHA-256 digest, the canonical sorted-key UTF-8 record pair, and the
+append length and digest.
+
+An operator may target that one transaction:
+
+```
+python3 -P -m validated_memory journal --repair TRANSACTION_ID
+```
+
+The command accepts only a current published/history-uncertain WAL carrying a
+valid claim. It requires an existing authoritative history, an unchanged
+claimed prefix, and a tail that is only a strict prefix or complete copy of the
+claimed append. The complete `prefix + append` snapshot is built in an
+unpredictable exclusive temporary, fsynced, revalidated, and atomically
+installed. A symlink history's resolved backing file and mode are preserved.
+Missing histories, legacy or foreign WALs, interior corruption, changed
+prefixes, unrelated tails, competing claims, unsafe artifact types, and
+retargeted links are refusals with no writes. A complete final snapshot is
+idempotently confirmed and the selected WAL is removed only after cleanup is
+confirmed. `--check` remains read-only and does not perform this operation. It
+enumerates non-canonical entries retained in the private `transactions/` and
+`preimages/` directories. Targeted repair leaves unclaimed residue untouched;
+it does not recursively scan the adopter tree and does not remove a candidate
+without proof of an exact canonical duplicate. Unclaimed residue stays
+byte-, type-, and mode-identical.

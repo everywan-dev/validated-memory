@@ -1,4 +1,4 @@
-"""The `journal` subcommand: report the record, reconcile, or resolve one.
+"""The `journal` subcommand: report, reconcile, resolve, or repair one.
 
 The only module of the package that renders findings, and the only one an
 argument parser reaches.
@@ -7,21 +7,23 @@ argument parser reaches.
 from pathlib import Path
 
 from ..findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
-from .executor import Run
+from .executor import repair_transaction, resolve_transaction
 from .reconcile import reconcile
 from .records import DURABILITIES, JOURNAL_FILENAME, JournalError, read
 from .transactions import (
     PROBLEM_DAMAGED,
     classify,
+    historyless_transactions_message,
     open_transactions,
+    retained_residue,
+    claimed_temporary_residue,
     transaction_artifact,
-    missing_resolution,
     report_word,
 )
 
 
-def run(check, resolve, resolution, stdout, stderr):
-    """The `journal` subcommand: report the record, reconcile, or resolve one.
+def run(check, resolve, resolution, repair, stdout, stderr):
+    """The `journal` subcommand: report, reconcile, resolve, or repair one.
 
     Read-only in both REPORTING modes, and `--check` is read-only in
     particular: it classifies every unresolved transaction by what recovery
@@ -33,10 +35,10 @@ def run(check, resolve, resolution, stdout, stderr):
     on disk (`open_transactions`) -- is an ERROR, because a caller that
     asked to be told cannot be told by an exit code of 0.
 
-    `--resolve` is the third mode and the only one that writes: an
-    operator's answer to a transaction recovery would not touch, which is
-    the only kind it may be applied to. It is not reporting and does not
-    report -- see `Run.resolve_transaction`.
+    `--resolve` and `--repair` are the two targeted modes that write:
+    `--resolve` records an operator's answer to a transaction recovery,
+    while `--repair` performs a proof-carrying history-tail repair. Neither
+    is reporting -- see the executor's targeted operations.
 
     A transaction file is reported even without `--check`, but only as a
     count: a reader who did not ask to gate on one should still be told
@@ -44,6 +46,8 @@ def run(check, resolve, resolution, stdout, stderr):
     say.
     """
     root = Path()
+    if repair is not None:
+        return _run_repair(root, repair, stdout, stderr)
     if resolve is not None:
         return _run_resolve(root, resolve, resolution, stdout, stderr)
     # Accumulated one artifact at a time so the summary below says how many
@@ -65,6 +69,7 @@ def run(check, resolve, resolution, stdout, stderr):
         # one pass is what lets the summary below count everything actually
         # read even when one of them is later refused.
         transactions = open_transactions(root)
+        residue = retained_residue(root)
         # The id the journals themselves carry, taken in the order `records`
         # preserves (the repository journal first, since it is filled in
         # `DURABILITIES` order) and never minted: a tree whose journals are
@@ -86,6 +91,22 @@ def run(check, resolve, resolution, stdout, stderr):
                 file=stdout,
             )
         return EXIT_OK
+
+    if not records and transactions:
+        print(
+            Finding(
+                ERROR,
+                ".validated-memory/transactions",
+                "journal",
+                historyless_transactions_message(transactions),
+            ).render(),
+            file=stderr,
+        )
+        print(
+            f"journal: 0 record(s), 1 error(s)",
+            file=stdout,
+        )
+        return EXIT_ERROR
 
     for entry, state in unfinished:
         print(
@@ -113,6 +134,7 @@ def run(check, resolve, resolution, stdout, stderr):
             Finding(ERROR, entry["path"], "journal", message).render(),
             file=stderr,
         )
+    claimed_residue_count = 0
     for item in transactions:
         # Classified by the one function recovery itself acts on, so what
         # `--check` promises and what the next run does cannot drift apart.
@@ -129,9 +151,14 @@ def run(check, resolve, resolution, stdout, stderr):
                 f"{location}: {report_word(verdict)}"
             )
         print(Finding(ERROR, location, "journal", message).render(), file=stderr)
+        for residue_location, residue_message in claimed_temporary_residue(root, item):
+            print(Finding(ERROR, residue_location, "journal", residue_message).render(), file=stderr)
+            claimed_residue_count += 1
+    for location, message in residue:
+        print(Finding(ERROR, location, "journal", message).render(), file=stderr)
 
     total_errors = (
-        len(unfinished) + len(disagreements) + len(anomalies) + len(transactions)
+        len(unfinished) + len(disagreements) + len(anomalies) + len(transactions) + len(residue) + claimed_residue_count
     )
     print(
         f"journal: {len(records)} record(s), {total_errors} error(s)",
@@ -140,14 +167,30 @@ def run(check, resolve, resolution, stdout, stderr):
     return EXIT_ERROR if total_errors else EXIT_OK
 
 
+def _run_repair(root, transaction_id, stdout, stderr):
+    """`journal --repair`: perform one proof-carrying tail repair."""
+    try:
+        outcome = repair_transaction(root, transaction_id)
+    except (JournalError, OSError) as error:
+        where = getattr(error, "artifact", None) or JOURNAL_FILENAME
+        print(Finding(ERROR, where, "journal", str(error)).render(), file=stderr)
+        return EXIT_ERROR
+    if outcome.message is not None:
+        print(Finding(ERROR, outcome.location, "journal", outcome.message).render(), file=stderr)
+        return EXIT_ERROR
+    print(
+        f"journal: repaired {outcome.location} for transaction {transaction_id}",
+        file=stdout,
+    )
+    return EXIT_OK
+
+
 def _run_resolve(root, transaction_id, resolution, stdout, stderr):
     """`journal --resolve`: close one transaction the way the operator says.
 
-    The one mode of this subcommand that writes, and the only place outside
-    `init` that opens a `Run`. It does NOT recover: `Run.recover` is
-    explicit precisely so that an operator answering for one transaction
-    does not have every other one closed underneath them in the same
-    breath.
+    The one mode of this subcommand that writes. It does NOT recover: an
+    operator answering for one transaction does not have every other one
+    closed underneath them in the same breath.
 
     A refusal is an ERROR and exit 1, not a traceback and not a usage
     error: the id was well formed and the flags were legal, and what could
@@ -159,14 +202,7 @@ def _run_resolve(root, transaction_id, resolution, stdout, stderr):
     should show which one.
     """
     try:
-        # Asked before a `Run` is built, which is why it is not the
-        # resolver's own answer: building one adopts the tree. Two writes,
-        # not one -- `Lock` creates `.validated-memory/` for its lock file
-        # and constructing the run installs `journal.jsonl` -- so deferring
-        # journal installation would not make this question removable.
-        outcome = missing_resolution(root, transaction_id, resolution)
-        if outcome is None:
-            outcome = Run(root).resolve_transaction(transaction_id, resolution)
+        outcome = resolve_transaction(root, transaction_id, resolution)
     except JournalError as error:
         where = error.artifact or JOURNAL_FILENAME
         location = where if error.lineno is None else f"{where}:{error.lineno}"

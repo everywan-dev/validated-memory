@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -42,8 +43,9 @@ JOURNAL_MUTATORS = {"install"}
 
 # Require a journal receiver so unrelated append/write calls cannot count.
 RECORDERS = {"session", "journal"}
-# The complete Run method allowlist. Module exports are pinned separately.
-PERMITTED_RUN_METHODS = ("execute", "observe", "recover", "resolve_transaction")
+# The complete adopting-session method allowlist. Module exports are pinned
+# separately; the session is obtained only from `adopting_run`.
+PERMITTED_RUN_METHODS = ("execute", "observe", "recover")
 RECORDING_METHODS = set(PERMITTED_RUN_METHODS)
 
 # Paths relative to validated_memory identify modules; basenames do not.
@@ -143,21 +145,22 @@ PERMITTED_JOURNAL_EXPORTS = (
     "JOURNAL_FILENAME",
     "JournalError",
     "LOCAL",
-    "Lock",
     "OUTCOME_APPLIED",
     "OUTCOME_NOOP",
     "OUTCOME_REFUSED",
     "RECOVERED",
     "REPO",
     "RESOLUTIONS",
-    "Run",
     "SYMLINK",
     "VAULT_DIRNAME",
+    "adopting_run",
     "append_to_file",
     "create_directory",
     "create_file",
     "digest",
     "link_to",
+    "repair_harness_link",
+    "resolve_transaction",
     "run",
 )
 
@@ -1030,11 +1033,11 @@ def test_no_module_outside_the_journal_reaches_past_the_executor():
             if name in PRIVATE_JOURNAL_CALLS:
                 offenders.append(f"{relative}:{node.lineno}: calls `{name}(...)`")
     assert not offenders, (
-        "these reach past `Run.execute` into the journal's own protocol; "
+        "these reach past the adopting session into the journal's own protocol; "
         "the whole of the journal surface a module outside it may touch is "
         + ", ".join(f"`{name}`" for name in PERMITTED_JOURNAL_EXPORTS)
         + ", plus "
-        + ", ".join(f"`Run.{name}`" for name in PERMITTED_RUN_METHODS)
+        + ", ".join(f"`session.{name}`" for name in PERMITTED_RUN_METHODS)
         + ":\n"
         + "\n".join(offenders)
     )
@@ -1088,17 +1091,16 @@ def test_nothing_outside_the_journal_reaches_a_name_it_does_not_export():
         "the whole of the journal a module outside it may reach is "
         + ", ".join(f"`{name}`" for name in PERMITTED_JOURNAL_EXPORTS)
         + ", plus "
-        + ", ".join(f"`Run.{name}`" for name in PERMITTED_RUN_METHODS)
-        + " on a `Run`; the journal is imported whole and reached by "
+        + ", ".join(f"`session.{name}`" for name in PERMITTED_RUN_METHODS)
+        + " on the session yielded by `adopting_run`; the journal is "
+        "imported whole and reached by "
         "attribute, never by one of its own modules:\n"
         + "\n".join(offenders)
     )
 
 
 def test_the_facade_exports_exactly_the_surface_the_pin_permits():
-    """Pin sorted __all__ to PERMITTED_JOURNAL_EXPORTS without importing it.
-
-    Run methods belong to PERMITTED_RUN_METHODS, not module-level __all__."""
+    """Pin sorted __all__ to PERMITTED_JOURNAL_EXPORTS without importing it."""
     source = (
         REPO_ROOT / "validated_memory" / JOURNAL_SOURCE / "__init__.py"
     ).read_text(encoding="utf-8")
@@ -1122,6 +1124,65 @@ def test_the_facade_exports_exactly_the_surface_the_pin_permits():
         "  only in PERMITTED_JOURNAL_EXPORTS: "
         f"{sorted(set(PERMITTED_JOURNAL_EXPORTS) - set(exports))}"
     )
+
+
+def test_the_adopting_session_exposes_only_its_three_operations():
+    """The opaque session cannot grow a second resolution or lock interface."""
+    source = (
+        REPO_ROOT / "validated_memory" / JOURNAL_SOURCE / "executor.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    run_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Run"
+    )
+    methods = sorted(
+        node.name
+        for node in run_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and not node.name.startswith("_")
+    )
+    assert methods == sorted(PERMITTED_RUN_METHODS)
+
+
+def test_adoption_and_resolution_keep_their_distinct_protocols():
+    """Only adoption bootstraps; targeted resolution never surveys or recovers."""
+    source = (
+        REPO_ROOT / "validated_memory" / JOURNAL_SOURCE / "executor.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    def calls(function):
+        names = []
+        for call in (node for node in ast.walk(function) if isinstance(node, ast.Call)):
+            target = call.func
+            if isinstance(target, ast.Name):
+                names.append(target.id)
+            elif isinstance(target, ast.Attribute):
+                names.append(target.attr)
+        return names
+
+    adopting_calls = calls(functions["adopting_run"])
+    resolving_calls = calls(functions["resolve_transaction"])
+    resolve_one_calls = calls(functions["_resolve_one"])
+    assert adopting_calls.count("_bootstrap") == 1
+    assert sum(
+        calls(function).count("_bootstrap") for function in functions.values()
+    ) == 1
+    assert resolving_calls.count("has_transaction") == 1
+    assert resolving_calls.count("read_transaction") == 1
+    assert not {
+        "_bootstrap",
+        "_survey",
+        "open_transactions",
+        "recover",
+    }.intersection(resolving_calls + resolve_one_calls)
 
 
 # The journal's modules in the order `journal/__init__.py` lists them, which
@@ -1366,6 +1427,1090 @@ def test_the_adoption_id_survives_a_journal_a_checkout_took_away(
     assert adopted == {minted}, (adopted, minted)
 
 
+def test_bootstrap_barrier_failure_gates_before_scaffold_and_keeps_identity(
+    run_cli, tmp_path, monkeypatch
+):
+    """A visible opening record is never described as absent or rolled back."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "install:journal.jsonl"
+    )
+
+    failed = run_cli("init", cwd=tmp_path)
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert "Traceback" not in failed.stderr, failed.stderr
+    assert "visible" in failed.stderr, failed.stderr
+    assert "durability is unconfirmed" in failed.stderr, failed.stderr
+    journal = tmp_path / "journal.jsonl"
+    opening = _records(journal)
+    assert len(opening) == 1, opening
+    assert opening[0]["note"] == "journal opened", opening
+    assert not (tmp_path / "knowledge").exists()
+    assert not (tmp_path / ".gitignore").exists()
+    assert not list((tmp_path / ".validated-memory").glob("transactions/*.json"))
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    retried = run_cli("init", cwd=tmp_path)
+
+    assert retried.returncode == 0, (retried.stdout, retried.stderr)
+    assert {record["adoption"] for record in _records(journal)} == {
+        opening[0]["adoption"]
+    }
+
+
+def _orphan_transaction(tree, transaction_id, adoption="aaaaaaaaaaaaaaaa"):
+    """Write a WAL fixture without either authoritative history."""
+    directory = tree / ".validated-memory" / "transactions"
+    directory.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "schema": 1,
+        "at": "2026-09-01T00:00:00Z",
+        "version": "1.6.0",
+        "adoption": adoption,
+        "run": "7777777777777777",
+        "transaction": transaction_id,
+        "intention": {
+            "op": "create",
+            "purpose": "init",
+            "path": "knowledge",
+            "durability": "repo",
+            "directory": True,
+        },
+        "preimage": {"kind": "absent"},
+        "postimage": {"kind": "directory"},
+        "preimage_blob": None,
+        "mode": None,
+        "prior_bytes": None,
+        "stage": "prepared",
+    }
+    path = directory / f"{transaction_id}.json"
+    path.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    "shape", ("one", "empty-history-files", "conflicting", "damaged")
+)
+def test_wal_without_history_refuses_init_before_any_write(
+    run_cli, tmp_path, shape
+):
+    """WAL residue is restoration evidence, never authority to adopt."""
+    first = _orphan_transaction(tmp_path, "1111111111111111")
+    if shape == "empty-history-files":
+        (tmp_path / "journal.jsonl").write_bytes(b"")
+        (tmp_path / ".validated-memory" / "local.jsonl").write_bytes(b"")
+    elif shape == "conflicting":
+        _orphan_transaction(
+            tmp_path, "2222222222222222", adoption="bbbbbbbbbbbbbbbb"
+        )
+    elif shape == "damaged":
+        first.write_text("{not json\n", encoding="utf-8")
+    before = {
+        path.relative_to(tmp_path).as_posix(): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "neither permanent history" in result.stderr, result.stderr
+    assert "restore" in result.stderr, result.stderr
+    if shape == "conflicting":
+        assert "aaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbb" in result.stderr
+    elif shape == "damaged":
+        assert "damaged artifact(s): 1111111111111111" in result.stderr
+    else:
+        assert "artifact adoption id(s): aaaaaaaaaaaaaaaa" in result.stderr
+    after = {
+        path.relative_to(tmp_path).as_posix(): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    if shape == "empty-history-files":
+        assert (tmp_path / "journal.jsonl").read_bytes() == b""
+    else:
+        assert not (tmp_path / "journal.jsonl").exists()
+
+
+def test_journal_check_uses_the_same_orphan_wal_truth(run_cli, tmp_path):
+    """Reporting cannot call a historyless WAL recoverable under a new ID."""
+    artifact = _orphan_transaction(tmp_path, "3333333333333333")
+    before = artifact.read_bytes()
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "neither permanent history" in result.stderr, result.stderr
+    assert artifact.read_bytes() == before
+    assert not (tmp_path / "journal.jsonl").exists()
+
+
+def test_transaction_directory_barrier_failure_precedes_target_and_history(
+    run_cli, tmp_path, monkeypatch
+):
+    """An unconfirmed WAL directory cannot be trusted with a child artifact."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    target = tmp_path / "knowledge-extension.md"
+    target.unlink()
+    transactions = tmp_path / ".validated-memory" / "transactions"
+    transactions.rmdir()
+    journal = tmp_path / "journal.jsonl"
+    before = journal.read_bytes()
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "confirm:transactions"
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "durability is unconfirmed" in result.stderr, result.stderr
+    assert not target.exists()
+    assert journal.read_bytes() == before
+    assert not list(transactions.glob("*.json"))
+
+
+def test_preimage_directory_barrier_failure_precedes_wal_and_publication(
+    run_cli, tmp_path, monkeypatch
+):
+    """The only old bytes are protected before any transaction can publish."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    ignore = tmp_path / ".gitignore"
+    ignore.write_text("kept by adopter\n", encoding="utf-8")
+    original = ignore.read_bytes()
+    preimages = tmp_path / ".validated-memory" / "preimages"
+    if preimages.exists():
+        for child in preimages.iterdir():
+            child.unlink()
+        preimages.rmdir()
+    journal = tmp_path / "journal.jsonl"
+    before = journal.read_bytes()
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "confirm:preimages"
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "durability is unconfirmed" in result.stderr, result.stderr
+    assert ignore.read_bytes() == original
+    assert journal.read_bytes() == before
+    assert not list(
+        (tmp_path / ".validated-memory" / "transactions").glob("*.json")
+    )
+
+
+@pytest.mark.parametrize("point", ("open", "fsync"))
+def test_unexpected_bootstrap_directory_errors_gate_without_claiming_absence(
+    run_cli, tmp_path, monkeypatch, point
+):
+    """EACCES/EIO-like barrier failures are not portable-unsupported results."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", f"{point}:."
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "durability is unconfirmed" in result.stderr, result.stderr
+    assert not (tmp_path / "journal.jsonl").exists()
+    assert not (tmp_path / "knowledge").exists()
+
+
+def test_declared_unsupported_directory_barrier_keeps_portable_atomicity(
+    run_cli, tmp_path, monkeypatch
+):
+    """A known missing capability differs from an unexpected I/O failure."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "unsupported:."
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert (tmp_path / "journal.jsonl").is_file()
+    assert (tmp_path / "knowledge").is_dir()
+
+
+def test_windows_skips_unsupported_directory_open_before_attempting_it():
+    """Windows capability absence is narrow and precedes directory open."""
+    source = (
+        REPO_ROOT / "validated_memory" / "journal" / "durable.py"
+    ).read_text(encoding="utf-8")
+    confirm = source.split("def _confirm_directory(", 1)[1].split(
+        "\ndef ", 1
+    )[0]
+    assert 'os.name == "nt"' in confirm
+    assert confirm.index('os.name == "nt"') < confirm.index("os.open(")
+
+
+def test_persistence_result_and_visibility_error_stay_private_and_disjoint():
+    """The private seam cannot regress post-visibility failure into OSError."""
+    source = (
+        REPO_ROOT / "validated_memory" / "journal" / "durable.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    bases = [
+        base.id
+        for base in classes["VisibilityUnconfirmed"].bases
+        if isinstance(base, ast.Name)
+    ]
+    assert bases == ["Exception"]
+    assert "Persistence" in classes
+    assert "_Operation" in classes
+    assert any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "persist"
+        for node in tree.body
+    )
+    facade = (
+        REPO_ROOT / "validated_memory" / "journal" / "__init__.py"
+    ).read_text(encoding="utf-8")
+    assert "VisibilityUnconfirmed" not in facade
+    assert "Persistence" not in facade
+
+
+def test_owned_ancestry_is_confirmed_before_durable_children_are_written():
+    """Structurally pin the power-ordering that the CLI cannot observe."""
+    sources = {
+        name: (
+            REPO_ROOT / "validated_memory" / "journal" / name
+        ).read_text(encoding="utf-8")
+        for name in ("records.py", "transactions.py", "executor.py")
+    }
+    records_append = sources["records.py"].split("def append(", 1)[1].split(
+        "\ndef ", 1
+    )[0]
+    transaction_write = sources["transactions.py"].split(
+        "def _write_transaction_file(", 1
+    )[1].split("\ndef ", 1)[0]
+    preimage_park = sources["executor.py"].split(
+        "def _park_preimage(", 1
+    )[1].split("\n    def ", 1)[0]
+
+    assert records_append.index("ensure_owned_directory(") < records_append.index(
+        "append_bytes("
+    )
+    assert transaction_write.index(
+        "ensure_owned_directory("
+    ) < transaction_write.index("install_bytes(")
+    assert preimage_park.index("ensure_owned_directory(") < preimage_park.index(
+        "install_bytes("
+    )
+
+
+def test_missing_harness_parent_is_confirmed_before_a_link_transaction(
+    run_cli, tmp_path, monkeypatch
+):
+    """A partial external parent chain never becomes a trusted WAL target."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    harness = tmp_path / "external-harness" / "nested" / "memory"
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "confirm:nested"
+    )
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness), cwd=tmp_path
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "durability is unconfirmed" in result.stderr
+    assert harness.parent.is_dir()
+    assert harness.is_symlink()
+    assert harness.resolve() == (tmp_path / "memory").resolve()
+    assert not _transactions(tmp_path)
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    assert not local.exists()
+
+
+def test_partial_harness_ancestry_creation_is_reported_as_visible(
+    run_cli, tmp_path, monkeypatch
+):
+    """A later mkdir failure cannot erase an earlier visible ancestor."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    first = tmp_path / "partial-harness"
+    harness = first / "nested" / "memory"
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "mkdir:nested"
+    )
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness), cwd=tmp_path
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert first.is_dir()
+    assert "may be visible" in result.stderr
+    assert "Nothing has been written" not in result.stderr
+    assert not _transactions(tmp_path)
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    assert not local.exists()
+
+
+def test_partial_harness_repair_cannot_become_a_clean_unconfirmed_noop(
+    run_cli, tmp_path, monkeypatch
+):
+    """A fail-open repair retains one stable ancestry obligation on retry."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    harness = tmp_path / "partial-harness" / "nested" / "memory"
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "mkdir:nested"
+    )
+
+    first = run_cli(
+        "init", "--harness-memory", str(harness), cwd=tmp_path
+    )
+
+    assert first.returncode == 1, (first.stdout, first.stderr)
+    assert harness.is_symlink()
+    assert harness.resolve() == (tmp_path / "memory").resolve()
+    assert "durability is unconfirmed" in first.stderr
+    assert not _transactions(tmp_path)
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    assert not local.exists()
+
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", f"confirm:{tmp_path.name}"
+    )
+    retry = run_cli(
+        "init", "--harness-memory", str(harness), cwd=tmp_path
+    )
+
+    assert retry.returncode == 1, (retry.stdout, retry.stderr)
+    assert "durability is unconfirmed" in retry.stderr
+    assert "kept symlink" not in retry.stdout
+    assert harness.is_symlink()
+    assert harness.resolve() == (tmp_path / "memory").resolve()
+    assert not _transactions(tmp_path)
+    assert not local.exists()
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    repaired = run_cli(
+        "init", "--harness-memory", str(harness), cwd=tmp_path
+    )
+
+    assert repaired.returncode == 0, (repaired.stdout, repaired.stderr)
+    assert "kept symlink" in repaired.stdout
+    assert not _transactions(tmp_path)
+    assert not local.exists()
+
+
+def test_link_publication_does_not_create_ancestry_inside_publish():
+    """External ancestry is prepared before WAL, outside target publication."""
+    source = (
+        REPO_ROOT / "validated_memory" / "journal" / "executor.py"
+    ).read_text(encoding="utf-8")
+    publish = source.split("    def _publish(", 1)[1].split("\n    def ", 1)[0]
+    assert ".mkdir(parents=True" not in publish
+
+
+def test_visible_file_create_barrier_failure_recovers_exactly_once(
+    run_cli, tmp_path, monkeypatch
+):
+    """A visible create keeps WAL, writes no history, and is republished."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "create-exclusive:.gitignore"
+    )
+
+    failed = run_cli("init", cwd=tmp_path)
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert "Traceback" not in failed.stderr, failed.stderr
+    assert (tmp_path / ".gitignore").is_file()
+    assert "visible" in failed.stderr, failed.stderr
+    assert "Nothing has been published" not in failed.stderr
+    transactions = _transactions(tmp_path)
+    assert len(transactions) == 1, transactions
+    transaction = transactions[0]
+    assert transaction["unconfirmed"] == "target", transaction
+    assert not [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record.get("transaction") == transaction["transaction"]
+    ]
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    recovered = run_cli("init", cwd=tmp_path)
+
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    pair = [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record.get("transaction") == transaction["transaction"]
+    ]
+    assert [record["stage"] for record in pair] == ["prepared", "committed"]
+    assert not _transactions(tmp_path)
+
+    again = run_cli("init", cwd=tmp_path)
+    assert again.returncode == 0, (again.stdout, again.stderr)
+    assert len(
+        [
+            record
+            for record in _records(tmp_path / "journal.jsonl")
+            if record.get("transaction") == transaction["transaction"]
+        ]
+    ) == 2
+
+
+@pytest.mark.parametrize("point", ("write", "file-fsync"))
+def test_failed_exclusive_content_write_confirms_name_cleanup(
+    run_cli, tmp_path, monkeypatch, point
+):
+    """A pre-publication content failure may claim absence only after a barrier."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", f"{point}:.gitignore"
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr
+    assert not (tmp_path / ".gitignore").exists()
+    assert not _transactions(tmp_path)
+    assert "Nothing has been published" in result.stderr
+
+
+def test_failed_exclusive_write_with_uncertain_cleanup_retains_target_fact(
+    run_cli, tmp_path, monkeypatch
+):
+    """An unconfirmed removal cannot be reported as a clean content failure."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "write:.gitignore,remove:.gitignore",
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr
+    assert not (tmp_path / ".gitignore").exists()
+    transactions = _transactions(tmp_path)
+    assert len(transactions) == 1, transactions
+    assert transactions[0]["unconfirmed"] == "target", transactions[0]
+    assert "durability is unconfirmed" in result.stderr
+    assert "Nothing has been published" not in result.stderr
+    assert not [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry.get("transaction") == transactions[0]["transaction"]
+    ]
+
+
+@pytest.mark.parametrize("shape", ("replace", "directory", "link"))
+def test_each_visible_target_shape_retains_recoverable_uncertainty(
+    run_cli, tmp_path, monkeypatch, shape
+):
+    """Replace, mkdir and symlink barriers share the target recovery rule."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    harness = tmp_path / "harness" / "memory"
+    if shape == "replace":
+        target = tmp_path / ".gitignore"
+        target.write_text("adopter line\n", encoding="utf-8")
+        fault = "install:.gitignore"
+        durability = "repo"
+    elif shape == "directory":
+        target = tmp_path / "knowledge"
+        target.rmdir()
+        fault = "create-directory:knowledge"
+        durability = "repo"
+    else:
+        target = harness
+        target.parent.mkdir(parents=True)
+        fault = "replace-symlink:memory"
+        durability = "local"
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", fault)
+
+    arguments = ("init", "--harness-memory", str(harness)) if shape == "link" else ("init",)
+    failed = run_cli(*arguments, cwd=tmp_path)
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert "Traceback" not in failed.stderr, failed.stderr
+    transaction = _transactions(tmp_path)[0]
+    assert transaction["unconfirmed"] == "target", transaction
+    assert target.exists() or target.is_symlink()
+    history = (
+        tmp_path / "journal.jsonl"
+        if durability == "repo"
+        else tmp_path / ".validated-memory" / "local.jsonl"
+    )
+    existing = _records(history) if history.exists() else []
+    assert not [
+        entry
+        for entry in existing
+        if entry.get("transaction") == transaction["transaction"]
+    ]
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    recovered = run_cli(*arguments, cwd=tmp_path)
+
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    pair = [
+        entry
+        for entry in _records(history)
+        if entry.get("transaction") == transaction["transaction"]
+    ]
+    assert [entry["stage"] for entry in pair] == ["prepared", "committed"]
+    assert not _transactions(tmp_path)
+
+
+def test_nonempty_unconfirmed_directory_is_not_replaced_by_recovery(
+    run_cli, tmp_path, monkeypatch
+):
+    """Directory-kind postimages do not prove later child membership is exact."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    target = tmp_path / "knowledge"
+    target.rmdir()
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "create-directory:knowledge"
+    )
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    transaction = _transactions(tmp_path)[0]["transaction"]
+    child = target / "added-after-failure.md"
+    child.write_text("keep me\n", encoding="utf-8")
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "not empty" in result.stderr
+    assert child.read_text(encoding="utf-8") == "keep me\n"
+    assert _transactions(tmp_path)[0]["transaction"] == transaction
+
+
+def test_directory_republication_never_renames_a_path_to_itself():
+    """A same-source/destination rename is not a fresh namespace operation."""
+    source = (
+        REPO_ROOT / "validated_memory" / "journal" / "durable.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "republish_directory"
+    )
+    for call in (
+        node for node in ast.walk(function) if isinstance(node, ast.Call)
+    ):
+        if ast.unparse(call.func) in ("os.rename", "os.replace"):
+                assert len(call.args) >= 2
+                assert ast.unparse(call.args[0]) != ast.unparse(call.args[1])
+
+
+def test_directory_republication_confirms_staging_and_gates_windows():
+    """Staging is durable before replace; unsupported Windows never attempts it."""
+    source = (
+        REPO_ROOT / "validated_memory" / "journal" / "durable.py"
+    ).read_text(encoding="utf-8")
+    republish = source.split("def republish_directory(", 1)[1].split(
+        "\ndef ", 1
+    )[0]
+    assert 'os.name == "nt"' in republish
+    assert republish.index('os.name == "nt"') < republish.index("tempfile.mkdtemp(")
+    assert republish.index("ensure_owned_directory(") < republish.index("persist(")
+
+    ensure = source.split("def ensure_owned_directory(", 1)[1].split(
+        "\ndef ", 1
+    )[0]
+    assert ensure.index("current = path") < ensure.index("current = current.parent")
+
+
+def test_changed_target_unconfirmed_state_remains_gated(
+    run_cli, tmp_path, monkeypatch
+):
+    """Recovery never republishes over a target that lost the exact postimage."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "create-exclusive:.gitignore"
+    )
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    transaction = _transactions(tmp_path)[0]["transaction"]
+    (tmp_path / ".gitignore").write_text("changed afterwards\n", encoding="utf-8")
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert transaction in result.stderr
+    assert "exact postimage" in result.stderr
+    assert _transactions(tmp_path)[0]["transaction"] == transaction
+
+
+def test_target_snapshot_swap_during_recovery_is_not_overwritten(
+    run_cli, tmp_path, monkeypatch
+):
+    """Recovery installs only the bytes it validated immediately beforehand."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "create-exclusive:.gitignore"
+    )
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    transaction = _transactions(tmp_path)[0]["transaction"]
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "swap-target:.gitignore"
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "changed after its validated snapshot" in result.stderr
+    assert (tmp_path / ".gitignore").read_bytes() == b"adversarial swap\n"
+    artifact = _transactions(tmp_path)[0]
+    assert artifact["transaction"] == transaction
+    assert artifact["unconfirmed"] == "target"
+    assert not [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry.get("transaction") == transaction
+    ]
+
+
+def test_same_byte_symlink_swap_during_target_recovery_is_gated(
+    run_cli, tmp_path, monkeypatch
+):
+    """Matching bytes cannot disguise a different target kind."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "create-exclusive:.gitignore"
+    )
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    transaction = _transactions(tmp_path)[0]["transaction"]
+    expected = (tmp_path / ".gitignore").read_bytes()
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "swap-target-symlink:.gitignore",
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "validated snapshot" in result.stderr
+    assert (tmp_path / ".gitignore").is_symlink()
+    assert (tmp_path / ".gitignore").read_bytes() == expected
+    artifact = _transactions(tmp_path)[0]
+    assert artifact["transaction"] == transaction
+    assert artifact["unconfirmed"] == "target"
+
+
+def test_different_mode_swap_during_target_recovery_is_gated(
+    run_cli, tmp_path, monkeypatch
+):
+    """A replacement postimage's mode belongs to its validated snapshot."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    target = tmp_path / ".gitignore"
+    target.write_text("adopter line\n", encoding="utf-8")
+    target.chmod(0o640)
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "install:.gitignore"
+    )
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    transaction = _transactions(tmp_path)[0]["transaction"]
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "swap-target-mode:.gitignore"
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "validated snapshot" in result.stderr
+    assert stat.S_IMODE(target.stat().st_mode) != 0o640
+    artifact = _transactions(tmp_path)[0]
+    assert artifact["transaction"] == transaction
+    assert artifact["unconfirmed"] == "target"
+
+
+@pytest.mark.parametrize("history_kind", ("first-local", "existing-repo"))
+def test_history_barrier_failure_republishes_without_duplicate_pair(
+    run_cli, tmp_path, monkeypatch, history_kind
+):
+    """Visible history bytes are completed and atomically republished once."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    if history_kind == "first-local":
+        harness = tmp_path / "harness" / "memory"
+        arguments = ("init", "--harness-memory", str(harness))
+        history = tmp_path / ".validated-memory" / "local.jsonl"
+        monkeypatch.setenv(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:local.jsonl"
+        )
+    else:
+        (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+        arguments = ("init",)
+        history = tmp_path / "journal.jsonl"
+        monkeypatch.setenv(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl"
+        )
+
+    failed = run_cli(*arguments, cwd=tmp_path)
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert "Traceback" not in failed.stderr, failed.stderr
+    transaction = _transactions(tmp_path)[0]
+    assert transaction["stage"] == "published", transaction
+    assert transaction["unconfirmed"] == "history", transaction
+    visible = [
+        entry
+        for entry in _records(history)
+        if entry.get("transaction") == transaction["transaction"]
+    ]
+    assert [entry["stage"] for entry in visible] == ["prepared", "committed"]
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    recovered = run_cli(*arguments, cwd=tmp_path)
+
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    pair = [
+        entry
+        for entry in _records(history)
+        if entry.get("transaction") == transaction["transaction"]
+    ]
+    assert [entry["stage"] for entry in pair] == ["prepared", "committed"]
+    assert not _transactions(tmp_path)
+
+
+def test_history_snapshot_swap_during_recovery_is_not_overwritten(
+    run_cli, tmp_path, monkeypatch
+):
+    """History republication cannot replace bytes that changed after validation."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl"
+    )
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    transaction = _transactions(tmp_path)[0]["transaction"]
+    history = tmp_path / "journal.jsonl"
+    before = history.read_bytes()
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "swap-history:journal.jsonl"
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "changed after its validated snapshot" in result.stderr
+    assert history.read_bytes() == before[:-1] + b"\r\n"
+    artifact = _transactions(tmp_path)[0]
+    assert artifact["transaction"] == transaction
+    assert artifact["unconfirmed"] == "history"
+    assert len(
+        [
+            entry
+            for entry in _records(history)
+            if entry.get("transaction") == transaction
+        ]
+    ) == 2
+
+
+def test_final_history_snapshot_without_pair_is_not_republished(
+    run_cli, tmp_path, monkeypatch
+):
+    """The exact final JSONL snapshot must contain one consistent pair."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl"
+    )
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    transaction = _transactions(tmp_path)[0]["transaction"]
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "swap-history-final:journal.jsonl",
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "complete consistent pair" in result.stderr
+    artifact = _transactions(tmp_path)[0]
+    assert artifact["transaction"] == transaction
+    assert artifact["unconfirmed"] == "history"
+    assert not [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry.get("transaction") == transaction
+    ]
+
+
+def test_missing_history_after_unconfirmed_append_is_not_reconstructed(
+    run_cli, tmp_path, monkeypatch
+):
+    """One WAL cannot stand in for a lost append-only local history."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    harness = tmp_path / "harness" / "memory"
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:local.jsonl"
+    )
+    assert (
+        run_cli("init", "--harness-memory", str(harness), cwd=tmp_path).returncode
+        == 1
+    )
+    transaction = _transactions(tmp_path)[0]["transaction"]
+    history = tmp_path / ".validated-memory" / "local.jsonl"
+    history.unlink()
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+
+    result = run_cli("init", "--harness-memory", str(harness), cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "cannot reconstruct missing append-only history" in result.stderr
+    assert not history.exists()
+    assert _transactions(tmp_path)[0]["transaction"] == transaction
+
+
+@pytest.mark.parametrize("damage", ("duplicate", "disagreement"))
+def test_inconsistent_history_after_unconfirmed_append_remains_gated(
+    run_cli, tmp_path, monkeypatch, damage
+):
+    """Recovery refuses a duplicated transaction instead of blessing it."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl"
+    )
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    transaction = _transactions(tmp_path)[0]["transaction"]
+    history = tmp_path / "journal.jsonl"
+    lines = history.read_text(encoding="utf-8").splitlines()
+    matching = [
+        line
+        for line in lines
+        if json.loads(line).get("transaction") == transaction
+    ]
+    if damage == "duplicate":
+        lines.append(matching[0])
+    else:
+        committed = next(
+            index
+            for index, line in enumerate(lines)
+            if json.loads(line).get("transaction") == transaction
+            and json.loads(line)["stage"] == "committed"
+        )
+        changed = json.loads(lines[committed])
+        changed["purpose"] = "different"
+        lines[committed] = json.dumps(changed, sort_keys=True)
+    history.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "inconsistent record set" in result.stderr
+    assert _transactions(tmp_path)[0]["transaction"] == transaction
+
+
+def test_cleanup_barrier_failure_retries_without_duplicate_history(
+    run_cli, tmp_path, monkeypatch
+):
+    """Confirmed target/history survive an uncertain WAL unlink exactly once."""
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "remove:*")
+
+    failed = run_cli("init", cwd=tmp_path)
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert "Traceback" not in failed.stderr, failed.stderr
+    transaction = _transactions(tmp_path)[0]
+    assert transaction["unconfirmed"] == "cleanup", transaction
+    pair_before = [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry.get("transaction") == transaction["transaction"]
+    ]
+    assert [entry["stage"] for entry in pair_before] == ["prepared", "committed"]
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    recovered = run_cli("init", cwd=tmp_path)
+
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    pair_after = [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry.get("transaction") == transaction["transaction"]
+    ]
+    assert pair_after == pair_before
+    assert not _transactions(tmp_path)
+
+
+def test_recovery_advances_uncertainty_through_history_and_cleanup(
+    run_cli, tmp_path, monkeypatch
+):
+    """Each failed recovery step records the step that actually remains."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "create-exclusive:.gitignore"
+    )
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    transaction = _transactions(tmp_path)[0]["transaction"]
+
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl"
+    )
+    history_failed = run_cli("init", cwd=tmp_path)
+    assert history_failed.returncode == 1, (
+        history_failed.stdout,
+        history_failed.stderr,
+    )
+    artifact = _transactions(tmp_path)[0]
+    assert artifact["unconfirmed"] == "history", artifact
+    assert "history" in history_failed.stderr
+    pair = [
+        entry
+        for entry in _records(tmp_path / "journal.jsonl")
+        if entry.get("transaction") == transaction
+    ]
+    assert [entry["stage"] for entry in pair] == ["prepared", "committed"]
+
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "remove:*")
+    cleanup_failed = run_cli("init", cwd=tmp_path)
+    assert cleanup_failed.returncode == 1, (
+        cleanup_failed.stdout,
+        cleanup_failed.stderr,
+    )
+    artifact = _transactions(tmp_path)[0]
+    assert artifact["unconfirmed"] == "cleanup", artifact
+    assert "cleanup" in cleanup_failed.stderr
+    assert len(
+        [
+            entry
+            for entry in _records(tmp_path / "journal.jsonl")
+            if entry.get("transaction") == transaction
+        ]
+    ) == 2
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    recovered = run_cli("init", cwd=tmp_path)
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    assert not _transactions(tmp_path)
+    assert len(
+        [
+            entry
+            for entry in _records(tmp_path / "journal.jsonl")
+            if entry.get("transaction") == transaction
+        ]
+    ) == 2
+
+
+def test_visible_restore_barrier_failure_never_claims_nothing_was_restored(
+    run_cli, tmp_path, monkeypatch
+):
+    """An exact visible restore retains a fact and finishes on the next init."""
+    transaction = _diverged(tmp_path, before="before adoption\n")
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "install:.gitignore"
+    )
+
+    failed = run_cli(
+        "journal", "--resolve", transaction, "--restore", cwd=tmp_path
+    )
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert "Traceback" not in failed.stderr, failed.stderr
+    assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == (
+        "before adoption\n"
+    )
+    assert "Nothing has been restored" not in failed.stderr
+    artifact = _transactions(tmp_path)[0]
+    assert artifact["unconfirmed"] == "restore", artifact
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    recovered = run_cli("init", cwd=tmp_path)
+
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    final = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert final.startswith("before adoption\n")
+    assert final.count("/.validated-memory/") == 1
+    assert not _transactions(tmp_path)
+
+
+@pytest.mark.parametrize("damage", ("unknown-phase", "missing-reason"))
+def test_unconfirmed_transaction_extension_is_strictly_validated(
+    run_cli, tmp_path, damage
+):
+    """Unknown or incomplete recovery facts are damaged, never guessed at."""
+    transaction = _diverged(tmp_path, kill_after=None)
+    path = (
+        tmp_path / ".validated-memory" / "transactions" / f"{transaction}.json"
+    )
+    entry = json.loads(path.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "future" if damage == "unknown-phase" else "target"
+    if damage == "unknown-phase":
+        entry["unconfirmed_reason"] = "fixture"
+    path.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = run_cli("journal", "--check", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "damaged transaction" in result.stderr
+    expected = "unknown unconfirmed phase" if damage == "unknown-phase" else "no recorded reason"
+    assert expected in result.stderr
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ("unknown-phase", "missing-reason", "invalid-reason", "orphan-reason"),
+)
+def test_aborted_transaction_extension_damage_is_retained(
+    run_cli, tmp_path, damage
+):
+    """The aborted outcome cannot bypass validation of recovery facts."""
+    transaction = _diverged(tmp_path, kill_after=None)
+    path = (
+        tmp_path / ".validated-memory" / "transactions" / f"{transaction}.json"
+    )
+    entry = json.loads(path.read_text(encoding="utf-8"))
+    entry["stage"] = "aborted"
+    entry["reason"] = "fixture abort"
+    if damage == "unknown-phase":
+        entry["unconfirmed"] = "future"
+        entry["unconfirmed_reason"] = "fixture"
+    elif damage == "missing-reason":
+        entry["unconfirmed"] = "target"
+        entry.pop("unconfirmed_reason", None)
+    elif damage == "invalid-reason":
+        entry["unconfirmed"] = "target"
+        entry["unconfirmed_reason"] = 3
+    else:
+        entry.pop("unconfirmed", None)
+        entry["unconfirmed_reason"] = "orphan"
+    path.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    before = path.read_bytes()
+
+    checked = run_cli("journal", "--check", cwd=tmp_path)
+    initialized = run_cli("init", cwd=tmp_path)
+
+    assert checked.returncode == 1, (checked.stdout, checked.stderr)
+    assert initialized.returncode == 1, (initialized.stdout, initialized.stderr)
+    assert "damaged transaction" in checked.stderr
+    assert "damaged transaction" in initialized.stderr
+    assert path.read_bytes() == before
+
+
+def test_failure_fact_uncertainty_reports_both_failures_and_retains_wal(
+    run_cli, tmp_path, monkeypatch
+):
+    """A failing recovery-fact barrier never hides the protected failure."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "install:.gitignore,fact:target",
+    )
+
+    failed = run_cli("init", cwd=tmp_path)
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert "durability is unconfirmed" in failed.stderr
+    assert "recording that recovery fact was itself unconfirmed" in failed.stderr
+    artifact = _transactions(tmp_path)[0]
+    assert artifact["unconfirmed"] == "target", artifact
+    assert "/.validated-memory/" in (tmp_path / ".gitignore").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_two_artifacts_holding_different_adoption_ids_are_refused(
     run_cli, tmp_path
 ):
@@ -1400,6 +2545,42 @@ def test_two_artifacts_holding_different_adoption_ids_are_refused(
     assert mine in result.stderr, result.stderr
     assert "restore" in result.stderr, result.stderr
     assert "adopt afresh" in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("durability", ("repo", "local"))
+def test_a_later_record_with_another_adoption_id_gates_init(
+    run_cli, tmp_path, durability
+):
+    """Every history record, not only the first, must name one adoption."""
+    harness_memory = tmp_path / "harness" / "memory"
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert run_cli(
+        "init", "--harness-memory", str(harness_memory), cwd=adopter
+    ).returncode == 0
+    repository = adopter / "journal.jsonl"
+    local = adopter / ".validated-memory" / "local.jsonl"
+    artifact = repository if durability == "repo" else local
+    lines = artifact.read_text(encoding="utf-8").splitlines()
+    assert len(lines) > 1, lines
+    mine = json.loads(lines[0])["adoption"]
+    foreign = "f" * 16
+    lines[-1] = json.dumps(
+        {**json.loads(lines[-1]), "adoption": foreign}, sort_keys=True
+    )
+    artifact.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    repository_before = repository.read_bytes()
+    local_before = local.read_bytes()
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "one project has one adoption id" in result.stderr, result.stderr
+    assert mine in result.stderr, result.stderr
+    assert foreign in result.stderr, result.stderr
+    assert repository.read_bytes() == repository_before
+    assert local.read_bytes() == local_before
 
 
 # --- a journal that is there is never treated as one that is not --------------
@@ -2234,18 +3415,33 @@ def test_a_creation_publishes_with_o_excl_rather_than_replacing():
     ]
     assert len(publishers) == 1, [relative for relative, _ in publishers]
     publish = publishers[0][1]
-    # The call that publishes, identified by what it opens: `_publish` opens
-    # a temporary as well, and pinning "somewhere in this function" would go
-    # green on the temporary's flags while the publication replaced whatever
-    # it found.
-    opens = [
+    exclusive_calls = [
         node
         for node in ast.walk(publish)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "create_exclusive"
+    ]
+    assert len(exclusive_calls) == 1
+    assert ast.unparse(exclusive_calls[0].args[0]) == "target"
+
+    durable_tree = ast.parse(
+        (REPO_ROOT / "validated_memory" / "journal" / "durable.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    exclusive = next(
+        node
+        for node in durable_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "create_exclusive"
+    )
+    opens = [
+        node
+        for node in ast.walk(exclusive)
         if isinstance(node, ast.Call)
         and ast.unparse(node.func) == "os.open"
         and node.args
     ]
-    published = [node for node in opens if ast.unparse(node.args[0]) == "target"]
+    published = [node for node in opens if ast.unparse(node.args[0]) == "path"]
     assert len(published) == 1, [ast.unparse(node) for node in opens]
     flags = ast.unparse(published[0].args[1])
     assert "os.O_CREAT" in flags and "os.O_EXCL" in flags, (
@@ -2257,7 +3453,23 @@ def test_a_creation_publishes_with_o_excl_rather_than_replacing():
     # adopter's bytes are never briefly readable by anyone the target's own
     # mode excludes. Same kind of guarantee, same reason it is pinned here:
     # the window is the length of one write.
-    staged = [node for node in opens if ast.unparse(node.args[0]) == "temporary"]
+    installer = next(
+        node
+        for node in durable_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "install_bytes"
+    )
+    publish_opens = [
+        node
+        for node in ast.walk(installer)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "os.open"
+        and node.args
+    ]
+    staged = [
+        node
+        for node in publish_opens
+        if ast.unparse(node.args[0]) == "temporary"
+    ]
     assert len(staged) == 1, [ast.unparse(node) for node in opens]
     assert ast.literal_eval(staged[0].args[2]) == 0o600, ast.unparse(staged[0])
 
@@ -2326,10 +3538,8 @@ def _run_init_in_background(cwd):
     )
 
 
-def test_init_takes_the_lock_it_already_holds(run_cli, tmp_path):
-    """Nested init and Run lock acquisition succeeds and releases the lock.
-
-    Run takes the inner lock around its reads and `_bootstrap`."""
+def test_an_adopting_run_holds_and_releases_its_lock(run_cli, tmp_path):
+    """The adopting scope and its nested session operations share one lock."""
     result = run_cli("init", cwd=tmp_path)
 
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
@@ -2848,6 +4058,73 @@ def test_journal_resolve_abandon_records_that_the_path_was_left_as_found(
     ) == "an adopter wrote this\n"
 
 
+def test_resolving_one_transaction_does_not_recover_another(run_cli, tmp_path):
+    """Targeted resolution leaves another transaction and its path untouched."""
+    target = _diverged(tmp_path)
+    other = "3434343434343434"
+    other_path = tmp_path / "other.txt"
+    other_path.write_text("untouched\n", encoding="utf-8")
+    _transaction_file(
+        tmp_path,
+        other,
+        intention={
+            "op": "replace",
+            "purpose": "init",
+            "path": "other.txt",
+            "durability": "repo",
+        },
+    )
+    artifact = (
+        tmp_path / ".validated-memory" / "transactions" / f"{other}.json"
+    )
+    artifact_before = artifact.read_bytes()
+    path_before = other_path.read_bytes()
+
+    result = run_cli("journal", "--resolve", target, "--accept", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert artifact.read_bytes() == artifact_before
+    assert other_path.read_bytes() == path_before
+    assert [entry["transaction"] for entry in _transactions(tmp_path)] == [other]
+    assert not [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record.get("transaction") == other
+    ]
+
+
+def test_resolution_refuses_a_later_conflicting_history_identity(run_cli, tmp_path):
+    """A named transaction cannot mutate through a mixed-identity history."""
+    transaction = _diverged(tmp_path)
+    journal = tmp_path / "journal.jsonl"
+    lines = journal.read_text(encoding="utf-8").splitlines()
+    mine = json.loads(lines[0])["adoption"]
+    foreign = "f" * 16
+    lines.append(
+        json.dumps({**json.loads(lines[0]), "adoption": foreign}, sort_keys=True)
+    )
+    journal.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    artifact = (
+        tmp_path / ".validated-memory" / "transactions" / f"{transaction}.json"
+    )
+    journal_before = journal.read_bytes()
+    artifact_before = artifact.read_bytes()
+    path_before = (tmp_path / ".gitignore").read_bytes()
+
+    result = run_cli(
+        "journal", "--resolve", transaction, "--accept", cwd=tmp_path
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "one project has one adoption id" in result.stderr, result.stderr
+    assert mine in result.stderr, result.stderr
+    assert foreign in result.stderr, result.stderr
+    assert journal.read_bytes() == journal_before
+    assert artifact.read_bytes() == artifact_before
+    assert (tmp_path / ".gitignore").read_bytes() == path_before
+
+
 def test_journal_resolve_over_a_published_transaction_keeps_its_record_pair(
     run_cli, tmp_path
 ):
@@ -2989,6 +4266,398 @@ def test_journal_resolve_restore_refuses_once_the_mutation_is_history(
     accepted = run_cli("journal", "--resolve", transaction, "--accept", cwd=tmp_path)
     assert accepted.returncode == 0, (accepted.stdout, accepted.stderr)
     assert run_cli("journal", "--check", cwd=tmp_path).returncode == 0
+
+
+def test_nonterminated_history_is_refused_without_writes(run_cli, tmp_path):
+    """A valid final object without LF is not an appendable history."""
+    initial = run_cli("init", cwd=tmp_path)
+    assert initial.returncode == 0, initial.stderr
+    history = tmp_path / "journal.jsonl"
+    original = history.read_bytes()
+    history.write_bytes(original[:-1])
+    before = sorted(
+        (path.relative_to(tmp_path).as_posix(), path.read_bytes())
+        for path in tmp_path.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
+
+    checked = run_cli("journal", "--check", cwd=tmp_path)
+    assert checked.returncode == 1
+    assert "does not end with a line feed" in checked.stderr
+    assert history.read_bytes() == original[:-1]
+
+    refused = run_cli("init", cwd=tmp_path)
+    assert refused.returncode == 1
+    assert "does not end with a line feed" in refused.stderr
+    after = sorted(
+        (path.relative_to(tmp_path).as_posix(), path.read_bytes())
+        for path in tmp_path.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
+    assert after == before
+
+
+def test_repair_usage_is_rejected_before_filesystem_materialization(run_cli, tmp_path):
+    """The explicit repair ID is required and mutually exclusive with read-only mode."""
+    assert not any(tmp_path.iterdir())
+    empty = run_cli("journal", "--repair", "", cwd=tmp_path)
+    assert empty.returncode == 2
+    assert not any(tmp_path.iterdir())
+    mixed = run_cli("journal", "--repair", "x", "--check", cwd=tmp_path)
+    assert mixed.returncode == 2
+    assert not any(tmp_path.iterdir())
+    help_result = run_cli("journal", "--help", cwd=tmp_path)
+    assert help_result.returncode == 0
+    assert "repair one torn history append from a WAL proof" in help_result.stdout
+    assert "get ID from journal --check" in help_result.stdout
+
+
+def _history_repair_fixture(run_cli, tmp_path, monkeypatch):
+    """Create one local history WAL whose append barrier is unconfirmed."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:local.jsonl")
+    result = run_cli("init", "--harness-memory", str(tmp_path / "h"), cwd=tmp_path)
+    assert result.returncode == 1
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    transaction = next((tmp_path / ".validated-memory" / "transactions").glob("*.json"))
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    claim = entry["history_append"]
+    payload = b"".join(
+        (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+        for record in claim["records"]
+    )
+    history = tmp_path / ".validated-memory" / "local.jsonl"
+    return transaction, claim, payload, history
+
+
+@pytest.mark.parametrize("field", ["path", "adoption", "run", "postimage", "mode"])
+def test_repair_refuses_claims_forged_against_the_wal(
+    run_cli, tmp_path, monkeypatch, field
+):
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    original = history.read_bytes()
+    changed = json.loads(transaction.read_text(encoding="utf-8"))
+    record = changed["history_append"]["records"][0]
+    if field == "adoption":
+        record[field] = "foreign"
+    elif field == "run":
+        record[field] = "foreign"
+    elif field == "postimage":
+        record[field] = "sha256:" + "0" * 64
+    elif field == "mode":
+        record[field] = 1
+    else:
+        record[field] = "foreign/path"
+    transaction.write_text(json.dumps(changed, sort_keys=True) + "\n", encoding="utf-8")
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+    assert result.returncode == 1
+    assert history.read_bytes() == original
+    assert transaction.exists()
+
+
+def test_repair_refuses_retimed_history_claim_even_with_recomputed_digest(
+    run_cli, tmp_path, monkeypatch
+):
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    changed = json.loads(transaction.read_text(encoding="utf-8"))
+    changed["history_append"]["records"][0]["at"] = "2099-01-01T00:00:00Z"
+    retimed = b"".join(
+        (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+        for record in changed["history_append"]["records"]
+    )
+    changed["history_append"]["append"] = {
+        "length": len(retimed),
+        "digest": "sha256:" + hashlib.sha256(retimed).hexdigest(),
+    }
+    transaction.write_text(json.dumps(changed, sort_keys=True) + "\n", encoding="utf-8")
+    before = history.read_bytes()
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert "timestamps" in result.stderr
+    assert history.read_bytes() == before
+    assert transaction.exists()
+
+
+@pytest.mark.parametrize("tail_size", [None, 1])
+def test_repair_accepts_partial_prepared_or_committed_suffix(
+    run_cli, tmp_path, monkeypatch, tail_size
+):
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    prepared_end = payload.find(b"\n") + 1
+    history.write_bytes(payload[:prepared_end] if tail_size is None else payload[:prepared_end + tail_size])
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert history.read_bytes() == payload
+    assert not transaction.exists()
+
+
+def test_repair_uses_claim_boundary_for_nonempty_prefix_and_partial_committed_tail(
+    run_cli, tmp_path, monkeypatch
+):
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    # Carry one valid local record before the claimed append.  The existing
+    # parser tail then starts in the middle of the claimed append, so repair
+    # must use the proof's byte boundary rather than that parser offset.
+    prefix_entry = json.loads(
+        (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    prefix_entry["durability"] = "local"
+    prefix = (json.dumps(prefix_entry, sort_keys=True) + "\n").encode("utf-8")
+    prepared_end = payload.find(b"\n") + 1
+    history.write_bytes(prefix + payload[: prepared_end + 1])
+    changed = json.loads(transaction.read_text(encoding="utf-8"))
+    changed["history_append"]["prefix"] = {
+        "length": len(prefix),
+        "digest": "sha256:" + hashlib.sha256(prefix).hexdigest(),
+    }
+    transaction.write_text(
+        json.dumps(changed, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert history.read_bytes() == prefix + payload
+    assert not transaction.exists()
+
+
+@pytest.mark.parametrize("forged_length", [True, 0])
+def test_repair_refuses_boolean_or_lower_self_consistent_prefix(
+    run_cli, tmp_path, monkeypatch, forged_length
+):
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    prefix = json.loads(
+        (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    prefix["durability"] = "local"
+    prefix_bytes = (json.dumps(prefix, sort_keys=True) + "\n").encode("utf-8")
+    history.write_bytes(prefix_bytes + payload[: payload.find(b"\n") + 1])
+    changed = json.loads(transaction.read_text(encoding="utf-8"))
+    if forged_length is True:
+        length = True
+        digest_bytes = prefix_bytes
+    else:
+        length = len(prefix_bytes) - 1
+        digest_bytes = prefix_bytes[:-1]
+    changed["history_append"]["prefix"] = {
+        "length": length,
+        "digest": "sha256:" + hashlib.sha256(digest_bytes).hexdigest(),
+    }
+    transaction.write_text(
+        json.dumps(changed, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    before = history.read_bytes()
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert history.read_bytes() == before
+    assert transaction.exists()
+
+
+def test_exact_final_repair_republishes_and_retries_after_confirmation_failure(
+    run_cli, tmp_path, monkeypatch
+):
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    assert history.read_bytes() == payload
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "install:local.jsonl")
+    failed = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+    assert failed.returncode == 1
+    assert transaction.exists()
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    repaired = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+    assert repaired.returncode == 0, repaired.stderr
+    assert ".validated-memory/local.jsonl" in repaired.stdout
+    assert not transaction.exists()
+    assert history.read_bytes() == payload
+    assert len(history.read_bytes().splitlines()) == 2
+
+
+def test_repair_cleanup_visibility_failure_retains_wal_until_retry(
+    run_cli, tmp_path, monkeypatch
+):
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", f"remove:{transaction.name}"
+    )
+    failed = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+    assert failed.returncode == 1
+    assert "evidence was retained" in failed.stderr
+    assert transaction.exists()
+    assert history.read_bytes() == payload
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    retried = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+    assert retried.returncode == 0, retried.stderr
+    assert not transaction.exists()
+    assert history.read_bytes() == payload
+
+
+def test_private_duplicate_cleanup_visibility_failure_retains_wal(
+    run_cli, tmp_path, monkeypatch
+):
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    private = tmp_path / ".validated-memory" / "transactions"
+    duplicate = private / f".{transaction.name}.{'a' * 32}.tmp"
+    duplicate.write_bytes(transaction.read_bytes())
+    duplicate.chmod(transaction.stat().st_mode & 0o777)
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", f"remove:{duplicate.name}"
+    )
+
+    failed = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert failed.returncode == 1
+    assert transaction.exists()
+    assert not duplicate.exists()
+    assert "evidence was retained" in failed.stderr
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    retried = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+    assert retried.returncode == 0, retried.stderr
+    assert not transaction.exists()
+
+
+def test_repair_uses_wal_published_mode_after_target_chmod(
+    run_cli, tmp_path, monkeypatch
+):
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    target = tmp_path / ".gitignore"
+    target.write_text("adopter change\n", encoding="utf-8")
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl")
+    failed = run_cli("init", cwd=tmp_path)
+    assert failed.returncode == 1
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    transaction = next((tmp_path / ".validated-memory" / "transactions").glob("*.json"))
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    published_mode = entry["published_mode"]
+    target.chmod(0o600 if published_mode != 0o600 else 0o640)
+
+    before = (tmp_path / "journal.jsonl").read_bytes()
+    repaired = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert repaired.returncode == 1, repaired.stderr
+    assert "WAL postimage" in repaired.stderr
+    assert transaction.exists()
+    assert (tmp_path / "journal.jsonl").read_bytes() == before
+
+
+def test_history_claim_persistence_failure_never_appends_or_recovers(
+    run_cli, tmp_path, monkeypatch
+):
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    target = tmp_path / ".gitignore"
+    target.write_text("adopter change\n", encoding="utf-8")
+    before = (tmp_path / "journal.jsonl").read_bytes()
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "history-claim")
+
+    failed = run_cli("init", cwd=tmp_path)
+
+    assert failed.returncode == 1
+    transaction = next((tmp_path / ".validated-memory" / "transactions").glob("*.json"))
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    assert entry["unconfirmed"] == "history-claim"
+    assert "history_append" not in entry
+    assert (tmp_path / "journal.jsonl").read_bytes() == before
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    blocked = run_cli("init", cwd=tmp_path)
+    assert blocked.returncode == 1
+    assert (tmp_path / "journal.jsonl").read_bytes() == before
+    assert transaction.exists()
+
+
+def test_symlink_staging_collision_preserves_foreign_entry(
+    run_cli, tmp_path, monkeypatch
+):
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    sentinel = tmp_path / ".h.collision.tmp"
+    sentinel.write_bytes(b"foreign")
+    sentinel.chmod(0o640)
+    before = (sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode), sentinel.is_symlink())
+    monkeypatch.setenv("VALIDATED_MEMORY_SYMLINK_TEMP_NAME", sentinel.name)
+    result = run_cli("init", "--harness-memory", str(tmp_path / "h"), cwd=tmp_path)
+    assert result.returncode == 0
+    assert "could not be linked" in result.stderr
+    assert (sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode), sentinel.is_symlink()) == before
+
+
+def test_reserved_regular_staging_replacement_does_not_mutate_foreign_entry(
+    run_cli, tmp_path, monkeypatch
+):
+    """Descriptor metadata cannot chmod a replacement at the staging name."""
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "swap-staging:local.jsonl"
+    )
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1, result.stderr
+    foreign = list(
+        (tmp_path / ".validated-memory").glob(".local.jsonl.*.tmp.foreign")
+    )
+    assert len(foreign) == 1
+    foreign = foreign[0]
+    assert foreign.is_file() and not foreign.is_symlink()
+    assert foreign.read_bytes() == b"foreign staging entry\n"
+    assert stat.S_IMODE(foreign.stat().st_mode) == 0o640
+    assert transaction.exists()
+    assert "evidence was retained" in result.stderr
+
+
+def test_private_storage_crash_seam_leaves_prefix_and_claimed_staging(
+    run_cli, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("VALIDATED_MEMORY_STORAGE_CRASH", "history-prefix:3")
+    crashed = run_cli("init", cwd=tmp_path)
+    assert crashed.returncode == 71
+    assert (tmp_path / "journal.jsonl").read_bytes()
+    assert list((tmp_path / ".validated-memory" / "transactions").glob("*.json"))
+
+    monkeypatch.delenv("VALIDATED_MEMORY_STORAGE_CRASH")
+    fresh = tmp_path / "staging"
+    monkeypatch.setenv("VALIDATED_MEMORY_STORAGE_CRASH", "staged-before-install:*")
+    # The existing partial history gates this second invocation, so use a
+    # separate adopter for the staged-before-install subprocess assertion.
+    other = tmp_path / "other"
+    other.mkdir()
+    assert run_cli("init", cwd=other).returncode == 0
+    staged = run_cli("init", "--harness-memory", str(other / "h"), cwd=other)
+    assert staged.returncode == 71
+    assert list(other.glob(".h.*.tmp"))
+
+
+def test_check_reports_private_residue_without_removing_it(run_cli, tmp_path):
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    residue = tmp_path / ".validated-memory" / "transactions" / "legacy.tmp"
+    residue.write_bytes(b"foreign")
+    residue.chmod(0o640)
+    before = (residue.read_bytes(), stat.S_IMODE(residue.stat().st_mode), residue.is_symlink())
+    result = run_cli("journal", "--check", cwd=tmp_path)
+    assert result.returncode == 1
+    assert "retained private residue" in result.stderr
+    assert (residue.read_bytes(), stat.S_IMODE(residue.stat().st_mode), residue.is_symlink()) == before
 
 
 def test_journal_resolve_refuses_an_id_no_transaction_carries(run_cli, tmp_path):
@@ -3663,13 +5332,99 @@ def test_recovery_still_appends_exactly_one_pair_over_a_history_that_has_it(
 # --- a refusal that says nothing changed has changed nothing ------------------
 
 
+@pytest.mark.parametrize(
+    "transaction_id",
+    ("../../escape", r"folder\escape")
+    + (() if os.name == "nt" else ("C:escape",)),
+)
+def test_path_bearing_resolution_ids_never_reach_a_transaction_file(
+    run_cli, tmp_path, transaction_id
+):
+    """POSIX and Windows separators cannot escape the transaction namespace."""
+    genuine = _diverged(tmp_path)
+    transactions = tmp_path / ".validated-memory" / "transactions"
+    genuine_artifact = transactions / f"{genuine}.json"
+    forged = json.loads(genuine_artifact.read_text(encoding="utf-8"))
+    forged["transaction"] = transaction_id
+    if transaction_id.startswith("../"):
+        outside = tmp_path / "escape.json"
+    elif os.name == "nt":
+        outside = transactions / "folder" / "escape.json"
+    else:
+        outside = transactions / f"{transaction_id}.json"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text(json.dumps(forged, sort_keys=True) + "\n", encoding="utf-8")
+    journal = tmp_path / "journal.jsonl"
+    outside_before = outside.read_bytes()
+    journal_before = journal.read_bytes()
+    genuine_before = genuine_artifact.read_bytes()
+    path_before = (tmp_path / ".gitignore").read_bytes()
+
+    result = run_cli(
+        "journal", "--resolve", transaction_id, "--abandon", cwd=tmp_path
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert f"there is no unresolved transaction {transaction_id}" in result.stderr
+    assert outside.read_bytes() == outside_before
+    assert journal.read_bytes() == journal_before
+    assert genuine_artifact.read_bytes() == genuine_before
+    assert (tmp_path / ".gitignore").read_bytes() == path_before
+
+
+def test_an_absolute_resolution_id_does_not_materialize_a_virgin_tree(
+    run_cli, tmp_path
+):
+    """An absolute external JSON is not a transaction and is never opened."""
+    adopter = tmp_path / "virgin"
+    adopter.mkdir()
+    outside_stem = tmp_path / "outside"
+    outside = Path(f"{outside_stem}.json")
+    outside.write_bytes(b"external bytes that are not a transaction\n")
+    before = outside.read_bytes()
+
+    result = run_cli(
+        "journal", "--resolve", str(outside_stem), "--accept", cwd=adopter
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert f"there is no unresolved transaction {outside_stem}" in result.stderr
+    assert outside.read_bytes() == before
+    assert not list(adopter.iterdir()), sorted(path.name for path in adopter.iterdir())
+
+
+def test_a_safe_nonhex_filename_stem_remains_a_resolvable_transaction_id(
+    run_cli, tmp_path
+):
+    """Target validation excludes paths, not historical arbitrary safe stems."""
+    generated = _diverged(tmp_path)
+    transaction_id = "release-1.alpha"
+    directory = tmp_path / ".validated-memory" / "transactions"
+    generated_artifact = directory / f"{generated}.json"
+    entry = json.loads(generated_artifact.read_text(encoding="utf-8"))
+    entry["transaction"] = transaction_id
+    artifact = directory / f"{transaction_id}.json"
+    artifact.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    generated_artifact.unlink()
+
+    result = run_cli(
+        "journal", "--resolve", transaction_id, "--accept", cwd=tmp_path
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert f"journal: resolved {transaction_id} (--accept)" in result.stdout
+    assert not artifact.exists()
+
+
 def test_resolving_an_id_nothing_carries_leaves_a_virgin_tree_virgin(
     run_cli, tmp_path
 ):
     """Resolving an unknown ID leaves a virgin tree filesystem-empty.
 
-    The exact refusal, absent journal and absent vault pin preflight before
-    constructing the adopting run."""
+    The exact refusal, absent journal and absent vault pin the resolver's
+    non-materializing missing-transaction path."""
     result = run_cli(
         "journal", "--resolve", "deadbeefdeadbeef", "--accept", cwd=tmp_path
     )
@@ -3685,6 +5440,52 @@ def test_resolving_an_id_nothing_carries_leaves_a_virgin_tree_virgin(
     assert not (tmp_path / "journal.jsonl").exists(), "the journal was created"
     assert not (tmp_path / ".validated-memory").exists(), "the vault was created"
     assert not list(tmp_path.iterdir()), sorted(p.name for p in tmp_path.iterdir())
+
+
+def test_a_transaction_without_adoption_history_does_not_adopt_the_tree(
+    run_cli, tmp_path
+):
+    """Resolution refuses contradictory residue without opening a journal."""
+    transaction_id = "abababababababab"
+    directory = tmp_path / ".validated-memory" / "transactions"
+    directory.mkdir(parents=True)
+    entry = {
+        "schema": 1,
+        "at": "2026-09-01T00:00:00Z",
+        "version": "1.6.0",
+        "adoption": "1111111111111111",
+        "run": "2222222222222222",
+        "transaction": transaction_id,
+        "intention": {
+            "op": "replace",
+            "purpose": "init",
+            "path": "validated-memory.md",
+            "durability": "repo",
+        },
+        "preimage": {"kind": "absent"},
+        "postimage": {
+            "kind": "file",
+            "digest": "sha256:" + "1" * 64,
+            "mode": 420,
+        },
+        "preimage_blob": None,
+        "mode": None,
+        "prior_bytes": None,
+        "stage": "prepared",
+    }
+    artifact = directory / f"{transaction_id}.json"
+    artifact.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    before = artifact.read_bytes()
+
+    result = run_cli(
+        "journal", "--resolve", transaction_id, "--abandon", cwd=tmp_path
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "no adoption history" in result.stderr, result.stderr
+    assert not (tmp_path / "journal.jsonl").exists(), "resolution adopted the tree"
+    assert artifact.read_bytes() == before
 
 
 def test_resolving_an_id_nothing_carries_is_the_same_refusal_in_an_adopted_tree(

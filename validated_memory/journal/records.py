@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import __version__
+from .durable import append_bytes, ensure_owned_directory
 
 
 JOURNAL_FILENAME = "journal.jsonl"
@@ -180,12 +181,40 @@ def append(records, root=Path(), durability=REPO):
     rule out.
     """
     path = journal_path(root, durability)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        for entry in records:
-            handle.write(json.dumps(entry, sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    ensure_owned_directory(path.parent, Path(root))
+    payload = encode_records(records)
+    append_bytes(path, payload)
+
+
+def encode_records(records):
+    """Return the canonical UTF-8 JSONL bytes for history records."""
+    return b"".join(
+        (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
+        for entry in records
+    )
+
+
+def history_snapshot(root=Path(), durability=REPO):
+    """Read one history through a descriptor for a proof-bound append."""
+    path = journal_path(root, durability)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return b""
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise JournalError(
+                None, "history is not a regular file", artifact_name(durability)
+            )
+        with open(descriptor, "rb", closefd=False) as handle:
+            return handle.read()
+    except OSError as error:
+        raise JournalError(
+            None, f"history could not be read: {error}", artifact_name(durability)
+        ) from error
+    finally:
+        os.close(descriptor)
 
 
 def artifact_name(durability):
@@ -193,7 +222,47 @@ def artifact_name(durability):
     return journal_path(Path(), durability).as_posix()
 
 
-def read(root=Path(), durability=REPO):
+def validate_snapshot(data, durability, where):
+    """Strictly validate an in-memory complete JSONL history snapshot."""
+    if data and not data.endswith(b"\n"):
+        raise JournalError(None, "history snapshot has no final line feed", where)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise JournalError(None, f"history snapshot is not UTF-8: {error}", where) from error
+    result = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise JournalError(lineno, f"line is not valid JSON: {error.msg}", where) from error
+        if not isinstance(entry, dict):
+            raise JournalError(lineno, "record is not a JSON object", where)
+        _validate_entry(lineno, entry, durability, where)
+        result.append(entry)
+    return result
+
+
+def _validate_entry(lineno, entry, durability, where):
+    missing = [field for field in COMMON_FIELDS if field not in entry]
+    if missing:
+        raise JournalError(lineno, f"record is missing {', '.join(missing)}", where)
+    _check_types(lineno, entry, where)
+    if entry["schema"] > SCHEMA:
+        raise JournalError(lineno, f"record uses schema {entry['schema']}, newer than this plugin understands ({SCHEMA}); upgrade the plugin", where)
+    if entry["op"] not in OPS:
+        raise JournalError(lineno, f"record has unknown op '{entry['op']}'", where)
+    if entry["stage"] not in STAGES:
+        raise JournalError(lineno, f"record has unknown stage '{entry['stage']}'", where)
+    if entry["durability"] != durability:
+        raise JournalError(lineno, f"record claims durability '{entry['durability']}' in the '{durability}' journal", where)
+    if durability == REPO and not is_inside_path(entry["path"]):
+        raise JournalError(lineno, f"record path '{entry['path']}' is not inside the adopter root", where)
+
+
+def read(root=Path(), durability=REPO, with_snapshot=False):
     """Every record in the journal of `durability`, in file order.
 
     A missing journal reads as no records. A journal that is there but
@@ -236,13 +305,14 @@ def read(root=Path(), durability=REPO):
         # it has no FIFOs to hang on either.
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
-        return []
+        return ([], None, None) if with_snapshot else []
     except OSError as error:
         raise JournalError(
             None, f"journal could not be read: {error}", where
         ) from error
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        file_mode = os.fstat(descriptor).st_mode
+        if not stat.S_ISREG(file_mode):
             raise JournalError(
                 None,
                 "journal is not a regular file; a directory, a device or a "
@@ -252,13 +322,21 @@ def read(root=Path(), durability=REPO):
         # `closefd=False`: the descriptor has one owner, the `finally` below,
         # so a failure between the two closes it exactly once.
         with open(descriptor, "rb", closefd=False) as handle:
-            text = handle.read().decode("utf-8")
+            data = handle.read()
+            text = data.decode("utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise JournalError(
             None, f"journal could not be read: {error}", where
         ) from error
     finally:
         os.close(descriptor)
+    if data and not data.endswith(b"\n"):
+        raise JournalError(
+            None,
+            "non-empty history does not end with a line feed; the final "
+            "record is not appendable without explicit targeted repair",
+            where,
+        )
     records = []
     for offset, line in enumerate(text.splitlines()):
         lineno = offset + 1
@@ -315,6 +393,8 @@ def read(root=Path(), durability=REPO):
                 where,
             )
         records.append(entry)
+    if with_snapshot:
+        return records, data, stat.S_IMODE(file_mode)
     return records
 
 

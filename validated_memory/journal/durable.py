@@ -1,61 +1,687 @@
-"""Getting one change to the filesystem to survive a power cut.
+"""Private persistence primitives for journal-owned namespace effects.
 
-Two primitives and the order between them: the atomic publication of a
-temporary file over a name, and the barrier that makes the directory entry
-carrying that name durable. Nothing here knows what the bytes are: a
-transaction file, a parked preimage and an adopter's own file are published
-by the same two calls, and none of them is this module's to interpret. A
-journal line is not among them -- `records.append` opens the journal for
-append and fsyncs the handle, which is a different question and is answered
-where it is asked.
+Visibility and durability are different outcomes. An ``OSError`` means the
+requested effect did not become visible. ``VisibilityUnconfirmed`` means the
+effect completed, but the directory barrier that would confirm its survival
+did not. Keeping those exception families disjoint prevents callers which can
+safely clean up a pre-publication failure from claiming rollback after a
+rename or mkdir has already happened.
 """
 
+import errno
+import json
 import os
+import stat
+import tempfile
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
+from typing import Callable
+
+
+
+class Persistence(Enum):
+    """The truthful result of a completed persistence effect."""
+
+    CONFIRMED = "confirmed"
+    UNSUPPORTED = "unsupported"
+
+
+class VisibilityUnconfirmed(Exception):
+    """A namespace effect is visible but its durability is unconfirmed."""
+
+    def __init__(self, path, operation, complete, error):
+        self.path = Path(path)
+        self.operation = operation
+        self.complete = complete
+        self.error = error
+        state = "is visible" if complete else "may be visible"
+        super().__init__(
+            f"{operation} of {self.path.as_posix()} {state}, but its "
+            f"durability is unconfirmed: {error}"
+        )
+
+
+class _Operation(Enum):
+    """The closed set of namespace effects this persistence seam owns."""
+
+    ENSURE_DIRECTORY = "ensure-directory"
+    INSTALL = "install"
+    CREATE_EXCLUSIVE = "create-exclusive"
+    CREATE_DIRECTORY = "create-directory"
+    REPLACE_SYMLINK = "replace-symlink"
+    APPEND = "append"
+    REMOVE = "remove"
+    CONFIRM = "confirm"
+
+
+@dataclass(frozen=True)
+class _Effect:
+    """One closed persistence operation, kept private to this module."""
+
+    operation: _Operation
+    path: Path
+    directory: Path
+    apply: Callable[[], None]
+    complete: bool = True
+
+
+def storage_crash(point, path):
+    """Private storage-crash seam, inert unless explicitly selected."""
+    requested = {
+        item.strip()
+        for item in os.environ.get("VALIDATED_MEMORY_STORAGE_CRASH", "").split(",")
+        if item.strip()
+    }
+    path = Path(path)
+    if f"{point}:*" in requested or f"{point}:{path.name}" in requested:
+        os._exit(71)
+
+
+def storage_prefix(path, data, handle):
+    """Write and fsync a selected history prefix before the storage crash."""
+    requested = os.environ.get("VALIDATED_MEMORY_STORAGE_CRASH", "")
+    if not requested.startswith("history-prefix:") or Path(path).name not in {"journal.jsonl", "local.jsonl"}:
+        return
+    try:
+        prefix = int(requested.split(":", 1)[1])
+    except ValueError:
+        return
+    if 0 <= prefix < len(data):
+        handle.write(data[:prefix])
+        handle.flush()
+        os.fsync(handle.fileno())
+        os._exit(71)
+
+
+def _temporary_path(directory, prefix, suffix=".tmp"):
+    """Reserve an unpredictable, exclusive regular-file staging name."""
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{prefix}.", suffix=suffix, dir=directory
+    )
+    return Path(name), descriptor
+
+
+def _same_open_entry(path, identity):
+    """Whether a path still names the descriptor-owned staging inode."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    return (
+        stat.S_ISREG(info.st_mode)
+        and info.st_dev == identity.st_dev
+        and info.st_ino == identity.st_ino
+    )
+
+
+def _chmod_staging(descriptor, path, mode):
+    """Set staging metadata only through its still-owned descriptor."""
+    if hasattr(os, "fchmod"):
+        os.fchmod(descriptor, mode)
+        return
+    # A pathname-based fallback is unsafe even with follow_symlinks=False:
+    # another actor can replace it with a foreign regular file between the
+    # replacement and chmod. Refuse the operation rather than mutating an
+    # entry the descriptor does not own.
+    raise OSError(
+        errno.ENOTSUP,
+        "cannot safely set staging mode without descriptor metadata support",
+        os.fspath(path),
+    )
+
+
+_UNSUPPORTED_DIRECTORY_ERRORS = {
+    value
+    for value in (
+        errno.EINVAL,
+        getattr(errno, "ENOTSUP", None),
+        getattr(errno, "EOPNOTSUPP", None),
+    )
+    if value is not None
+}
+
+
+def _injected_error(point, path):
+    """Raise a deterministic test-only I/O error at one persistence point."""
+    requested = {
+        item.strip()
+        for item in os.environ.get(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
+        ).split(",")
+        if item.strip()
+    }
+    path = Path(path)
+    if requested.intersection((
+        f"{point}:*",
+        f"{point}:{path.name}",
+        f"{point}:{path.as_posix()}",
+    )):
+        raise OSError(errno.EIO, "injected persistence failure", os.fspath(path))
+
+
+def _swap_staging_for_test(path):
+    """Replace one reserved staging name to exercise descriptor ownership."""
+    requested = {
+        item.strip()
+        for item in os.environ.get(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
+        ).split(",")
+        if item.strip()
+    }
+    path = Path(path)
+    for item in requested:
+        prefix = "swap-staging:"
+        if not item.startswith(prefix):
+            continue
+        target_name = item.removeprefix(prefix)
+        if not target_name or not path.name.startswith(f".{target_name}."):
+            continue
+        foreign = path.with_name(path.name + ".foreign")
+        foreign.write_bytes(b"foreign staging entry\n")
+        os.chmod(foreign, 0o640)
+        path.unlink()
+        os.symlink(foreign.name, path)
+        return
+
+
+def _confirm_directory(path, operation):
+    """Confirm directory entries, distinguishing unsupported from failure."""
+    path = Path(path)
+    if os.name == "nt":
+        return Persistence.UNSUPPORTED
+    requested = {
+        item.strip()
+        for item in os.environ.get(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
+        ).split(",")
+        if item.strip()
+    }
+    if requested.intersection((
+        f"unsupported:{path.name}",
+        f"unsupported:{path.as_posix()}",
+    )):
+        return Persistence.UNSUPPORTED
+    try:
+        _injected_error("open", path)
+        descriptor = os.open(
+            path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        )
+    except OSError as error:
+        if error.errno in _UNSUPPORTED_DIRECTORY_ERRORS:
+            return Persistence.UNSUPPORTED
+        raise
+    try:
+        _injected_error(operation, path)
+        _injected_error("fsync", path)
+        os.fsync(descriptor)
+    except OSError as error:
+        if error.errno in _UNSUPPORTED_DIRECTORY_ERRORS:
+            return Persistence.UNSUPPORTED
+        raise
+    finally:
+        os.close(descriptor)
+    return Persistence.CONFIRMED
+
+
+def persist(effect):
+    """Apply one private namespace effect and confirm its carrying directory."""
+    effect.apply()
+    try:
+        _injected_error(effect.operation.value, effect.path)
+        return _confirm_directory(effect.directory, effect.operation.value)
+    except OSError as error:
+        raise VisibilityUnconfirmed(
+            effect.path, effect.operation.value, effect.complete, error
+        ) from error
+
+
+def confirm_directory(path):
+    """Confirm an existing directory without changing its namespace."""
+    path = Path(path)
+    try:
+        return _confirm_directory(path, "confirm")
+    except OSError as error:
+        raise VisibilityUnconfirmed(path, "confirmation", True, error) from error
+
+
+def ensure_owned_directory(path, anchor, creation_point="mkdir"):
+    """Create and confirm a journal-owned directory chain below ``anchor``."""
+    path = Path(path)
+    anchor = Path(anchor)
+    try:
+        relative = path.relative_to(anchor)
+    except ValueError as error:
+        raise ValueError(f"{path} is not below persistence anchor {anchor}") from error
+
+    current = anchor
+    created = []
+    for part in relative.parts:
+        current = current / part
+        try:
+            _injected_error(creation_point, current)
+            os.mkdir(current)
+        except FileExistsError:
+            if not current.is_dir():
+                raise
+        except OSError as error:
+            if created:
+                raise VisibilityUnconfirmed(
+                    created[-1], "ensure-directory-chain", False, error
+                ) from error
+            raise
+        else:
+            created.append(current)
+
+    result = Persistence.CONFIRMED
+    confirmations = []
+    current = path
+    while True:
+        confirmations.append(current)
+        if current == anchor:
+            break
+        current = current.parent
+    seen = set()
+    for directory in confirmations:
+        if directory in seen:
+            continue
+        seen.add(directory)
+        outcome = confirm_directory(directory)
+        if outcome is Persistence.UNSUPPORTED:
+            result = outcome
+    return result
+
+
+def ensure_external_directory(path, reference, creation_point="mkdir"):
+    """Create an external chain below one stable, lexically derived anchor."""
+    path = Path(os.path.abspath(path))
+    reference = Path(os.path.abspath(reference))
+    try:
+        anchor = Path(os.path.commonpath((path, reference)))
+    except ValueError:
+        # Different Windows drives have no common lexical ancestor. The
+        # target drive root is still stable and this operation creates only
+        # names in the caller-supplied target chain below it.
+        anchor = Path(path.anchor)
+    if not anchor.is_dir():
+        raise NotADirectoryError(os.fspath(anchor))
+    return ensure_owned_directory(path, anchor, creation_point)
+
+
+def repair_symlink(path, target, reference):
+    """Durably restore the fail-open harness link through this private seam."""
+    path = Path(path)
+    ancestry_error = None
+    try:
+        ensure_external_directory(
+            path.parent, reference, creation_point="repair-mkdir"
+        )
+    except VisibilityUnconfirmed as error:
+        # The fail-open contract still restores the link when all required
+        # parent names are visible. Preserve the ancestry failure so the run
+        # gates even if that restoration and its immediate barrier succeed.
+        ancestry_error = error
+    outcome = replace_symlink(path, target)
+    if ancestry_error is not None:
+        raise ancestry_error
+    return outcome
 
 
 def install(temporary, target):
-    """Atomically move `temporary` onto `target`, and ask for the barrier.
+    """Atomically install complete bytes and confirm the target name."""
+    temporary = Path(temporary)
+    target = Path(target)
+    return persist(
+        _Effect(
+            _Operation.INSTALL,
+            target,
+            target.parent,
+            lambda: os.replace(temporary, target),
+        )
+    )
 
-    The rename is atomic on every platform this runs on. The durability is
-    conditional: `fsync_directory` skips the barrier on a platform that
-    cannot open a directory for reading, for the reason its own docstring
-    gives, so what this promises unconditionally is the atomicity and not
-    the survival of the directory entry.
 
-    `os.replace` publishes the new bytes under the old name, but the
-    directory entry carrying that name is itself buffered. Without the
-    directory fsync, a `committed` record that was flushed to disk can
-    outlive the rename it describes -- "a record describes a state that
-    never existed", one power cut down -- so
-    docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md
-    §4's claim that a `committed` record means the bytes are on disk
-    would hold for a process crash and not for a power loss.
+def install_bytes(path, data, mode=0o600, verify=None, temporary=None, crash_storage=False):
+    """Build complete private bytes, optionally verify them, then install."""
+    path = Path(path)
+    provided = temporary is not None
+    descriptor = None
+    if provided:
+        temporary = Path(temporary)
+    else:
+        temporary, descriptor = _temporary_path(path.parent, path.name)
+    identity = None
+    try:
+        if provided:
+            descriptor = os.open(
+                temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+            )
+        # Keep the descriptor open through metadata changes.  Applying mode
+        # through the pathname after closing it lets a concurrent replacement
+        # turn a harmless staging operation into a chmod of a foreign target.
+        with os.fdopen(descriptor, "wb", closefd=False) as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+            identity = os.fstat(handle.fileno())
+        _swap_staging_for_test(temporary)
+        _chmod_staging(descriptor, temporary, mode)
+        if verify is not None:
+            verify(temporary)
+        if identity is None or not _same_open_entry(temporary, identity):
+            raise OSError(
+                errno.EBUSY,
+                "staging entry changed before atomic installation",
+                os.fspath(temporary),
+            )
+        if crash_storage:
+            storage_crash("staged-before-install", temporary)
+        return install(temporary, path)
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+            descriptor = None
+        if identity is not None and _same_open_entry(temporary, identity):
+            temporary.unlink()
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
-    The order is the guarantee, and no test in this suite reaches it: a
-    power loss is not observable at the CLI seam this project tests
-    through, so what pins the sequence is this sentence and the review
-    that reads it.
-    """
-    os.replace(temporary, target)
-    fsync_directory(Path(target).parent)
+
+def create_exclusive(path, data, mode=0o666):
+    """Create and flush one complete file without replacing an existing name."""
+    path = Path(path)
+
+    def apply():
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
+        try:
+            with open(descriptor, "wb", closefd=True) as handle:
+                _injected_error("write", path)
+                handle.write(data)
+                handle.flush()
+                _injected_error("file-fsync", path)
+                os.fsync(handle.fileno())
+        except OSError as content_error:
+            try:
+                remove_name(path)
+            except (OSError, VisibilityUnconfirmed) as cleanup_error:
+                combined = OSError(
+                    errno.EIO,
+                    f"{content_error}; cleanup could not be confirmed: "
+                    f"{cleanup_error}",
+                    os.fspath(path),
+                )
+                raise VisibilityUnconfirmed(
+                    path,
+                    _Operation.CREATE_EXCLUSIVE.value,
+                    False,
+                    combined,
+                ) from cleanup_error
+            raise
+
+    return persist(
+        _Effect(_Operation.CREATE_EXCLUSIVE, path, path.parent, apply)
+    )
+
+
+def create_directory(path):
+    """Create one directory and confirm the name in its parent."""
+    path = Path(path)
+    return persist(
+        _Effect(
+            _Operation.CREATE_DIRECTORY,
+            path,
+            path.parent,
+            lambda: os.mkdir(path),
+        )
+    )
+
+
+def replace_symlink(path, target, temporary=None, crash_storage=False):
+    """Atomically publish a symlink and confirm its carrying directory."""
+    path = Path(path)
+    forced = os.environ.get("VALIDATED_MEMORY_SYMLINK_TEMP_NAME")
+    temporary = (
+        Path(temporary)
+        if temporary is not None
+        else path.parent / (
+            forced
+            if forced
+            else f".{path.name}.{next(tempfile._get_candidate_names())}.tmp"
+        )
+    )
+
+    def apply():
+        created = False
+        try:
+            os.symlink(target, temporary)
+            created = True
+            if crash_storage:
+                storage_crash("staged-before-install", temporary)
+            os.replace(temporary, path)
+        except OSError:
+            if created:
+                temporary.unlink(missing_ok=True)
+            raise
+
+    return persist(
+        _Effect(_Operation.REPLACE_SYMLINK, path, path.parent, apply)
+    )
+
+
+def append_bytes(path, data):
+    """Append complete bytes, flush them, then confirm the history location."""
+    path = Path(path)
+
+    def apply():
+        handle = path.open("ab")
+        try:
+            with handle:
+                storage_prefix(path, data, handle)
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as error:
+            raise VisibilityUnconfirmed(
+                path, _Operation.APPEND.value, False, error
+            ) from error
+
+    return persist(_Effect(_Operation.APPEND, path, path.parent, apply))
+
+
+def remove_name(path, directory=False):
+    """Remove one name and confirm its absence in the carrying directory."""
+    path = Path(path)
+    apply = (lambda: os.rmdir(path)) if directory else (
+        lambda: path.unlink(missing_ok=True)
+    )
+    return persist(
+        _Effect(
+            _Operation.REMOVE,
+            path,
+            path.parent,
+            apply,
+        )
+    )
+
+
+def read_file_snapshot(path):
+    """Read bytes and mode from the regular file held by one descriptor."""
+    path = Path(path)
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError(errno.EBUSY, "path is not a regular file", os.fspath(path))
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        held = os.fstat(descriptor)
+        after = os.lstat(path)
+        identity = (held.st_dev, held.st_ino)
+        if (
+            not stat.S_ISREG(held.st_mode)
+            or (before.st_dev, before.st_ino) != identity
+            or (after.st_dev, after.st_ino) != identity
+        ):
+            raise OSError(
+                errno.EBUSY,
+                "path changed while its file snapshot was read",
+                os.fspath(path),
+            )
+        with open(descriptor, "rb", closefd=False) as handle:
+            data = handle.read()
+    finally:
+        os.close(descriptor)
+    return data, stat.S_IMODE(held.st_mode)
+
+
+def _swap_snapshot_for_test(path, snapshot_kind, data, mode):
+    """Deterministically change a validated pathname for race coverage."""
+    requested = {
+        item.strip()
+        for item in os.environ.get(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
+        ).split(",")
+        if item.strip()
+    }
+    name = Path(path).name
+    if f"swap-target-symlink:{name}" in requested:
+        backing = Path(path).with_name(f".{name}.swap-target")
+        backing.write_bytes(data)
+        Path(path).unlink()
+        os.symlink(backing.name, path)
+    elif f"swap-target-mode:{name}" in requested:
+        os.chmod(path, 0o600 if mode != 0o600 else 0o644)
+    elif f"swap-history:{name}" in requested:
+        data = Path(path).read_bytes()
+        changed = data[:-1] + b"\r\n" if data.endswith(b"\n") else data + b"\r\n"
+        with Path(path).open("wb") as handle:
+            handle.write(changed)
+            handle.flush()
+            os.fsync(handle.fileno())
+    elif f"swap-{snapshot_kind}:{name}" in requested:
+        Path(path).write_bytes(b"adversarial swap\n")
+
+
+def swap_final_history_for_test(path, transaction):
+    """Remove one pair before final snapshot validation when tests request it."""
+    path = Path(path)
+    requested = {
+        item.strip()
+        for item in os.environ.get(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
+        ).split(",")
+        if item.strip()
+    }
+    if f"swap-history-final:{path.name}" not in requested:
+        return
+    kept = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or json.loads(line).get("transaction") != transaction:
+            kept.append(line)
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write("\n".join(kept) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def republish_file(path, data, mode, snapshot_kind):
+    """Republish exact readable bytes through a fresh atomic namespace effect."""
+    path = Path(path)
+    temporary, descriptor = _temporary_path(
+        path.parent, path.name, ".republish.tmp"
+    )
+    identity = None
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+            identity = os.fstat(handle.fileno())
+        _swap_staging_for_test(temporary)
+        _chmod_staging(descriptor, temporary, mode)
+        _swap_snapshot_for_test(path, snapshot_kind, data, mode)
+        try:
+            current_data, current_mode = read_file_snapshot(path)
+        except OSError as error:
+            raise OSError(
+                errno.EBUSY,
+                f"{snapshot_kind} changed after its validated snapshot: "
+                f"{error}",
+                os.fspath(path),
+            ) from error
+        if current_data != data or current_mode != mode:
+            raise OSError(
+                errno.EBUSY,
+                f"{snapshot_kind} changed after its validated snapshot",
+                os.fspath(path),
+            )
+        return install(temporary, path)
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+            descriptor = None
+        if identity is not None and _same_open_entry(temporary, identity):
+            temporary.unlink()
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def republish_directory(path):
+    """Establish a fresh namespace operation for an exact directory state."""
+    path = Path(path)
+    if any(path.iterdir()):
+        raise OSError(
+            errno.ENOTEMPTY,
+            "directory postimage is not empty",
+            os.fspath(path),
+        )
+    if os.name == "nt":
+        raise OSError(
+            errno.ENOTSUP,
+            "automatic empty-directory recovery is unsupported on Windows; "
+            "the transaction is retained for manual inspection",
+            os.fspath(path),
+        )
+    parent = path.parent.resolve()
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f".{path.name}.republish.", dir=parent)
+    )
+    try:
+        os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
+        staging = ensure_owned_directory(temporary, parent)
+        if staging is Persistence.UNSUPPORTED:
+            error = OSError(
+                errno.ENOTSUP,
+                "the staging directory and its carrying entry cannot be "
+                "confirmed on this filesystem",
+                os.fspath(temporary),
+            )
+            raise VisibilityUnconfirmed(
+                temporary, "stage-directory", True, error
+            ) from error
+        return persist(
+            _Effect(
+                _Operation.INSTALL,
+                path,
+                path.parent,
+                lambda: os.replace(temporary, path),
+            )
+        )
+    except VisibilityUnconfirmed:
+        raise
+    except Exception:
+        try:
+            temporary.rmdir()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def fsync_directory(path):
-    """Flush a directory's own entries to disk.
-
-    A platform where a directory cannot be opened for reading skips the
-    barrier rather than failing the write it was protecting: the bytes are
-    already fsynced and renamed at this point, and refusing here would turn
-    a durability improvement into a lost mutation.
-    """
-    try:
-        handle = os.open(path, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(handle)
-    except OSError:
-        pass
-    finally:
-        os.close(handle)
+    """Compatibility name for a truthful directory confirmation."""
+    return confirm_directory(path)
