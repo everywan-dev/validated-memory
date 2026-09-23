@@ -3284,6 +3284,65 @@ def test_a_kill_at_after_publish_leaves_bytes_the_transaction_has_not_claimed(
     _recovers_to_exactly_one_pair(run_cli, tmp_path, ".gitignore", monkeypatch)
 
 
+def test_a_caught_publish_marker_failure_recovers_exactly_once(
+    run_cli, tmp_path, monkeypatch
+):
+    """A failed WAL marker retains the visible target for exact recovery."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "mark-published"
+    )
+
+    failed = run_cli("init", cwd=tmp_path)
+
+    assert failed.returncode == 1, (
+        failed.returncode,
+        failed.stdout,
+        failed.stderr,
+    )
+    assert "Traceback" not in failed.stderr, failed.stderr
+    assert (
+        "target barrier completed, but the published marker's durability "
+        "is unconfirmed"
+    ) in failed.stderr, failed.stderr
+    assert "Nothing has been published" not in failed.stderr, failed.stderr
+    ignore = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert "/.validated-memory/" in ignore, ignore
+
+    open_transactions = _transactions(tmp_path)
+    assert len(open_transactions) == 1, open_transactions
+    entry = open_transactions[0]
+    transaction = entry["transaction"]
+    assert entry["stage"] == "prepared", entry
+    assert entry["unconfirmed"] == "target", entry
+    assert entry["intention"]["path"] == ".gitignore", entry
+    assert not [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record.get("transaction") == transaction
+    ]
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    recovered = run_cli("init", cwd=tmp_path)
+
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    assert not _transactions(tmp_path), _transactions(tmp_path)
+    records = _records(tmp_path / "journal.jsonl")
+    pair = [
+        record
+        for record in records
+        if record.get("transaction") == transaction
+    ]
+    assert [record["stage"] for record in pair] == [
+        "prepared",
+        "committed",
+    ], pair
+    assert all(record["path"] == ".gitignore" for record in pair), pair
+
+    again = run_cli("init", cwd=tmp_path)
+    assert again.returncode == 0, (again.stdout, again.stderr)
+    assert _records(tmp_path / "journal.jsonl") == records
+
+
 def test_a_kill_at_after_history_leaves_records_the_transaction_outlived(
     run_cli, tmp_path, monkeypatch
 ):

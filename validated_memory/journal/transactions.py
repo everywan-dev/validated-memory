@@ -206,6 +206,16 @@ def mark_published(root, transaction_id, published_mode=None):
     proves publication happened before another writer changed the target.
     """
     path = _transaction_path(root, transaction_id)
+    if "mark-published" in {
+        item.strip()
+        for item in os.environ.get("VALIDATED_MEMORY_PERSISTENCE_FAULT", "").split(",")
+        if item.strip()
+    }:
+        raise OSError(
+            errno.EIO,
+            "injected published-marker persistence failure",
+            os.fspath(path),
+        )
     entry = json.loads(path.read_text(encoding="utf-8"))
     entry["stage"] = PUBLISHED
     if published_mode is not None:

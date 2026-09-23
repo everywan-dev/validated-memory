@@ -971,6 +971,10 @@ barrier failing in one run; `fact:target`, `fact:history`, `fact:cleanup` and
 `fact:restore` address only that retained local fact. It is not part of the
 crash-point vocabulary above.
 
+The private `mark-published` persistence point raises a caught I/O error after
+target publication and before the WAL's published-marker rewrite. It exercises
+the retained target-uncertainty path; it is not a fifth hard-crash seam.
+
 Storage-only crash tests use the separate private
 `VALIDATED_MEMORY_STORAGE_CRASH` seam. `history-prefix:N` writes and fsyncs
 exactly the selected byte prefix before `os._exit`, while
