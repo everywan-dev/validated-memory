@@ -99,3 +99,31 @@ def test_journal_repair_synopsis_and_writing_modes_are_documented():
     assert "--resolve` and `--repair`" in cli
     assert "--resolve` and `--repair`" in journal
     assert "`--resolve` and `--repair` are the two targeted modes" in command
+
+
+def test_journal_introduction_links_every_section():
+    """The reader-journey navigation reaches every current H2 section."""
+    journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(
+        encoding="utf-8"
+    )
+    introduction, separator, body = journal.partition("\n## ")
+    assert separator, "the journal reference has no H2 sections"
+    headings = re.findall(r"^## (.+)$", "## " + body, re.MULTILINE)
+
+    def _github_fragment(heading):
+        words = re.sub(r"[^\w -]", "", heading.lower())
+        return words.replace(" ", "-")
+
+    section_fragments = [_github_fragment(heading) for heading in headings]
+    assert len(section_fragments) == len(set(section_fragments)), (
+        f"journal H2 headings derive duplicate fragments: {section_fragments}"
+    )
+
+    linked_fragments = re.findall(r"\]\(#([^)]+)\)", introduction)
+    assert len(linked_fragments) == len(set(linked_fragments)), (
+        f"journal introduction repeats section links: {linked_fragments}"
+    )
+    assert set(linked_fragments) == set(section_fragments), (
+        "journal introduction fragments differ from H2 sections: "
+        f"linked={linked_fragments}, sections={section_fragments}"
+    )

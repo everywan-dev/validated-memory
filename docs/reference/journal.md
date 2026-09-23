@@ -1,19 +1,27 @@
 # Journal
 
 The append-only record of what adoption did to this project, and the
-`journal` subcommand that reports, reconciles and resolves it: [The three
-records](#the-three-records) · [The two artifacts](#the-two-artifacts) ·
-[The write-ahead log](#the-write-ahead-log) · [Expected states, and what a
-precondition promises](#expected-states-and-what-a-precondition-promises) ·
-[What is recorded, and what is not
-yet](#what-is-recorded-and-what-is-not-yet) · [Common
-fields](#common-fields) ·
-[Operations and their inverses](#operations-and-their-inverses) ·
-[Stages and unfinished transactions](#stages-and-unfinished-transactions) ·
-[Recovery](#recovery) · [Resolving a
-transaction](#resolving-a-transaction) ·
-[The `journal` subcommand](#the-journal-subcommand) · [The fault-injection
-seam](#the-fault-injection-seam). Why the journal is split by durability is
+`journal` subcommand that reports, reconciles and resolves it. Follow the
+journey that matches what you need:
+
+- **Understand the record:** [The three records](#the-three-records), [The
+  two artifacts](#the-two-artifacts), [The write-ahead
+  log](#the-write-ahead-log), [Expected states, and what a precondition
+  promises](#expected-states-and-what-a-precondition-promises), [What is
+  recorded, and what is not yet](#what-is-recorded-and-what-is-not-yet), and
+  [Common fields](#common-fields).
+- **Follow a mutation:** [Operations and their
+  inverses](#operations-and-their-inverses) and [Stages and unfinished
+  transactions](#stages-and-unfinished-transactions).
+- **Operate and recover:** [The `journal`
+  subcommand](#the-journal-subcommand), [Recovery](#recovery), [Resolving a
+  transaction](#resolving-a-transaction), [Recovery after an unconfirmed
+  barrier](#recovery-after-an-unconfirmed-barrier), and [Explicit repair of a
+  torn history append](#explicit-repair-of-a-torn-history-append).
+- **Develop and test:** [The fault-injection
+  seam](#the-fault-injection-seam).
+
+Why the journal is split by durability is
 [ADR 0008](../adr/0008-the-journal-is-versioned-and-the-vault-is-local.md);
 why a refusal never reaches it is [ADR
 0009](../adr/0009-a-refusal-is-never-permanent-history.md).
