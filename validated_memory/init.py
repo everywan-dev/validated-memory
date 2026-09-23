@@ -485,7 +485,11 @@ def _ensure_dir(path, session):
 
     A directory that is already there is recorded as an observation: that it
     pre-existed is a fact about the state before adoption, and nothing can
-    re-derive it later.
+    re-derive it later. A symlink resolving to a directory inside the adopter
+    is an accepted logical container, but the observation names the symlink
+    and its resolved adopter-relative target truthfully. The journal's machine
+    state remains lstat-based, so this note does not turn the node itself into
+    a directory or bypass authorisation of the path and its children.
 
     A broken symlink is the same shape `_ensure_file` refuses, and it earns
     the same answer here: `mkdir` cannot create through it, and the
@@ -505,7 +509,23 @@ def _ensure_dir(path, session):
     if path.is_symlink() and not path.exists():
         return location, None, Finding(ERROR, location, "create", BROKEN_SYMLINK)
     if path.is_dir():
-        finding = _observe(session, location, "directory already present")
+        note = "directory already present"
+        if path.is_symlink():
+            try:
+                relative_target = os.path.relpath(
+                    path.resolve(), Path.cwd().resolve()
+                )
+            except ValueError:
+                # A cross-volume target cannot be relative to the adopter.
+                # The journal authorisation below still owns the refusal; this
+                # placeholder can never be recorded for an authorised path.
+                relative_target = "../outside-adopter"
+            target = Path(relative_target).as_posix()
+            note = (
+                "directory symlink already present; resolves inside the "
+                f"adopter to '{target}'"
+            )
+        finding = _observe(session, location, note)
         if finding is not None:
             return location, None, finding
         return location, "kept", None

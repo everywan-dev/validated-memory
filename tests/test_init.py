@@ -291,10 +291,11 @@ def test_a_directory_that_cannot_be_created_gates_with_an_error(adopter_dir, run
         os.chmod(locked, 0o700)
 
 
-def test_a_directory_blocked_by_a_broken_symlink_gates_and_records_nothing(
-    adopter_dir, run_cli
+@pytest.mark.parametrize("target", ("nowhere-at-all", "knowledge"))
+def test_a_directory_blocked_by_an_unresolved_symlink_gates_without_a_record(
+    adopter_dir, run_cli, target
 ):
-    """`init` never destroys what the adopter put there, and never files junk.
+    """A missing-target or looping link is preserved without false history.
 
     `Path.exists()` follows a symlink and reads a broken one as absent, so
     `_ensure_dir` wrote the `create` `prepared` record and only then found
@@ -308,7 +309,7 @@ def test_a_directory_blocked_by_a_broken_symlink_gates_and_records_nothing(
     """
     import json
 
-    (adopter_dir / "knowledge").symlink_to("nowhere-at-all")
+    (adopter_dir / "knowledge").symlink_to(target)
 
     for _ in range(3):
         result = run_cli("init", cwd=adopter_dir)
@@ -471,6 +472,122 @@ def test_an_observation_that_cannot_be_recorded_gates_only_its_own_item(
     assert (adopter / "validated-memory.md").is_file()
     assert (adopter / "knowledge-extension.md").is_file()
     assert not (outside / "MEMORY.md").exists()
+
+
+@pytest.mark.parametrize(
+    ("managed", "absolute_target"),
+    (("memory", False), ("knowledge", True)),
+)
+def test_in_root_directory_symlink_is_kept_with_a_truthful_first_sight_note(
+    adopter_dir, run_cli, managed, absolute_target
+):
+    import json
+
+    target = adopter_dir / "containers" / f"real-{managed}"
+    target.mkdir(parents=True)
+    marker = target / "preserved.txt"
+    marker.write_bytes(b"preserved target bytes\x00\xff")
+    raw_target = (
+        str(target)
+        if absolute_target
+        else target.relative_to(adopter_dir).as_posix()
+    )
+    link = adopter_dir / managed
+    link.symlink_to(raw_target, target_is_directory=True)
+
+    result = run_cli("init", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert f"init: kept {managed}" in result.stdout.splitlines()
+    assert f"init: created {managed}" not in result.stdout.splitlines()
+    assert link.is_symlink()
+    assert os.readlink(link) == raw_target
+    assert marker.read_bytes() == b"preserved target bytes\x00\xff"
+    records = [
+        json.loads(line)
+        for line in (adopter_dir / "journal.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    managed_records = [entry for entry in records if entry["path"] == managed]
+    assert len(managed_records) == 1
+    observation = managed_records[0]
+    assert {
+        key: value
+        for key, value in observation.items()
+        if key not in ("adoption", "at", "run", "version")
+    } == {
+        "durability": "repo",
+        "note": (
+            "directory symlink already present; resolves inside the "
+            f"adopter to 'containers/real-{managed}'"
+        ),
+        "op": "observe",
+        "path": managed,
+        "purpose": "init",
+        "schema": 1,
+        "stage": "committed",
+    }
+    assert all(observation[key] for key in ("adoption", "at", "run", "version"))
+    assert not list(
+        (adopter_dir / ".validated-memory" / "transactions").glob("*.json")
+    )
+
+    if managed == "memory":
+        assert (target / "MEMORY.md").is_file()
+        child = [
+            entry for entry in records if entry["path"] == "memory/MEMORY.md"
+        ]
+        assert [entry["op"] for entry in child] == ["create", "create"]
+        assert [entry["stage"] for entry in child] == ["prepared", "committed"]
+
+    journal_before = (adopter_dir / "journal.jsonl").read_bytes()
+    link_before = os.readlink(link)
+    target_before = _tree_snapshot(target)
+
+    repeated = run_cli("init", cwd=adopter_dir)
+
+    assert repeated.returncode == 0, repeated.stderr
+    assert f"init: kept {managed}" in repeated.stdout.splitlines()
+    assert f"init: created {managed}" not in repeated.stdout.splitlines()
+    assert (adopter_dir / "journal.jsonl").read_bytes() == journal_before
+    assert os.readlink(link) == link_before
+    assert _tree_snapshot(target) == target_before
+
+
+def test_existing_directory_observation_is_not_rewritten_for_a_later_symlink(
+    adopter_dir, run_cli
+):
+    import json
+
+    memory = adopter_dir / "memory"
+    memory.mkdir()
+    first = run_cli("init", cwd=adopter_dir)
+    assert first.returncode == 0, first.stderr
+    journal = adopter_dir / "journal.jsonl"
+    before = journal.read_bytes()
+    observations = [
+        json.loads(line)
+        for line in before.decode("utf-8").splitlines()
+        if json.loads(line)["path"] == "memory"
+    ]
+    assert len(observations) == 1
+    assert observations[0]["note"] == "directory already present"
+
+    target = adopter_dir / "containers" / "real-memory"
+    target.parent.mkdir()
+    memory.rename(target)
+    memory.symlink_to("containers/real-memory", target_is_directory=True)
+    target_before = _tree_snapshot(target)
+
+    repeated = run_cli("init", cwd=adopter_dir)
+
+    assert repeated.returncode == 0, repeated.stderr
+    assert "init: kept memory" in repeated.stdout
+    assert journal.read_bytes() == before
+    assert memory.is_symlink()
+    assert os.readlink(memory) == "containers/real-memory"
+    assert _tree_snapshot(target) == target_before
 
 
 def test_an_item_blocked_by_a_file_gates_with_an_error(adopter_dir, run_cli):

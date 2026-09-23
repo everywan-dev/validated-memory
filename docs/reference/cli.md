@@ -97,6 +97,16 @@ where the item goes -- installing over it would replace the link, and `init`
 never destroys something already there), and on a journal it could not read
 or write -- see [Journal](journal.md).
 
+Managed directories and managed files deliberately have different node
+rules. `memory/` and `knowledge/` may be real directories or symlinks that
+resolve to real directories inside the adopter. Such an in-adopter directory
+symlink is kept as a logical container; its first observation identifies it
+as a symlink and names the resolved adopter-relative target. Its children are
+still authorised and recorded separately. A directory symlink that is broken,
+loops, resolves outside the adopter or resolves to a non-directory is refused
+and preserved. At a managed file name, only the exact regular file is kept:
+every symlink is refused and preserved rather than read through.
+
 An item `init` cannot create is refused by the executor, which names what it
 found rather than what it expected in the abstract. The three shapes an
 adopter meets:

@@ -2249,6 +2249,28 @@ def test_link_publication_does_not_create_ancestry_inside_publish():
     assert ".mkdir(parents=True" not in publish
 
 
+def test_directory_publication_requires_its_named_parent_and_one_mkdir():
+    """A repo directory intention never creates an unrecorded ancestor."""
+    executor = (
+        REPO_ROOT / "validated_memory" / "journal" / "executor.py"
+    ).read_text(encoding="utf-8")
+    publish = executor.split("    def _publish(", 1)[1].split("\n    def ", 1)[0]
+    directory_branch = publish.split("if intention.directory:", 1)[1].split(
+        "elif intention.op == LINK:", 1
+    )[0]
+    assert "if not target.parent.is_dir():" in directory_branch
+    assert directory_branch.count("create_directory(target)") == 1
+
+    durable = (
+        REPO_ROOT / "validated_memory" / "journal" / "durable.py"
+    ).read_text(encoding="utf-8")
+    helper = durable.split("def create_directory(path):", 1)[1].split(
+        "\ndef ", 1
+    )[0]
+    assert "lambda: os.mkdir(path)" in helper
+    assert "parents=True" not in helper
+
+
 def test_visible_file_create_barrier_failure_recovers_exactly_once(
     run_cli, tmp_path, monkeypatch
 ):

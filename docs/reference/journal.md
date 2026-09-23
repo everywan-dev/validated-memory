@@ -267,6 +267,18 @@ intention may only ever expect `absent` -- a creation over something already
 there is a replacement, and it has to say so, because the inverse of a
 create is removal.
 
+`init` has one higher-level policy distinction that does not change this
+machine vocabulary. An existing managed-directory symlink that resolves to a
+real directory inside the adopter is accepted as a logical container. Its
+first-sight `observe` record says `directory symlink already present; resolves
+inside the adopter to '<target>'`, with an adopter-relative POSIX target. That
+note is a truthful historical annotation, not a structured state predicate or
+a promise about the symlink's current target; the journal still sees the node
+as `symlink(target)`. Historical observations, including older generic notes,
+are never rewritten, and each child mutation through the logical container is
+authorised and recorded separately. Managed files have no such policy:
+keeping one requires the exact regular-file node.
+
 What the check buys, stated exactly, because overstating it would be the
 same class of defect this core exists to remove:
 
@@ -330,6 +342,16 @@ Unexpected post-visibility confirmation failure is an ERROR even on this
 fail-open path; an ordinary failure before the link becomes visible remains a
 WARNING. Every
 publication then requests a barrier on the directory that carries its name.
+
+This also fixes the public parent policy at the intention boundary. A
+repository directory intention creates only its named directory with one
+`mkdir`, and both repository directory and file intentions refuse a missing
+parent rather than creating it implicitly. The external harness link is the
+sole public exception: its supplied external parent chain is created and
+confirmed before the link transaction begins. Journal-owned lock,
+transaction and preimage directories are private persistence storage, not
+implicit adopter scaffold parents. These guarantees do not claim that an
+ancestor is descriptor-stabilised; the race described above remains.
 
 **Metadata means the mode, and nothing else.** A replacement copies the
 target's mode onto the temporary before the rename, so an adopter's 0640
