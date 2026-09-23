@@ -3,8 +3,10 @@
 Publication is per artifact, not across pages; concurrent processes are
 last-writer-wins and may publish an older snapshot. The knowledge page uses
 one verdict-log reading. A failed temporary cleanup is reported after the
-primary write failure without replacing it. No concurrency or atomic-reader
-test pins these publication limits.
+primary write failure without replacing it. Black-box concurrency coverage
+pins per-artifact canonical-target visibility during staging and the documented
+last-writer-wins result; it does not establish cross-artifact atomicity or
+eliminate pathname races.
 """
 
 import errno

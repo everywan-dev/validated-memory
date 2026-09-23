@@ -5,6 +5,9 @@ import os
 import re
 import shutil
 import stat
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -419,6 +422,56 @@ def _assert_self_contained(page, page_events):
     return elements
 
 
+_HTML_VOID_ELEMENTS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+    "meta", "param", "source", "track", "wbr",
+}
+
+
+def _parsed_html_tree(page, page_events):
+    """Build a minimal ordered tree from the independent stdlib event stream."""
+    root = {"tag": None, "attrs": {}, "content": []}
+    stack = [root]
+    for event in page_events(page):
+        if event[0] == "data":
+            stack[-1]["content"].append(event[1])
+            continue
+        if event[0] == "start":
+            node = {"tag": event[1], "attrs": event[2], "content": []}
+            stack[-1]["content"].append(node)
+            if event[1] not in _HTML_VOID_ELEMENTS:
+                stack.append(node)
+            continue
+        assert len(stack) > 1 and stack[-1]["tag"] == event[1], event
+        stack.pop()
+    assert stack == [root]
+    return root
+
+
+def _walk_nodes(root):
+    """Yield parsed element nodes in source order without recursive traversal."""
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        if node["tag"] is not None:
+            yield node
+        children = [item for item in node["content"] if isinstance(item, dict)]
+        pending.extend(reversed(children))
+
+
+def _node_text(node):
+    """Return descendant text in source order without recursion."""
+    parts = []
+    pending = list(reversed(node["content"]))
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            parts.append(item)
+        else:
+            pending.extend(reversed(item["content"]))
+    return "".join(parts)
+
+
 def _assert_app_self_contained(page, page_events):
     """App source allows exactly one attribute-less script, then strict HTML."""
     scripts = [event for event in page_events(page)
@@ -719,9 +772,9 @@ def test_a_verdict_log_that_is_not_utf8_is_reported_without_a_line_number(
 
 
 def test_the_history_window_shows_twenty_and_states_the_true_total(
-    run_cli, adopter_dir, write_unit
+    run_cli, adopter_dir, write_unit, page_events
 ):
-    """Show the newest 20 records while reporting both full totals as 25."""
+    """Keep the newest append window while presenting its two exact orders."""
     run_cli("init", cwd=adopter_dir)
     write_unit(
         "kb-0001.md",
@@ -730,11 +783,30 @@ def test_the_history_window_shows_twenty_and_states_the_true_total(
         "    captured_at: 2025-12-01T00:00:00Z\n    payload: {}\n",
         "# Title\n",
     )
-    _log(adopter_dir, [
-        {"unit": "kb-0001", "system": "repo", "kind": "git_ref", "payload": {},
-         "verdict": "current", "recorded_at": f"2026-01-{day:02d}T00:00:00Z"}
-        for day in range(1, 26)
-    ])
+    verdicts = ("current", "drifted", "unknown")
+
+    def verdict(position):
+        return verdicts[(position - 1) % len(verdicts)]
+
+    def timestamp(position):
+        # Reverse chronological values make timestamp sorting disagree with
+        # append order while remaining valid timestamps.
+        return f"2026-01-{26 - position:02d}T00:00:00Z"
+
+    _log(
+        adopter_dir,
+        [
+            {
+                "unit": "kb-0001",
+                "system": "repo",
+                "kind": "git_ref",
+                "payload": {},
+                "verdict": verdict(position),
+                "recorded_at": timestamp(position),
+            }
+            for position in range(1, 26)
+        ],
+    )
 
     run_cli("render", cwd=adopter_dir)
     page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
@@ -743,8 +815,50 @@ def test_the_history_window_shows_twenty_and_states_the_true_total(
     assert "25 record(s)" in page
     assert "of which 25 belong to an anchor shown below" in page
     assert "25 record(s) for this anchor; showing 20." in page
-    assert "2026-01-25T00:00:00Z" in page
-    assert "2026-01-01T00:00:00Z" not in page
+    tree = _parsed_html_tree(page, page_events)
+    record_values = [
+        _node_text(node)
+        for node in _walk_nodes(tree)
+        if node["tag"] == "li" and node["attrs"].get("class") == "record"
+    ]
+    expected_records = [
+        f"{timestamp(position)} {verdict(position)}"
+        for position in range(25, 5, -1)
+    ]
+    assert record_values == expected_records
+
+    freshness = [
+        node
+        for node in _walk_nodes(tree)
+        if node["tag"] == "svg" and node["attrs"].get("class") == "freshness"
+    ]
+    assert len(freshness) == 1
+    direct = [
+        item for item in freshness[0]["content"] if isinstance(item, dict)
+    ]
+    rects = [node for node in direct if node["tag"] == "rect"]
+    band_values = []
+    for rect in rects:
+        titles = [
+            item
+            for item in rect["content"]
+            if isinstance(item, dict) and item["tag"] == "title"
+        ]
+        assert len(titles) == 1
+        band_values.append(_node_text(titles[0]))
+    expected_bands = [
+        f"{timestamp(position)} {verdict(position)}"
+        for position in range(6, 26)
+    ]
+    assert band_values == expected_bands
+    omitted = {
+        f"{timestamp(position)} {verdict(position)}" for position in range(1, 6)
+    }
+    assert omitted.isdisjoint(record_values)
+    assert omitted.isdisjoint(band_values)
+    assert freshness[0]["attrs"]["aria-label"].endswith(
+        f"ending {verdict(25)}"
+    )
 
 
 def test_a_record_without_a_payload_is_never_attributed_to_an_anchor(
@@ -889,6 +1003,81 @@ def test_a_chain_three_deep_nests_correctly_and_renders_each_unit_once(
 
     # No repeat reference anywhere: a straight chain never re-enters a unit.
     assert 'class="repeat"' not in page
+
+
+def test_a_chain_deeper_than_the_child_recursion_limit_renders_iteratively(
+    run_cli, adopter_dir, write_unit, page_elements, page_events
+):
+    limit_result = subprocess.run(
+        [sys.executable, "-P", "-c", "import sys; print(sys.getrecursionlimit())"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    child_limit = int(limit_result.stdout.strip())
+    assert child_limit <= 1500, "refuse an unexpectedly large unbounded fixture"
+    depth = child_limit + 25
+    assert depth > child_limit
+
+    initialized = run_cli("init", cwd=adopter_dir)
+    assert initialized.returncode == 0, initialized.stderr
+    midpoint = depth // 2
+    for position in range(1, depth + 1):
+        unit_id = f"kb-{position:04d}"
+        supersedes = (
+            ""
+            if position == 1
+            else f"supersedes:\n  - kb-{position - 1:04d}\n"
+        )
+        body = f"T3 chain body {position}"
+        if position in {1, midpoint, depth}:
+            body += " deep-content-marker"
+        write_unit(
+            f"{unit_id}.md",
+            f"id: {unit_id}\nevidence: measured\n{supersedes}",
+            f"# {body}\n",
+        )
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr
+    page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
+    sections = [
+        attrs
+        for tag, attrs in page_elements(page)
+        if tag == "section" and "data-unit" in attrs
+    ]
+    assert len(sections) == depth
+    assert {attrs["data-unit"] for attrs in sections} == {
+        f"kb-{position:04d}" for position in range(1, depth + 1)
+    }
+    for position in range(1, depth + 1):
+        assert page.count(f'id="unit-kb-{position:04d}"') == 1
+    assert [
+        attrs["data-unit"] for attrs in sections if attrs.get("class") == "unit"
+    ] == [f"kb-{depth:04d}"]
+    top_level = []
+    unit_depth = 0
+    open_elements = []
+    for event in page_events(page):
+        if event[0] == "start":
+            is_unit = event[1] == "section" and "data-unit" in event[2]
+            if is_unit and unit_depth == 0:
+                top_level.append(event[2]["data-unit"])
+            if event[1] not in _HTML_VOID_ELEMENTS:
+                open_elements.append((event[1], is_unit))
+                unit_depth += int(is_unit)
+        elif event[0] == "end":
+            tag, is_unit = open_elements.pop()
+            assert tag == event[1]
+            unit_depth -= int(is_unit)
+    assert not open_elements
+    assert unit_depth == 0
+    assert top_level == [f"kb-{depth:04d}"]
+    assert "T3 chain body 1 deep-content-marker" in page
+    assert f"T3 chain body {midpoint} deep-content-marker" in page
+    assert f"T3 chain body {depth} deep-content-marker" in page
 
 
 def test_a_diamond_below_one_root_renders_the_shared_unit_once(
@@ -1588,12 +1777,42 @@ def test_all_three_diagrams_carry_a_title_and_a_desc(
     result = run_cli("render", cwd=adopter_dir)
     page = (adopter_dir / "knowledge.html").read_text(encoding="utf-8")
     elements = page_elements(page)
+    tree = _parsed_html_tree(page, page_events)
 
     assert result.returncode == 0, result.stderr
     assert {
         attrs.get("class") for tag, attrs in elements if tag == "svg"
     } == {"freshness", "confluence", "rationale"}
-    assert len([tag for tag, _ in elements if tag == "desc"]) == 3
+    svgs = [node for node in _walk_nodes(tree) if node["tag"] == "svg"]
+    assert len(svgs) == 3
+    description_ids = []
+    described_by = []
+    for svg in svgs:
+        attrs = svg["attrs"]
+        assert attrs.get("role") == "img"
+        label = attrs.get("aria-label")
+        description_id = attrs.get("aria-describedby")
+        assert label
+        assert description_id
+        direct = [item for item in svg["content"] if isinstance(item, dict)]
+        titles = [node for node in direct if node["tag"] == "title"]
+        descriptions = [node for node in direct if node["tag"] == "desc"]
+        assert direct[0]["tag"] == "title"
+        assert len(titles) == 1
+        assert _node_text(titles[0]) == label
+        assert len(descriptions) == 1
+        assert direct.index(descriptions[0]) > direct.index(titles[0])
+        assert _node_text(descriptions[0]).strip()
+        assert descriptions[0]["attrs"].get("id") == description_id
+        description_ids.append(descriptions[0]["attrs"]["id"])
+        described_by.append(description_id)
+    assert len(set(description_ids)) == len(description_ids)
+    assert set(described_by) == set(description_ids)
+    all_descriptions = [
+        node for node in _walk_nodes(tree) if node["tag"] == "desc"
+    ]
+    assert len(all_descriptions) == len(description_ids)
+    assert [node["attrs"].get("id") for node in all_descriptions] == description_ids
     _assert_self_contained(page, page_events)
 
 
@@ -1930,6 +2149,176 @@ def test_a_write_failure_gates_when_the_artifact_cannot_be_replaced(
     assert "ERROR: knowledge.html: write: file could not be written" in result.stderr
     assert (adopter_dir / "knowledge.html").is_dir()
     assert not list(adopter_dir.glob("knowledge.html.*.tmp"))
+
+
+def test_concurrent_render_keeps_the_target_atomic_and_is_last_writer_wins(
+    run_cli, adopter_dir, write_unit
+):
+    descriptor_root = Path("/proc/self/fd")
+    if not descriptor_root.is_dir():
+        pytest.skip("/proc/self/fd is unavailable")
+    descriptor = os.open(__file__, os.O_RDONLY)
+    try:
+        try:
+            os.readlink(descriptor_root / str(descriptor))
+        except OSError as error:
+            pytest.skip(f"descriptor paths are unavailable: {error}")
+    finally:
+        os.close(descriptor)
+
+    initialized = run_cli("init", cwd=adopter_dir)
+    assert initialized.returncode == 0, initialized.stderr
+    unit = "kb-0001.md"
+
+    def write_body(label):
+        write_unit(
+            unit,
+            "id: kb-0001\nevidence: measured\n",
+            f"# T3 {label} snapshot\n",
+        )
+
+    target = adopter_dir / "knowledge.html"
+    write_body("baseline")
+    assert run_cli("render", cwd=adopter_dir).returncode == 0
+    baseline = target.read_bytes()
+    write_body("newer")
+    assert run_cli("render", cwd=adopter_dir).returncode == 0
+    expected_newer = target.read_bytes()
+    assert expected_newer != baseline
+    write_body("baseline")
+    assert run_cli("render", cwd=adopter_dir).returncode == 0
+    assert target.read_bytes() == baseline
+
+    control = adopter_dir.parent / f"{adopter_dir.name}-t3-render-control"
+    control.mkdir()
+    shim = control / "shim"
+    shim.mkdir()
+    half_marker = control / "half-written"
+    release_half = control / "release-half"
+    staged_marker = control / "fully-staged"
+    release_replace = control / "release-replace"
+    (shim / "sitecustomize.py").write_text(
+        "import os\n"
+        "import time\n"
+        "_real_fdopen = os.fdopen\n"
+        "_real_replace = os.replace\n"
+        "_half = os.environ['T3_HALF_MARKER']\n"
+        "_release_half = os.environ['T3_RELEASE_HALF']\n"
+        "_staged = os.environ['T3_STAGED_MARKER']\n"
+        "_release_replace = os.environ['T3_RELEASE_REPLACE']\n"
+        "def _signal(path):\n"
+        "    with open(path, 'w', encoding='utf-8') as marker:\n"
+        "        marker.write('ready\\n')\n"
+        "def _wait(path):\n"
+        "    deadline = time.monotonic() + 20\n"
+        "    while not os.path.exists(path):\n"
+        "        if time.monotonic() >= deadline:\n"
+        "            raise RuntimeError('timed out waiting for ' + path)\n"
+        "        time.sleep(0.01)\n"
+        "class _PausedWriter:\n"
+        "    def __init__(self, stream):\n"
+        "        self.stream = stream\n"
+        "        self.paused = False\n"
+        "    def __enter__(self):\n"
+        "        return self\n"
+        "    def __exit__(self, *args):\n"
+        "        return self.stream.__exit__(*args)\n"
+        "    def write(self, content):\n"
+        "        if self.paused:\n"
+        "            return self.stream.write(content)\n"
+        "        self.paused = True\n"
+        "        midpoint = len(content) // 2\n"
+        "        self.stream.write(content[:midpoint])\n"
+        "        self.stream.flush()\n"
+        "        _signal(_half)\n"
+        "        _wait(_release_half)\n"
+        "        self.stream.write(content[midpoint:])\n"
+        "        return len(content)\n"
+        "def _fdopen(fd, *args, **kwargs):\n"
+        "    try:\n"
+        "        target = os.readlink('/proc/self/fd/' + str(fd))\n"
+        "    except OSError:\n"
+        "        target = ''\n"
+        "    stream = _real_fdopen(fd, *args, **kwargs)\n"
+        "    name = os.path.basename(target)\n"
+        "    if name.startswith('knowledge.html.') and name.endswith('.tmp'):\n"
+        "        return _PausedWriter(stream)\n"
+        "    return stream\n"
+        "def _replace(source, destination, *args, **kwargs):\n"
+        "    if os.path.basename(os.fspath(destination)) == 'knowledge.html':\n"
+        "        _signal(_staged)\n"
+        "        _wait(_release_replace)\n"
+        "    return _real_replace(source, destination, *args, **kwargs)\n"
+        "os.fdopen = _fdopen\n"
+        "os.replace = _replace\n",
+        encoding="utf-8",
+    )
+
+    def wait_for(marker, process):
+        deadline = time.monotonic() + 20
+        while not marker.exists():
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                raise AssertionError(
+                    f"render exited before {marker.name}: {stdout!r} {stderr!r}"
+                )
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"timed out waiting for {marker.name}")
+            time.sleep(0.01)
+
+    write_body("older")
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join((str(shim), str(REPO_ROOT)))
+    environment.update(
+        {
+            "T3_HALF_MARKER": str(half_marker),
+            "T3_RELEASE_HALF": str(release_half),
+            "T3_STAGED_MARKER": str(staged_marker),
+            "T3_RELEASE_REPLACE": str(release_replace),
+        }
+    )
+    old_render = subprocess.Popen(
+        [sys.executable, "-P", "-m", "validated_memory", "render"],
+        cwd=adopter_dir,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        wait_for(half_marker, old_render)
+        assert target.read_bytes() == baseline
+        release_half.touch()
+        wait_for(staged_marker, old_render)
+        old_temporary = adopter_dir / f"knowledge.html.{old_render.pid}.tmp"
+        captured_old = old_temporary.read_bytes()
+        assert b"T3 older snapshot" in captured_old
+        assert b"T3 newer snapshot" not in captured_old
+
+        write_body("newer")
+        newer_render = run_cli("render", cwd=adopter_dir)
+        assert newer_render.returncode == 0, newer_render.stderr
+        assert target.read_bytes() == expected_newer
+
+        release_replace.touch()
+        old_stdout, old_stderr = old_render.communicate(timeout=20)
+        assert old_render.returncode == 0, (old_stdout, old_stderr)
+        assert "Traceback" not in old_stderr
+        assert target.read_bytes() == captured_old
+        assert not list(adopter_dir.glob("*.tmp"))
+    finally:
+        release_half.touch(exist_ok=True)
+        release_replace.touch(exist_ok=True)
+        if old_render.poll() is None:
+            try:
+                old_render.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                old_render.terminate()
+                try:
+                    old_render.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    old_render.kill()
+                    old_render.communicate(timeout=5)
 
 
 @pytest.mark.parametrize(

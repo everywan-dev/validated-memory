@@ -43,8 +43,8 @@ def _unit_section(corpus, unit_id, rendered, shown_keys, top=True):
     """Render a validated supersession DAG with an explicit stack.
 
     Targets must exist and cycles must already be rejected. Shared ancestors
-    become links after their first render. Recursion-limit-depth behavior lacks
-    a direct test.
+    become links after their first render. Black-box coverage renders a valid
+    chain strictly deeper than the child interpreter's recursion limit.
     """
     if unit_id in rendered:
         return _repeat_reference(unit_id)
@@ -174,8 +174,8 @@ def _history(matching, instance):
     """Show the last HISTORY_WINDOW appended records, latest append first.
 
     `matching` is one anchor's log-ordered group, not timestamp-sorted. Disclose
-    the full group total; the strip uses the same window in append order. Exact
-    SVG window ordering lacks a direct test.
+    the full group total. Black-box coverage pins the selected window exactly:
+    newest append first in HTML and oldest to newest in the SVG strip.
     """
     shown = list(reversed(matching))[:HISTORY_WINDOW]
     items = "\n".join(
