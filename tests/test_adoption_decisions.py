@@ -262,7 +262,7 @@ def test_an_ignore_file_init_must_not_replace_gates_and_is_left_alone(
 
 
 def test_an_ignore_file_that_cannot_be_read_gates(tmp_path, run_cli):
-    """A directory where the ignore file goes: the entry cannot be written, and it says so."""
+    """A directory at the ignore path is refused by the read-side check."""
     adopter = _fixture_repo(tmp_path / "repo")
     (adopter / ".gitignore").mkdir()
 
@@ -270,6 +270,8 @@ def test_an_ignore_file_that_cannot_be_read_gates(tmp_path, run_cli):
 
     assert result.returncode == 1, result.stdout
     assert ".gitignore" in result.stderr, result.stderr
+    assert "the ignore file could not be read" in result.stderr, result.stderr
+    assert "could not be written" not in result.stderr, result.stderr
     assert (adopter / ".gitignore").is_dir()
 
 
@@ -345,20 +347,33 @@ def test_an_unreadable_ignore_file_stops_the_run_including_the_views(
     assert "init: created" not in result.stdout, result.stdout
 
 
-def test_an_ignore_entry_the_adopter_already_wrote_is_left_alone(tmp_path, run_cli):
-    """The "Local, ignored" answer writes the same entry; `init` must not repeat it."""
+@pytest.mark.parametrize(
+    "entry",
+    (
+        "/.validated-memory/",
+        "/.validated-memory",
+        ".validated-memory/",
+        ".validated-memory",
+    ),
+    ids=("root-slash", "root", "relative-slash", "relative"),
+)
+def test_an_ignore_entry_the_adopter_already_wrote_is_left_alone(
+    tmp_path, run_cli, entry
+):
+    """Every equivalent whole-line spelling is preserved byte for byte."""
     adopter = _fixture_repo(tmp_path / "repo")
-    (adopter / ".gitignore").write_text(
-        "# validated-memory layout, local to this clone\n"
-        "/knowledge/\n"
-        "/.validated-memory/\n",
-        encoding="utf-8",
+    ignore = adopter / ".gitignore"
+    before = (
+        b"build/\n"
+        b"# adopter-owned surrounding content\n"
+        + entry.encode("ascii")
+        + b"\n.cache/\n"
     )
-    before = (adopter / ".gitignore").read_text(encoding="utf-8")
+    ignore.write_bytes(before)
 
     assert run_cli("init", cwd=adopter).returncode == 0
 
-    assert (adopter / ".gitignore").read_text(encoding="utf-8") == before
+    assert ignore.read_bytes() == before
 
 
 # --- the gate fires only where the vault is really exposed --------------------
