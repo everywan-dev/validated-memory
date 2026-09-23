@@ -185,6 +185,28 @@ def _swap_staging_for_test(path):
         return
 
 
+def _corrupt_staging_for_test(path, descriptor, data):
+    """Corrupt verified staging bytes in place when the private seam selects it."""
+    requested = {
+        item.strip()
+        for item in os.environ.get(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
+        ).split(",")
+        if item.strip()
+    }
+    path = Path(path)
+    if f"corrupt-staging:{path.name}" not in requested:
+        return
+    replacement = (
+        bytes((data[0] ^ 0xFF,)) + data[1:]
+        if data
+        else b"\x00"
+    )
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    os.ftruncate(descriptor, 0)
+    os.write(descriptor, replacement)
+
+
 def _confirm_directory(path, operation):
     """Confirm directory entries, distinguishing unsupported from failure."""
     path = Path(path)
@@ -331,12 +353,17 @@ def install(temporary, target):
     """Atomically install complete bytes and confirm the target name."""
     temporary = Path(temporary)
     target = Path(target)
+
+    def apply():
+        _injected_error("atomic-install", target)
+        os.replace(temporary, target)
+
     return persist(
         _Effect(
             _Operation.INSTALL,
             target,
             target.parent,
-            lambda: os.replace(temporary, target),
+            apply,
         )
     )
 
@@ -356,17 +383,20 @@ def install_bytes(path, data, mode=0o600, verify=None, temporary=None, crash_sto
             descriptor = os.open(
                 temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
             )
+        identity = os.fstat(descriptor)
         # Keep the descriptor open through metadata changes.  Applying mode
         # through the pathname after closing it lets a concurrent replacement
         # turn a harmless staging operation into a chmod of a foreign target.
         with os.fdopen(descriptor, "wb", closefd=False) as handle:
+            _injected_error("write", path)
             handle.write(data)
             handle.flush()
+            _injected_error("file-fsync", path)
             os.fsync(handle.fileno())
-            identity = os.fstat(handle.fileno())
         _swap_staging_for_test(temporary)
         _chmod_staging(descriptor, temporary, mode)
         if verify is not None:
+            _corrupt_staging_for_test(path, descriptor, data)
             verify(temporary)
         if identity is None or not _same_open_entry(temporary, identity):
             raise OSError(
@@ -428,12 +458,17 @@ def create_exclusive(path, data, mode=0o666):
 def create_directory(path):
     """Create one directory and confirm the name in its parent."""
     path = Path(path)
+
+    def apply():
+        _injected_error("mkdir", path)
+        os.mkdir(path)
+
     return persist(
         _Effect(
             _Operation.CREATE_DIRECTORY,
             path,
             path.parent,
-            lambda: os.mkdir(path),
+            apply,
         )
     )
 

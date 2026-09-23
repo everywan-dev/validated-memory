@@ -2267,8 +2267,49 @@ def test_directory_publication_requires_its_named_parent_and_one_mkdir():
     helper = durable.split("def create_directory(path):", 1)[1].split(
         "\ndef ", 1
     )[0]
-    assert "lambda: os.mkdir(path)" in helper
+    assert helper.count(' _injected_error("mkdir", path)'.lstrip()) == 1
+    assert helper.count("os.mkdir(path)") == 1
+    assert helper.index('_injected_error("mkdir", path)') < helper.index(
+        "os.mkdir(path)"
+    )
     assert "parents=True" not in helper
+
+
+def test_failed_target_mkdir_after_wal_aborts_without_history(
+    run_cli, tmp_path, monkeypatch
+):
+    """A target mkdir failure closes its WAL and a retry records one pair."""
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "mkdir:knowledge")
+
+    failed = run_cli("init", cwd=tmp_path)
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert "Traceback" not in failed.stderr, failed.stderr
+    assert not (tmp_path / "knowledge").exists()
+    assert not _transactions(tmp_path)
+    assert "Nothing has been published" in failed.stderr, failed.stderr
+    assert not [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record["path"] == "knowledge" and record["op"] == "create"
+    ]
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    retried = run_cli("init", cwd=tmp_path)
+
+    assert retried.returncode == 0, (retried.stdout, retried.stderr)
+    records = _records(tmp_path / "journal.jsonl")
+    pair = [
+        record
+        for record in records
+        if record["path"] == "knowledge" and record["op"] == "create"
+    ]
+    assert [record["stage"] for record in pair] == ["prepared", "committed"]
+    assert pair[0]["transaction"] == pair[1]["transaction"]
+
+    again = run_cli("init", cwd=tmp_path)
+    assert again.returncode == 0, (again.stdout, again.stderr)
+    assert _records(tmp_path / "journal.jsonl") == records
 
 
 def test_visible_file_create_barrier_failure_recovers_exactly_once(
@@ -2335,6 +2376,76 @@ def test_failed_exclusive_content_write_confirms_name_cleanup(
     assert not (tmp_path / ".gitignore").exists()
     assert not _transactions(tmp_path)
     assert "Nothing has been published" in result.stderr
+    assert not [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record["path"] == ".gitignore"
+    ]
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    retried = run_cli("init", cwd=tmp_path)
+
+    assert retried.returncode == 0, (retried.stdout, retried.stderr)
+    records = _records(tmp_path / "journal.jsonl")
+    pair = [
+        record
+        for record in records
+        if record["path"] == ".gitignore" and record["op"] == "create"
+    ]
+    assert [record["stage"] for record in pair] == ["prepared", "committed"]
+    assert pair[0]["transaction"] == pair[1]["transaction"]
+
+    again = run_cli("init", cwd=tmp_path)
+    assert again.returncode == 0, (again.stdout, again.stderr)
+    assert _records(tmp_path / "journal.jsonl") == records
+
+
+@pytest.mark.parametrize("point", ("write", "file-fsync", "atomic-install"))
+def test_existing_file_previsibility_failure_preserves_append_target(
+    run_cli, tmp_path, monkeypatch, point
+):
+    """The shared existing-file publisher fails before replacing an append target."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    target = tmp_path / ".gitignore"
+    original = b"build/\n"
+    target.write_bytes(original)
+    target.chmod(0o640)
+    identity = target.stat().st_ino
+    history = tmp_path / "journal.jsonl"
+    before_history = history.read_bytes()
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", f"{point}:.gitignore"
+    )
+
+    failed = run_cli("init", cwd=tmp_path)
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert "Traceback" not in failed.stderr, failed.stderr
+    assert "Nothing has been published" in failed.stderr, failed.stderr
+    assert target.read_bytes() == original
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert target.stat().st_ino == identity
+    assert history.read_bytes() == before_history
+    assert not _transactions(tmp_path)
+    assert not list(tmp_path.glob("..gitignore.*.tmp"))
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    retried = run_cli("init", cwd=tmp_path)
+
+    assert retried.returncode == 0, (retried.stdout, retried.stderr)
+    records = _records(history)
+    pair = [
+        record
+        for record in records
+        if record["path"] == ".gitignore" and record["op"] == "append"
+    ]
+    assert [record["stage"] for record in pair] == ["prepared", "committed"]
+    assert pair[0]["transaction"] == pair[1]["transaction"]
+    assert [record["prior_bytes"] for record in pair] == [len(original)] * 2
+
+    again = run_cli("init", cwd=tmp_path)
+    assert again.returncode == 0, (again.stdout, again.stderr)
+    assert _records(history) == records
 
 
 def test_failed_exclusive_write_with_uncertain_cleanup_retains_target_fact(
@@ -2372,7 +2483,8 @@ def test_each_visible_target_shape_retains_recoverable_uncertainty(
     harness = _external_harness_path(tmp_path, "memory")
     if shape == "replace":
         target = tmp_path / ".gitignore"
-        target.write_text("adopter line\n", encoding="utf-8")
+        original = b"adopter line\n"
+        target.write_bytes(original)
         fault = "install:.gitignore"
         durability = "repo"
     elif shape == "directory":
@@ -2394,6 +2506,9 @@ def test_each_visible_target_shape_retains_recoverable_uncertainty(
     assert "Traceback" not in failed.stderr, failed.stderr
     transaction = _transactions(tmp_path)[0]
     assert transaction["unconfirmed"] == "target", transaction
+    if shape == "replace":
+        assert transaction["intention"]["op"] == "append", transaction
+        assert transaction["prior_bytes"] == len(original), transaction
     assert target.exists() or target.is_symlink()
     history = (
         tmp_path / "journal.jsonl"
@@ -2417,6 +2532,9 @@ def test_each_visible_target_shape_retains_recoverable_uncertainty(
         if entry.get("transaction") == transaction["transaction"]
     ]
     assert [entry["stage"] for entry in pair] == ["prepared", "committed"]
+    if shape == "replace":
+        assert [entry["op"] for entry in pair] == ["append", "append"]
+        assert [entry["prior_bytes"] for entry in pair] == [len(original)] * 2
     assert not _transactions(tmp_path)
 
 
@@ -3870,6 +3988,105 @@ def test_a_corrupt_preimage_blob_is_replaced_rather_than_wedging_the_run(
     assert sorted(p.name for p in preimages.iterdir()) == [reference]
 
 
+def test_verified_preimage_staging_corruption_preserves_every_input(
+    run_cli, tmp_path, monkeypatch
+):
+    """Same-inode corruption is rejected before a preimage becomes canonical."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    target = tmp_path / ".gitignore"
+    original = b"known adopter bytes\n"
+    target.write_bytes(original)
+    target.chmod(0o640)
+    target_identity = target.stat().st_ino
+    digest_name = hashlib.sha256(original).hexdigest()
+    preimages = tmp_path / ".validated-memory" / "preimages"
+    preimages.mkdir(exist_ok=True)
+    canonical = preimages / digest_name
+
+    def vault_state():
+        state = []
+        vault = tmp_path / ".validated-memory"
+        for path in sorted(vault.rglob("*")):
+            relative = path.relative_to(vault).as_posix()
+            if path.is_symlink():
+                state.append((relative, "symlink", os.readlink(path)))
+            elif path.is_dir():
+                state.append((relative, "directory", None))
+            else:
+                state.append(
+                    (
+                        relative,
+                        "file",
+                        path.read_bytes(),
+                        stat.S_IMODE(path.stat().st_mode),
+                    )
+                )
+        return state
+
+    repo_history = (tmp_path / "journal.jsonl").read_bytes()
+    local_history_path = tmp_path / ".validated-memory" / "local.jsonl"
+    local_history = (
+        local_history_path.read_bytes() if local_history_path.exists() else None
+    )
+    before_vault = vault_state()
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        f"corrupt-staging:{digest_name}",
+    )
+
+    failed = run_cli("init", cwd=tmp_path)
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert "Traceback" not in failed.stderr, failed.stderr
+    assert "could not be parked" in failed.stderr, failed.stderr
+    assert target.read_bytes() == original
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert target.stat().st_ino == target_identity
+    assert (tmp_path / "journal.jsonl").read_bytes() == repo_history
+    assert (
+        local_history_path.read_bytes() if local_history_path.exists() else None
+    ) == local_history
+    assert vault_state() == before_vault
+    assert not canonical.exists()
+    assert not list(preimages.glob(f".{digest_name}.*.tmp"))
+    assert not _transactions(tmp_path)
+    assert not (tmp_path / ".validated-memory" / "lock").exists()
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    retried = run_cli("init", cwd=tmp_path)
+
+    assert retried.returncode == 0, (retried.stdout, retried.stderr)
+    assert canonical.read_bytes() == original
+    pair = [
+        record
+        for record in _records(tmp_path / "journal.jsonl")
+        if record["path"] == ".gitignore" and record["op"] == "append"
+    ]
+    assert [record["stage"] for record in pair] == ["prepared", "committed"]
+    assert [record["preimage"] for record in pair] == [
+        f"sha256:{digest_name}",
+        f"sha256:{digest_name}",
+    ]
+    checked = run_cli("journal", "--check", cwd=tmp_path)
+    assert checked.returncode == 0, (checked.stdout, checked.stderr)
+
+
+def test_verified_staging_corruption_is_after_fsync_and_before_verification():
+    """The corruption seam mutates only verifier-bound, already-flushed staging."""
+    source = (
+        REPO_ROOT / "validated_memory" / "journal" / "durable.py"
+    ).read_text(encoding="utf-8")
+    installer = source.split("def install_bytes(", 1)[1].split("\ndef ", 1)[0]
+    initial_fsync = installer.index("os.fsync(handle.fileno())")
+    mode = installer.index("_chmod_staging(descriptor, temporary, mode)")
+    verify_branch = installer.index("if verify is not None:")
+    corruption = installer.index(
+        "_corrupt_staging_for_test(path, descriptor, data)"
+    )
+    verification = installer.index("verify(temporary)")
+    assert initial_fsync < mode < verify_branch < corruption < verification
+
+
 def test_a_symlink_where_a_directory_goes_is_refused_not_kept(run_cli, tmp_path):
     """A symlink to a file cannot satisfy a directory creation precondition.
 
@@ -4252,41 +4469,122 @@ def test_a_run_whose_lock_was_broken_leaves_its_successor_alone(tmp_path):
     assert lock.read_text(encoding="ascii").strip() == str(os.getpid())
 
 
-@pytest.mark.skipif(
-    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
-)
 def test_two_trees_sharing_one_journal_take_one_lock(run_cli, tmp_path):
-    """Two trees sharing a journal both target the store's adjacent lock.
-
-    Permission failures expose the selected lock path; this does not run two
-    successful mutations concurrently."""
+    """Two successful shared-journal mutations serialize at one store lock."""
     store = tmp_path / "store"
     first = tmp_path / "first"
     second = tmp_path / "second"
     for tree in (store, first, second):
         tree.mkdir()
 
-    seeded = run_cli("init", cwd=first)
-    assert seeded.returncode == 0, seeded.stderr
+    for tree in (first, second):
+        seeded = run_cli("init", cwd=tree)
+        assert seeded.returncode == 0, (tree, seeded.stdout, seeded.stderr)
     (first / "journal.jsonl").rename(store / "journal.jsonl")
     for tree in (first, second):
-        (tree / "journal.jsonl").symlink_to(store / "journal.jsonl")
+        journal = tree / "journal.jsonl"
+        journal.unlink(missing_ok=True)
+        journal.symlink_to(Path("..") / "store" / "journal.jsonl")
+        (tree / ".gitignore").write_bytes(b"build/\n")
 
-    shared_vault = store / ".validated-memory"
-    shared_vault.mkdir()
-    os.chmod(shared_vault, 0o500)  # read + execute: no lock can be created
+    shared_lock = store / ".validated-memory" / "lock"
+    first_run = None
+    second_run = None
     try:
-        refusals = {tree: run_cli("init", cwd=tree) for tree in (first, second)}
-    finally:
-        os.chmod(shared_vault, 0o700)
+        first_run = _run_init_in_background(first, test_seam="during-lock")
+        first_transaction = _wait_for_transaction(
+            first_run, first, ".gitignore"
+        )
+        assert shared_lock.read_text(encoding="ascii").strip() == str(
+            first_run.pid
+        )
+        assert not (first / ".validated-memory" / "lock").exists()
+        assert not (second / ".validated-memory" / "lock").exists()
 
-    shared_lock = str(shared_vault / "lock")
-    for tree, result in refusals.items():
-        assert result.returncode == 1, (tree, result.stdout, result.stderr)
-        assert shared_lock in result.stderr, (tree, result.stderr)
-    # And neither tree fell back to a lock of its own.
+        second_run = _run_init_in_background(second, test_seam="during-lock")
+        second_transaction = _wait_for_transaction(
+            second_run, second, ".gitignore"
+        )
+        assert not _transactions(first), (
+            "the second WAL opened before the first WAL was removed"
+        )
+        shared_records = _records(store / "journal.jsonl")
+        first_pair = [
+            (index, record)
+            for index, record in enumerate(shared_records)
+            if record.get("transaction") == first_transaction["transaction"]
+        ]
+        assert len(first_pair) == 2, first_pair
+        assert [record["stage"] for _, record in first_pair] == [
+            "prepared",
+            "committed",
+        ]
+        assert first_pair[1][0] == first_pair[0][0] + 1, first_pair
+        assert shared_lock.read_text(encoding="ascii").strip() == str(
+            second_run.pid
+        )
+        first_stdout, first_stderr = first_run.communicate(timeout=30)
+        second_stdout, second_stderr = second_run.communicate(timeout=30)
+    finally:
+        for process in (first_run, second_run):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.communicate()
+
+    assert first_run.returncode == 0, (first_stdout, first_stderr)
+    assert second_run.returncode == 0, (second_stdout, second_stderr)
+    assert first_stderr == ""
+    assert second_stderr == ""
+    update = "init: ignored /.validated-memory/ in .gitignore"
+    assert first_stdout.count(update) == 1, first_stdout
+    assert second_stdout.count(update) == 1, second_stdout
+    assert first_transaction["transaction"] != second_transaction["transaction"]
+    assert first_transaction["run"] != second_transaction["run"]
+
+    expected = b"""build/
+
+# The validated-memory vault: preimages, and the records of mutations whose
+# path leaves the repository. Always local to this clone (ADR 0008), which is
+# why `init` writes this entry itself rather than the adoption questionnaire
+# asking for it.
+/.validated-memory/
+"""
+    assert (first / ".gitignore").read_bytes() == expected
+    assert (second / ".gitignore").read_bytes() == expected
+    records = [
+        record
+        for record in _records(store / "journal.jsonl")
+        if record["path"] == ".gitignore" and record["op"] == "append"
+    ]
+    assert [record["stage"] for record in records] == [
+        "prepared",
+        "committed",
+        "prepared",
+        "committed",
+    ]
+    transactions = [record["transaction"] for record in records]
+    assert transactions == [
+        first_transaction["transaction"],
+        first_transaction["transaction"],
+        second_transaction["transaction"],
+        second_transaction["transaction"],
+    ]
+    assert len({record["run"] for record in records}) == 2
+    preimage = "sha256:" + hashlib.sha256(b"build/\n").hexdigest()
+    postimage = "sha256:" + hashlib.sha256(expected).hexdigest()
+    assert {record["preimage"] for record in records} == {preimage}
+    assert {record["postimage"] for record in records} == {postimage}
+
+    assert not _transactions(first)
+    assert not _transactions(second)
+    assert not shared_lock.exists()
     assert not (first / ".validated-memory" / "lock").exists()
-    assert not (second / ".validated-memory").exists()
+    assert not (second / ".validated-memory" / "lock").exists()
+    assert not list(first.glob("..gitignore.*.tmp"))
+    assert not list(second.glob("..gitignore.*.tmp"))
+    for tree in (first, second):
+        checked = run_cli("journal", "--check", cwd=tree)
+        assert checked.returncode == 0, (tree, checked.stdout, checked.stderr)
 
 
 def test_a_broken_journal_symlink_locks_inside_the_root(run_cli, tmp_path):
