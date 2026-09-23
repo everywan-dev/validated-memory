@@ -7,7 +7,9 @@ Exit code convention:
 """
 
 import argparse
+import os
 import sys
+from pathlib import Path
 
 from . import (
     agent,
@@ -65,6 +67,28 @@ def _timeout_seconds(value):
             f"{probe.MAX_TIMEOUT_SECONDS:g}"
         )
     return parsed
+
+
+def _harness_memory_is_outside_adopter(value):
+    """Return whether a harness destination's containing path leaves the project."""
+    try:
+        cwd = Path.cwd()
+        adopter_root = cwd.resolve(strict=True)
+        destination = Path(os.path.abspath(value))
+        supplied = Path(value)
+        qualified = supplied if supplied.is_absolute() else cwd / supplied
+        separators = os.sep + (os.altsep or "")
+        final_component = os.path.basename(value.rstrip(separators))
+        resolution_target = (
+            qualified if final_component in (".", "..") else qualified.parent
+        )
+        resolved_container = resolution_target.resolve(strict=False)
+        return not any(
+            path == adopter_root or adopter_root in path.parents
+            for path in (destination, resolved_container)
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def build_parser():
@@ -161,7 +185,8 @@ def build_parser():
                 "--harness-memory",
                 metavar="PATH",
                 help=(
-                    "make PATH a move-proof symlink to this project's "
+                    "make PATH outside the adopter project a move-proof "
+                    "symlink to this project's "
                     f"{lint.DEFAULT_MEMORY_DIR}/ directory"
                 ),
             )
@@ -416,6 +441,12 @@ def main(argv=None):
         )
     if args.app and not args.view:
         args._init_subparser.error("--app requires --view")
+    if args.harness_memory is not None and not _harness_memory_is_outside_adopter(
+        args.harness_memory
+    ):
+        args._init_subparser.error(
+            "--harness-memory must name a path outside the adopter project"
+        )
     return init.run(
         args.harness_memory, args.view, stdout=sys.stdout, stderr=sys.stderr,
         app=args.app,

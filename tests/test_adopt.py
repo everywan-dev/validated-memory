@@ -13,6 +13,10 @@ MEMORY_FRONTMATTER = (
 )
 
 
+def _external_harness_root(adopter_dir):
+    return adopter_dir.parent / f"{adopter_dir.name}-harness"
+
+
 def write_native(directory, name, description="A fact.", body="Memory body.\n"):
     """Write a harness-shaped memory file into `directory`."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -44,7 +48,7 @@ def write_native_index(directory, *entries):
 def test_a_native_memory_directory_is_absorbed_parked_and_linked(
     adopter_dir, tmp_path, run_cli
 ):
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     write_native_index(native, "- [Coffee preference](coffee-preference.md) — oat milk")
 
@@ -54,13 +58,13 @@ def test_a_native_memory_directory_is_absorbed_parked_and_linked(
     assert native.is_symlink()
     assert native.resolve() == (adopter_dir / "memory").resolve()
     assert (adopter_dir / "memory" / "coffee-preference.md").is_file()
-    parked = tmp_path / "harness" / "memory.bak"
+    parked = _external_harness_root(adopter_dir) / "memory.bak"
     assert parked.is_dir() and not parked.is_symlink()
     assert (parked / "coffee-preference.md").is_file()
 
 
 def test_lint_passes_clean_on_the_merged_memory(adopter_dir, tmp_path, run_cli):
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     write_native_index(native, "- [Coffee preference](coffee-preference.md) — oat milk")
 
@@ -75,7 +79,7 @@ def test_lint_passes_clean_on_the_merged_memory(adopter_dir, tmp_path, run_cli):
 def test_the_harness_index_line_is_carried_over_verbatim(
     adopter_dir, tmp_path, run_cli
 ):
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     entry = "- [Coffee preference](coffee-preference.md) — oat milk, no sugar"
     write_native_index(native, entry)
@@ -91,7 +95,7 @@ def test_the_harness_index_line_is_carried_over_verbatim(
 def test_a_memory_the_harness_index_never_listed_gets_a_synthesized_entry(
     adopter_dir, tmp_path, run_cli
 ):
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     write_native_index(native)  # an index with no entries at all
 
@@ -106,7 +110,7 @@ def test_a_memory_the_harness_index_never_listed_gets_a_synthesized_entry(
 def test_a_memory_in_a_subdirectory_is_adopted_with_its_path(
     adopter_dir, tmp_path, run_cli
 ):
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native / "archive", "old-fact", "Something from before.")
     write_native_index(native, "- [Old fact](archive/old-fact.md) — from before")
 
@@ -126,7 +130,7 @@ def test_entries_are_appended_to_an_index_that_already_has_some(
         "name: deploy-window\ndescription: Tuesdays only.\nmetadata:\n  type: project\n",
     )
     write_index(f"# Agent memory\n\n{existing}\n")
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     adopted = "- [Coffee preference](coffee-preference.md) — oat milk"
     write_native_index(native, adopted)
@@ -148,7 +152,7 @@ def test_an_index_entry_already_there_is_not_duplicated_by_absorption(
     # the entry already there, not append a second one for the same file.
     stale = "- [Coffee preference](coffee-preference.md) — oat milk"
     write_index(f"# Agent memory\n\n{stale}\n")
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     write_native_index(native, stale)
 
@@ -166,7 +170,7 @@ def test_a_padded_href_still_carries_the_harness_line_over(
     # it fails to find the line and synthesizes one instead, silently losing
     # what a human wrote about the fact.
     write_index("# Agent memory\n\nNo entries yet.\n")
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     write_native_index(native, "- [Coffee preference]( coffee-preference.md ) — oat milk")
 
@@ -184,7 +188,7 @@ def test_an_index_entry_written_with_a_path_alias_is_not_duplicated(
     # appends a second one; reconciling has to normalize the path the way the
     # index/file cross-check already does.
     write_index("# Agent memory\n\n- [Coffee](./coffee-preference.md) — oat milk\n")
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     write_native_index(native, "- [Coffee preference](coffee-preference.md) — oat milk")
 
@@ -201,7 +205,7 @@ def test_a_malformed_entry_does_not_keep_the_placeholder_alive(
     # index holding only that one is still an index with no entries: the
     # placeholder must go when real entries arrive.
     write_index("# Agent memory\n\nNo entries yet.\n- [Malformed](   )\n")
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     write_native_index(native, "- [Coffee preference](coffee-preference.md) — oat milk")
 
@@ -223,7 +227,7 @@ def test_a_conflicting_file_is_kept_warned_about_and_preserved_in_the_bak(
         "metadata:\n  type: user\n",
     )
     write_index("# Agent memory\n\n- [Coffee preference](coffee-preference.md) — black\n")
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     write_native_index(native, "- [Coffee preference](coffee-preference.md) — oat milk")
 
@@ -236,7 +240,7 @@ def test_a_conflicting_file_is_kept_warned_about_and_preserved_in_the_bak(
         encoding="utf-8"
     )
     assert "Prefers black coffee." in project_copy
-    parked = tmp_path / "harness" / "memory.bak" / "coffee-preference.md"
+    parked = _external_harness_root(adopter_dir) / "memory.bak" / "coffee-preference.md"
     assert "Prefers oat milk." in parked.read_text(encoding="utf-8")
 
 
@@ -251,7 +255,7 @@ def test_a_file_that_is_already_identical_is_absorbed_without_a_warning(
     the index gains no second entry for a file it already lists. Asserting
     only the silence would pass over a run that absorbed nothing at all.
     """
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     source = write_native(native, "coffee-preference", "Prefers oat milk.")
     write_native_index(native, "- [Coffee preference](coffee-preference.md) — oat milk")
     project_copy = adopter_dir / "memory" / "coffee-preference.md"
@@ -263,9 +267,9 @@ def test_a_file_that_is_already_identical_is_absorbed_without_a_warning(
 
     assert result.returncode == 0, result.stderr
     assert "WARNING" not in result.stderr
-    assert native.is_symlink(), sorted((tmp_path / "harness").iterdir())
+    assert native.is_symlink(), sorted((_external_harness_root(adopter_dir)).iterdir())
     assert native.resolve() == (adopter_dir / "memory").resolve()
-    parked = tmp_path / "harness" / "memory.bak" / "coffee-preference.md"
+    parked = _external_harness_root(adopter_dir) / "memory.bak" / "coffee-preference.md"
     assert "Prefers oat milk." in parked.read_text(encoding="utf-8")
     index = (adopter_dir / "memory" / "MEMORY.md").read_text(encoding="utf-8")
     assert index.count("(coffee-preference.md)") == 1, index
@@ -275,9 +279,9 @@ def test_a_file_that_is_already_identical_is_absorbed_without_a_warning(
 
 
 def test_parking_picks_the_next_free_bak_slot(adopter_dir, tmp_path, run_cli):
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
-    occupied = tmp_path / "harness" / "memory.bak"
+    occupied = _external_harness_root(adopter_dir) / "memory.bak"
     occupied.mkdir(parents=True)
     (occupied / "keep-me.txt").write_text("Do not touch.\n", encoding="utf-8")
 
@@ -285,7 +289,7 @@ def test_parking_picks_the_next_free_bak_slot(adopter_dir, tmp_path, run_cli):
 
     assert result.returncode == 0, result.stderr
     assert (occupied / "keep-me.txt").read_text(encoding="utf-8") == "Do not touch.\n"
-    assert (tmp_path / "harness" / "memory.bak.1" / "coffee-preference.md").is_file()
+    assert (_external_harness_root(adopter_dir) / "memory.bak.1" / "coffee-preference.md").is_file()
 
 
 # --- what does not qualify is still left alone --------------------------------
@@ -294,7 +298,7 @@ def test_parking_picks_the_next_free_bak_slot(adopter_dir, tmp_path, run_cli):
 def test_a_directory_holding_a_non_markdown_file_is_left_untouched(
     adopter_dir, tmp_path, run_cli
 ):
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     (native / "notes.txt").write_text("Not a memory.\n", encoding="utf-8")
 
@@ -305,7 +309,7 @@ def test_a_directory_holding_a_non_markdown_file_is_left_untouched(
     assert "notes.txt" in result.stderr
     assert not native.is_symlink()
     assert (native / "coffee-preference.md").is_file()
-    assert not (tmp_path / "harness" / "memory.bak").exists()
+    assert not (_external_harness_root(adopter_dir) / "memory.bak").exists()
 
 
 def test_a_non_markdown_file_is_left_untouched_even_when_it_looks_like_a_memory(
@@ -315,7 +319,7 @@ def test_a_non_markdown_file_is_left_untouched_even_when_it_looks_like_a_memory(
     # any other suffix would be parked into the backup and never seen again.
     # Recognition has to reject the directory on the suffix alone, before its
     # contents are read.
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     (native / "stray.yaml").write_text(
         "---\n"
@@ -339,7 +343,7 @@ def test_a_hidden_file_disqualifies_the_directory_like_any_other(
     # Recognition counts hidden files too. A stray '.gitkeep' or '.DS_Store'
     # therefore blocks the merge until a human removes it -- strict by design,
     # and the WARNING names the file so the fix is obvious.
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     (native / ".gitkeep").write_text("", encoding="utf-8")
 
@@ -355,20 +359,20 @@ def test_a_directory_holding_only_the_index_qualifies(adopter_dir, tmp_path, run
     # A harness index with no facts under it is still recognizably agent
     # memory: absorbing it is a no-op, but the path gets its symlink instead
     # of warning on every session start forever.
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native_index(native)
 
     result = run_cli("init", "--harness-memory", str(native), cwd=adopter_dir)
 
     assert result.returncode == 0, result.stderr
     assert native.is_symlink()
-    assert (tmp_path / "harness" / "memory.bak" / "MEMORY.md").is_file()
+    assert (_external_harness_root(adopter_dir) / "memory.bak" / "MEMORY.md").is_file()
 
 
 def test_a_markdown_file_without_memory_frontmatter_is_left_untouched(
     adopter_dir, tmp_path, run_cli
 ):
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     (native / "readme.md").write_text("Just prose, no frontmatter.\n", encoding="utf-8")
 
@@ -386,7 +390,7 @@ def test_a_directory_of_memories_with_no_index_still_qualifies(
 ):
     # The harness's index may be absent; the memory files alone are enough to
     # recognize the directory, and their entries get synthesized.
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
 
     result = run_cli("init", "--harness-memory", str(native), cwd=adopter_dir)
@@ -401,7 +405,7 @@ def test_a_directory_of_memories_with_no_index_still_qualifies(
 
 
 def test_an_empty_directory_is_replaced_by_the_symlink(adopter_dir, tmp_path, run_cli):
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     native.mkdir(parents=True)
 
     result = run_cli("init", "--harness-memory", str(native), cwd=adopter_dir)
@@ -410,7 +414,7 @@ def test_an_empty_directory_is_replaced_by_the_symlink(adopter_dir, tmp_path, ru
     assert "WARNING" not in result.stderr
     assert native.is_symlink()
     assert native.resolve() == (adopter_dir / "memory").resolve()
-    assert not (tmp_path / "harness" / "memory.bak").exists()
+    assert not (_external_harness_root(adopter_dir) / "memory.bak").exists()
 
 
 # --- idempotency ---------------------------------------------------------------
@@ -419,7 +423,7 @@ def test_an_empty_directory_is_replaced_by_the_symlink(adopter_dir, tmp_path, ru
 def test_re_running_after_absorption_keeps_the_symlink_and_absorbs_nothing(
     adopter_dir, tmp_path, run_cli
 ):
-    native = tmp_path / "harness" / "memory"
+    native = _external_harness_root(adopter_dir) / "memory"
     write_native(native, "coffee-preference", "Prefers oat milk.")
     write_native_index(native, "- [Coffee preference](coffee-preference.md) — oat milk")
     run_cli("init", "--harness-memory", str(native), cwd=adopter_dir)
@@ -435,4 +439,4 @@ def test_re_running_after_absorption_keeps_the_symlink_and_absorbs_nothing(
     assert (adopter_dir / "memory" / "MEMORY.md").read_text(
         encoding="utf-8"
     ) == index_after_first
-    assert not (tmp_path / "harness" / "memory.bak.1").exists()
+    assert not (_external_harness_root(adopter_dir) / "memory.bak.1").exists()

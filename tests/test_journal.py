@@ -21,6 +21,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+
+def _external_harness_path(adopter, *parts):
+    return adopter.parent / f"{adopter.name}-harness" / Path(*parts)
+
 # Path methods that mutate, whatever the receiver.
 PATH_MUTATORS = {
     "write_text", "write_bytes", "mkdir", "symlink_to", "hardlink_to",
@@ -2144,7 +2148,7 @@ def test_missing_harness_parent_is_confirmed_before_a_link_transaction(
 ):
     """A partial external parent chain never becomes a trusted WAL target."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
-    harness = tmp_path / "external-harness" / "nested" / "memory"
+    harness = _external_harness_path(tmp_path, "nested", "memory")
     monkeypatch.setenv(
         "VALIDATED_MEMORY_PERSISTENCE_FAULT", "confirm:nested"
     )
@@ -2168,7 +2172,7 @@ def test_partial_harness_ancestry_creation_is_reported_as_visible(
 ):
     """A later mkdir failure cannot erase an earlier visible ancestor."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
-    first = tmp_path / "partial-harness"
+    first = _external_harness_path(tmp_path)
     harness = first / "nested" / "memory"
     monkeypatch.setenv(
         "VALIDATED_MEMORY_PERSISTENCE_FAULT", "mkdir:nested"
@@ -2192,7 +2196,7 @@ def test_partial_harness_repair_cannot_become_a_clean_unconfirmed_noop(
 ):
     """A fail-open repair retains one stable ancestry obligation on retry."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
-    harness = tmp_path / "partial-harness" / "nested" / "memory"
+    harness = _external_harness_path(tmp_path, "nested", "memory")
     monkeypatch.setenv(
         "VALIDATED_MEMORY_PERSISTENCE_FAULT", "mkdir:nested"
     )
@@ -2210,7 +2214,8 @@ def test_partial_harness_repair_cannot_become_a_clean_unconfirmed_noop(
     assert not local.exists()
 
     monkeypatch.setenv(
-        "VALIDATED_MEMORY_PERSISTENCE_FAULT", f"confirm:{tmp_path.name}"
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        f"confirm:{tmp_path.name}-harness",
     )
     retry = run_cli(
         "init", "--harness-memory", str(harness), cwd=tmp_path
@@ -2342,7 +2347,7 @@ def test_each_visible_target_shape_retains_recoverable_uncertainty(
 ):
     """Replace, mkdir and symlink barriers share the target recovery rule."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
-    harness = tmp_path / "harness" / "memory"
+    harness = _external_harness_path(tmp_path, "memory")
     if shape == "replace":
         target = tmp_path / ".gitignore"
         target.write_text("adopter line\n", encoding="utf-8")
@@ -2563,7 +2568,7 @@ def test_history_barrier_failure_republishes_without_duplicate_pair(
     """Visible history bytes are completed and atomically republished once."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
     if history_kind == "first-local":
-        harness = tmp_path / "harness" / "memory"
+        harness = _external_harness_path(tmp_path, "memory")
         arguments = ("init", "--harness-memory", str(harness))
         history = tmp_path / ".validated-memory" / "local.jsonl"
         monkeypatch.setenv(
@@ -2673,7 +2678,7 @@ def test_missing_history_after_unconfirmed_append_is_not_reconstructed(
 ):
     """One WAL cannot stand in for a lost append-only local history."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
-    harness = tmp_path / "harness" / "memory"
+    harness = _external_harness_path(tmp_path, "memory")
     monkeypatch.setenv(
         "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:local.jsonl"
     )
@@ -4748,7 +4753,8 @@ def _history_repair_fixture(run_cli, tmp_path, monkeypatch):
     """Create one local history WAL whose append barrier is unconfirmed."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
     monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:local.jsonl")
-    result = run_cli("init", "--harness-memory", str(tmp_path / "h"), cwd=tmp_path)
+    harness = _external_harness_path(tmp_path, "h")
+    result = run_cli("init", "--harness-memory", str(harness), cwd=tmp_path)
     assert result.returncode == 1
     monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
     transaction = next((tmp_path / ".validated-memory" / "transactions").glob("*.json"))
@@ -5021,12 +5027,14 @@ def test_symlink_staging_collision_preserves_foreign_entry(
     run_cli, tmp_path, monkeypatch
 ):
     assert run_cli("init", cwd=tmp_path).returncode == 0
-    sentinel = tmp_path / ".h.collision.tmp"
+    harness = _external_harness_path(tmp_path, "h")
+    harness.parent.mkdir(parents=True)
+    sentinel = harness.parent / ".h.collision.tmp"
     sentinel.write_bytes(b"foreign")
     sentinel.chmod(0o640)
     before = (sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode), sentinel.is_symlink())
     monkeypatch.setenv("VALIDATED_MEMORY_SYMLINK_TEMP_NAME", sentinel.name)
-    result = run_cli("init", "--harness-memory", str(tmp_path / "h"), cwd=tmp_path)
+    result = run_cli("init", "--harness-memory", str(harness), cwd=tmp_path)
     assert result.returncode == 0
     assert "could not be linked" in result.stderr
     assert (sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode), sentinel.is_symlink()) == before
@@ -5075,9 +5083,10 @@ def test_private_storage_crash_seam_leaves_prefix_and_claimed_staging(
     other = tmp_path / "other"
     other.mkdir()
     assert run_cli("init", cwd=other).returncode == 0
-    staged = run_cli("init", "--harness-memory", str(other / "h"), cwd=other)
+    harness = _external_harness_path(other, "h")
+    staged = run_cli("init", "--harness-memory", str(harness), cwd=other)
     assert staged.returncode == 71
-    assert list(other.glob(".h.*.tmp"))
+    assert list(harness.parent.glob(".h.*.tmp"))
 
 
 def test_check_reports_private_residue_without_removing_it(run_cli, tmp_path):

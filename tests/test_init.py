@@ -9,8 +9,49 @@ clean right after a run on an empty project.
 
 import os
 import re
+import stat
 
 import pytest
+
+
+HARNESS_OUTSIDE_ERROR = (
+    "validated-memory init: error: --harness-memory must name a path outside "
+    "the adopter project"
+)
+
+
+def _tree_snapshot(root):
+    """Capture node types, file bytes and link targets without following links."""
+    snapshot = {}
+
+    def visit(path, relative):
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            snapshot[relative] = ("symlink", os.readlink(path))
+            return
+        if stat.S_ISDIR(mode):
+            snapshot[relative] = ("directory",)
+            for child in sorted(path.iterdir(), key=lambda item: item.name):
+                visit(child, relative / child.name)
+            return
+        if stat.S_ISREG(mode):
+            snapshot[relative] = ("file", path.read_bytes())
+            return
+        snapshot[relative] = ("other", stat.S_IFMT(mode))
+
+    visit(root, root.relative_to(root))
+    return snapshot
+
+
+def _assert_harness_usage_refusal(result):
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.splitlines()[-1] == HARNESS_OUTSIDE_ERROR
+    assert "Traceback" not in result.stderr
+
+
+def _external_harness_path(adopter_dir, name="memory"):
+    return adopter_dir.parent / f"{adopter_dir.name}-harness" / name
 
 
 def test_app_requires_view_before_any_write(adopter_dir, run_cli):
@@ -19,6 +60,18 @@ def test_app_requires_view_before_any_write(adopter_dir, run_cli):
     assert result.returncode == 2
     assert "--app requires --view" in result.stderr
     assert sorted(adopter_dir.rglob("*")) == before
+
+
+def test_init_help_requires_an_external_harness_memory_path(
+    adopter_dir, run_cli
+):
+    result = run_cli("init", "--help", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "make PATH outside the adopter project a move-proof symlink to this "
+        "project's memory/ directory"
+    ) in " ".join(result.stdout.split())
 
 
 def test_init_view_app_creates_all_three_pages(adopter_dir, run_cli):
@@ -435,8 +488,131 @@ def test_an_item_blocked_by_a_file_gates_with_an_error(adopter_dir, run_cli):
 # --- --harness-memory: the move-proof symlink ----------------------------------
 
 
+@pytest.mark.parametrize(
+    "case_name",
+    (
+        "relative",
+        "absolute",
+        "root",
+        "nested-missing",
+        "normalized-parent",
+        "memory-shaped",
+        "redirected-parent",
+        "redirected-parent-dotdot",
+        "terminal-dot",
+        "terminal-dotdot",
+        "unresolvable-parent",
+    ),
+)
+def test_in_project_harness_memory_is_a_repeatable_usage_refusal_before_writes(
+    tmp_path, run_cli, case_name
+):
+    case_root = tmp_path / case_name
+    adopter = case_root / "adopter"
+    adopter.mkdir(parents=True)
+    (adopter / "existing.txt").write_bytes(b"preserve exactly\x00\xff")
+
+    if case_name == "relative":
+        argument = "harness-memory"
+    elif case_name == "absolute":
+        argument = str(adopter / "harness-memory")
+    elif case_name == "root":
+        argument = str(adopter)
+    elif case_name == "nested-missing":
+        argument = str(adopter / "missing" / "nested" / "memory")
+    elif case_name == "normalized-parent":
+        other = case_root / "other"
+        other.mkdir()
+        argument = str(other / ".." / "adopter" / "memory")
+    elif case_name == "memory-shaped":
+        destination = adopter / "native-memory"
+        destination.mkdir()
+        (destination / "MEMORY.md").write_text(
+            "# Agent memory\n\n- [Fact](fact.md) — retained\n", encoding="utf-8"
+        )
+        (destination / "fact.md").write_text(
+            "---\nname: fact\ndescription: Retained.\nmetadata:\n"
+            "  type: project\n---\n\nExact body.\n",
+            encoding="utf-8",
+        )
+        argument = str(destination)
+    elif case_name == "redirected-parent":
+        redirected = adopter / "redirected"
+        redirected.mkdir()
+        parent_link = case_root / "apparently-external"
+        parent_link.symlink_to(redirected, target_is_directory=True)
+        argument = str(parent_link / "memory")
+    elif case_name in (
+        "redirected-parent-dotdot",
+        "terminal-dot",
+        "terminal-dotdot",
+    ):
+        redirected = adopter / "nested"
+        redirected.mkdir()
+        external = case_root / "external"
+        external.mkdir()
+        (external / "into").symlink_to(redirected, target_is_directory=True)
+        if case_name == "redirected-parent-dotdot":
+            argument = str(external / "into" / ".." / "harness-memory")
+        elif case_name == "terminal-dot":
+            argument = f"{external / 'into'}{os.sep}."
+        else:
+            argument = f"{external / 'into'}{os.sep}.."
+    else:
+        parent_link = case_root / "parent-loop"
+        parent_link.symlink_to(parent_link.name, target_is_directory=True)
+        argument = str(parent_link / "memory")
+
+    before = _tree_snapshot(case_root)
+    for _ in range(2):
+        result = run_cli("init", "--harness-memory", argument, cwd=adopter)
+        _assert_harness_usage_refusal(result)
+        assert _tree_snapshot(case_root) == before
+
+
+def test_in_project_harness_refusal_precedes_view_creation(
+    adopter_dir, run_cli
+):
+    before = _tree_snapshot(adopter_dir)
+
+    for _ in range(2):
+        result = run_cli(
+            "init",
+            "--harness-memory",
+            str(adopter_dir / "harness-memory"),
+            "--view",
+            "--app",
+            cwd=adopter_dir,
+        )
+        _assert_harness_usage_refusal(result)
+        assert _tree_snapshot(adopter_dir) == before
+
+
+def test_app_without_view_precedes_in_project_harness_refusal(
+    adopter_dir, run_cli
+):
+    before = _tree_snapshot(adopter_dir)
+
+    for _ in range(2):
+        result = run_cli(
+            "init",
+            "--harness-memory",
+            str(adopter_dir / "harness-memory"),
+            "--app",
+            cwd=adopter_dir,
+        )
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr.splitlines()[-1] == (
+            "validated-memory init: error: --app requires --view"
+        )
+        assert "--harness-memory must name" not in result.stderr
+        assert "Traceback" not in result.stderr
+        assert _tree_snapshot(adopter_dir) == before
+
+
 def test_harness_memory_creates_a_symlink_when_missing(adopter_dir, tmp_path, run_cli):
-    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory = _external_harness_path(adopter_dir)
 
     result = run_cli(
         "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
@@ -451,7 +627,7 @@ def test_harness_memory_creates_a_symlink_when_missing(adopter_dir, tmp_path, ru
 def test_harness_memory_symlink_sees_the_project_memory_files(
     adopter_dir, tmp_path, write_memory, write_index, run_cli
 ):
-    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory = _external_harness_path(adopter_dir)
     write_memory(
         "coffee-preference.md",
         "name: coffee-preference\ndescription: Prefers oat milk.\n"
@@ -469,7 +645,7 @@ def test_harness_memory_symlink_sees_the_project_memory_files(
 def test_harness_memory_is_idempotent_when_already_correct(
     adopter_dir, tmp_path, run_cli
 ):
-    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory = _external_harness_path(adopter_dir)
     run_cli("init", "--harness-memory", str(harness_memory), cwd=adopter_dir)
 
     result = run_cli(
@@ -485,7 +661,7 @@ def test_harness_memory_is_idempotent_when_already_correct(
 def test_harness_memory_repoints_a_symlink_pointing_elsewhere(
     adopter_dir, tmp_path, run_cli
 ):
-    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory = _external_harness_path(adopter_dir)
     other = tmp_path / "elsewhere"
     other.mkdir()
     harness_memory.parent.mkdir(parents=True)
@@ -501,7 +677,7 @@ def test_harness_memory_repoints_a_symlink_pointing_elsewhere(
 
 
 def test_harness_memory_repoints_a_broken_symlink(adopter_dir, tmp_path, run_cli):
-    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory = _external_harness_path(adopter_dir)
     gone = tmp_path / "gone"
     harness_memory.parent.mkdir(parents=True)
     harness_memory.symlink_to(gone, target_is_directory=True)
@@ -556,7 +732,7 @@ def test_harness_memory_move_or_clone_restores_the_symlink_without_data_loss(
 def test_harness_memory_existing_real_directory_warns_and_is_left_untouched(
     adopter_dir, tmp_path, run_cli
 ):
-    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory = _external_harness_path(adopter_dir)
     harness_memory.mkdir(parents=True)
     marker = harness_memory / "pre-existing.md"
     marker.write_text("Do not touch.\n", encoding="utf-8")
@@ -575,7 +751,8 @@ def test_harness_memory_existing_real_directory_warns_and_is_left_untouched(
 def test_harness_memory_existing_real_file_warns_and_is_left_untouched(
     adopter_dir, tmp_path, run_cli
 ):
-    harness_memory = tmp_path / "harness-memory-file"
+    harness_memory = _external_harness_path(adopter_dir, "memory-file")
+    harness_memory.parent.mkdir(parents=True)
     harness_memory.write_text("Do not touch.\n", encoding="utf-8")
 
     result = run_cli(
@@ -618,7 +795,7 @@ def test_a_repointed_symlink_records_its_previous_target_before_losing_it(
 
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory = _external_harness_path(adopter_dir)
     harness_memory.parent.mkdir(parents=True)
     harness_memory.symlink_to(elsewhere, target_is_directory=True)
 
@@ -660,7 +837,7 @@ def test_a_first_link_records_that_there_was_no_previous_target(
     """
     import json
 
-    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory = _external_harness_path(adopter_dir)
 
     result = run_cli(
         "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
@@ -695,7 +872,7 @@ def test_a_recorded_symlink_carries_no_mode(
     """
     import json
 
-    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory = _external_harness_path(adopter_dir)
 
     result = run_cli(
         "init", "--harness-memory", str(harness_memory), cwd=adopter_dir
@@ -754,7 +931,7 @@ def test_a_corrupt_journal_still_restores_the_harness_symlink(
     harness half of `init` is what the `SessionStart` hook exists for and it
     runs regardless -- with the loss of its own record reported, not hidden.
     """
-    harness_memory = tmp_path / "harness" / "memory"
+    harness_memory = _external_harness_path(adopter_dir)
     assert (
         run_cli(
             "init", "--harness-memory", str(harness_memory), cwd=adopter_dir

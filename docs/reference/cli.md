@@ -177,11 +177,16 @@ empty extension) and its body documents, in prose, the field format (`name`,
 Both files are plain Markdown with a YAML-subset frontmatter: readable
 without the plugin installed.
 
-**`--harness-memory PATH`** makes PATH a move-proof symlink to this
-project's `memory/` directory (absolute target), so the harness can read
-agent memory from wherever it expects it while the data stays inside the
-adopter repo (versioned, if the adopter versions the layout -- see [the
-adoption guide](../adoption.md#2-decide-what-this-repository-versions)):
+**`--harness-memory PATH`** requires PATH to be outside the adopter project
+and makes it a move-proof symlink to this project's `memory/` directory
+(absolute target), so the harness can read agent memory from wherever it
+expects it while the data stays inside the adopter repo (versioned, if the
+adopter versions the layout -- see [the adoption
+guide](../adoption.md#2-decide-what-this-repository-versions)). A PATH at or
+below the adopter root, including one reached through its parent symlink, is
+an invalid invocation: `init` exits 2 before writing, absorbing or parking
+anything. The final PATH component is not followed for this check, so an
+existing external harness symlink can still be kept or re-pointed:
 
 - PATH missing: `init` creates the symlink (making parent directories as
   needed).

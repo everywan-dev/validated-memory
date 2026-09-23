@@ -69,10 +69,12 @@ never sorted.
   the repository-visible mutations that are recorded (see [the section
   below](#what-is-recorded-and-what-is-not-yet)): what `init` created,
   what it found already there, and the line it added to the ignore file.
-  Not the harness symlink: `init` writes that record to the vault whatever
-  path `--harness-memory` names, including one inside the repository. It is
-  not subject to the versioning question the adoption questionnaire asks
-  about the derived files (ADR 0002, ADR 0003) -- unlike
+  Not the harness symlink: `init` writes that record to the vault. New
+  invocations require `--harness-memory` to name a path outside the adopter
+  and refuse an in-project path before writing. Historical records for
+  in-project harness paths remain valid and readable. The link record is not
+  subject to the versioning question the adoption questionnaire asks about
+  the derived files (ADR 0002, ADR 0003) -- unlike
   `knowledge-index.md` or the HTML views, nothing regenerates it, so the
   questionnaire never offers to leave it unversioned.
 - **`.validated-memory/local.jsonl`**, under `.validated-memory/` at the
