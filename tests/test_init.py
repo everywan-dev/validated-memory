@@ -18,6 +18,10 @@ HARNESS_OUTSIDE_ERROR = (
     "validated-memory init: error: --harness-memory must name a path outside "
     "the adopter project"
 )
+PROJECT_MEMORY_OUTSIDE_ERROR = (
+    "project memory resolves outside the adopter, so the harness path was "
+    "left untouched"
+)
 
 
 def _tree_snapshot(root):
@@ -52,6 +56,19 @@ def _assert_harness_usage_refusal(result):
 
 def _external_harness_path(adopter_dir, name="memory"):
     return adopter_dir.parent / f"{adopter_dir.name}-harness" / name
+
+
+def _link_records(adopter_dir):
+    import json
+
+    history = adopter_dir / ".validated-memory" / "local.jsonl"
+    if not history.exists():
+        return []
+    return [
+        entry
+        for line in history.read_text(encoding="utf-8").splitlines()
+        if (entry := json.loads(line))["op"] == "link"
+    ]
 
 
 def test_app_requires_view_before_any_write(adopter_dir, run_cli):
@@ -364,6 +381,40 @@ def test_a_file_blocked_by_a_broken_symlink_gates_and_leaves_the_link(
     assert not [
         entry for entry in records if entry["path"] == "validated-memory.md"
     ], records
+
+
+def test_a_direct_looping_managed_file_keeps_the_broken_symlink_diagnostic(
+    adopter_dir, run_cli
+):
+    import json
+
+    managed = adopter_dir / "validated-memory.md"
+    managed.symlink_to("validated-memory.md")
+
+    for _ in range(2):
+        result = run_cli("init", cwd=adopter_dir)
+
+        assert result.returncode == 1
+        assert "validated-memory.md: create: exists as a broken symlink" in (
+            result.stderr
+        )
+        assert "path contains a symlink loop" not in result.stderr
+        assert "Traceback" not in result.stderr
+        assert managed.is_symlink()
+        assert os.readlink(managed) == "validated-memory.md"
+
+    records = [
+        json.loads(line)
+        for line in (adopter_dir / "journal.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert not [
+        entry for entry in records if entry["path"] == "validated-memory.md"
+    ]
+    assert not list(
+        (adopter_dir / ".validated-memory" / "transactions").glob("*.json")
+    )
 
 
 def test_a_directory_where_a_scaffold_file_goes_is_refused_not_kept(
@@ -880,6 +931,282 @@ def test_harness_memory_existing_real_file_warns_and_is_left_untouched(
     assert "WARNING" in result.stderr
     assert not harness_memory.is_symlink()
     assert harness_memory.read_text(encoding="utf-8") == "Do not touch.\n"
+
+
+@pytest.mark.parametrize(
+    "gate", ("healthy", "corrupt-journal", "unignored-vault")
+)
+@pytest.mark.parametrize("harness_state", ("missing", "stale", "native"))
+def test_outside_project_memory_is_refused_before_every_harness_action(
+    adopter_dir, run_cli, gate, harness_state
+):
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    outside = adopter_dir.parent / f"{adopter_dir.name}-outside-memory"
+    (adopter_dir / "memory").rename(outside)
+    marker = outside / "outside-marker.bin"
+    marker.write_bytes(b"outside project memory\x00\xff")
+    project_link = adopter_dir / "memory"
+    raw_project_target = os.path.relpath(outside, adopter_dir)
+    project_link.symlink_to(raw_project_target, target_is_directory=True)
+
+    harness = _external_harness_path(adopter_dir)
+    if harness_state == "stale":
+        harness.parent.mkdir(parents=True)
+        stale = harness.parent / "stale-target"
+        stale.mkdir()
+        harness.symlink_to(stale, target_is_directory=True)
+    elif harness_state == "native":
+        harness.mkdir(parents=True)
+        (harness / "harness-only.md").write_text(
+            "---\nname: harness-only\ndescription: Harness bytes.\n"
+            "metadata:\n  type: user\n---\n\nHarness bytes.\n",
+            encoding="utf-8",
+        )
+        (harness / "MEMORY.md").write_text(
+            "# Agent memory\n\n"
+            "- [Harness only](harness-only.md) — harness bytes\n",
+            encoding="utf-8",
+        )
+
+    if gate == "corrupt-journal":
+        history = adopter_dir / "journal.jsonl"
+        history.write_text(
+            history.read_text(encoding="utf-8") + "{not json\n",
+            encoding="utf-8",
+        )
+    elif gate == "unignored-vault":
+        ignore_file = adopter_dir / ".gitignore"
+        ignore_file.unlink()
+        ignore_target = adopter_dir / "unignored-target"
+        ignore_target.write_bytes(b"adopter-owned ignore bytes\n")
+        ignore_file.symlink_to(ignore_target.name)
+
+    adopter_before = _tree_snapshot(adopter_dir)
+    outside_before = _tree_snapshot(outside)
+    harness_parent_before = (
+        _tree_snapshot(harness.parent) if harness.parent.exists() else None
+    )
+    local_history = adopter_dir / ".validated-memory" / "local.jsonl"
+    local_before = local_history.read_bytes() if local_history.exists() else None
+    expected_error = (
+        f"ERROR: {harness}: symlink: {PROJECT_MEMORY_OUTSIDE_ERROR}"
+    )
+
+    results = []
+    for _ in range(2):
+        result = run_cli(
+            "init", "--harness-memory", str(harness), cwd=adopter_dir
+        )
+        results.append((result.stdout, result.stderr))
+
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert result.stderr.splitlines().count(expected_error) == 1
+        assert str(outside.resolve()) not in result.stderr
+        assert "Traceback" not in result.stderr
+        assert "created symlink" not in result.stdout
+        assert "re-pointed symlink" not in result.stdout
+        assert "kept symlink" not in result.stdout
+        assert "adopted" not in result.stdout
+        assert "parked" not in result.stdout
+        assert project_link.is_symlink()
+        assert os.readlink(project_link) == raw_project_target
+        assert marker.read_bytes() == b"outside project memory\x00\xff"
+        assert _tree_snapshot(adopter_dir) == adopter_before
+        assert _tree_snapshot(outside) == outside_before
+        assert (
+            _tree_snapshot(harness.parent) if harness.parent.exists() else None
+        ) == harness_parent_before
+        assert not list(harness.parent.glob("memory.bak*"))
+        assert (
+            local_history.read_bytes() if local_history.exists() else None
+        ) == local_before
+        assert not _link_records(adopter_dir)
+
+    assert results[1] == results[0]
+
+
+def test_b1_usage_preflight_precedes_b6_project_memory_check(
+    adopter_dir, run_cli
+):
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    outside = adopter_dir.parent / f"{adopter_dir.name}-outside-memory"
+    (adopter_dir / "memory").rename(outside)
+    marker = outside / "outside-marker.bin"
+    marker.write_bytes(b"outside project memory stays untouched\x00\xff")
+    project_memory = adopter_dir / "memory"
+    raw_project_target = os.path.relpath(outside, adopter_dir)
+    project_memory.symlink_to(raw_project_target, target_is_directory=True)
+
+    parent_loop = adopter_dir.parent / f"{adopter_dir.name}-harness-loop"
+    parent_loop.symlink_to(parent_loop.name, target_is_directory=True)
+    harness = parent_loop / "memory"
+    adopter_before = _tree_snapshot(adopter_dir)
+    outside_before = _tree_snapshot(outside)
+    loop_target = os.readlink(parent_loop)
+    local_history = adopter_dir / ".validated-memory" / "local.jsonl"
+    local_before = local_history.read_bytes() if local_history.exists() else None
+
+    try:
+        for _ in range(2):
+            result = run_cli(
+                "init", "--harness-memory", str(harness), cwd=adopter_dir
+            )
+
+            assert result.returncode == 2
+            assert result.stdout == ""
+            assert result.stderr.splitlines()[-1] == HARNESS_OUTSIDE_ERROR
+            assert PROJECT_MEMORY_OUTSIDE_ERROR not in result.stderr
+            assert "Traceback" not in result.stderr
+            assert _tree_snapshot(adopter_dir) == adopter_before
+            assert _tree_snapshot(outside) == outside_before
+            assert parent_loop.is_symlink()
+            assert os.readlink(parent_loop) == loop_target
+            assert not harness.exists() and not harness.is_symlink()
+            assert marker.read_bytes() == (
+                b"outside project memory stays untouched\x00\xff"
+            )
+            assert (
+                local_history.read_bytes() if local_history.exists() else None
+            ) == local_before
+            assert not _link_records(adopter_dir)
+    finally:
+        # Keep pytest's basetemp cleanup from resolving this deliberate loop.
+        parent_loop.unlink()
+
+
+def test_looping_project_memory_is_diagnosed_before_harness_parent_creation(
+    adopter_dir, run_cli
+):
+    project_memory = adopter_dir / "memory"
+    project_memory.symlink_to("memory", target_is_directory=True)
+    harness = _external_harness_path(adopter_dir)
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness), cwd=adopter_dir
+    )
+
+    assert result.returncode == 1
+    assert "no 'memory/' to link to" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert project_memory.is_symlink()
+    assert os.readlink(project_memory) == "memory"
+    assert not harness.parent.exists()
+    assert not _link_records(adopter_dir)
+
+
+@pytest.mark.parametrize(
+    "project_memory", ("missing", "broken", "loop", "non-directory")
+)
+def test_unusable_project_memory_keeps_the_existing_no_action_warning(
+    adopter_dir, run_cli, project_memory
+):
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    memory = adopter_dir / "memory"
+    (memory / "MEMORY.md").unlink()
+    memory.rmdir()
+    if project_memory == "broken":
+        memory.symlink_to("missing-memory", target_is_directory=True)
+    elif project_memory == "loop":
+        memory.symlink_to("memory", target_is_directory=True)
+    elif project_memory == "non-directory":
+        memory.write_bytes(b"not a project memory directory\n")
+
+    history = adopter_dir / "journal.jsonl"
+    history.write_text(
+        history.read_text(encoding="utf-8") + "{not json\n",
+        encoding="utf-8",
+    )
+    harness = _external_harness_path(adopter_dir)
+    adopter_before = _tree_snapshot(adopter_dir)
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness), cwd=adopter_dir
+    )
+
+    assert result.returncode == 1
+    assert "no 'memory/' to link to" in result.stderr
+    assert PROJECT_MEMORY_OUTSIDE_ERROR not in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not harness.parent.exists()
+    assert _tree_snapshot(adopter_dir) == adopter_before
+    assert not _link_records(adopter_dir)
+
+
+@pytest.mark.parametrize("project_memory", ("direct", "relative", "absolute"))
+def test_valid_project_memory_targets_create_a_recorded_harness_link(
+    adopter_dir, run_cli, project_memory
+):
+    target = adopter_dir / "memory"
+    raw_target = None
+    if project_memory != "direct":
+        target = adopter_dir / "containers" / f"{project_memory}-memory"
+        target.mkdir(parents=True)
+        (target / "preserved.bin").write_bytes(b"in-root memory\x00\xff")
+        raw_target = (
+            target.relative_to(adopter_dir).as_posix()
+            if project_memory == "relative"
+            else str(target)
+        )
+        (adopter_dir / "memory").symlink_to(
+            raw_target, target_is_directory=True
+        )
+    harness = _external_harness_path(adopter_dir)
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness), cwd=adopter_dir
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"init: created symlink {harness} -> {target.resolve()}" in (
+        result.stdout.splitlines()
+    )
+    assert harness.is_symlink()
+    assert os.readlink(harness) == str(target.resolve())
+    assert [entry["stage"] for entry in _link_records(adopter_dir)] == [
+        "prepared",
+        "committed",
+    ]
+    if raw_target is not None:
+        assert os.readlink(adopter_dir / "memory") == raw_target
+        assert (target / "preserved.bin").read_bytes() == b"in-root memory\x00\xff"
+
+
+@pytest.mark.parametrize("harness_state", ("missing", "stale"))
+def test_unrelated_item_error_still_restores_a_valid_harness_link(
+    adopter_dir, run_cli, harness_state
+):
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    config = adopter_dir / "validated-memory.md"
+    config.unlink()
+    config.mkdir()
+    marker = adopter_dir / "memory" / "project-marker.bin"
+    marker.write_bytes(b"project memory stays valid\n")
+    harness = _external_harness_path(adopter_dir)
+    if harness_state == "stale":
+        harness.parent.mkdir(parents=True)
+        stale = harness.parent / "stale-target"
+        stale.mkdir()
+        harness.symlink_to(stale, target_is_directory=True)
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness), cwd=adopter_dir
+    )
+
+    assert result.returncode == 1
+    assert "validated-memory.md: create" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert harness.is_symlink()
+    assert os.readlink(harness) == str((adopter_dir / "memory").resolve())
+    assert marker.read_bytes() == b"project memory stays valid\n"
+    verb = "created" if harness_state == "missing" else "re-pointed"
+    assert (
+        f"init: {verb} symlink {harness} -> "
+        f"{(adopter_dir / 'memory').resolve()}"
+    ) in result.stdout.splitlines()
+    assert [entry["stage"] for entry in _link_records(adopter_dir)] == [
+        "prepared",
+        "committed",
+    ]
 
 
 def test_a_repointed_symlink_records_its_previous_target_before_losing_it(

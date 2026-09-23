@@ -22,17 +22,17 @@ project's `memory/` and parked aside as a `.bak` before the link is created
 outcomes are fail-open: the link is restored, or it is left alone and said
 so, and the session is unaffected either way.
 
-A project with no `memory/` is the one case where PATH is not touched at
-all. The link's target is this project's agent memory, so a link made
-before that directory exists points nowhere: the harness is left with no
-memory, where an untouched PATH leaves it its own -- which a later run
-absorbs into the project rather than losing.
+A project with no usable `memory/` leaves PATH untouched. A missing, broken,
+looping or non-directory node has no directory to point at. A directory that
+resolves outside the adopter is ineligible: exposing it would make external
+bytes this project's harness memory. The former is a WARNING and the latter an
+ERROR, but both are decided before any harness-path action.
 
 A journal that cannot be read or written does gate -- a required record that
 is missing or corrupt is exit 1 (ADR 0008), never a silent continuation --
-but it does not take the symlink with it: the harness half runs outside the
-journalled part of the run, and the record it could not write is reported as
-a WARNING naming what was lost. So `init` can exit 1 while the link is back,
+but it does not take an eligible symlink with it: the harness half runs outside
+the journalled part of the run, and the record it could not write is reported
+as a WARNING naming what was lost. So `init` can exit 1 while the link is back,
 which is why the `SessionStart` hook reports success whatever the exit code
 (`hooks/restore-memory-symlink.sh`). This fail-open path restores only missing
 or existing symlinks. A real harness directory is never absorbed or parked
@@ -51,14 +51,14 @@ its own. So the scaffold, the take-over and the views do not run: the ERROR
 names the one line to add by hand, and the next run picks up from a tree
 `init` has not touched.
 
-The harness symlink is the one act that outlives that gate, because
-restoring it moves no data and it is the whole job of the `SessionStart`
-hook. Its record is the one that could only live in the vault, which is
-precisely what is exposed, so it is not written and the loss is a WARNING
--- exactly the treatment a journal that cannot be written already gets. A
-gated run ends with the link back, an ERROR naming the ignore file, and
-exit 1. As with a journal failure, this exception never absorbs or parks a
-real directory.
+The harness symlink is the one act that outlives that gate when project memory
+first resolves inside the adopter, because restoring it moves no data and it is
+the whole job of the `SessionStart` hook. Its record is the one that could only
+live in the vault, which is precisely what is exposed, so it is not written and
+the loss is a WARNING -- exactly the treatment a journal that cannot be written
+already gets. An ineligible outside-root project target instead leaves the
+harness path untouched with an ERROR. As with a journal failure, this exception
+never absorbs or parks a real directory.
 
 With `--view`, `init` also creates `knowledge.html` and `memory.html` --
 once each. The views are optional, and activation is the presence of the
@@ -104,6 +104,10 @@ NO_PROJECT_MEMORY = (
     "alone: a link made now would point at a directory that does not exist, "
     "leaving the harness no memory at all, where an untouched path leaves it "
     "its own"
+)
+PROJECT_MEMORY_OUTSIDE = (
+    "project memory resolves outside the adopter, so the harness path was "
+    "left untouched"
 )
 UNABSORBED = (
     "already exists and is not a symlink; absorbing it moves the adopter's "
@@ -187,9 +191,11 @@ def run(harness_memory, view, stdout, stderr, app=False):
     """Scaffold the adopter layout under the working directory.
 
     Returns an exit code: 0 unless an item could not be created, or the
-    journal could not be read or written. Even a harness-memory symlink
-    `init` cannot restore is a WARNING, not an ERROR -- fail-open, so the
-    caller (eventually a startup hook) never breaks the session over it.
+    journal could not be read or written. An OS failure while restoring an
+    eligible harness-memory symlink is a WARNING, not an ERROR -- fail-open,
+    so the caller (eventually a startup hook) never breaks the session over it.
+    Project memory that resolves outside the adopter is instead an ERROR and
+    reaches no harness action.
     Same for `view`: a corpus the renderer refuses is a WARNING, never a
     gate -- see `_ensure_views`.
 
@@ -198,8 +204,9 @@ def run(harness_memory, view, stdout, stderr, app=False):
     0008). What it gates is the journalled part of the run -- the scaffold,
     which must not mutate the adopter tree while nothing can record what it
     did. The harness symlink is not part of that: it runs afterwards, on its
-    own, and reports the record it could not write. A real harness directory
-    is not a symlink restoration and remains untouched after this gate.
+    own after independently validating the project-memory target, and reports
+    the record it could not write. A real harness directory is not a symlink
+    restoration and remains untouched after this gate.
 
     The vault's ignore entry is the other ERROR that is not about a single
     item (`_ensure_ignored`), and it gates the same journalled part plus the
@@ -313,8 +320,9 @@ def run(harness_memory, view, stdout, stderr, app=False):
         findings.extend(view_findings)
 
     # Neither of the two whole-run ERRORs reached the harness path inside
-    # the block, and both leave an existing or missing link to be restored
-    # here: the journal is the
+    # the block, and both leave an existing or missing link to be considered
+    # here. `_sync_symlink` first validates the project target: the journal
+    # is the
     # record of what `init` did, not what a session needs to keep working,
     # and an unignored vault is a reason not to write a record, not a reason
     # to leave the harness pointing at a project it no longer names. Outside
@@ -571,6 +579,15 @@ def _ensure_file(path, content, session):
     location = path.as_posix()
     if path.is_symlink() and not path.exists():
         return location, None, Finding(ERROR, location, "create", BROKEN_SYMLINK)
+    try:
+        path.resolve()
+    except RuntimeError:
+        return location, None, Finding(
+            ERROR,
+            location,
+            "create",
+            "the path contains a symlink loop, so it was left untouched",
+        )
     if path.is_file() and not path.is_symlink():
         finding = _observe(session, location, "file already present")
         if finding is not None:
@@ -618,6 +635,10 @@ def _sync_symlink(
       than none -- the harness reads and writes through this path, so a
       dangling link costs it its memory, where an untouched path leaves it
       its own for a later run to absorb.
+    - `memory/` resolves outside this adopter: refuse before inspecting or
+      creating the harness path. An in-root directory symlink remains a valid
+      logical container, but an outside one must never become the target the
+      harness exposes.
     - Missing: create the symlink (making parent directories as needed).
     - Already a symlink (even broken, even pointing elsewhere): re-point it --
       re-pointing a symlink never destroys data, unlike replacing a real path.
@@ -650,9 +671,20 @@ def _sync_symlink(
     path = Path(raw_path)
     location = path.as_posix()
     project_memory = Path("memory")
-    if not project_memory.is_dir():
+    try:
+        if not project_memory.is_dir():
+            return [Finding(WARNING, location, "symlink", NO_PROJECT_MEMORY)]
+        target = project_memory.resolve()
+        adopter_root = Path().resolve()
+    except (OSError, RuntimeError):
         return [Finding(WARNING, location, "symlink", NO_PROJECT_MEMORY)]
-    target = project_memory.resolve()
+    if not target.is_relative_to(adopter_root):
+        return [Finding(ERROR, location, "symlink", PROJECT_MEMORY_OUTSIDE)]
+
+    # The target is eligible before the harness leaf is inspected. That
+    # ordering is the rule: an invalid project target may not create the
+    # external parent, read or replace its leaf, begin take-over, or form a
+    # LOCAL intention.
     was_symlink = path.is_symlink()
     previous = os.readlink(path) if was_symlink else None
 

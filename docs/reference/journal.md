@@ -396,13 +396,27 @@ vault's entry in the ignore file (`create` or `append`), and the harness
 symlink (`link`, always in the vault). That is not every mutation `init`
 performs.
 
+After the requested harness PATH passes the CLI's outside-adopter usage
+preflight, the harness record is formed only after each sync independently
+resolves project `memory/` to a real directory at or below the adopter root.
+An in-root logical directory symlink remains eligible. An outside-root target
+is an ERROR on the requested harness path before sync inspects its parent or
+leaf, before take-over can absorb or park anything, and before a LOCAL
+intention exists. The harness path and any existing local history are therefore
+unchanged, including after a journal-unavailable or vault-unignored gate. A
+PATH whose parent the earlier preflight cannot resolve remains an invalid
+invocation (exit 2), before `init.run`; it does not reach this project-memory
+diagnostic. Neither diagnostic stores or prints the resolved host target. This
+ordering does not descriptor-stabilize ancestors and is not a whole-run
+rollback promise.
+
 **Two mutations bypass the executor by decision**, and they are the only
 two. Both are declared in the design and pinned by name in
 `tests/test_journal.py`, so a third cannot be added quietly:
 
 | Write | By | Why it is an exception |
 |---|---|---|
-| the fail-open repair of the harness symlink | `init.relink` | The contract requires the link back when the journal cannot be read or written **at all** -- that is the `SessionStart` hook's only job -- and an executor that requires a working journal cannot serve it. The record goes through the executor whenever the journal is healthy; only the repair survives when it is not. The repair creates only the supplied parent chain, republishes the link atomically and requests the same durability barriers. A pre-visibility failure remains a WARNING naming the previous target; a visible effect whose barrier fails is an ERROR and cannot become a clean retry. |
+| the fail-open repair of the harness symlink | `init.relink` | After the CLI usage preflight accepts PATH, an eligible in-adopter project-memory target is required before every sync action. The contract then requires the link back when the journal cannot be read or written **at all** -- that is the `SessionStart` hook's only job -- and an executor that requires a working journal cannot serve it. An outside-root project target reaches no repair. The record goes through the executor whenever the journal is healthy; only the repair survives when it is not. The repair creates only the supplied parent chain, republishes the link atomically and requests the same durability barriers. A pre-visibility failure remains a WARNING naming the previous target; a visible effect whose barrier fails is an ERROR and cannot become a clean retry. |
 | the harness take-over | `adopt.take_over`, and its `_absorb`, `_reconcile_index` and `_park` | It recognises a tree, copies conditionally, reconciles an index and renames the source, and its published contract tolerates a per-file conflict and continues. That needs its own planner before the executor can apply it. |
 
 **Not recorded at all**, because what is written is not adopter data: a
@@ -704,12 +718,14 @@ blocking every mutation would brick the session hook over one stale file.
 The refusal is an ERROR, so the run's exit code gates even though the other
 items were created.
 
-The harness symlink is the one thing that overrides that refusal. The
-`SessionStart` hook's only job is to give a session its memory back, the
-transaction file still holds the previous target the record would have
-carried, and leaving a session with no memory to protect a file nothing has
-read yet is not a trade this hook may make. The link is restored, and a
-WARNING says it was not recorded and what the previous target was.
+The harness symlink is the one thing that overrides that refusal, after its
+project-memory target has independently been found eligible inside the adopter.
+The `SessionStart` hook's only job is to give a session its memory back, the
+transaction file still holds the previous target the record would have carried,
+and leaving a session with no memory to protect a file nothing has read yet is
+not a trade this hook may make. The link is restored, and a WARNING says it was
+not recorded and what the previous target was. An outside-root project-memory
+target instead produces its stable harness-path ERROR before repair begins.
 
 ## Resolving a transaction
 

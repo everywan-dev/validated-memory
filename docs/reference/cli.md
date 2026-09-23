@@ -198,6 +198,22 @@ an invalid invocation: `init` exits 2 before writing, absorbing or parking
 anything. The final PATH component is not followed for this check, so an
 existing external harness symlink can still be kept or re-pointed:
 
+After PATH passes the preceding outside-adopter usage preflight, every harness
+sync independently resolves the project's `memory/` before it inspects the
+harness parent or leaf or creates any parent directory. That target must be a
+real directory at or below the adopter root. A real in-adopter directory and
+an in-adopter directory symlink are both eligible. If `memory/` resolves
+outside the adopter, `init` reports an ERROR on PATH saying that project memory
+resolves outside the adopter and that the harness path was left untouched; it
+does not disclose the resolved host path. No harness parent or leaf is created
+or changed, no native harness directory is absorbed or parked, and no local
+link intention or record is formed. This check applies equally during healthy
+initialization and after either whole-run gate. If the earlier PATH preflight
+cannot resolve the supplied parent, that invalid invocation remains the B1
+usage error (exit 2) and no project-memory diagnostic is produced. Missing,
+broken, looping and non-directory project-memory nodes retain the existing
+"no `memory/` to link to" no-action warning.
+
 - PATH missing: `init` creates the symlink (making parent directories as
   needed).
 - PATH already a symlink -- pointing at this project, elsewhere, or broken:
@@ -225,11 +241,11 @@ session its memory back is the `SessionStart` hook's only job.
 
 That fail-open restoration after either whole-run gate -- an unavailable or
 corrupt journal, or a vault whose ignore entry could not be established --
-never absorbs or parks a real directory at PATH. Only a missing path or an
-existing symlink can be restored after the gate. A real directory is left
-byte-for-byte in place with the warning that absorbing it would move the
-adopter's data; healthy initialization can recognize and absorb it on a later
-run.
+first requires the same eligible in-adopter project-memory target. It never
+absorbs or parks a real directory at PATH. Only a missing path or an existing
+symlink can be restored after the gate. A real directory is left byte-for-byte
+in place with the warning that absorbing it would move the adopter's data;
+healthy initialization can recognize and absorb it on a later run.
 
 Computing PATH from the harness's own layout and calling `init
 --harness-memory PATH` automatically on every session start is the plugin's
