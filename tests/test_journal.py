@@ -38,8 +38,163 @@ SHUTIL_MUTATORS = {
     "copy", "copy2", "copyfile", "copytree", "copymode", "copystat", "move",
     "rmtree", "make_archive", "unpack_archive",
 }
-# The journal's atomic install is a mutation when called from outside it.
+# Journal primitives remain writes in non-exempt implementation modules.
 JOURNAL_MUTATORS = {"install"}
+DURABLE_MUTATORS = {
+    "install", "install_bytes", "create_exclusive", "create_directory",
+    "replace_symlink", "append_bytes", "remove_name", "ensure_owned_directory",
+    "ensure_external_directory", "repair_symlink", "republish_file",
+    "republish_directory",
+}
+FACADE = "validated_memory.journal"
+
+
+def _import_module(node, relative):
+    if not node.level:
+        return node.module or ""
+    package = ["validated_memory", *relative.split("/")[:-1]]
+    return ".".join(package[:len(package) - node.level + 1]
+                    + ([node.module] if node.module else []))
+
+
+def _origins(node, bindings):
+    """Resolve only static names, attributes and literal/computed getattr.
+
+    A '*' member retains unknown reflection on a proven receiver. Unresolved
+    receivers use '?' so path-method vocabulary still works without claiming
+    to infer types. Dynamic imports, eval and interprocedural flows are outside
+    this structural check.
+    """
+    if isinstance(node, ast.Name):
+        return bindings.get(node.id, {node.id})
+    if isinstance(node, ast.Attribute):
+        return {base + "." + node.attr for base in _origins(node.value, bindings)}
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr" and len(node.args) >= 2):
+        member = node.args[1]
+        member = member.value if isinstance(member, ast.Constant) and isinstance(member.value, str) else "*"
+        origins = {base + "." + member for base in _origins(node.args[0], bindings)}
+        # Preserve optional-flag fallback safety through assignments as well
+        # as inline expressions; the flag's name alone is insufficient.
+        if origins & {"os." + flag for flag in READ_ONLY_OPEN_FLAGS}:
+            if not (len(node.args) == 3 and isinstance(node.args[2], ast.Constant)
+                    and node.args[2].value == 0):
+                origins.add("?")
+        return origins
+    return {"?"}
+
+
+def _bound_nodes(tree, relative):
+    """Pair source nodes with bounded lexical provenance, never sibling state.
+
+    Local bindings mask enclosing names, including parameters. Multiple local
+    assignments are conservatively unioned regardless of ordering/branches:
+    rebinding a sensitive alias cannot make its earlier uses disappear. This
+    intentionally can reject a read after a sensitive name was reassigned.
+    Comprehension locals are isolated; function headers use the enclosing
+    scope and method free names skip class namespaces. Class-body assignments
+    conservatively retain enclosing fallback origins. No execution, control
+    flow, dynamic import or arbitrary Python reflection is inferred.
+    """
+    functions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+    comprehensions = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+    boundaries = (*functions, ast.ClassDef, *comprehensions)
+
+    def parameters(node):
+        return [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs,
+                *([node.args.vararg] if node.args.vararg else []),
+                *([node.args.kwarg] if node.args.kwarg else [])]
+
+    def headers(node):
+        if isinstance(node, functions):
+            return [*getattr(node, "decorator_list", []), *node.args.defaults,
+                    *(v for v in node.args.kw_defaults if v is not None),
+                    *(a.annotation for a in parameters(node) if a.annotation),
+                    *([node.returns] if getattr(node, "returns", None) else [])]
+        if isinstance(node, ast.ClassDef):
+            return [*node.decorator_list, *node.bases, *node.keywords]
+        return [node.generators[0].iter]
+
+    def contents(node):
+        if isinstance(node, functions):
+            body = [node.body] if isinstance(node, ast.Lambda) else node.body
+            return [*parameters(node), *body]
+        if isinstance(node, comprehensions):
+            values = ([node.key, node.value] if isinstance(node, ast.DictComp)
+                      else [node.elt])
+            for index, generator in enumerate(node.generators):
+                values.extend([generator.target, *generator.ifs])
+                if index:
+                    values.append(generator.iter)
+            return values
+        return node.body
+
+    def visit(scope, inherited):
+        own, nested = [], []
+        def collect(node):
+            own.append(node)
+            if isinstance(node, boundaries):
+                nested.append(node)
+                for header in headers(node):
+                    collect(header)
+            elif not isinstance(node, ast.arg):
+                for child in ast.iter_child_nodes(node):
+                    collect(child)
+        for child in contents(scope):
+            collect(child)
+        bindings = {name: set(values) for name, values in inherited.items()}
+        local = {node.id for node in own if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))}
+        local.update(node.arg for node in own if isinstance(node, ast.arg))
+        local.update(node.name for node in nested if hasattr(node, "name"))
+        enclosing_assignments = {
+            name
+            for node in own
+            if isinstance(node, (ast.Global, ast.Nonlocal))
+            for name in node.names
+        }
+        imports = []
+        for node in own:
+            if isinstance(node, ast.Import):
+                imports.extend((a.asname or a.name.split(".")[0], a.name if a.asname else a.name.split(".")[0]) for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                module = _import_module(node, relative)
+                imports.extend((a.asname or a.name, module + "." + a.name) for a in node.names)
+        local.update(name for name, _ in imports)
+        for name in local:
+            # Class-body LOAD_NAME falls back to enclosing bindings before a
+            # local assignment (notably `alias = alias`). Keep both possible
+            # origins conservatively, without passing this namespace to methods.
+            bindings[name] = (
+                set(inherited.get(name, ()))
+                if isinstance(scope, ast.ClassDef) or name in enclosing_assignments
+                else set()
+            )
+        for node in own:
+            if isinstance(node, ast.arg):
+                bindings[node.arg].add("?")
+        for name, origin in imports:
+            bindings[name].add(origin)
+        assignments = []
+        for node in own:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                assignments.extend((t.id, node.value) for t in targets if isinstance(t, ast.Name))
+        # Bound alias propagation by the number of assignments; recursive
+        # attribute constructions cannot create an unbounded fixed point.
+        for _ in range(len(assignments) + 1):
+            previous = {k: set(v) for k, v in bindings.items()}
+            for name, value in assignments:
+                bindings[name].update(_origins(value, previous))
+            if bindings == previous:
+                break
+        for node in own:
+            yield node, bindings
+        for child in nested:
+            # A class body executes in its own namespace, but methods and
+            # comprehension bodies resolve free names outside that namespace.
+            yield from visit(child, inherited if isinstance(scope, ast.ClassDef) else bindings)
+    yield from visit(tree, {})
+
 
 # Require a journal receiver so unrelated append/write calls cannot count.
 RECORDERS = {"session", "journal"}
@@ -64,7 +219,7 @@ RAW_WRITE_MODULES = {
 
 def _inside_journal(relative):
     """Whether `relative` is the journal's own source, or a module of it."""
-    return relative == JOURNAL_SOURCE or relative.startswith(JOURNAL_SOURCE + "/")
+    return relative.startswith(JOURNAL_SOURCE + "/")
 
 # --- the two exception sets, and why they are two ------------------------------
 #
@@ -168,12 +323,13 @@ PERMITTED_JOURNAL_EXPORTS = (
 PRIVATE_JOURNAL_CALLS = ("record", "install")
 
 
-def _writing_mode(call):
+def _writing_mode(call, index=None):
     """Recognize literal write modes; unknown expressions count as writes.
 
     Account for the different mode positions in open(path, mode) and
     path.open(mode); an omitted mode is read-only."""
-    index = 1 if isinstance(call.func, ast.Name) else 0
+    if index is None:
+        index = 1 if isinstance(call.func, ast.Name) else 0
     mode = call.args[index] if len(call.args) > index else None
     for keyword in call.keywords:
         if keyword.arg == "mode":
@@ -201,38 +357,27 @@ READ_ONLY_OPEN_FLAGS = frozenset(
 )
 
 
-def _read_only_flags(node):
+def _read_only_flags(node, bindings=None):
     """Whether a flags expression is a proven read-only `os.O_*` combination.
 
     Recursive over `|` alone. The leaves are a literal 0, an allowed `os.O_*`
-    attribute and `getattr(os, "O_...", 0)` over the same set. A variable, a
-    call, an arithmetic expression or an unlisted flag is not proven."""
+    attribute and `getattr(os, "O_...", 0)` over the same set, including static
+    aliases. An unresolved variable, arithmetic expression or unlisted flag
+    is not proven."""
+    bindings = bindings or {}
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return _read_only_flags(node.left) and _read_only_flags(node.right)
+        return _read_only_flags(node.left, bindings) and _read_only_flags(node.right, bindings)
+    origins = _origins(node, bindings)
+    if origins and all(origin in {"os." + flag for flag in READ_ONLY_OPEN_FLAGS} for origin in origins):
+        if isinstance(node, ast.Call):
+            return len(node.args) == 3 and isinstance(node.args[2], ast.Constant) and node.args[2].value == 0
+        return True
     if isinstance(node, ast.Constant):
         return node.value == 0
-    if (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "os"
-    ):
-        return node.attr in READ_ONLY_OPEN_FLAGS
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "getattr"
-        and len(node.args) == 3
-        and isinstance(node.args[0], ast.Name)
-        and node.args[0].id == "os"
-        and isinstance(node.args[1], ast.Constant)
-        and isinstance(node.args[2], ast.Constant)
-        and node.args[2].value == 0
-    ):
-        return node.args[1].value in READ_ONLY_OPEN_FLAGS
     return False
 
 
-def _os_open_writes(call):
+def _os_open_writes(call, bindings=None):
     """Whether an `os.open(...)` call may create or modify its target.
 
     A missing flags argument, a computed one, or any flag outside the
@@ -243,37 +388,33 @@ def _os_open_writes(call):
             flags = keyword.value
     if flags is None:
         return True
-    return not _read_only_flags(flags)
+    return not _read_only_flags(flags, bindings)
 
 
-def _mutating_call(call):
-    """The name of the filesystem mutation this call performs, or None."""
-    function = call.func
-    if isinstance(function, ast.Name):
-        if function.id == "open" and _writing_mode(call):
-            return "open(...) for writing"
-        return None
-    if not isinstance(function, ast.Attribute):
-        return None
-    receiver = (
-        function.value.id if isinstance(function.value, ast.Name) else None
-    )
-    if receiver == "os" and function.attr == "open":
-        # os.open's second argument is a flags expression, not a mode string.
-        return "os.open(...) for writing" if _os_open_writes(call) else None
-    if function.attr == "open":
-        return "open(...) for writing" if _writing_mode(call) else None
-    for module, vocabulary in (
-        ("os", OS_MUTATORS),
-        ("shutil", SHUTIL_MUTATORS),
-        ("journal", JOURNAL_MUTATORS),
-    ):
-        if receiver == module and function.attr in vocabulary:
-            return f"{module}.{function.attr}"
-    if function.attr in PATH_MUTATORS:
-        return function.attr
-    if function.attr == "replace" and len(call.args) == 1 and not call.keywords:
-        return "replace"
+def _mutating_call(call, bindings=None):
+    """Recognize the bounded mutation vocabulary through static provenance."""
+    bindings = bindings or {}
+    for origin in sorted(_origins(call.func, bindings)):
+        receiver, _, member = origin.rpartition(".")
+        if origin == "os.open":
+            if _os_open_writes(call, bindings):
+                return "os.open(...) for writing"
+            continue
+        if origin == "open" or member == "open":
+            if _writing_mode(call, 1 if origin == "open" else 0):
+                return "open(...) for writing"
+        if (receiver == "os" and member in OS_MUTATORS
+                or receiver == "shutil" and member in SHUTIL_MUTATORS
+                or receiver == FACADE + ".durable" and member in DURABLE_MUTATORS
+                or receiver == FACADE + ".records" and member == "append"
+                or receiver == "journal" and member in JOURNAL_MUTATORS):
+            return origin
+        if member == "*" and (receiver in {"os", "shutil"} or receiver.startswith(FACADE + ".")):
+            return origin + " (computed member)"
+        if member in PATH_MUTATORS:
+            return member
+        if member == "replace" and len(call.args) == 1 and not call.keywords:
+            return "replace"
     return None
 
 
@@ -293,30 +434,56 @@ def _scopes(tree):
 
     Nested functions are independent scopes. Duplicate function names share
     an exception, including identically named closures or methods; this
-    deliberately over-covers rather than resolving that ambiguity."""
+    deliberately over-covers rather than resolving that ambiguity. Decorators,
+    defaults and annotations execute in the enclosing scope, not the function
+    body they describe, so a recorder in that body cannot cover them."""
     functions = [
         node
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
+    lambdas = [node for node in ast.walk(tree) if isinstance(node, ast.Lambda)]
 
-    def _own(node):
-        """The calls made directly in `node`, not inside a function within it."""
-        nested = {
-            id(inner)
-            for child in ast.walk(node)
-            if child is not node
-            and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-            for inner in ast.walk(child)
-        }
+    def _headers(node):
+        if isinstance(node, ast.Lambda):
+            return [
+                *node.args.defaults,
+                *(value for value in node.args.kw_defaults if value is not None),
+            ]
         return [
-            call
-            for call in ast.walk(node)
-            if isinstance(call, ast.Call) and id(call) not in nested
+            *node.decorator_list,
+            *node.args.defaults,
+            *(value for value in node.args.kw_defaults if value is not None),
+            *(arg.annotation for arg in (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+                *([node.args.vararg] if node.args.vararg else []),
+                *([node.args.kwarg] if node.args.kwarg else []),
+            ) if arg.annotation is not None),
+            *([node.returns] if node.returns is not None else []),
         ]
 
-    scopes = [(function.name, _own(function)) for function in functions]
-    scopes.append(("<module>", _own(tree)))
+    def _calls(nodes):
+        calls = []
+
+        def visit(node):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                for header in _headers(node):
+                    visit(header)
+                return
+            if isinstance(node, ast.Call):
+                calls.append(node)
+            for child in ast.iter_child_nodes(node):
+                visit(child)
+
+        for node in nodes:
+            visit(node)
+        return calls
+
+    scopes = [(function.name, _calls(function.body)) for function in functions]
+    scopes.extend(("<lambda>", _calls([function.body])) for function in lambdas)
+    scopes.append(("<module>", _calls(tree.body)))
     return scopes
 
 
@@ -896,6 +1063,23 @@ def _package_modules():
     ]
 
 
+def _write_offenders(source, relative):
+    exempt = {**EXECUTOR_EXCEPTIONS, **UNRECORDED_WRITES}
+    if relative in RAW_WRITE_MODULES or (relative, "*") in exempt:
+        return []
+    tree = ast.parse(source)
+    bindings = {id(node): values for node, values in _bound_nodes(tree, relative)}
+    offenders = []
+    for name, calls in _scopes(tree):
+        if (relative, name) in exempt or any(_recording_call(call) for call in calls):
+            continue
+        for call in calls:
+            mutation = _mutating_call(call, bindings[id(call)])
+            if mutation:
+                offenders.append(f"{relative}:{call.lineno}: {name} calls {mutation} and never reaches the journal")
+    return offenders
+
+
 def test_every_write_in_the_package_goes_through_the_journal():
     """Structurally require a recorder beside each recognized filesystem write.
 
@@ -903,32 +1087,15 @@ def test_every_write_in_the_package_goes_through_the_journal():
     executor; UNRECORDED_WRITES covers derived artifacts and the verdict log.
     RAW_WRITE_MODULES explicitly permits the journal implementation.
 
-    This fixed vocabulary misses aliases and new write idioms. A recorder
+    This bounded vocabulary resolves static aliases and getattr. New write
+    idioms and arbitrary reflection remain outside it. A recorder
     and mutation merely coexist in one scope: that does not prove guarding
     or ordering. Receiver matching excludes unrelated append/write calls.
     Mutation tests of known idioms establish only this vocabulary; extend
     it when the package introduces a different idiom."""
-    exempt = {**EXECUTOR_EXCEPTIONS, **UNRECORDED_WRITES}
     offenders = []
     for relative, path in _package_modules():
-        if relative in RAW_WRITE_MODULES or (relative, "*") in exempt:
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for name, calls in _scopes(tree):
-            if (relative, name) in exempt:
-                continue
-            mutations = [
-                (_mutating_call(call), call.lineno)
-                for call in calls
-                if _mutating_call(call) is not None
-            ]
-            if any(_recording_call(call) for call in calls):
-                continue
-            for mutation, lineno in mutations:
-                offenders.append(
-                    f"{relative}:{lineno}: {name} calls {mutation} "
-                    "and never reaches the journal"
-                )
+        offenders.extend(_write_offenders(path.read_text(encoding="utf-8"), relative))
     assert not offenders, (
         "these mutate without reaching the journal; route them through "
         "`Run.execute` or add them to EXECUTOR_EXCEPTIONS / "
@@ -1043,50 +1210,37 @@ def test_no_module_outside_the_journal_reaches_past_the_executor():
     )
 
 
+def _facade_offenders(source, relative):
+    if _inside_journal(relative):
+        return []
+    offenders = []
+    for node, bindings in _bound_nodes(ast.parse(source), relative):
+        origins = set()
+        if isinstance(node, ast.Import):
+            origins.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = _import_module(node, relative)
+            origins.update(module + "." + a.name for a in node.names)
+        elif isinstance(node, (ast.Attribute, ast.Call)):
+            origins.update(_origins(node, bindings))
+        for origin in sorted(origins):
+            if origin.startswith(FACADE + "."):
+                member = origin[len(FACADE) + 1:].split(".")[0]
+                if member not in PERMITTED_JOURNAL_EXPORTS:
+                    offenders.append(f"{relative}:{node.lineno}: non-exported journal member `{origin}`")
+    return offenders
+
+
 def test_nothing_outside_the_journal_reaches_a_name_it_does_not_export():
     """Check journal imports and literal journal.X access against the exports.
 
     Unlike the text denylist, this rejects _bootstrap and ordinary names
     such as append as symbols, without rejecting prose. Direct submodule
-    imports bypass the facade and are refused. Aliased receivers and dynamic
-    access are not resolved by this structural scan."""
-    exports = set(PERMITTED_JOURNAL_EXPORTS)
+    imports bypass the facade and are refused. Static aliases and getattr
+    are resolved; arbitrary reflection and dynamic imports are not."""
     offenders = []
     for relative, path in _package_modules():
-        if _inside_journal(relative):
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.startswith("validated_memory.journal."):
-                        offenders.append(
-                            f"{relative}:{node.lineno}: imports the journal "
-                            f"module `{alias.name}`"
-                        )
-            elif isinstance(node, ast.ImportFrom):
-                module = (node.module or "").removeprefix("validated_memory.")
-                if module.startswith("journal."):
-                    offenders.append(
-                        f"{relative}:{node.lineno}: imports from the journal "
-                        f"module `{module}`"
-                    )
-                elif module == "journal":
-                    for alias in node.names:
-                        if alias.name not in exports:
-                            offenders.append(
-                                f"{relative}:{node.lineno}: imports "
-                                f"`{alias.name}` from the journal"
-                            )
-            elif (
-                isinstance(node, ast.Attribute)
-                and isinstance(node.value, ast.Name)
-                and node.value.id == "journal"
-                and node.attr not in exports
-            ):
-                offenders.append(
-                    f"{relative}:{node.lineno}: names `journal.{node.attr}`"
-                )
+        offenders.extend(_facade_offenders(path.read_text(encoding="utf-8"), relative))
     assert not offenders, (
         "the whole of the journal a module outside it may reach is "
         + ", ".join(f"`{name}`" for name in PERMITTED_JOURNAL_EXPORTS)
@@ -1104,18 +1258,23 @@ def test_the_facade_exports_exactly_the_surface_the_pin_permits():
     source = (
         REPO_ROOT / "validated_memory" / JOURNAL_SOURCE / "__init__.py"
     ).read_text(encoding="utf-8")
-    exports = None
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "__all__"
-            for target in node.targets
-        ):
-            # A literal list of literal strings, so this reads it without
-            # importing anything: an `__all__` built by concatenating other
-            # modules' would be unreadable here, and is refused by the
-            # `element.value` access below rather than silently skipped.
-            exports = [element.value for element in node.value.elts]
-    assert exports is not None, "journal/__init__.py declares no `__all__`"
+    _assert_facade_exports(source)
+
+
+def _assert_facade_exports(source):
+    tree = ast.parse(source)
+    declarations = []
+    for node in tree.body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if len(targets) == 1 and isinstance(targets[0], ast.Name) and targets[0].id == "__all__":
+                declarations.append((node, targets[0]))
+    assert len(declarations) == 1, "require one module-level __all__ Assign or AnnAssign"
+    declaration, target = declarations[0]
+    assert all(node is target for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "__all__"), "additional __all__ references or mutations are forbidden"
+    value = declaration.value
+    assert isinstance(value, (ast.List, ast.Tuple)) and all(isinstance(item, ast.Constant) and isinstance(item.value, str) for item in value.elts), "__all__ must be a literal list/tuple of literal strings"
+    exports = [item.value for item in value.elts]
     assert exports == sorted(exports), "`__all__` is not sorted"
     assert exports == list(PERMITTED_JOURNAL_EXPORTS), (
         "the facade and the surface this suite pins have drifted:\n"
@@ -1124,6 +1283,279 @@ def test_the_facade_exports_exactly_the_surface_the_pin_permits():
         "  only in PERMITTED_JOURNAL_EXPORTS: "
         f"{sorted(set(PERMITTED_JOURNAL_EXPORTS) - set(exports))}"
     )
+
+
+@pytest.mark.parametrize("source", [
+    "from os import replace as publish\npublish(a, b)",
+    "import os as fs\npublish = fs.replace\npublish(a, b)",
+    "import shutil as files\ncopy = files.copyfile\ncopy(a, b)",
+    "from shutil import move as relocate\nrelocate(a, b)",
+    "from .durable import install\ninstall(a, b)",
+    "from .durable import install as publish\npublish(a, b)",
+    "from .records import append\nappend(a, b)",
+    "from .records import append as record\nrecord(a, b)",
+    "from validated_memory.journal import records as history\nwrite = history.append\nwrite(a, b)",
+    'import os as fs\ngetattr(fs, "replace")(a, b)',
+    'import shutil as files\ngetattr(files, method)(a, b)',
+    'from . import durable\ngetattr(durable, method)(a, b)',
+    'from . import records\nwrite = getattr(records, method)\nwrite(a, b)',
+    'getattr(path, "write_text")("data")',
+    'write = getattr(path, "write_bytes")\nwrite(data)',
+    'import os as fs\nwrite = getattr(fs, "replace")\nwrite(a, b)',
+    'import os as fs\nwrite = getattr(fs, method)\nwrite(a, b)',
+    'import os as fs\nfs.open(p, fs.O_RDONLY | fs.O_CREAT)',
+    'from os import open as descriptor\ndescriptor(p, flags)',
+    'read = path.open\nread("w")',
+    'read = open\nread(p, mode)',
+])
+def test_journal_write_scan_rejects_bound_mutations(source):
+    # A journal submodule gets no directory-wide raw-write exemption.
+    offenders = _write_offenders(source, "journal/inspection.py")
+    assert offenders and "journal/inspection.py:" in offenders[0]
+
+
+@pytest.mark.parametrize("writer", sorted(DURABLE_MUTATORS))
+def test_journal_write_scan_rejects_every_current_durable_writer(writer):
+    source = f"from ..durable import {writer} as write\nwrite(a, b)"
+    assert _write_offenders(source, "journal/nested/inspection.py")
+
+
+@pytest.mark.parametrize("source", [
+    "import os as fs\nfs.open(p, fs.O_RDONLY | fs.O_NOFOLLOW)",
+    'import os as fs\nread = fs.open\nread(p, fs.O_RDONLY | getattr(fs, "O_CLOEXEC", 0))',
+    'from os import open as descriptor, O_RDONLY as read_only\ndescriptor(p, flags=read_only)',
+    'import os as fs\ngetattr(fs, "open")(p, fs.O_RDONLY)',
+    'read = open\nread(p, "rb")',
+    'read = path.open\nread("r")',
+    'getattr(path, "open")("r")',
+    'items.append(value)\ndatabase.append(value)',
+    'from . import verdicts\nverdicts.append(value)',
+    'text.replace("old", "new")',
+    'getattr(receiver, "inspect")()\ngetattr(receiver, method)()',
+    'from . import journal as history\nhistory.create_directory(path)',
+])
+def test_journal_write_scan_preserves_read_only_and_unrelated_calls(source):
+    assert _write_offenders(source, "consumer.py") == []
+
+
+def test_journal_write_scan_keeps_lexical_scopes_separate():
+    source = '''
+def first():
+    from os import replace as action
+    action(a, b)
+def second():
+    action(a, b)
+'''
+    offenders = _write_offenders(source, "consumer.py")
+    assert len(offenders) == 1 and "first calls os.replace" in offenders[0]
+
+
+def test_journal_write_scan_masks_enclosing_names_for_parameters_and_locals():
+    source = '''
+import os as fs
+def parameter(fs):
+    fs.replace("old", "new")
+def local():
+    fs = text
+    fs.replace("old", "new")
+'''
+    assert _write_offenders(source, "consumer.py") == []
+
+
+def test_journal_write_scan_conservatively_retains_sensitive_rebindings():
+    source = '''
+import os as fs
+def change(flag):
+    action = fs.replace
+    if flag:
+        action = unrelated
+    action(a, b)
+    action = other
+'''
+    offenders = _write_offenders(source, "consumer.py")
+    assert len(offenders) == 1 and "os.replace" in offenders[0]
+
+
+@pytest.mark.parametrize("source", [
+    'from . import journal as history\nhistory._bootstrap()',
+    'from . import journal\nhistory = journal\nhistory.records.append(a)',
+    'import validated_memory.journal as history\ngetattr(history, "install")(a)',
+    'from . import journal as history\ngetattr(history, name)',
+    'import validated_memory.journal\nvalidated_memory.journal._bootstrap()',
+    'import validated_memory.journal\ngetattr(validated_memory.journal, name)',
+    'from validated_memory.journal import _bootstrap as bootstrap',
+    'import validated_memory.journal.records as records',
+    'from .journal.records import append',
+])
+def test_journal_facade_scan_rejects_private_bound_access(source):
+    offenders = _facade_offenders(source, "consumer.py")
+    assert offenders and "non-exported journal member" in offenders[0]
+
+
+@pytest.mark.parametrize("source", [
+    'from . import journal as history\nhistory.adopting_run(root)',
+    'from . import journal\nhistory = journal\ngetattr(history, "create_file")(path)',
+    'import validated_memory.journal\nvalidated_memory.journal.digest(data)',
+    '"journal._bootstrap is ordinary prose"',
+    'from .verdicts import append\nappend(value)',
+    'getattr(unrelated, member)',
+])
+def test_journal_facade_scan_preserves_public_and_unrelated_access(source):
+    assert _facade_offenders(source, "consumer.py") == []
+
+
+def test_journal_facade_scan_keeps_scopes_and_shadowing_explicit():
+    source = '''
+from . import journal as history
+def shadow(history):
+    history.private()
+def first():
+    from . import journal as local_history
+    local_history.private()
+def second():
+    local_history.private()
+'''
+    offenders = _facade_offenders(source, "consumer.py")
+    assert len(offenders) == 1 and ":7:" in offenders[0]
+
+
+@pytest.mark.parametrize("prefix, call", [
+    ("import os as sensitive", "sensitive.replace(a, b)"),
+    ("from .durable import install as sensitive", "sensitive(a, b)"),
+    ("from . import records as sensitive", "sensitive.append(a, b)"),
+])
+@pytest.mark.parametrize("body", [
+    "def f():\n    [sensitive for sensitive in ()]\n    {call}",
+    "class C:\n    sensitive = text\n    def f(self):\n        {call}",
+    "class C:\n    sensitive = sensitive\n    {call}",
+    "def f(sensitive={call}):\n    pass",
+])
+def test_journal_write_scan_preserves_enclosing_sensitive_bindings(prefix, call, body):
+    source = prefix + "\n" + body.format(call=call)
+    assert _write_offenders(source, "journal/inspection.py")
+
+
+@pytest.mark.parametrize("header", [
+    "@fs.replace(a, b)\ndef f():",
+    "def f(value=fs.replace(a, b)):",
+    "def f(value: fs.replace(a, b)):",
+    "def f() -> fs.replace(a, b):",
+])
+def test_journal_write_scan_keeps_function_headers_in_enclosing_scope(header):
+    source = f"import os as fs\n{header}\n    session.execute(op)"
+    offenders = _write_offenders(source, "consumer.py")
+    assert len(offenders) == 1 and "<module> calls os.replace" in offenders[0]
+
+
+def test_journal_write_scan_keeps_lambda_defaults_in_enclosing_scope():
+    source = "import os as fs\nf = lambda value=fs.replace(a, b): session.execute(op)"
+    offenders = _write_offenders(source, "consumer.py")
+    assert len(offenders) == 1 and "<module> calls os.replace" in offenders[0]
+
+
+def test_journal_write_scan_preserves_global_sensitive_origin_on_rebinding():
+    source = '''
+import os as fs
+def f():
+    global fs
+    fs.replace(a, b)
+    fs = unrelated
+'''
+    offenders = _write_offenders(source, "consumer.py")
+    assert len(offenders) == 1 and "f calls os.replace" in offenders[0]
+
+
+@pytest.mark.parametrize("body", [
+    "def f():\n    [api for api in ()]\n    api._bootstrap()",
+    "class C:\n    api = text\n    def f(self):\n        api._bootstrap()",
+    "class C:\n    api = api\n    api._bootstrap()",
+    "def f(api=api._bootstrap()):\n    pass",
+])
+def test_journal_facade_scan_preserves_enclosing_sensitive_bindings(body):
+    assert _facade_offenders("from . import journal as api\n" + body, "consumer.py")
+
+
+def test_journal_facade_scan_preserves_global_sensitive_origin_on_rebinding():
+    source = '''
+from . import journal as api
+def f():
+    global api
+    api._bootstrap()
+    api = unrelated
+'''
+    assert _facade_offenders(source, "consumer.py")
+
+
+@pytest.mark.parametrize("expression", [
+    "[fs.replace(a, b) for fs in items]",
+    "{fs.replace(a, b) for fs in items}",
+    "{fs: fs.replace(a, b) for fs in items}",
+    "(fs.replace(a, b) for fs in items)",
+])
+def test_journal_write_scan_comprehension_targets_are_local(expression):
+    assert _write_offenders("import os as fs\n" + expression, "consumer.py") == []
+
+
+def test_journal_write_scan_comprehension_first_iterable_uses_enclosing_scope():
+    assert _write_offenders("import os as fs\n[fs for fs in fs.replace(a, b)]", "consumer.py")
+
+
+@pytest.mark.parametrize("fallback", ["fs.O_CREAT", "flags", "fs.O_WRONLY", "make_flags()"])
+@pytest.mark.parametrize("assigned", [False, True])
+def test_journal_write_scan_refuses_unknown_getattr_flag_fallback(fallback, assigned):
+    expression = f'getattr(fs, "O_NOFOLLOW", {fallback})'
+    source = "import os as fs\n"
+    if assigned:
+        source += f"flags = {expression}\nalias = flags\nfs.open(p, alias)"
+    else:
+        source += f"fs.open(p, {expression})"
+    assert _write_offenders(source, "consumer.py")
+
+
+def test_journal_write_scan_retains_safe_optional_flag_alias():
+    source = 'import os as fs\nflags = getattr(fs, "O_NOFOLLOW", 0)\nalias = flags\nfs.open(p, alias)'
+    assert _write_offenders(source, "consumer.py") == []
+
+
+@pytest.mark.parametrize("declaration", [
+    "__all__ = {exports}", "__all__: list[str] = {exports}",
+    "__all__ = tuple_placeholder",
+])
+def test_journal_facade_export_literal_shapes(declaration):
+    if "tuple_placeholder" in declaration:
+        source = declaration.replace("tuple_placeholder", repr(PERMITTED_JOURNAL_EXPORTS))
+    else:
+        source = declaration.format(exports=repr(list(PERMITTED_JOURNAL_EXPORTS)))
+    _assert_facade_exports(source)
+
+
+@pytest.mark.parametrize("suffix", [
+    '__all__ = []', '__all__ += ["private"]', '__all__[0] = "private"',
+    'del __all__[0]', '__all__.append("private")', 'alias = __all__',
+    'getattr(__all__, "append")("private")',
+    'def change():\n    __all__.clear()',
+])
+def test_journal_facade_export_amendments_are_refused(suffix):
+    source = f"__all__ = {list(PERMITTED_JOURNAL_EXPORTS)!r}\n{suffix}"
+    with pytest.raises(AssertionError, match="__all__"):
+        _assert_facade_exports(source)
+
+
+@pytest.mark.parametrize("source", [
+    'def declare():\n    __all__ = []', '__all__ = build_exports()',
+    '__all__ = [name]', '__all__: list[str]', 'alias = __all__ = []',
+    '__all__ = [] + []', '__all__ = [*names]',
+])
+def test_journal_facade_unsupported_export_construction_is_explicit(source):
+    with pytest.raises(AssertionError, match="module-level|literal list/tuple"):
+        _assert_facade_exports(source)
+
+
+def test_journal_source_boundary_is_a_package_prefix():
+    assert _inside_journal("journal/__init__.py")
+    assert _inside_journal("journal/nested/inspection.py")
+    assert not _inside_journal("journal.py")
+    assert not _inside_journal("journalish/module.py")
 
 
 def test_the_adopting_session_exposes_only_its_three_operations():
