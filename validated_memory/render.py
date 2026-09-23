@@ -2,11 +2,14 @@
 
 Publication is per artifact, not across pages; concurrent processes are
 last-writer-wins and may publish an older snapshot. The knowledge page uses
-one verdict-log reading. No concurrency or atomic-reader test pins these
-publication limits.
+one verdict-log reading. A failed temporary cleanup is reported after the
+primary write failure without replacing it. No concurrency or atomic-reader
+test pins these publication limits.
 """
 
+import errno
 import os
+import stat
 from pathlib import Path
 
 from . import corpus, knowledge_view, memory_view, validate
@@ -29,8 +32,8 @@ def run(only_existing, stdout, stderr):
 
     Unattended mode returns 0 and downgrades findings, but never bypasses build
     gates. It restores absent canonical knowledge when an app exists. With no
-    existing artifact it returns before reading inputs. Write
-    failures become findings unless temporary cleanup itself raises.
+    existing artifact it returns before reading inputs. Write failures become
+    findings and retain any temporary-cleanup failure as secondary context.
     """
     include_app = Path(APP_ARTIFACT).exists()
     if only_existing:
@@ -185,11 +188,14 @@ def write_if_changed(path, content):
     """Return `(action, finding)`; leave equal UTF-8 content untouched.
 
     Unreadable existing content counts as different. Publish via a same-directory
-    PID-named temporary and replace, atomically per artifact, not across pages.
-    Concurrent-process and atomic-reader behavior lack direct tests. OSError
-    returns a finding only if temporary cleanup succeeds; cleanup can itself
-    raise (including when the temporary path is a directory). Other exceptions
-    are re-raised after attempting cleanup.
+    exclusively created PID-named temporary and replace, atomically per
+    artifact, not across pages. Publication and cleanup act only on the regular
+    inode created through the retained descriptor. The identity check does not
+    make the later pathname replace a portable conditional rename; concurrent
+    processes remain last-writer-wins. An OSError returns one finding whose
+    primary write failure precedes any secondary cleanup context. Other
+    exceptions remain fatal after cleanup is attempted; a cleanup OSError is
+    attached without replacing the primary exception.
     """
     if path.exists():
         try:
@@ -198,16 +204,83 @@ def write_if_changed(path, content):
         except (OSError, UnicodeDecodeError):
             pass
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    descriptor = None
+    identity = None
     try:
-        temporary.write_text(content, encoding="utf-8")
+        descriptor = os.open(
+            temporary,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o666,
+        )
+        identity = os.fstat(descriptor)
+        stream = os.fdopen(descriptor, "w", encoding="utf-8")
+        descriptor = None
+        with stream:
+            stream.write(content)
+        if not _is_owned_regular(temporary, identity):
+            raise OSError(
+                errno.EBUSY,
+                "temporary name no longer identifies the file this run created",
+                os.fspath(temporary),
+            )
         os.replace(temporary, path)
     except OSError as error:
-        temporary.unlink(missing_ok=True)
+        cleanup_context = _cleanup_temporary(temporary, identity)
+        message = f"file could not be written: {error}"
+        if cleanup_context is not None:
+            message += f"; {cleanup_context}"
         return None, Finding(
-            ERROR, path.as_posix(), "write", f"file could not be written: {error}"
+            ERROR, path.as_posix(), "write", message
         )
-    except BaseException:
-        # Non-OSError exceptions remain fatal; cleanup may also raise.
-        temporary.unlink(missing_ok=True)
+    except BaseException as error:
+        cleanup_context = _cleanup_temporary(temporary, identity)
+        if cleanup_context is not None:
+            error.add_note(cleanup_context)
         raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     return "wrote", None
+
+
+def _is_owned_regular(path, identity):
+    """Whether ``path`` still names the retained descriptor's regular inode."""
+    if identity is None:
+        return False
+    try:
+        current = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    return (
+        stat.S_ISREG(identity.st_mode)
+        and stat.S_ISREG(current.st_mode)
+        and (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino)
+    )
+
+
+def _cleanup_temporary(temporary, identity):
+    """Remove one owned inode once; describe foreign names or cleanup failure."""
+    try:
+        current = os.lstat(temporary)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        return (
+            f"temporary '{temporary.as_posix()}' could not be removed: {error}"
+        )
+    if identity is None or not (
+        stat.S_ISREG(identity.st_mode)
+        and stat.S_ISREG(current.st_mode)
+        and (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino)
+    ):
+        return (
+            f"temporary '{temporary.as_posix()}' was not removed because it "
+            "was not owned by this run"
+        )
+    try:
+        temporary.unlink()
+    except OSError as error:
+        return (
+            f"temporary '{temporary.as_posix()}' could not be removed: {error}"
+        )
+    return None

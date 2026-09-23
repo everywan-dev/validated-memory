@@ -733,6 +733,21 @@ render: wrote knowledge.html
 render: unchanged memory.html
 ```
 
+If an artifact cannot be published, `render` emits one `write` finding for
+that artifact and no success line for it. The primary `file could not be
+written` error is reported first. Render exclusively creates a regular,
+same-directory temporary and records its identity. Immediately before
+publication or one non-recursive cleanup attempt, it checks that the temporary
+name still identifies that file. If owned cleanup fails, the same finding
+names the temporary and reports that it could not be removed. A pre-existing
+or already-observed replacement is left alone, and the finding says that it
+was not removed because it was not owned by this run. The later pathname
+replace and unlink operations are not conditional on that check, so a
+concurrent swap can still race and concurrent rendering retains the existing
+last-writer-wins limitation. Explicit rendering reports the finding as an
+ERROR and exits 1; `--only-existing` reports the same message as a WARNING and
+remains exit 0. Other selected artifacts continue in the stable order above.
+
 **A file whose content is unchanged is not rewritten**, and the output
 carries no generation timestamp, so an unchanged corpus produces
 byte-identical output run after run. Without this, the refresh hook (see [Startup

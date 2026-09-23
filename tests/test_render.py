@@ -4,9 +4,12 @@ import json
 import os
 import re
 import shutil
+import stat
+from pathlib import Path
 
 import pytest
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 HISTORY_WINDOW = 20
 CSP = "default-src 'none'; connect-src 'none'; img-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
 
@@ -1919,6 +1922,214 @@ def test_a_write_failure_gates_when_the_artifact_cannot_be_replaced(
     assert "ERROR: knowledge.html: write: file could not be written" in result.stderr
     assert (adopter_dir / "knowledge.html").is_dir()
     assert not list(adopter_dir.glob("knowledge.html.*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("arguments", "severity", "exit_code"),
+    [
+        ((), "ERROR", 1),
+        (("--only-existing",), "WARNING", 0),
+    ],
+)
+@pytest.mark.parametrize("obstruction_kind", ("directory", "symlink", "regular"))
+def test_render_preserves_foreign_temporary_obstructions(
+    run_cli,
+    adopter_dir,
+    write_unit,
+    write_memory,
+    monkeypatch,
+    arguments,
+    severity,
+    exit_code,
+    obstruction_kind,
+):
+    """A foreign PID-named path survives one ordered write finding."""
+    initialized = run_cli("init", cwd=adopter_dir)
+    assert initialized.returncode == 0, initialized.stderr
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: git\n"
+        "    kind: file-hash\n"
+        "    captured_at: 2026-09-23T00:00:00Z\n"
+        "    payload:\n"
+        "      ref: main\n",
+        "# Stable knowledge\n",
+    )
+    rendered = run_cli("render", cwd=adopter_dir)
+    assert rendered.returncode == 0, rendered.stderr
+
+    def file_state(path):
+        info = path.stat()
+        return (
+            path.read_bytes(),
+            stat.S_IMODE(info.st_mode),
+            info.st_ino,
+            info.st_mtime_ns,
+        )
+
+    knowledge = adopter_dir / "knowledge.html"
+    memory = adopter_dir / "memory.html"
+    canonical = {path: file_state(path) for path in (knowledge, memory)}
+    write_memory(
+        "changed.md",
+        "description: changed memory\nmetadata:\n  type: user\n",
+        "Changed memory body.\n",
+    )
+
+    fixed_pid = 424242
+    temporary = adopter_dir / f"memory.html.{fixed_pid}.tmp"
+    related = None
+    if obstruction_kind == "directory":
+        temporary.mkdir()
+        related = temporary / "marker.txt"
+        related.write_bytes(b"operator-owned directory\n")
+    elif obstruction_kind == "symlink":
+        related = adopter_dir / "operator-owned-target"
+        related.write_bytes(b"operator-owned symlink target\n")
+        related.chmod(0o640)
+        temporary.symlink_to(related.name)
+    else:
+        temporary.write_bytes(b"operator-owned regular file\n")
+        temporary.chmod(0o640)
+
+    def obstruction_state():
+        info = temporary.lstat()
+        state = (
+            stat.S_IFMT(info.st_mode),
+            stat.S_IMODE(info.st_mode),
+            info.st_ino,
+            info.st_mtime_ns,
+        )
+        if obstruction_kind == "directory":
+            return state, file_state(related)
+        if obstruction_kind == "symlink":
+            return state, os.readlink(temporary), file_state(related)
+        return state, file_state(temporary)
+
+    obstruction = obstruction_state()
+
+    shim = adopter_dir / "fixed-pid"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        f"import os\nos.getpid = lambda: {fixed_pid}\n",
+        encoding="utf-8",
+    )
+    python_path = os.environ.get("PYTHONPATH", str(REPO_ROOT))
+    monkeypatch.setenv(
+        "PYTHONPATH", os.pathsep.join((str(shim), python_path))
+    )
+
+    result = run_cli("render", *arguments, cwd=adopter_dir)
+
+    assert result.returncode == exit_code, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.stderr.startswith(f"{severity}: memory.html: write: ")
+    primary = "file could not be written:"
+    cleanup = (
+        f"temporary 'memory.html.{fixed_pid}.tmp' was not removed because it "
+        "was not owned by this run"
+    )
+    assert result.stderr.count(primary) == 1, result.stderr
+    assert result.stderr.count(cleanup) == 1, result.stderr
+    assert result.stderr.index(primary) < result.stderr.index(cleanup)
+    assert result.stderr.count("\n") == 1, result.stderr
+    assert result.stdout == "render: unchanged knowledge.html\n"
+    assert "memory.html" not in result.stdout
+
+    assert {path: file_state(path) for path in (knowledge, memory)} == canonical
+    assert obstruction_state() == obstruction
+
+
+def test_render_keeps_a_fatal_write_primary_when_owned_cleanup_fails(
+    run_cli,
+    adopter_dir,
+    write_unit,
+    write_memory,
+    monkeypatch,
+):
+    """An unexpected write exception stays primary and cleanup becomes a note."""
+    initialized = run_cli("init", cwd=adopter_dir)
+    assert initialized.returncode == 0, initialized.stderr
+    write_unit(
+        "kb-0001.md",
+        "id: kb-0001\nevidence: measured\nanchors:\n"
+        "  - system: git\n"
+        "    kind: file-hash\n"
+        "    captured_at: 2026-09-23T00:00:00Z\n"
+        "    payload:\n"
+        "      ref: main\n",
+        "# Stable knowledge\n",
+    )
+    rendered = run_cli("render", cwd=adopter_dir)
+    assert rendered.returncode == 0, rendered.stderr
+    knowledge = adopter_dir / "knowledge.html"
+    memory = adopter_dir / "memory.html"
+    canonical = {
+        path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in (knowledge, memory)
+    }
+    write_memory(
+        "changed.md",
+        "description: changed memory\nmetadata:\n  type: user\n",
+        "Changed memory body.\n",
+    )
+
+    fixed_pid = 424243
+    temporary = adopter_dir / f"memory.html.{fixed_pid}.tmp"
+    shim = adopter_dir / "fatal-write"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import errno\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        f"os.getpid = lambda: {fixed_pid}\n"
+        "_real_fdopen = os.fdopen\n"
+        "_real_unlink = Path.unlink\n"
+        "class FatalWriter:\n"
+        "    def __init__(self, stream):\n"
+        "        self.stream = stream\n"
+        "    def __enter__(self):\n"
+        "        return self\n"
+        "    def __exit__(self, *args):\n"
+        "        self.stream.close()\n"
+        "    def write(self, content):\n"
+        "        raise RuntimeError('injected fatal render write')\n"
+        "def fatal_fdopen(fd, *args, **kwargs):\n"
+        "    return FatalWriter(_real_fdopen(fd, *args, **kwargs))\n"
+        "def failing_unlink(self, *args, **kwargs):\n"
+        f"    if self.name == 'memory.html.{fixed_pid}.tmp':\n"
+        "        raise OSError(errno.EIO, 'injected render cleanup failure', "
+        "os.fspath(self))\n"
+        "    return _real_unlink(self, *args, **kwargs)\n"
+        "os.fdopen = fatal_fdopen\n"
+        "Path.unlink = failing_unlink\n",
+        encoding="utf-8",
+    )
+    python_path = os.environ.get("PYTHONPATH", str(REPO_ROOT))
+    monkeypatch.setenv(
+        "PYTHONPATH", os.pathsep.join((str(shim), python_path))
+    )
+
+    result = run_cli("render", cwd=adopter_dir)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    primary = "RuntimeError: injected fatal render write"
+    cleanup = (
+        f"temporary 'memory.html.{fixed_pid}.tmp' could not be removed: "
+        "[Errno 5] injected render cleanup failure"
+    )
+    assert "Traceback" in result.stderr
+    assert result.stderr.count(primary) == 1, result.stderr
+    assert result.stderr.count(cleanup) == 1, result.stderr
+    assert result.stderr.index(primary) < result.stderr.index(cleanup)
+    assert "ERROR: memory.html: write:" not in result.stderr
+    assert result.stdout == "render: unchanged knowledge.html\n"
+    assert {
+        path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in (knowledge, memory)
+    } == canonical
+    assert temporary.is_file() and not temporary.is_symlink()
 
 
 def test_duplicate_supersedes_entries_count_once_in_the_page(
