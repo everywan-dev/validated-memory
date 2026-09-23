@@ -4,6 +4,10 @@
 python3 -P -m validated_memory <command>
 ```
 
+`validated_memory.cli` is an internal implementation module, not a second
+CLI. Executing it directly is a usage error; use only
+`python3 -P -m validated_memory` as shown above.
+
 Commands: [`init`](#init), [`lint`](#lint), [`validate`](#validate),
 [`derive`](#derive), [`probe`](#probe), [`recall`](#recall), [`render`](#render),
 [`status`](#status), [`journal`](#journal), [`consultation`](#consultation),

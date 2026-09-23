@@ -6,9 +6,17 @@ Exit code convention:
   2  usage error (argparse)
 """
 
+import sys
+
+if __name__ == "__main__":
+    sys.stderr.write(
+        "validated-memory: error: validated_memory.cli is internal; "
+        "run python3 -P -m validated_memory instead\n"
+    )
+    raise SystemExit(2)
+
 import argparse
 import os
-import sys
 from pathlib import Path
 
 from . import (
