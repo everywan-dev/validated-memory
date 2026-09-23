@@ -20,7 +20,8 @@ recognizably holding the harness's own agent memory is absorbed into this
 project's `memory/` and parked aside as a `.bak` before the link is created
 (see `adopt.py`); anything else is left alone with a WARNING saying why. Both
 outcomes are fail-open: the link is restored, or it is left alone and said
-so, and the session is unaffected either way.
+so. A take-over that fails after copying may leave those copies in the project;
+its warning names that retained state rather than claiming no effect.
 
 A project with no usable `memory/` leaves PATH untouched. A missing, broken,
 looping or non-directory node has no directory to point at. A directory that
@@ -286,6 +287,12 @@ def run(harness_memory, view, stdout, stderr, app=False):
                     findings.extend(
                         _sync_symlink(harness_memory, stdout, session)
                     )
+    except _HarnessSyncFailure as failure:
+        findings.extend(failure.findings)
+        error = failure.error
+        journal_failure = Finding(
+            ERROR, _journal_artifact(error), "journal", error.message
+        )
     except journal.JournalError as error:
         journal_failure = Finding(
             ERROR, _journal_artifact(error), "journal", error.message
@@ -648,9 +655,11 @@ def _sync_symlink(
       False when the run has already gated: absorbing moves the adopter's
       own data, which restoring a link does not, so only the link survives.
 
-    Any OS-level failure along this path (permissions, a dangling parent,
-    ...) is reported the same way: a WARNING that never gates, because a
-    startup hook built on `init` must never break the session over a symlink.
+    An ordinary OS-level failure before link publication (permissions, a
+    dangling parent, ...) is a WARNING that never gates, because a startup
+    hook built on `init` must never break the session over a symlink. The J2
+    executor's distinct post-visibility durability uncertainty remains an
+    ERROR: the link may already be visible and a clean retry cannot be claimed.
 
     `raw_path` is outside the repository root, so its record can only ever
     live in the vault (`durability=journal.LOCAL`) -- a repository record
@@ -670,6 +679,9 @@ def _sync_symlink(
     """
     path = Path(raw_path)
     location = path.as_posix()
+    parked = None
+    take_over_effect = adopt.TakeOverEffect.NONE
+    findings = []
     project_memory = Path("memory")
     try:
         if not project_memory.is_dir():
@@ -711,12 +723,14 @@ def _sync_symlink(
             return []
         # A real path that is not a symlink: `adopt` decides whether it holds
         # agent memory this project can absorb, or must be left alone.
-        findings = []
         if not was_symlink and path.exists():
             if not absorb:
                 return [Finding(WARNING, location, "symlink", UNABSORBED)]
-            freed, findings = adopt.take_over(path, target, stdout)
-            if not freed:
+            take_over = adopt.take_over(path, target, stdout)
+            findings = list(take_over.findings)
+            parked = take_over.parked
+            take_over_effect = take_over.effect
+            if not take_over.freed:
                 return findings
         findings.extend(
             _record_symlink(
@@ -729,13 +743,46 @@ def _sync_symlink(
     except journal.JournalError as error:
         if getattr(error, "visibility_unconfirmed", False):
             if session is not None:
-                raise
-            return [Finding(ERROR, location, "symlink", error.message)]
-        message = f"could not be linked to '{target}': {error}; session unaffected"
-        return [Finding(WARNING, location, "symlink", message)]
+                raise _HarnessSyncFailure(error, findings) from error
+            return [
+                *findings,
+                Finding(ERROR, location, "symlink", error.message),
+            ]
+        message = _link_failure_message(
+            target, error, take_over_effect, parked
+        )
+        return [*findings, Finding(WARNING, location, "symlink", message)]
     except OSError as error:
-        message = f"could not be linked to '{target}': {error}; session unaffected"
-        return [Finding(WARNING, location, "symlink", message)]
+        message = _link_failure_message(
+            target, error, take_over_effect, parked
+        )
+        return [*findings, Finding(WARNING, location, "symlink", message)]
+
+
+class _HarnessSyncFailure(Exception):
+    """Carry pre-publication findings through a gating journal failure."""
+
+    def __init__(self, error, findings):
+        super().__init__(error.message)
+        self.error = error
+        self.findings = tuple(findings)
+
+
+def _link_failure_message(target, error, take_over_effect, parked):
+    """Name recovery truth after take-over, or retain the ordinary warning."""
+    prefix = f"could not be linked to '{target}': {error}"
+    if take_over_effect is adopt.TakeOverEffect.PARKED:
+        return (
+            f"{prefix}; harness memory was parked at '{parked}' and remains "
+            "there for recovery"
+        )
+    if take_over_effect is adopt.TakeOverEffect.EMPTY_REMOVED:
+        return (
+            f"{prefix}; the empty harness directory was removed, no memory "
+            "data was parked, and the harness path is absent; clear the link "
+            "publication error and rerun init"
+        )
+    return f"{prefix}; session unaffected"
 
 
 def _previous_target(previous):

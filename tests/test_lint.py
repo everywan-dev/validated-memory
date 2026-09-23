@@ -7,6 +7,8 @@ shape, plus a one-line-per-entry index at `memory/MEMORY.md`.
 
 import re
 
+import pytest
+
 HEALTHY_MEMORY = """\
 name: coffee-preference
 description: Prefers oat milk in coffee.
@@ -57,6 +59,70 @@ def test_a_memory_file_without_an_index_entry_gates(
     assert result.returncode == 1
     assert "ERROR: memory/coffee-preference.md: index: " in result.stderr
     assert "MEMORY.md" in result.stderr
+
+
+@pytest.mark.parametrize("node", ("directory", "directory-symlink"))
+def test_a_non_regular_index_is_one_stable_finding_without_a_traceback(
+    adopter_dir, run_cli, node
+):
+    memory = adopter_dir / "memory"
+    memory.mkdir()
+    index = memory / "MEMORY.md"
+    if node == "directory":
+        index.mkdir()
+        marker = index / "preserved.bin"
+    else:
+        target = adopter_dir / "index-directory"
+        target.mkdir()
+        index.symlink_to(target, target_is_directory=True)
+        marker = target / "preserved.bin"
+    marker.write_bytes(b"index node bytes\x00\xff")
+    raw_link = index.readlink() if index.is_symlink() else None
+
+    results = []
+    for _ in range(2):
+        result = run_cli("lint", cwd=adopter_dir)
+        results.append((result.stdout, result.stderr))
+
+        assert result.returncode == 1
+        assert result.stdout == (
+            "lint: 0 memory file(s) checked, 1 error(s), 0 warning(s)\n"
+        )
+        assert result.stderr == (
+            "ERROR: memory/MEMORY.md: index: index 'MEMORY.md' must resolve "
+            "to a regular file\n"
+        )
+        assert "Traceback" not in result.stderr
+        assert index.is_dir()
+        assert index.is_symlink() == (node == "directory-symlink")
+        if raw_link is not None:
+            assert index.readlink() == raw_link
+        assert marker.read_bytes() == b"index node bytes\x00\xff"
+
+    assert results[1] == results[0]
+
+
+def test_an_index_symlink_to_a_regular_file_is_valid_and_preserved(
+    adopter_dir, write_memory, run_cli
+):
+    write_memory("coffee-preference.md", HEALTHY_MEMORY)
+    target = adopter_dir / "memory-index"
+    target.write_text(HEALTHY_INDEX, encoding="utf-8")
+    index = adopter_dir / "memory" / "MEMORY.md"
+    raw_target = "../memory-index"
+    index.symlink_to(raw_target)
+    target_bytes = target.read_bytes()
+
+    result = run_cli("lint", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "lint: 1 memory file(s) checked, 0 error(s), 0 warning(s)\n"
+    )
+    assert result.stderr == ""
+    assert index.is_symlink()
+    assert index.readlink().as_posix() == raw_target
+    assert target.read_bytes() == target_bytes
 
 
 # --- frontmatter completeness --------------------------------------------------

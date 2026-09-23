@@ -346,6 +346,144 @@ def test_hook_absorbs_a_harness_memory_directory_that_already_holds_memories(
     assert (parked / "deploy-window.md").is_file()
 
 
+def test_post_park_link_failure_names_the_exact_backup_through_the_hook(
+    tmp_path,
+):
+    project_dir = tmp_path / "project"
+    memory_dir = _write_adopter_project(project_dir)
+    config_dir = tmp_path / "config"
+    harness_memory = config_dir / "projects" / _slug(project_dir) / "memory"
+    harness_memory.mkdir(parents=True)
+    native = harness_memory / "native.md"
+    native_bytes = (
+        b"---\nname: native\ndescription: Native memory.\n"
+        b"metadata:\n  type: project\n---\n\nNative body.\n"
+    )
+    native.write_bytes(native_bytes)
+    (harness_memory / "MEMORY.md").write_text(
+        "# Agent memory\n\n- [Native](native.md) — Native memory.\n",
+        encoding="utf-8",
+    )
+    sentinel = harness_memory.parent / ".memory.collision.tmp"
+    sentinel.write_bytes(b"foreign staging name\n")
+
+    result = _run_hook(
+        {
+            "HOME": str(tmp_path / "home"),
+            "CLAUDE_CONFIG_DIR": str(config_dir),
+            "CLAUDE_PROJECT_DIR": str(project_dir),
+            "VALIDATED_MEMORY_SYMLINK_TEMP_NAME": sentinel.name,
+        }
+    )
+
+    backup = harness_memory.parent / "memory.bak"
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr.splitlines() == [
+        f"WARNING: {harness_memory}: symlink: could not be linked to "
+        f"'{memory_dir.resolve()}': [Errno 17] File exists: "
+        f"'{memory_dir.resolve()}' -> '{sentinel}'; harness memory was "
+        f"parked at '{backup}' and remains there for recovery"
+    ]
+    assert not harness_memory.exists()
+    assert not harness_memory.is_symlink()
+    assert (backup / "native.md").read_bytes() == native_bytes
+    assert sentinel.is_file() and not sentinel.is_symlink()
+    assert sentinel.read_bytes() == b"foreign staging name\n"
+    assert (memory_dir / "native.md").read_bytes() == native_bytes
+
+
+def test_conflict_warning_survives_post_park_link_failure_through_the_hook(
+    tmp_path,
+):
+    project_dir = tmp_path / "project"
+    memory_dir = _write_adopter_project(project_dir)
+    project_bytes = (memory_dir / "coffee-preference.md").read_bytes()
+    config_dir = tmp_path / "config"
+    harness_memory = config_dir / "projects" / _slug(project_dir) / "memory"
+    harness_memory.mkdir(parents=True)
+    harness_bytes = (
+        b"---\nname: coffee-preference\ndescription: Prefers black coffee.\n"
+        b"metadata:\n  type: user\n---\n\nHarness body.\n"
+    )
+    (harness_memory / "coffee-preference.md").write_bytes(harness_bytes)
+    (harness_memory / "MEMORY.md").write_text(
+        "# Agent memory\n\n- [Coffee preference](coffee-preference.md)"
+        " — black coffee\n",
+        encoding="utf-8",
+    )
+    sentinel = harness_memory.parent / ".memory.collision.tmp"
+    sentinel_bytes = b"foreign staging name\n"
+    sentinel.write_bytes(sentinel_bytes)
+
+    result = _run_hook(
+        {
+            "HOME": str(tmp_path / "home"),
+            "CLAUDE_CONFIG_DIR": str(config_dir),
+            "CLAUDE_PROJECT_DIR": str(project_dir),
+            "VALIDATED_MEMORY_SYMLINK_TEMP_NAME": sentinel.name,
+        }
+    )
+
+    backup = harness_memory.parent / "memory.bak"
+    backup_file = backup / "coffee-preference.md"
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr.splitlines() == [
+        f"WARNING: {memory_dir / 'coffee-preference.md'}: adopt: this project "
+        "already has a different 'coffee-preference.md'; the project's copy "
+        f"was kept and the harness's is preserved at '{backup_file}'",
+        f"WARNING: {harness_memory}: symlink: could not be linked to "
+        f"'{memory_dir.resolve()}': [Errno 17] File exists: "
+        f"'{memory_dir.resolve()}' -> '{sentinel}'; harness memory was "
+        f"parked at '{backup}' and remains there for recovery",
+    ]
+    assert (memory_dir / "coffee-preference.md").read_bytes() == project_bytes
+    assert backup_file.read_bytes() == harness_bytes
+    assert not harness_memory.exists()
+    assert not harness_memory.is_symlink()
+    assert sentinel.read_bytes() == sentinel_bytes
+
+
+def test_post_empty_directory_removal_link_failure_names_the_exact_state(
+    tmp_path,
+):
+    project_dir = tmp_path / "project"
+    memory_dir = _write_adopter_project(project_dir)
+    config_dir = tmp_path / "config"
+    harness_memory = config_dir / "projects" / _slug(project_dir) / "memory"
+    harness_memory.mkdir(parents=True)
+    sentinel = harness_memory.parent / ".memory.collision.tmp"
+    sentinel.write_bytes(b"foreign staging name\n")
+
+    result = _run_hook(
+        {
+            "HOME": str(tmp_path / "home"),
+            "CLAUDE_CONFIG_DIR": str(config_dir),
+            "CLAUDE_PROJECT_DIR": str(project_dir),
+            "VALIDATED_MEMORY_SYMLINK_TEMP_NAME": sentinel.name,
+        }
+    )
+
+    backup = harness_memory.parent / "memory.bak"
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr.splitlines() == [
+        f"WARNING: {harness_memory}: symlink: could not be linked to "
+        f"'{memory_dir.resolve()}': [Errno 17] File exists: "
+        f"'{memory_dir.resolve()}' -> '{sentinel}'; the empty harness "
+        "directory was removed, no memory data was parked, and the harness "
+        "path is absent; clear the link publication error and rerun init"
+    ]
+    assert "session unaffected" not in result.stderr
+    assert not harness_memory.exists()
+    assert not harness_memory.is_symlink()
+    assert not backup.exists()
+    assert not backup.is_symlink()
+    assert sentinel.is_file() and not sentinel.is_symlink()
+    assert sentinel.read_bytes() == b"foreign staging name\n"
+
+
 def test_the_project_slug_replaces_every_non_alphanumeric_character(tmp_path):
     # The harness keys `~/.claude/projects/` by the project's own path with
     # every non-alphanumeric character replaced by '-' -- '_' and '.' included,

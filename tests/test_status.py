@@ -14,6 +14,8 @@ test_derive.py does.
 
 import json
 
+import pytest
+
 INDEX_FILENAME = "knowledge-index.md"
 VERDICT_LOG = "verdicts.jsonl"
 
@@ -117,6 +119,82 @@ def test_skip_index_bypasses_the_index_gate(adopter_dir, write_unit, run_cli):
     assert result.returncode == 0, result.stderr
     assert "status: index: skipped (--skip-index)" in result.stdout
     assert f"ERROR: {INDEX_FILENAME}" not in result.stderr
+
+
+@pytest.mark.parametrize("node", ("directory", "directory-symlink"))
+def test_status_reports_a_non_regular_memory_index_without_a_traceback(
+    adopter_dir, run_cli, node
+):
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    index = adopter_dir / "memory" / "MEMORY.md"
+    index.unlink()
+    if node == "directory":
+        index.mkdir()
+        marker = index / "preserved.bin"
+    else:
+        target = adopter_dir / "index-directory"
+        target.mkdir()
+        index.symlink_to(target, target_is_directory=True)
+        marker = target / "preserved.bin"
+    marker.write_bytes(b"index node bytes\x00\xff")
+    raw_link = index.readlink() if index.is_symlink() else None
+    journal_before = (adopter_dir / "journal.jsonl").read_bytes()
+
+    results = []
+    for _ in range(2):
+        result = run_cli("status", "--skip-index", cwd=adopter_dir)
+        results.append((result.stdout, result.stderr))
+
+        assert result.returncode == 1
+        assert result.stderr.splitlines().count(
+            "ERROR: memory/MEMORY.md: index: index 'MEMORY.md' must resolve "
+            "to a regular file"
+        ) == 1
+        assert "Traceback" not in result.stderr
+        assert (
+            "status: lint: 0 memory file(s) checked, 1 error(s), 0 warning(s)"
+            in result.stdout.splitlines()
+        )
+        assert "status: 1 error(s), 1 warning(s) overall" in (
+            result.stdout.splitlines()
+        )
+        assert index.is_dir()
+        assert index.is_symlink() == (node == "directory-symlink")
+        if raw_link is not None:
+            assert index.readlink() == raw_link
+        assert marker.read_bytes() == b"index node bytes\x00\xff"
+        assert (adopter_dir / "journal.jsonl").read_bytes() == journal_before
+
+    assert results[1] == results[0]
+
+
+def test_status_accepts_a_memory_index_symlink_to_a_regular_file(
+    adopter_dir, run_cli
+):
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    index = adopter_dir / "memory" / "MEMORY.md"
+    index.unlink()
+    target = adopter_dir / "memory-index"
+    target.write_text("# Agent memory\n\nNo entries yet.\n", encoding="utf-8")
+    raw_target = "../memory-index"
+    index.symlink_to(raw_target)
+    target_bytes = target.read_bytes()
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == (
+        "WARNING: knowledge: target: no curated-knowledge units (*.md) found\n"
+    )
+    assert (
+        "status: lint: 0 memory file(s) checked, 0 error(s), 0 warning(s)"
+        in result.stdout.splitlines()
+    )
+    assert "status: 0 error(s), 1 warning(s) overall" in result.stdout.splitlines()
+    assert "Traceback" not in result.stderr
+    assert index.is_symlink()
+    assert index.readlink().as_posix() == raw_target
+    assert target.read_bytes() == target_bytes
 
 
 def test_a_hand_edited_index_fails_like_derive_check(adopter_dir, write_unit, run_cli):

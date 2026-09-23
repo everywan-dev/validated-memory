@@ -148,6 +148,36 @@ def test_a_memory_in_a_subdirectory_is_adopted_with_its_path(
     assert linted.returncode == 0, linted.stderr
 
 
+def test_a_partial_copy_failure_keeps_the_source_and_does_not_try_to_link(
+    adopter_dir, tmp_path, run_cli
+):
+    native = _external_harness_root(adopter_dir) / "memory"
+    first = write_native(native, "a", "Copied before the failure.")
+    blocked = write_native(native / "z", "nested", "Still only in the source.")
+    project_blocker = adopter_dir / "memory" / "z"
+    project_blocker.parent.mkdir(parents=True)
+    project_blocker.write_bytes(b"project blocker\x00")
+
+    result = run_cli("init", "--harness-memory", str(native), cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.splitlines() == [
+        f"WARNING: {native}: adopt: harness memory could not be taken over: "
+        f"[Errno 17] File exists: '{project_blocker}'; the original remains at "
+        f"'{native}'; project copies or index changes made before the failure "
+        "remain and were not rolled back"
+    ]
+    assert "session unaffected" not in result.stderr
+    assert "parked" not in result.stderr
+    assert "could not be linked" not in result.stderr
+    assert "Traceback" not in result.stderr
+    assert native.is_dir() and not native.is_symlink()
+    assert first.read_bytes() == (adopter_dir / "memory" / "a.md").read_bytes()
+    assert blocked.is_file()
+    assert project_blocker.read_bytes() == b"project blocker\x00"
+    assert not (_external_harness_root(adopter_dir) / "memory.bak").exists()
+
+
 def test_entries_are_appended_to_an_index_that_already_has_some(
     adopter_dir, tmp_path, run_cli, write_memory, write_index
 ):
@@ -268,6 +298,51 @@ def test_a_conflicting_file_is_kept_warned_about_and_preserved_in_the_bak(
     )
     assert "Prefers black coffee." in project_copy
     parked = _external_harness_root(adopter_dir) / "memory.bak" / "coffee-preference.md"
+    assert result.stderr.splitlines() == [
+        f"WARNING: {adopter_dir / 'memory' / 'coffee-preference.md'}: adopt: "
+        "this project already has a different 'coffee-preference.md'; the "
+        "project's copy was "
+        f"kept and the harness's is preserved at '{parked}'"
+    ]
+    assert "Prefers oat milk." in parked.read_text(encoding="utf-8")
+
+
+def test_conflict_warning_survives_unconfirmed_link_visibility(
+    adopter_dir, tmp_path, run_cli, write_memory, write_index, monkeypatch
+):
+    write_memory(
+        "coffee-preference.md",
+        "name: coffee-preference\ndescription: Prefers black coffee.\n"
+        "metadata:\n  type: user\n",
+    )
+    write_index(
+        "# Agent memory\n\n"
+        "- [Coffee preference](coffee-preference.md) — black\n"
+    )
+    native = _external_harness_root(adopter_dir) / "memory"
+    write_native(native, "coffee-preference", "Prefers oat milk.")
+    write_native_index(
+        native,
+        "- [Coffee preference](coffee-preference.md) — oat milk",
+    )
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "replace-symlink:memory"
+    )
+
+    result = run_cli("init", "--harness-memory", str(native), cwd=adopter_dir)
+
+    parked = native.parent / "memory.bak" / "coffee-preference.md"
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stderr.splitlines()[0] == (
+        f"WARNING: {adopter_dir / 'memory' / 'coffee-preference.md'}: adopt: "
+        "this project already has a different 'coffee-preference.md'; the "
+        "project's copy was kept and the harness's is preserved at "
+        f"'{parked}'"
+    )
+    assert "ERROR" in result.stderr
+    assert "durability is unconfirmed" in result.stderr
+    assert native.is_symlink()
+    assert native.resolve() == (adopter_dir / "memory").resolve()
     assert "Prefers oat milk." in parked.read_text(encoding="utf-8")
 
 

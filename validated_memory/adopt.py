@@ -14,6 +14,8 @@ directory that belongs to something else.
 """
 
 import shutil
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path, PurePosixPath
 
 from .findings import WARNING, Finding
@@ -28,31 +30,101 @@ PARKED_SUFFIX = ".bak"
 PLACEHOLDER = "No entries yet."
 
 
+class TakeOverEffect(Enum):
+    """The semantic change that freed the harness leaf."""
+
+    NONE = "none"
+    EMPTY_REMOVED = "empty-removed"
+    PARKED = "parked"
+
+
+@dataclass(frozen=True)
+class TakeOverResult:
+    """The leaf outcome, its semantic effect and exact recovery directory."""
+
+    freed: bool
+    findings: tuple[Finding, ...]
+    effect: TakeOverEffect
+    parked: Path | None = None
+
+    def __post_init__(self):
+        has_effect = self.effect is not TakeOverEffect.NONE
+        if self.freed != has_effect:
+            raise ValueError("a freed harness leaf must name its take-over effect")
+        if (self.parked is not None) != (
+            self.effect is TakeOverEffect.PARKED
+        ):
+            raise ValueError("only a parked take-over may carry a recovery path")
+
+
 def take_over(path, memory_dir, stdout):
     """Free `path` by absorbing the agent memory it holds into `memory_dir`.
 
-    Returns `(freed, findings)`: `freed` says whether `path` no longer exists
-    and the caller may create its symlink. Every failure is fail-open -- a
-    WARNING and `freed` False -- so a startup hook built on this can never
-    break a session.
+    The result says whether `path` no longer exists and the caller may create
+    its symlink. When a native directory was parked it also carries that exact
+    recovery path, so a later link failure can name where the data remains.
+    Every failure is fail-open -- a WARNING and `freed` False -- so a startup
+    hook built on this can never break a session.
     """
-    if path.is_dir() and not any(path.iterdir()):
-        # An empty directory holds nothing to absorb and nothing to park.
-        # `rmdir` is the one removal here, and the operating system refuses it
-        # on anything that is not empty: it cannot lose data.
-        path.rmdir()
-        print(f"init: removed empty directory {path.as_posix()}", file=stdout)
-        return True, []
+    adopted = []
+    conflicts = []
+    attempted_copies = []
+    try:
+        if path.is_dir() and not any(path.iterdir()):
+            # An empty directory holds nothing to absorb and nothing to park.
+            # `rmdir` is the one removal here, and the operating system refuses it
+            # on anything that is not empty: it cannot lose data.
+            path.rmdir()
+            print(f"init: removed empty directory {path.as_posix()}", file=stdout)
+            return TakeOverResult(True, (), TakeOverEffect.EMPTY_REMOVED)
 
-    reason = _unrecognized(path)
-    if reason is not None:
-        return False, [Finding(WARNING, path.as_posix(), "symlink", reason)]
+        reason = _unrecognized(path)
+        if reason is not None:
+            return TakeOverResult(
+                False,
+                (Finding(WARNING, path.as_posix(), "symlink", reason),),
+                TakeOverEffect.NONE,
+            )
 
-    adopted, findings = _absorb(path, memory_dir, stdout)
-    _reconcile_index(path, memory_dir, adopted)
-    parked = _park(path)
+        _absorb(
+            path, memory_dir, stdout, adopted, conflicts, attempted_copies
+        )
+        _reconcile_index(path, memory_dir, adopted)
+        parked = _park(path)
+    except OSError as error:
+        message = (
+            f"harness memory could not be taken over: {error}; the original "
+            f"remains at '{path.as_posix()}'"
+        )
+        if adopted:
+            message += (
+                "; project copies or index changes made before the failure "
+                "remain and were not rolled back"
+            )
+        elif attempted_copies:
+            message += (
+                "; project directories or a partial copy may remain and were "
+                "not rolled back"
+            )
+        return TakeOverResult(
+            False,
+            (Finding(WARNING, path.as_posix(), "adopt", message),),
+            TakeOverEffect.NONE,
+        )
+
     print(f"init: parked {path.as_posix()} -> {parked.as_posix()}", file=stdout)
-    return True, findings
+    findings = tuple(
+        Finding(
+            WARNING,
+            (memory_dir / relative).as_posix(),
+            "adopt",
+            f"this project already has a different '{relative.as_posix()}'; "
+            f"the project's copy was kept and the harness's is preserved at "
+            f"'{(parked / relative).as_posix()}'",
+        )
+        for relative in conflicts
+    )
+    return TakeOverResult(True, findings, TakeOverEffect.PARKED, parked)
 
 
 def _unrecognized(path):
@@ -105,14 +177,17 @@ def _is_memory(path):
     )
 
 
-def _absorb(source, memory_dir, stdout):
+def _absorb(
+    source, memory_dir, stdout, adopted, conflicts, attempted_copies
+):
     """Copy every memory file under `source` into `memory_dir`, never overwriting.
 
-    Returns `(adopted, findings)`, where `adopted` lists the relative paths
-    actually copied -- what `_reconcile_index` then has to account for.
+    `adopted` receives paths as each copy completes, `conflicts` receives
+    harness files whose distinct project destination was kept, and
+    `attempted_copies` is marked before a missing destination's first write.
+    Keeping this progress in caller-owned lists lets `take_over` report both
+    completed and possibly partial effects if a filesystem operation fails.
     """
-    adopted = []
-    findings = []
     for entry in sorted(source.rglob(f"*{MEMORY_SUFFIX}")):
         if not entry.is_file():
             continue
@@ -122,17 +197,9 @@ def _absorb(source, memory_dir, stdout):
         destination = memory_dir / relative
         if destination.exists():
             if destination.read_bytes() != entry.read_bytes():
-                findings.append(
-                    Finding(
-                        WARNING,
-                        (memory_dir / relative).as_posix(),
-                        "adopt",
-                        f"this project already has a different "
-                        f"'{relative.as_posix()}'; the project's copy was kept "
-                        "and the harness's is preserved in the parked backup",
-                    )
-                )
+                conflicts.append(relative)
             continue
+        attempted_copies.append(relative.as_posix())
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(entry, destination)
         adopted.append(relative.as_posix())
@@ -141,7 +208,6 @@ def _absorb(source, memory_dir, stdout):
             f"init: adopted {len(adopted)} memory file(s) from {source.as_posix()}",
             file=stdout,
         )
-    return adopted, findings
 
 
 def _reconcile_index(source, memory_dir, adopted):

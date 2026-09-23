@@ -57,7 +57,7 @@ def _collect(target, explicit):
         return [], [Finding(ERROR, location, "target", message)]
 
     index_path = target / INDEX_FILENAME
-    if not index_path.exists():
+    if not index_path.exists() and not index_path.is_symlink():
         return [], [
             Finding(
                 ERROR,
@@ -66,6 +66,10 @@ def _collect(target, explicit):
                 f"index '{INDEX_FILENAME}' not found; run 'validated-memory init'",
             )
         ]
+
+    index_text, index_finding = _read_index(index_path)
+    if index_finding is not None:
+        return [], [index_finding]
 
     try:
         documents = memory_module.documents(target)
@@ -78,10 +82,31 @@ def _collect(target, explicit):
                 f"memory file could not be read: {error.reason}",
             )
         ]
-    entries = memory_module.index_entries(index_path.read_text(encoding="utf-8"))
+    entries = memory_module.index_entries(index_text)
     findings = _check_sync(index_path.as_posix(), entries, documents)
 
     return documents, findings
+
+
+def _read_index(index_path):
+    """Acquire one logical regular index, returning text or one finding."""
+    location = index_path.as_posix()
+    if not index_path.is_file():
+        return None, Finding(
+            ERROR,
+            location,
+            "index",
+            f"index '{INDEX_FILENAME}' must resolve to a regular file",
+        )
+    try:
+        return index_path.read_text(encoding="utf-8"), None
+    except OSError as error:
+        return None, Finding(
+            ERROR,
+            location,
+            "index",
+            f"index '{INDEX_FILENAME}' could not be read: {error}",
+        )
 
 
 def _check_sync(index_location, entries, documents):

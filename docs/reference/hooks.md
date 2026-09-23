@@ -46,6 +46,18 @@ rather than a flag the hook passes, so it happens once, by itself, on the
 deployment path -- gated by the recognition rule, which is what keeps it from
 touching anything that is not agent memory. See [the adoption
 guide](../adoption.md) ("The startup hooks") for the adopter-facing summary.
+If take-over fails before parking, the source remains in place and no link is
+attempted; its WARNING also says when project copies or index changes made
+before the failure were not rolled back. If an ordinary pre-visibility link
+publication failure follows a successful park, the merge is likewise not
+rolled back: project copies, the reconciled index and the backup remain
+inspectable, and the WARNING names the exact parked backup directory. A J2
+post-visibility durability uncertainty is instead a gating ERROR because the
+link may be visible but not durably confirmed; it also does not roll back the
+take-over. The hook itself always exits 0, suppresses stdout and preserves
+`init`'s stderr diagnostic. Only the ordinary post-park pre-visibility WARNING
+promises an exact recovery location; the J2 durability ERROR need not name the
+parked backup.
 
 On a healthy `init` run, what the hook created, what it found already there and
 the symlink it wrote or re-pointed are recorded the same way as any other

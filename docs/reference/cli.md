@@ -278,8 +278,8 @@ it, in this order -- nothing is parked until the copy is done:
    preserving subdirectories, **only where the destination does not exist**.
    A destination that already holds identical content is skipped silently, so
    re-running is quiet. A destination that differs is a real conflict: the
-   project's copy is kept, and a WARNING says so -- the harness's version is
-   still in the backup from step 4, for a human to reconcile.
+   project's copy is kept, and after parking a WARNING names the exact backup
+   file holding the harness's version for a human to reconcile.
 3. **Reconcile the index.** Every adopted file gets an entry in the project's
    `memory/MEMORY.md`: the line the harness's own index carried for it when
    there was one, synthesized from the file's `name` and `description`
@@ -300,13 +300,25 @@ The one exception to "nothing is deleted": PATH as an **empty** directory is
 removed with `rmdir` and replaced by the symlink, with no backup. `rmdir` is
 refused by the operating system on anything that is not empty, so it cannot
 lose data, and the alternative -- an empty `.bak` on the side, or a WARNING
-on every session start forever -- is worse.
+on every session start forever -- is worse. If ordinary link publication then
+fails, the WARNING does not claim the session was unaffected: it says that the
+empty directory was removed, no memory data was parked and PATH is absent, and
+directs the operator to clear the publication error and rerun `init`.
 
-Every failure along the way is fail-open: a WARNING, exit 0, and a state that
-still holds every file. The order is what guarantees it -- a failed copy
-leaves the original in place and unparked, a failed park leaves the copies in
-the project and the original intact, and a failed link leaves the backup path
-named in the WARNING.
+An absorption failure is fail-open: it is a WARNING, exit 0, and the link is
+not attempted. The order preserves every source file: a failed copy leaves the
+original in place and unparked, while a later copy, reconciliation or park
+failure may also leave project copies or index changes. The WARNING names the
+original source and says when those earlier effects were not rolled back.
+
+After a successful park, an ordinary pre-visibility link-publication failure is
+also a WARNING and exit 0. It does not roll the merge back, and names the exact
+parked backup directory so the recovery location remains visible even when the
+SessionStart hook suppresses `init`'s stdout. The J2 durability boundary is
+different: if the link may already be visible but its durability cannot be
+confirmed, `init` reports a gating ERROR because it cannot truthfully reduce
+that state to a clean retry. That ERROR likewise does not roll back the copies,
+reconciled index or parked source.
 
 ### `lint`
 
@@ -326,7 +338,12 @@ SEVERITY: <location>:<line>: <field>: <message>    # parse errors only
 
 `lint` resolves wikilinks and the supersession convention against the whole
 memory set, so a missing `MEMORY.md`, a missing memory directory, or an
-explicit PATH that does not exist each stop the run before any file is read.
+explicit PATH that does not exist each stop the run before any memory file is
+read. `MEMORY.md` must resolve to a regular file; a directory, broken link or
+other non-file node is one index ERROR and is left untouched. An OS failure
+while opening or reading an otherwise file-shaped index is likewise one index
+ERROR rather than a traceback. `status` uses this same acquisition path and
+reports the same finding in its lint section.
 
 ### `validate`
 
