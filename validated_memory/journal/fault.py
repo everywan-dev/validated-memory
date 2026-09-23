@@ -1,12 +1,14 @@
-"""The crash seam: the four points at which a test may kill the process.
+"""The crash seams and one bounded, private test-only pause.
 
-One module for one environment variable, so the package has exactly one
-reader of it and a grep for `fault_at` finds every line that can act on it.
-Neither name here is exported by the package.
+One module owns both environment variables, so each has exactly one reader.
+A grep for `fault_at` finds every line that can hard-kill the process; the
+sleeping seam is separate and cannot become a fifth crash point. Neither
+helper is exported by the package.
 """
 
 import os
 import sys
+import time
 
 
 # The seams of the executor's protocol: a transaction file fsynced with
@@ -21,6 +23,11 @@ FAULT_POINTS = (
     "after-published",
     "after-history",
 )
+
+
+_TEST_SEAM_VARIABLE = "VALIDATED_MEMORY_TEST_SEAM"
+_TEST_SEAM_SECONDS = 2
+_test_seam_used = False
 
 
 def fault_at(point):
@@ -44,3 +51,17 @@ def fault_at(point):
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(70)
+
+
+def sleep_at(point):
+    """Pause once at the private test seam, and otherwise remain inert.
+
+    This is deliberately not a crash seam. Its fixed duration bounds a failed
+    rendezvous, and claiming the one permitted pause before sleeping prevents
+    repeated mutations in one process from extending that bound.
+    """
+    global _test_seam_used
+    if _test_seam_used or os.environ.get(_TEST_SEAM_VARIABLE) != point:
+        return
+    _test_seam_used = True
+    time.sleep(_TEST_SEAM_SECONDS)

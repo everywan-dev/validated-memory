@@ -3464,20 +3464,65 @@ def test_a_kill_at_after_published_leaves_bytes_with_no_history(
     assert rebuilt[0]["transaction"] == entry["transaction"], (rebuilt, entry)
 
 
-def test_the_fault_variable_is_inert_when_unset_or_unreached(
+def test_the_fault_and_sleep_variables_are_inert_when_unset_or_unreached(
     run_cli, tmp_path, monkeypatch
 ):
-    """Unset and unreached fault points leave repeated init observably unchanged.
+    """Only the selected sleeping seam adds one bounded pause.
 
-    Outputs match exactly. Journal comparison removes timestamps and minted
-    IDs, so it proves equal operation data rather than byte-identical logs."""
+    Three equivalent fresh adopters distinguish no pause, an unreached
+    selector and one selected pause. Outputs match exactly. Journal comparison
+    removes timestamps and minted IDs, so it proves equal operation data rather
+    than byte-identical logs."""
     baseline = tmp_path / "baseline"
     unreached = tmp_path / "unreached"
+    selected = tmp_path / "selected"
     baseline.mkdir()
     unreached.mkdir()
+    selected.mkdir()
+
+    def _timed_init(root):
+        started = time.monotonic()
+        result = run_cli("init", cwd=root)
+        return result, time.monotonic() - started
+
     monkeypatch.delenv("VALIDATED_MEMORY_FAULT", raising=False)
-    assert run_cli("init", cwd=baseline).returncode == 0
-    assert run_cli("init", cwd=unreached).returncode == 0
+    monkeypatch.delenv("VALIDATED_MEMORY_TEST_SEAM", raising=False)
+    baseline_initial, baseline_elapsed = _timed_init(baseline)
+    monkeypatch.setenv("VALIDATED_MEMORY_TEST_SEAM", "not-a-seam")
+    unreached_initial, unreached_elapsed = _timed_init(unreached)
+    monkeypatch.setenv("VALIDATED_MEMORY_TEST_SEAM", "during-lock")
+    selected_initial, selected_elapsed = _timed_init(selected)
+    monkeypatch.delenv("VALIDATED_MEMORY_TEST_SEAM")
+
+    assert baseline_initial.returncode == 0, baseline_initial.stderr
+    assert unreached_initial.returncode == 0, unreached_initial.stderr
+    assert selected_initial.returncode == 0, selected_initial.stderr
+    assert baseline_initial.stdout == unreached_initial.stdout
+    assert baseline_initial.stdout == selected_initial.stdout
+    assert baseline_initial.stderr == unreached_initial.stderr
+    assert baseline_initial.stderr == selected_initial.stderr
+
+    # Ordinary subprocess and filesystem variance may move either control,
+    # so compare the selected run with the slower one. The lower bound rejects
+    # an absent/unconditional pause; the upper bound rejects two fixed pauses.
+    assert abs(unreached_elapsed - baseline_elapsed) < 1.5, (
+        baseline_elapsed,
+        unreached_elapsed,
+    )
+    selected_increment = selected_elapsed - max(
+        baseline_elapsed, unreached_elapsed
+    )
+    assert 1.25 <= selected_increment < 3.5, (
+        baseline_elapsed,
+        unreached_elapsed,
+        selected_elapsed,
+    )
+    selected_transactions = {
+        entry["transaction"]
+        for entry in _records(selected / "journal.jsonl")
+        if entry.get("transaction")
+    }
+    assert len(selected_transactions) > 1, selected_transactions
 
     control = run_cli("init", cwd=baseline)
 
@@ -3488,6 +3533,10 @@ def test_the_fault_variable_is_inert_when_unset_or_unreached(
     assert faulted.returncode == 0, faulted.stderr
     assert control.stdout == faulted.stdout
     assert control.stderr == faulted.stderr
+    selected_control = run_cli("init", cwd=selected)
+    assert selected_control.returncode == 0, selected_control.stderr
+    assert control.stdout == selected_control.stdout
+    assert control.stderr == selected_control.stderr
 
     def _stripped(path):
         # Normalize timestamps and minted identities. The comparison pins all
@@ -3504,6 +3553,83 @@ def test_the_fault_variable_is_inert_when_unset_or_unreached(
     assert _stripped(baseline / "journal.jsonl") == _stripped(
         unreached / "journal.jsonl"
     )
+    assert _stripped(baseline / "journal.jsonl") == _stripped(
+        selected / "journal.jsonl"
+    )
+
+
+def test_the_sleeping_seam_is_separate_from_the_four_crash_points():
+    """The private delay cannot expand the hard-crash protocol vocabulary."""
+    fault_path = REPO_ROOT / "validated_memory" / "journal" / "fault.py"
+    fault_source = fault_path.read_text(encoding="utf-8")
+    fault_tree = ast.parse(fault_source)
+    crash_assignment = next(
+        node
+        for node in fault_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "FAULT_POINTS"
+            for target in node.targets
+        )
+    )
+    assert ast.literal_eval(crash_assignment.value) == (
+        "after-transaction",
+        "after-publish",
+        "after-published",
+        "after-history",
+    )
+
+    readers = [
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in (REPO_ROOT / "validated_memory").rglob("*.py")
+        if "VALIDATED_MEMORY_TEST_SEAM" in path.read_text(encoding="utf-8")
+    ]
+    assert readers == ["validated_memory/journal/fault.py"]
+
+    executor = ast.parse(
+        (REPO_ROOT / "validated_memory" / "journal" / "executor.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    sleep_calls = [
+        node
+        for node in ast.walk(executor)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "sleep_at"
+    ]
+    assert len(sleep_calls) == 1
+    assert ast.literal_eval(sleep_calls[0].args[0]) == "during-lock"
+    run_class = next(
+        node
+        for node in executor.body
+        if isinstance(node, ast.ClassDef) and node.name == "Run"
+    )
+    execute = next(
+        node
+        for node in run_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_execute"
+    )
+
+    def _named_calls(name):
+        return [
+            node
+            for node in ast.walk(execute)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == name
+        ]
+
+    opened = _named_calls("open_transaction")
+    assert len(opened) == 1
+    rereads = [
+        node
+        for node in _named_calls("current_state")
+        if node.lineno > opened[0].lineno
+    ]
+    assert len(rereads) == 1
+    assert opened[0].end_lineno < sleep_calls[0].lineno
+    assert sleep_calls[0].end_lineno < rereads[0].lineno
 
 
 # --- the executor: what it refuses, what it preserves, what it records ---------
@@ -3708,69 +3834,33 @@ def test_a_symlink_where_a_directory_goes_is_refused_not_kept(run_cli, tmp_path)
     assert not _transactions(tmp_path)
 
 
-# A third party that is not this plugin and does not wait its turn: it
-# watches for the run to start parking a preimage and then replaces the file
-# under it, atomically, so the run can never read a half-written state.
-# Standard library only, and it imports nothing from the package.
-OVERWRITE_WHILE_PARKING = """
-import os
-import sys
-import time
-
-trigger, target, text = sys.argv[1], sys.argv[2], sys.argv[3]
-deadline = time.monotonic() + 60
-while not os.path.exists(trigger):
-    if time.monotonic() > deadline:
-        raise SystemExit("the run never parked a preimage")
-    time.sleep(0.0002)
-temporary = target + ".intruder"
-with open(temporary, "w", encoding="utf-8") as handle:
-    handle.write(text)
-os.replace(temporary, target)
-"""
-
-# Big enough that parking it -- write, fsync, install, read back and verify
-# -- takes long enough for the writer above to land inside the window the
-# re-read exists to close. Nothing about the guarantee depends on the size;
-# only this test's ability to reach the window does, and
-# docs/design/2026-09-01-the-journal-core.md §6 is explicit that what the
-# re-read buys is "a narrower window, not an atomic guarantee".
-INTRUDER_WINDOW_BYTES = 8 * 1024 * 1024
-
-
 def test_the_state_is_re_read_immediately_before_publishing(run_cli, tmp_path):
     """A raced write before the pre-publication re-read aborts the mutation.
 
-    A second process reaches the seam by exploiting slow preimage parking.
-    This proves refusal at that seam, not its width or the smaller race
-    between the re-read and publication."""
+    The transaction is observable only after the initial state is captured;
+    the bounded test pause then keeps the run before its second read. This
+    proves refusal at that seam, not its width or the smaller race between the
+    re-read and publication."""
     ignore = tmp_path / ".gitignore"
-    ignore.write_text("build/\n" + "# filler\n" * (INTRUDER_WINDOW_BYTES // 9),
-                      encoding="utf-8")
+    ignore.write_text("build/\n", encoding="utf-8")
     intruder_text = "build/\ndist/\n"
 
-    intruder = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            OVERWRITE_WHILE_PARKING,
-            str(tmp_path / ".validated-memory" / "preimages"),
-            str(ignore),
-            intruder_text,
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    running = _run_init_in_background(tmp_path, test_seam="during-lock")
     try:
-        result = run_cli("init", cwd=tmp_path)
+        transaction = _wait_for_transaction(running, tmp_path, ".gitignore")
+        temporary = ignore.with_suffix(".intruder")
+        temporary.write_text(intruder_text, encoding="utf-8")
+        os.replace(temporary, ignore)
+        stdout, stderr = running.communicate(timeout=30)
     finally:
-        intruder.wait(timeout=90)
-    assert intruder.returncode == 0, intruder.communicate()
+        if running.poll() is None:  # pragma: no cover - only on a timeout
+            running.kill()
+            running.communicate()
 
-    assert result.returncode == 1, (result.stdout, result.stderr)
-    assert ".gitignore" in result.stderr, result.stderr
-    assert "changed while its mutation was being prepared" in result.stderr
+    assert transaction["stage"] == "prepared", transaction
+    assert running.returncode == 1, (stdout, stderr)
+    assert ".gitignore" in stderr, stderr
+    assert "changed while its mutation was being prepared" in stderr
     # The intruder's bytes, exactly: not the original, and not the original
     # with the ignore entry appended to it.
     assert ignore.read_text(encoding="utf-8") == intruder_text
@@ -3784,62 +3874,34 @@ def test_the_state_is_re_read_immediately_before_publishing(run_cli, tmp_path):
     assert not _transactions(tmp_path)
 
 
-# The same window as `OVERWRITE_WHILE_PARKING`, reached the same way, but the
-# intruder takes the path away from the reader instead of changing it. The
-# preimage is already in hand when this lands, so the run reaches the re-read
-# with a path it can no longer `lstat` for a digest.
-DENY_READS_WHILE_PARKING = """
-import os
-import sys
-import time
-
-trigger, target = sys.argv[1], sys.argv[2]
-deadline = time.monotonic() + 60
-while not os.path.exists(trigger):
-    if time.monotonic() > deadline:
-        raise SystemExit("the run never parked a preimage")
-    time.sleep(0.0002)
-os.chmod(target, 0o000)
-"""
-
-
 def test_a_path_that_stops_being_readable_before_publication_aborts(
     run_cli, tmp_path
 ):
     """An unreadable pre-publication re-read gates cleanly and aborts its transaction.
 
-    The race fixture reaches only the post-parking seam; it does not prove
-    fsync ordering or exclude the remaining re-read/publication race."""
+    The transaction rendezvous reaches only the post-parking seam; it does not
+    prove fsync ordering or exclude the remaining re-read/publication race."""
     ignore = tmp_path / ".gitignore"
-    ignore.write_text("build/\n" + "# filler\n" * (INTRUDER_WINDOW_BYTES // 9),
-                      encoding="utf-8")
+    ignore.write_text("build/\n", encoding="utf-8")
 
-    intruder = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            DENY_READS_WHILE_PARKING,
-            str(tmp_path / ".validated-memory" / "preimages"),
-            str(ignore),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    running = _run_init_in_background(tmp_path, test_seam="during-lock")
     try:
-        result = run_cli("init", cwd=tmp_path)
+        _wait_for_transaction(running, tmp_path, ".gitignore")
+        ignore.chmod(0o000)
+        stdout, stderr = running.communicate(timeout=30)
     finally:
-        intruder.wait(timeout=90)
         ignore.chmod(0o644)
-    assert intruder.returncode == 0, intruder.communicate()
+        if running.poll() is None:  # pragma: no cover - only on a timeout
+            running.kill()
+            running.communicate()
 
-    assert result.returncode == 1, (result.stdout, result.stderr)
-    assert "Traceback" not in result.stderr, result.stderr
-    assert ".gitignore" in result.stderr, result.stderr
+    assert running.returncode == 1, (stdout, stderr)
+    assert "Traceback" not in stderr, stderr
+    assert ".gitignore" in stderr, stderr
     assert (
         "could not be read while its mutation was being prepared"
-        in result.stderr
-    ), result.stderr
+        in stderr
+    ), stderr
     assert not [
         entry
         for entry in _records(tmp_path / "journal.jsonl")
@@ -3983,10 +4045,12 @@ def _a_pid_that_is_gone():
     raise AssertionError("every probed pid was in use")
 
 
-def _run_init_in_background(cwd):
+def _run_init_in_background(cwd, *, test_seam=None):
     """Start `init` as a subprocess the test can interfere with while it runs."""
     environment = dict(os.environ)
     environment.setdefault("PYTHONPATH", str(REPO_ROOT))
+    if test_seam is not None:
+        environment["VALIDATED_MEMORY_TEST_SEAM"] = test_seam
     return subprocess.Popen(
         [sys.executable, "-P", "-m", "validated_memory", "init"],
         stdout=subprocess.PIPE,
@@ -3995,6 +4059,25 @@ def _run_init_in_background(cwd):
         cwd=cwd,
         env=environment,
     )
+
+
+def _wait_for_transaction(process, root, path):
+    """Return the durable prepared transaction for `path`, within a bound."""
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        matches = [
+            entry
+            for entry in _transactions(root)
+            if entry["intention"]["path"] == path
+        ]
+        if matches:
+            assert len(matches) == 1, matches
+            return matches[0]
+        assert process.poll() is None, (
+            "the run ended before opening its transaction"
+        )
+        time.sleep(0.005)
+    raise AssertionError(f"the run never opened a transaction for {path}")
 
 
 def test_an_adopting_run_holds_and_releases_its_lock(run_cli, tmp_path):
@@ -4070,8 +4153,8 @@ def test_a_lock_whose_owner_is_gone_is_broken_at_once(run_cli, tmp_path):
 def test_a_run_whose_lock_was_broken_leaves_its_successor_alone(tmp_path):
     """A run releases only the inode it acquired, preserving a successor lock.
 
-    Padding keeps the process inside its outer lock long enough to swap the
-    file; it creates timing opportunity, not a guarantee about an inner call."""
+    A durable transaction proves the run holds its outer lock and has reached
+    the bounded pause before the test swaps the lock file."""
     seed = subprocess.run(
         [sys.executable, "-P", "-m", "validated_memory", "init"],
         capture_output=True,
@@ -4081,20 +4164,14 @@ def test_a_run_whose_lock_was_broken_leaves_its_successor_alone(tmp_path):
         check=False,
     )
     assert seed.returncode == 0, seed.stderr
-    journal = tmp_path / "journal.jsonl"
-    line = journal.read_text(encoding="utf-8").splitlines()[0]
-    with journal.open("a", encoding="utf-8") as handle:
-        handle.write((line + "\n") * 150000)
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
 
     lock = tmp_path / ".validated-memory" / "lock"
     assert not lock.exists()
-    running = _run_init_in_background(tmp_path)
+    running = _run_init_in_background(tmp_path, test_seam="during-lock")
     try:
-        deadline = time.monotonic() + 30
-        while not lock.exists():
-            assert running.poll() is None, "the run ended before it took the lock"
-            assert time.monotonic() < deadline, "the run never took the lock"
-            time.sleep(0.005)
+        transaction = _wait_for_transaction(running, tmp_path, ".gitignore")
+        assert lock.exists(), "the run opened a transaction without its lock"
         broken = lock.stat().st_ino
         lock.unlink()
         descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
@@ -4110,6 +4187,7 @@ def test_a_run_whose_lock_was_broken_leaves_its_successor_alone(tmp_path):
             running.communicate()
 
     assert running.returncode == 0, (stdout, stderr)
+    assert transaction["stage"] == "prepared", transaction
     assert lock.exists(), "the run deleted a lock it no longer owned"
     assert lock.stat().st_ino == successor
     assert lock.read_text(encoding="ascii").strip() == str(os.getpid())

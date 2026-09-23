@@ -38,7 +38,7 @@ from .durable import (
     republish_file,
     swap_final_history_for_test,
 )
-from .fault import fault_at
+from .fault import fault_at, sleep_at
 from .lock import Lock
 from .operations import (
     OUTCOME_APPLIED,
@@ -856,6 +856,7 @@ class Run:
                 "history were not changed.",
             )
         fault_at("after-transaction")
+        sleep_at("during-lock")
 
         # The state as it is NOW, not as it was before the preimage was
         # parked and the transaction fsynced. Compared whole rather than
