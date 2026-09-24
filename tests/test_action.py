@@ -7,6 +7,7 @@ and how the CLI is invoked.
 """
 
 import re
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -108,6 +109,23 @@ def test_the_readme_documents_the_action_and_sha_pinning_first():
         "the SHA-pinned example must be presented before the @v2 convenience one"
     )
     assert "full commit SHA" in text, "README does not document SHA pinning"
+    assert "args` is split on whitespace" in text
+    assert "shell quotes are not interpreted" in text
+    assert "verbatim" not in text
+
+
+def test_action_python_input_matches_the_package_minimum():
+    action = ACTION_FILE.read_text(encoding="utf-8")
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(
+        encoding="utf-8"
+    ))["project"]
+    minimum = project["requires-python"].removeprefix(">=")
+    assert minimum == "3.11"
+    assert f"Python {minimum} or newer" in action
+    assert "any supported 3.x" not in action
+    default = re.search(r'^    default: "([0-9.]+)"$', action, re.MULTILINE)
+    assert default, "the Action must retain an explicit Python default"
+    assert tuple(map(int, default.group(1).split("."))) >= (3, 11)
 
 
 def test_gitlab_runs_full_suite_as_an_unprivileged_checkout_owner():

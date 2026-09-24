@@ -21,7 +21,7 @@ adds consultation-specific fields to that shared handoff.
 | --- | --- | --- |
 | First consultation in a project | Register its root in an explicit workspace outside adopters; bind the relevant canonical revision, support, dependencies and scope. | Which evidence and dependencies justify that claim in this scope. |
 | First reuse from another workspace | Assess and explicitly export whole history; import, inspect inventory, author a local proposal, map origins, inspect and accept, then install/bind/incorporate. | Local applicability, evidence equivalence, dependency and predecessor mappings. |
-| Resume work with a checked use | Follow [task resumption](#resume-a-task): retain supplied update outcomes, then run `resume-use` with the exact requested scope (unreleased after 2.3.0). | Applicability to this task and how to resolve pending review. |
+| Resume work with a checked use | Follow [task resumption](#resume-a-task): retain supplied update outcomes, then run `resume-use` with the exact requested scope (available since 2.4.0). | Applicability to this task and how to resolve pending review. |
 | Evidence or interpretation changes | Retain a factual or policy challenge, inspect and decide it. Review unchanged evidence or incorporate a canonical successor, inspect its binding and resolve. | Whether the challenge is accepted and how the claim should change. |
 | An imported origin changes | Import the new complete history. Check affected old uses; map a corrected local successor and complete local review/incorporation/resolution before reacquiring a consumer receipt. | How the source correction changes the local policy and consumer conclusion. |
 | A downstream report used the old conclusion | Track its old bytes before editing; obtain a checked new use, explicitly address the old use, update the report and record a reflection. | Whether the report's changed meaning is sufficient; reflection does not establish external delivery. |
@@ -35,9 +35,9 @@ than constructing hashes or asking the user to transcribe them.
 
 ## Resume a task
 
-**Unreleased after 2.3.0.** Task resumption adds `resume-use`; released 2.3.0
-provides `check-use` for the historical scope. The new report is read-only and
-creates no event, receipt or inspection handle. It cannot check external freshness.
+**Available since 2.4.0.** Task resumption adds `resume-use`; 2.3.0 provides
+`check-use` for the historical scope. The report is read-only and creates no
+event, receipt or inspection handle. It cannot check external freshness.
 
 Keep this reusable plain-text template in the adopter's existing trusted agent
 handoff. It is a working note, not a new configuration format. The agent fills
@@ -107,7 +107,7 @@ replace complete `inspect` or two-line `read` protocols. Its actions are advisor
 data, never executable shell text; subsequent operations revalidate their inputs.
 No scheduler, remote discovery or automatic acceptance is provided. The
 [selected material view](transfer.md#selected-material-before-proposal-authoring)
-is unreleased after 2.3.0 and opens no foreign paths. Whole history remains in
+is available since 2.4.0 and opens no foreign paths. Whole history remains in
 transport/storage; the selected view is not a replay capsule and does not establish
 external freshness. This workflow makes no measured token or empirical usefulness
 improvement claim. See the

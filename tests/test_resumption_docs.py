@@ -19,7 +19,8 @@ def prose(path):
 @pytest.mark.parametrize("path", [WORKFLOW, REFERENCE, CLI, SKILL])
 def test_resumption_surfaces_mark_release_boundary_and_local_links(path):
     text = path.read_text(encoding="utf-8")
-    assert "Unreleased after 2.3.0" in text
+    assert "since 2.4.0" in text.lower()
+    assert "unreleased after 2.3.0" not in text.lower()
     assert "resume-use" in text
     assert "sessions/" not in text
     for target in re.findall(r"\]\(([^)]+)\)", text):

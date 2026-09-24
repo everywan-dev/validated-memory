@@ -377,7 +377,7 @@ canonical validation errors gate; warnings do not.
 | `read ALIAS:ID --scope KEY=VALUE [--max-bytes N]` | Deliver the complete eligible transitive closure and support once each, then retain its receipt. Final acquisition uses the authored consumer as root. |
 | `record-use ALIAS:ID --receipt HANDLE` | Recheck the exact consumer/receipt root, complete enrolled snapshot and eligibility; retain a checked-use record. |
 | `check-use HANDLE` | Read-only current-use check of a historical use; no new receipt or persisted timestamp. |
-| `resume-use USE --scope KEY=VALUE [--scope KEY=VALUE ...] [--max-bytes N]` | Unreleased after 2.3.0: read-only task resumption report with exact requested scope and known origin review; see below. |
+| `resume-use USE --scope KEY=VALUE [--scope KEY=VALUE ...] [--max-bytes N]` | Available since 2.4.0: read-only task resumption report with exact requested scope and known origin review; see below. |
 | `show HANDLE` | Read-only historical artifact inspection, including retained predecessor bytes. Does not require current adopter availability. |
 | `checkpoint ALIAS --actor ACTOR --reason REASON` | Retain a content-only relocation baseline for the current registration. Stale bindings alone do not prevent a checkpoint. |
 | `relocate ALIAS ROOT --checkpoint HANDLE --actor ACTOR --reason REASON` | Retain an explicit new root after checking old-root unavailability and exact content equivalence with the latest checkpoint. |
@@ -400,7 +400,7 @@ project is allowed. Conflicts are explicitly declared, not inferred from text.
 
 ### Task resumption report
 
-**Unreleased after 2.3.0.** From this checkout:
+**Available since 2.4.0.** From this checkout:
 
 ```text
 PYTHONPATH=. python3 -P -m validated_memory consultation --store STORE resume-use USE --scope KEY=VALUE [--scope KEY=VALUE ...] [--max-bytes N]

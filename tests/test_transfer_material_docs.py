@@ -18,9 +18,10 @@ def prose(path):
 
 
 @pytest.mark.parametrize("path", [REFERENCE, STORAGE, WORKFLOW, CLI, SKILL])
-def test_selected_material_is_public_unreleased_and_linked(path):
+def test_selected_material_is_released_and_linked(path):
     text = path.read_text(encoding="utf-8")
-    assert "unreleased after 2.3.0" in text.lower()
+    assert "available since 2.4.0" in text.lower()
+    assert "unreleased after 2.3.0" not in text.lower()
     assert "--material" in text
     assert "sessions/" not in text
     for target in re.findall(r"\]\(([^)]+)\)", text):
