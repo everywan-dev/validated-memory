@@ -31,6 +31,8 @@ from the ones before it:
 - `fault` -- the four crash seams and private bounded test rendezvous.
 - `records` -- the record format, the digest, the two journals' paths, and
   the reader that refuses a journal it cannot account for.
+- `topology` -- pure semantic inspection of a coherent pair, including
+  schema dispatch, exact legacy anchors, frontiers, heads, and lineage.
 - `paths` -- what is at one path, whether that is what a caller expected,
   whether a record may name it, and whether this user may write over it.
 - `operations` -- the five functions a caller states a mutation with, and

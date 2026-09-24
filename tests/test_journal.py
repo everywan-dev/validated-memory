@@ -1664,6 +1664,7 @@ JOURNAL_LAYERS = (
     "durable",
     "fault",
     "records",
+    "topology",
     "paths",
     "operations",
     "lock",
@@ -6896,7 +6897,7 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
             for name in ("_RawHistory", "_acquire_history_pair")
         )
     ]
-    assert raw_reachers == ["command.py"]
+    assert raw_reachers == ["command.py", "topology.py"]
     parse_calls = [
         node
         for node in ast.walk(command_tree)
@@ -6955,6 +6956,1614 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
         and node.func.id == "_ensure_history_compatibility"
         for node in ast.walk(functions["repair_transaction"])
     )
+
+
+# --- private schema-2 topology shadow ---------------------------------------
+
+
+def _topology_adapter(tmp_path):
+    mutant_root = tmp_path / "topology-adapter"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant_root / "validated_memory")
+    command = mutant_root / "validated_memory" / "journal" / "command.py"
+    source = command.read_text(encoding="utf-8")
+    shadow = '''\
+        try:
+            # Packet B topology shadow: result intentionally discarded.
+            topology_inspection = inspect(acquired)
+        except Exception:
+            topology_inspection = None
+'''
+    adapter = '''\
+        # Packet B topology shadow: result intentionally discarded.
+        topology_inspection = inspect(acquired)
+        import json
+
+        def topology_reference(value):
+            if value is None:
+                return None
+            return {
+                "kind": value.kind,
+                "artifact": value.artifact,
+                "digest": value.digest,
+            }
+
+        snapshot = topology_inspection.snapshot
+        projection = {
+            "snapshot_present": snapshot is not None,
+            "conditions": [
+                {
+                    "code": value.code,
+                    "level": value.level,
+                    "artifact": value.artifact,
+                    "locations": [
+                        {"artifact": location.artifact, "line": location.line}
+                        for location in value.locations
+                    ],
+                    "node": value.node,
+                    "transaction": value.transaction,
+                    "reference": topology_reference(value.reference),
+                    "reason": value.reason,
+                    "fields": list(value.fields),
+                    "subjects": list(value.subjects),
+                }
+                for value in topology_inspection.conditions
+            ],
+            "capabilities": {
+                "appendable": topology_inspection.capabilities.appendable,
+                "reversal_ready": topology_inspection.capabilities.reversal_ready,
+                "identity_available": topology_inspection.capabilities.identity_available,
+                "topology_known_before": topology_inspection.capabilities.topology_known_before,
+                "ancestry_available": topology_inspection.capabilities.ancestry_available,
+            },
+        }
+        if snapshot is not None:
+            projection.update({
+                "artifacts": [
+                    {
+                        "artifact": value.artifact,
+                        "present": value.present,
+                        "length": value.length,
+                        "digest": value.digest,
+                        "physical_count": value.physical_count,
+                    }
+                    for value in snapshot.artifacts
+                ],
+                "anchors": [
+                    {
+                        **topology_reference(value.reference),
+                        "length": value.length,
+                        "physical_count": value.physical_count,
+                        "adoption_ids": list(value.adoption_ids),
+                    }
+                    for value in snapshot.anchors
+                ],
+                "heads": [topology_reference(value) for value in snapshot.heads],
+                "physical_count": snapshot.physical_count,
+                "adoption_ids": list(snapshot.adoption_ids),
+                "active_adoption": snapshot.active_adoption,
+            })
+        stdout.write(json.dumps(projection, sort_keys=True, separators=(",", ":")) + "\\n")
+        return EXIT_OK
+'''
+    assert source.count(shadow) == 1
+    command.write_text(source.replace(shadow, adapter), encoding="utf-8")
+    return mutant_root
+
+
+def _run_topology(adapter, adopter):
+    result = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "journal", "--check"],
+        cwd=adopter,
+        env={**os.environ, "PYTHONPATH": str(adapter)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stderr == ""
+    projection = json.loads(result.stdout)
+    assert result.stdout == json.dumps(
+        projection, sort_keys=True, separators=(",", ":")
+    ) + "\n"
+    return projection
+
+
+def _topology_history(root, repository=None, local=None):
+    root.mkdir()
+    if repository is not None:
+        (root / "journal.jsonl").write_bytes(repository)
+    if local is not None:
+        (root / ".validated-memory").mkdir()
+        (root / ".validated-memory" / "local.jsonl").write_bytes(local)
+
+
+def _legacy_record(adoption="A", **updates):
+    value = {
+        "schema": 1,
+        "at": "2026-01-01T00:00:00Z",
+        "version": "2.4.0",
+        "adoption": adoption,
+        "run": "run",
+        "durability": "repo",
+        "op": "observe",
+        "purpose": "fixture",
+        "path": "memory",
+        "stage": "committed",
+    }
+    value.update(updates)
+    return value
+
+
+def _jsonl(*records, crlf=False):
+    ending = b"\r\n" if crlf else b"\n"
+    return b"".join(
+        json.dumps(record, sort_keys=True, allow_nan=True).encode("utf-8") + ending
+        for record in records
+    )
+
+
+def _frontier(kind, artifact, digest):
+    return {"kind": kind, "artifact": artifact, "digest": digest}
+
+
+def _schema2_record(
+    *,
+    artifact="repo",
+    adoption="A",
+    kind="observation",
+    frontier=(),
+    at="2026-01-02T00:00:00Z",
+    unknown=False,
+    **updates,
+):
+    value = {
+        "schema": 2,
+        "at": at,
+        "version": "2.4.0",
+        "adoption": adoption,
+        "run": "run-2",
+        "durability": artifact,
+        "op": "observe",
+        "purpose": "fixture",
+        "path": "memory",
+        "stage": "committed",
+        "kind": kind,
+        "frontier": list(frontier),
+        "topology_unknown_before": unknown,
+        "note": "observed",
+    }
+    value.update(updates)
+    projection = dict(value)
+    value["node"] = "sha256:" + hashlib.sha256(
+        json.dumps(
+            projection,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return value
+
+
+def _mutation_pair(*, artifact="repo", adoption="A", frontier=(), **updates):
+    committed = _schema2_record(
+        artifact=artifact,
+        adoption=adoption,
+        kind="mutation",
+        frontier=frontier,
+        op="create",
+        transaction=updates.pop("transaction", "tx"),
+        preimage=None,
+        postimage="sha256:" + "1" * 64,
+        **updates,
+    )
+    committed.pop("note", None)
+    # The node was calculated before the observation-only field was removed.
+    projection = {key: value for key, value in committed.items() if key != "node"}
+    committed["node"] = "sha256:" + hashlib.sha256(
+        json.dumps(projection, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    prepared = dict(committed)
+    prepared["stage"] = "prepared"
+    prepared["at"] = "2026-01-01T23:59:59Z"
+    return prepared, committed
+
+
+def _computed_schema2_node(record):
+    projection = {key: value for key, value in record.items() if key != "node"}
+    return "sha256:" + hashlib.sha256(
+        json.dumps(
+            projection,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _condition(projection, code):
+    return [item for item in projection["conditions"] if item["code"] == code]
+
+
+def _semantic_topology_projection(projection):
+    normalized = json.loads(json.dumps(projection))
+    for artifact in normalized.get("artifacts", []):
+        artifact.pop("length", None)
+        artifact.pop("digest", None)
+    for condition in normalized["conditions"]:
+        condition.pop("locations", None)
+    return normalized
+
+
+def test_topology_snapshot_distinguishes_absent_empty_blank_and_exact_legacy(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    missing = tmp_path / "missing"
+    empty = tmp_path / "empty"
+    blank = tmp_path / "blank"
+    legacy = tmp_path / "legacy"
+    _topology_history(missing)
+    _topology_history(empty, b"", b"")
+    _topology_history(blank, b"\n\r\n")
+    legacy_bytes = _jsonl(_legacy_record(), crlf=True)
+    _topology_history(legacy, legacy_bytes)
+
+    absent = _run_topology(adapter, missing)
+    present = _run_topology(adapter, empty)
+    blank_result = _run_topology(adapter, blank)
+    legacy_result = _run_topology(adapter, legacy)
+
+    assert absent["artifacts"][0] == {
+        "artifact": "repo", "present": False, "length": None,
+        "digest": None, "physical_count": 0,
+    }
+    assert present["artifacts"][0]["present"] is True
+    assert present["artifacts"][0]["digest"] == "sha256:" + hashlib.sha256(b"").hexdigest()
+    assert absent["capabilities"]["reversal_ready"] is True
+    assert blank_result["anchors"][0]["physical_count"] == 0
+    assert blank_result["conditions"] == []
+    assert legacy_result["anchors"][0]["digest"] == "sha256:" + hashlib.sha256(legacy_bytes).hexdigest()
+    assert legacy_result["anchors"][0]["adoption_ids"] == ["A"]
+    assert _condition(legacy_result, "topology_unknown_before")[0]["locations"] == [
+        {"artifact": "repo", "line": 1}
+    ]
+
+
+def test_topology_counts_equal_physical_duplicates_before_semantic_collapse(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    record = _schema2_record()
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, _jsonl(record, record))
+
+    result = _run_topology(adapter, adopter)
+
+    assert result["physical_count"] == 2
+    assert result["artifacts"][0]["physical_count"] == 2
+    assert len(result["heads"]) == 1
+    assert result["adoption_ids"] == ["A"]
+
+
+def test_topology_node_digest_uses_complete_canonical_closing_projection(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    record = _schema2_record(note="café", at="2026-01-02T03:04:05Z")
+    # Physical encoding deliberately differs from the node projection:
+    # whitespace, non-ASCII bytes and CRLF are all outside the digest.
+    physical = json.dumps(
+        record, ensure_ascii=False, sort_keys=False, separators=(", ", ": ")
+    ).encode("utf-8") + b"\r\n"
+    adopter = tmp_path / "accepted"
+    _topology_history(adopter, physical)
+    accepted = _run_topology(adapter, adopter)
+    assert accepted["snapshot_present"] is True
+    assert not _condition(accepted, "node_digest_mismatch")
+
+    for field, value in (
+        ("at", "2026-01-02T03:04:06Z"),
+        ("frontier", [_frontier("node", "local", "sha256:" + "7" * 64)]),
+        ("topology_unknown_before", True),
+    ):
+        changed = dict(record)
+        changed[field] = value
+        root = tmp_path / field
+        _topology_history(root, _jsonl(changed))
+        result = _run_topology(adapter, root)
+        assert _condition(result, "node_digest_mismatch"), field
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("version", "other"),
+        ("adoption", "B"),
+        ("run", "other"),
+        ("op", "replace"),
+        ("purpose", "other"),
+        ("path", "other"),
+        ("transaction", "other"),
+        (
+            "frontier",
+            [
+                {
+                    "kind": "node",
+                    "artifact": "local",
+                    "digest": "sha256:" + "8" * 64,
+                }
+            ],
+        ),
+        ("topology_unknown_before", True),
+        ("preimage", "sha256:" + "2" * 64),
+        ("postimage", "sha256:" + "3" * 64),
+        ("prior_bytes", 3),
+        ("mode", 0o600),
+    ],
+)
+def test_topology_mutation_pair_discriminates_every_variable_paired_field(
+    field, value, tmp_path
+):
+    adapter = _topology_adapter(tmp_path)
+    prepared, committed = _mutation_pair()
+    prepared[field] = value
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, _jsonl(prepared, committed))
+
+    result = _run_topology(adapter, adopter)
+
+    disagreements = _condition(result, "mutation_pair_disagreement")
+    assert disagreements and field in disagreements[0]["fields"]
+
+
+@pytest.mark.parametrize(
+    ("bytes_value", "reason"),
+    [
+        (b'{"schema":2,"schema":2}\n', "duplicate_key"),
+        (b'{"schema":2,"at":NaN}\n', "nonstandard_constant"),
+        (b'{"schema":3}\n', "invalid_domain"),
+    ],
+)
+def test_topology_schema2_dispatch_is_strict(bytes_value, reason, tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, bytes_value)
+
+    result = _run_topology(adapter, adopter)
+
+    assert result["snapshot_present"] is False
+    assert _condition(result, "malformed_record")[0]["reason"] == reason
+
+
+def test_topology_legacy_dispatch_keeps_last_key_and_ignored_nan_compatibility(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    record = _legacy_record()
+    encoded = json.dumps(record, sort_keys=True)[:-1] + ',"ignored":NaN,"ignored":1}\n'
+    _topology_history(adopter, encoded.encode())
+
+    result = _run_topology(adapter, adopter)
+
+    assert result["snapshot_present"] is True
+    assert result["physical_count"] == 1
+
+
+@pytest.mark.parametrize("damage", ["digest", "missing", "pair", "node", "duplicate"])
+def test_topology_mutation_representation_damage_is_exact(damage, tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    prepared, committed = _mutation_pair()
+    expected = {
+        "digest": "node_digest_mismatch",
+        "missing": "invalid_stage_multiplicity",
+        "pair": "mutation_pair_disagreement",
+        "node": "mutation_pair_disagreement",
+        "duplicate": "duplicate_stage_conflict",
+    }[damage]
+    if damage == "digest":
+        prepared["node"] = committed["node"] = "sha256:" + "0" * 64
+        records = (prepared, committed)
+    elif damage == "missing":
+        records = (prepared,)
+    elif damage == "pair":
+        prepared["path"] = "other"
+        records = (prepared, committed)
+    elif damage == "node":
+        prepared["node"] = "sha256:" + "9" * 64
+        records = (prepared, committed)
+    else:
+        other = dict(committed)
+        other["note"] = "unequal"
+        records = (prepared, committed, other)
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, _jsonl(*records))
+
+    result = _run_topology(adapter, adopter)
+
+    assert result["snapshot_present"] is False
+    assert _condition(result, expected), result
+    if damage == "node":
+        assert "node" in _condition(result, expected)[0]["fields"]
+
+
+def test_topology_same_false_digest_stays_artifact_qualified(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    false_digest = "sha256:" + "0" * 64
+    repo_observation = _schema2_record(artifact="repo")
+    local_observation = _schema2_record(artifact="local")
+    repo_observation["node"] = local_observation["node"] = false_digest
+    observations = tmp_path / "observations"
+    _topology_history(
+        observations, _jsonl(repo_observation), _jsonl(local_observation)
+    )
+    result = _run_topology(adapter, observations)
+    mismatches = _condition(result, "node_digest_mismatch")
+    assert [(item["artifact"], item["locations"]) for item in mismatches] == [
+        ("repo", [{"artifact": "repo", "line": 1}]),
+        ("local", [{"artifact": "local", "line": 1}]),
+    ]
+    assert not _condition(result, "duplicate_stage_conflict")
+    assert not _condition(result, "invalid_stage_multiplicity")
+
+    repo_pair = _mutation_pair(artifact="repo", transaction="shared")
+    local_pair = _mutation_pair(artifact="local", transaction="shared")
+    for record in (*repo_pair, *local_pair):
+        record["node"] = false_digest
+    mutations = tmp_path / "mutations"
+    _topology_history(mutations, _jsonl(*repo_pair), _jsonl(*local_pair))
+    result = _run_topology(adapter, mutations)
+    assert len(_condition(result, "node_digest_mismatch")) == 2
+    identity = _condition(result, "transaction_identity_damage")[0]
+    assert identity["subjects"] == [
+        f"node:local:{false_digest}",
+        f"node:repo:{false_digest}",
+    ]
+    assert not _condition(result, "duplicate_stage_conflict")
+    assert not _condition(result, "invalid_stage_multiplicity")
+
+
+def test_topology_physical_order_does_not_choose_a_head(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    first = _schema2_record(at="2026-01-02T00:00:00Z")
+    second = _schema2_record(
+        frontier=(_frontier("node", "repo", first["node"]),),
+        at="2026-01-03T00:00:00Z",
+    )
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    _topology_history(left, _jsonl(first, second))
+    _topology_history(right, _jsonl(second, first))
+
+    left_result = _run_topology(adapter, left)
+    right_result = _run_topology(adapter, right)
+
+    for result in (left_result, right_result):
+        assert result["heads"] == [_frontier("node", "repo", second["node"])]
+        assert result["capabilities"]["appendable"] is True
+
+
+def test_topology_alternating_artifact_ancestry_is_permutation_invariant(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    repository_root = _schema2_record(artifact="repo", at="2026-01-02T00:00:00Z")
+    local_child = _schema2_record(
+        artifact="local",
+        frontier=(_frontier("node", "repo", repository_root["node"]),),
+        at="2026-01-03T00:00:00Z",
+    )
+    repository_head = _schema2_record(
+        artifact="repo",
+        frontier=(_frontier("node", "local", local_child["node"]),),
+        at="2026-01-04T00:00:00Z",
+    )
+    ordered = tmp_path / "ordered"
+    permuted = tmp_path / "permuted"
+    _topology_history(
+        ordered, _jsonl(repository_root, repository_head), _jsonl(local_child)
+    )
+    _topology_history(
+        permuted, _jsonl(repository_head, repository_root), _jsonl(local_child)
+    )
+
+    ordered_projection = _run_topology(adapter, ordered)
+    permuted_projection = _run_topology(adapter, permuted)
+
+    assert _semantic_topology_projection(ordered_projection) == (
+        _semantic_topology_projection(permuted_projection)
+    )
+    assert ordered_projection["heads"] == [
+        _frontier("node", "repo", repository_head["node"])
+    ]
+
+
+def test_topology_missing_ancestry_distinguishes_same_and_cross_artifacts(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    missing = "sha256:" + "4" * 64
+    same = _schema2_record(frontier=(_frontier("node", "repo", missing),))
+    cross = _schema2_record(frontier=(_frontier("node", "local", missing),))
+    same_root = tmp_path / "same"
+    cross_root = tmp_path / "cross"
+    _topology_history(same_root, _jsonl(same))
+    _topology_history(cross_root, _jsonl(cross))
+
+    same_result = _run_topology(adapter, same_root)
+    cross_result = _run_topology(adapter, cross_root)
+
+    assert same_result["snapshot_present"] is False
+    assert _condition(same_result, "same_artifact_ancestry_missing")
+    assert cross_result["snapshot_present"] is True
+    assert _condition(cross_result, "cross_artifact_ancestry_unavailable")
+    assert cross_result["capabilities"]["appendable"] is True
+    assert cross_result["capabilities"]["ancestry_available"] is False
+
+
+@pytest.mark.parametrize("missing_artifact", ["repo", "local"])
+def test_topology_digest_invalid_nodes_do_not_classify_missing_ancestry(
+    missing_artifact, tmp_path
+):
+    adapter = _topology_adapter(tmp_path)
+    missing = _frontier("node", missing_artifact, "sha256:" + "4" * 64)
+    record = _schema2_record(frontier=(missing,))
+    record["node"] = "sha256:" + "0" * 64
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, _jsonl(record))
+
+    result = _run_topology(adapter, adopter)
+
+    assert _condition(result, "node_digest_mismatch")
+    assert not _condition(result, "same_artifact_ancestry_missing")
+    assert not _condition(result, "cross_artifact_ancestry_unavailable")
+
+
+def test_topology_digest_invalid_activation_gets_no_activation_verdict(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    record = _schema2_record(
+        kind="activation",
+        frontier=(
+            _frontier("node", "repo", "sha256:" + "4" * 64),
+        ),
+    )
+    record["node"] = "sha256:" + "0" * 64
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, _jsonl(record))
+
+    result = _run_topology(adapter, adopter)
+
+    assert _condition(result, "node_digest_mismatch")
+    assert not _condition(result, "invalid_frontier")
+    assert not _condition(result, "same_artifact_ancestry_missing")
+
+
+def test_topology_schema_order_unknown_flag_and_cycle_damage_are_independent(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    legacy = _legacy_record()
+    legacy_bytes = _jsonl(legacy)
+    anchor = _frontier("legacy", "repo", "sha256:" + hashlib.sha256(legacy_bytes).hexdigest())
+    wrong_flag = _schema2_record(frontier=(anchor,), unknown=False)
+    flag_root = tmp_path / "flag"
+    _topology_history(flag_root, legacy_bytes + _jsonl(wrong_flag))
+    flag = _run_topology(adapter, flag_root)
+    assert _condition(flag, "topology_unknown_flag_damage")
+
+    order_root = tmp_path / "order"
+    _topology_history(order_root, _jsonl(_schema2_record(), legacy))
+    order = _run_topology(adapter, order_root)
+    assert _condition(order, "schema_order_damage")
+    assert not _condition(order, "node_digest_mismatch")
+
+    one_id = "sha256:" + "1" * 64
+    two_id = "sha256:" + "2" * 64
+    one = _schema2_record(frontier=(_frontier("node", "repo", two_id),))
+    one["node"] = one_id
+    two = _schema2_record(frontier=(_frontier("node", "repo", one_id),))
+    two["node"] = two_id
+    cycle_root = tmp_path / "cycle"
+    _topology_history(cycle_root, _jsonl(one, two))
+    cycle = _run_topology(adapter, cycle_root)
+    assert _condition(cycle, "node_digest_mismatch")
+    assert _condition(cycle, "topology_cycle")[0]["subjects"] == [
+        f"reference:node:repo:{one_id}",
+        f"reference:node:repo:{two_id}",
+    ]
+
+
+def test_topology_multi_reference_precedence_is_stable_during_unavailability(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    first = "sha256:" + "1" * 64
+    second = "sha256:" + "2" * 64
+    record = _schema2_record(
+        frontier=(
+            _frontier("node", "local", first),
+            _frontier("node", "local", second),
+        )
+    )
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, _jsonl(record))
+
+    result = _run_topology(adapter, adopter)
+
+    assert _condition(result, "invalid_frontier")[0]["reason"] == "implicit_join"
+    assert len(_condition(result, "cross_artifact_ancestry_unavailable")) == 2
+    assert result["snapshot_present"] is False
+
+
+@pytest.mark.parametrize("kind", ["observation", "mutation"])
+def test_topology_invalid_ordinary_join_leaves_legacy_anchor_fork(kind, tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    repository = _jsonl(_legacy_record("A"))
+    local = _jsonl(_legacy_record("A", durability="local", path="/outside"))
+    references = (
+        _frontier("legacy", "repo", "sha256:" + hashlib.sha256(repository).hexdigest()),
+        _frontier("legacy", "local", "sha256:" + hashlib.sha256(local).hexdigest()),
+    )
+    if kind == "mutation":
+        records = _mutation_pair(frontier=references)
+    else:
+        records = (_schema2_record(frontier=references),)
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, repository + _jsonl(*records), local)
+
+    result = _run_topology(adapter, adopter)
+
+    invalid = _condition(result, "invalid_frontier")
+    assert len(invalid) == 1 and invalid[0]["reason"] == "implicit_join"
+    assert _condition(result, "fork")[0]["subjects"] == [
+        f"reference:legacy:repo:{references[0]['digest']}",
+        f"reference:legacy:local:{references[1]['digest']}",
+    ]
+    assert result["snapshot_present"] is False
+
+
+def test_topology_prepared_only_join_still_exposes_implicit_join_and_fork(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    repository = _jsonl(_legacy_record("A"))
+    local = _jsonl(_legacy_record("A", durability="local", path="/outside"))
+    references = (
+        _frontier("legacy", "repo", "sha256:" + hashlib.sha256(repository).hexdigest()),
+        _frontier("legacy", "local", "sha256:" + hashlib.sha256(local).hexdigest()),
+    )
+    prepared, _committed = _mutation_pair(frontier=references)
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, repository + _jsonl(prepared), local)
+
+    result = _run_topology(adapter, adopter)
+
+    multiplicity = _condition(result, "invalid_stage_multiplicity")
+    assert len(multiplicity) == 1
+    assert multiplicity[0]["subjects"] == ["prepared:1", "committed:0"]
+    invalid = _condition(result, "invalid_frontier")
+    assert len(invalid) == 1 and invalid[0]["reason"] == "implicit_join"
+    assert _condition(result, "fork")[0]["subjects"] == [
+        f"reference:legacy:repo:{references[0]['digest']}",
+        f"reference:legacy:local:{references[1]['digest']}",
+    ]
+    assert result["snapshot_present"] is False
+
+
+def test_topology_frontier_duplicate_order_and_redundancy_are_distinct(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    missing = _frontier("node", "local", "sha256:" + "6" * 64)
+    duplicate = _schema2_record(frontier=(missing, missing))
+    duplicate_root = tmp_path / "duplicate"
+    _topology_history(duplicate_root, _jsonl(duplicate))
+    assert _condition(_run_topology(adapter, duplicate_root), "invalid_frontier")[0]["reason"] == "duplicate_reference"
+
+    repo = _frontier("node", "repo", "sha256:" + "5" * 64)
+    noncanonical = _schema2_record(frontier=(missing, repo))
+    order_root = tmp_path / "order"
+    _topology_history(order_root, _jsonl(noncanonical))
+    noncanonical_condition = _condition(
+        _run_topology(adapter, order_root), "invalid_frontier"
+    )[0]
+    assert noncanonical_condition["reason"] == "noncanonical_order"
+    assert noncanonical_condition["subjects"] == [
+        f"reference:node:repo:{repo['digest']}",
+        f"reference:node:local:{missing['digest']}",
+    ]
+
+    ancestor = _schema2_record(at="2026-01-02T00:00:00Z")
+    descendant = _schema2_record(
+        frontier=(_frontier("node", "repo", ancestor["node"]),),
+        at="2026-01-03T00:00:00Z",
+    )
+    references = tuple(
+        sorted(
+            (
+                _frontier("node", "repo", ancestor["node"]),
+                _frontier("node", "repo", descendant["node"]),
+            ),
+            key=lambda value: value["digest"],
+        )
+    )
+    redundant = _schema2_record(frontier=references, at="2026-01-04T00:00:00Z")
+    redundant_root = tmp_path / "redundant"
+    _topology_history(redundant_root, _jsonl(ancestor, descendant, redundant))
+    condition = _condition(_run_topology(adapter, redundant_root), "invalid_frontier")[0]
+    assert condition["reason"] == "redundant_reference"
+
+
+def test_topology_payloads_scope_mixed_locations_and_semantic_stage_counts(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    mixed_repository = _jsonl(_legacy_record("A"), _legacy_record("B"))
+    clean_local = _jsonl(_legacy_record("A", durability="local", path="/outside"))
+    mixed_root = tmp_path / "mixed"
+    _topology_history(mixed_root, mixed_repository, clean_local)
+    mixed = _condition(_run_topology(adapter, mixed_root), "legacy_mixed_lineage")[0]
+    assert mixed["locations"] == [
+        {"artifact": "repo", "line": 1},
+        {"artifact": "repo", "line": 2},
+    ]
+
+    prepared, _committed = _mutation_pair()
+    unequal = dict(prepared, purpose="unequal")
+    stages_root = tmp_path / "stages"
+    _topology_history(stages_root, _jsonl(prepared, unequal))
+    stages = _condition(
+        _run_topology(adapter, stages_root), "invalid_stage_multiplicity"
+    )[0]
+    assert stages["subjects"] == ["prepared:2", "committed:0"]
+    assert stages["locations"] == [
+        {"artifact": "repo", "line": 1},
+        {"artifact": "repo", "line": 2},
+    ]
+    duplicate = _condition(
+        _run_topology(adapter, stages_root), "duplicate_stage_conflict"
+    )[0]
+    assert duplicate["locations"] == stages["locations"]
+
+
+def test_topology_conflicted_committed_stage_is_permutation_independent(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    shared = "sha256:" + "f" * 64
+    first = _schema2_record(note="first")
+    first["node"] = shared
+    second = _schema2_record(
+        note="second",
+        frontier=(_frontier("node", "local", "sha256:" + "3" * 64),),
+    )
+    second["node"] = shared
+    expected = {
+        f"computed:{_computed_schema2_node(first)}",
+        f"computed:{_computed_schema2_node(second)}",
+    }
+    left = tmp_path / "committed-left"
+    right = tmp_path / "committed-right"
+    _topology_history(left, _jsonl(first, second))
+    _topology_history(right, _jsonl(second, first))
+
+    left_result = _run_topology(adapter, left)
+    right_result = _run_topology(adapter, right)
+
+    assert _semantic_topology_projection(left_result) == (
+        _semantic_topology_projection(right_result)
+    )
+    conflict = _condition(left_result, "duplicate_stage_conflict")
+    assert len(conflict) == 1
+    assert conflict[0]["locations"] == [
+        {"artifact": "repo", "line": 1},
+        {"artifact": "repo", "line": 2},
+    ]
+    multiplicity = _condition(left_result, "invalid_stage_multiplicity")
+    assert len(multiplicity) == 1
+    assert multiplicity[0]["subjects"] == ["prepared:0", "committed:2"]
+    assert multiplicity[0]["locations"] == conflict[0]["locations"]
+    mismatches = _condition(left_result, "node_digest_mismatch")
+    assert {item["subjects"][0] for item in mismatches} == expected
+    assert {item["locations"][0]["line"] for item in mismatches} == {1, 2}
+    assert not _condition(left_result, "cross_artifact_ancestry_unavailable")
+    assert not _condition(left_result, "invalid_frontier")
+
+
+def test_topology_conflicted_prepared_stage_is_permutation_independent(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    prepared, committed = _mutation_pair()
+    first = dict(
+        prepared,
+        purpose="first-purpose",
+        frontier=[_frontier("node", "local", "sha256:" + "4" * 64)],
+    )
+    second = dict(
+        prepared,
+        path="second-path",
+        frontier=[_frontier("node", "local", "sha256:" + "5" * 64)],
+    )
+    left = tmp_path / "prepared-left"
+    right = tmp_path / "prepared-right"
+    _topology_history(left, _jsonl(first, second, committed))
+    _topology_history(right, _jsonl(committed, second, first))
+
+    left_result = _run_topology(adapter, left)
+    right_result = _run_topology(adapter, right)
+
+    assert _semantic_topology_projection(left_result) == (
+        _semantic_topology_projection(right_result)
+    )
+    conflict = _condition(left_result, "duplicate_stage_conflict")
+    assert len(conflict) == 1
+    assert conflict[0]["locations"] == [
+        {"artifact": "repo", "line": 1},
+        {"artifact": "repo", "line": 2},
+    ]
+    multiplicity = _condition(left_result, "invalid_stage_multiplicity")
+    assert len(multiplicity) == 1
+    assert multiplicity[0]["subjects"] == ["prepared:2", "committed:1"]
+    assert multiplicity[0]["locations"] == [
+        {"artifact": "repo", "line": 1},
+        {"artifact": "repo", "line": 2},
+        {"artifact": "repo", "line": 3},
+    ]
+    disagreements = _condition(left_result, "mutation_pair_disagreement")
+    assert {tuple(item["fields"]) for item in disagreements} == {
+        ("frontier", "purpose"),
+        ("frontier", "path"),
+    }
+    assert {
+        tuple(location["line"] for location in item["locations"])
+        for item in disagreements
+    } == {(1, 3), (2, 3)}
+    assert not _condition(left_result, "cross_artifact_ancestry_unavailable")
+    assert not _condition(left_result, "invalid_frontier")
+
+
+@pytest.mark.parametrize("prepared_kind", ["mutation", "observation"])
+def test_topology_mixed_kind_pair_disagreement_is_permutation_independent(
+    prepared_kind, tmp_path
+):
+    adapter = _topology_adapter(tmp_path)
+    mutation_prepared, mutation_committed = _mutation_pair(transaction="mixed-tx")
+    observation_committed = _schema2_record()
+    if prepared_kind == "mutation":
+        prepared = dict(mutation_prepared, node=observation_committed["node"])
+        committed = observation_committed
+    else:
+        prepared = dict(
+            observation_committed,
+            stage="prepared",
+            node=mutation_committed["node"],
+        )
+        committed = mutation_committed
+    left = tmp_path / f"mixed-{prepared_kind}-left"
+    right = tmp_path / f"mixed-{prepared_kind}-right"
+    _topology_history(left, _jsonl(prepared, committed))
+    _topology_history(right, _jsonl(committed, prepared))
+
+    left_result = _run_topology(adapter, left)
+    right_result = _run_topology(adapter, right)
+
+    assert _semantic_topology_projection(left_result) == (
+        _semantic_topology_projection(right_result)
+    )
+    for result in (left_result, right_result):
+        disagreements = _condition(result, "mutation_pair_disagreement")
+        assert len(disagreements) == 1
+        assert disagreements[0]["transaction"] == "mixed-tx"
+        assert disagreements[0]["fields"] == [
+            "kind",
+            "note",
+            "op",
+            "postimage",
+            "preimage",
+            "transaction",
+        ]
+        assert disagreements[0]["locations"] == [
+            {"artifact": "repo", "line": 1},
+            {"artifact": "repo", "line": 2},
+        ]
+        multiplicity = _condition(result, "invalid_stage_multiplicity")
+        assert len(multiplicity) == 1
+        assert multiplicity[0]["subjects"] == ["prepared:1", "committed:1"]
+        assert multiplicity[0]["locations"] == disagreements[0]["locations"]
+
+
+def test_topology_rejects_an_in_lineage_identity_change(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    parent = _schema2_record(adoption="A")
+    child = _schema2_record(
+        adoption="B",
+        frontier=(_frontier("node", "repo", parent["node"]),),
+        at="2026-01-03T00:00:00Z",
+    )
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, _jsonl(child, parent))
+
+    result = _run_topology(adapter, adopter)
+
+    condition = _condition(result, "lineage_transition")[0]
+    assert condition["subjects"] == ["adoption:A", "adoption:B"]
+    assert result["snapshot_present"] is False
+
+
+def test_topology_fork_lineage_and_implicit_join_are_not_ordered(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    left = _schema2_record(adoption="A", at="2026-01-02T00:00:00Z")
+    right = _schema2_record(adoption="B", artifact="local", at="2026-01-03T00:00:00Z")
+    fork_root = tmp_path / "fork"
+    _topology_history(fork_root, _jsonl(left), _jsonl(right))
+    fork = _run_topology(adapter, fork_root)
+    assert _condition(fork, "fork")
+    assert _condition(fork, "unreconciled_lineages")
+    assert fork["active_adoption"] is None
+    assert fork["capabilities"]["appendable"] is False
+
+    join = _schema2_record(
+        frontier=tuple(sorted((
+            _frontier("node", "repo", left["node"]),
+            _frontier("node", "local", right["node"]),
+        ), key=lambda value: (value["artifact"] == "local", value["kind"], value["digest"]))),
+    )
+    join_root = tmp_path / "join"
+    _topology_history(join_root, _jsonl(left, join), _jsonl(right))
+    joined = _run_topology(adapter, join_root)
+    assert joined["snapshot_present"] is False
+    assert _condition(joined, "invalid_frontier")[0]["reason"] == "implicit_join"
+
+
+def test_topology_activation_is_causal_and_preserves_omitted_inputs(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    repo_legacy = _jsonl(_legacy_record())
+    local_legacy = _jsonl(_legacy_record(durability="local", path="/outside"))
+    repo_ref = _frontier("legacy", "repo", "sha256:" + hashlib.sha256(repo_legacy).hexdigest())
+    local_ref = _frontier("legacy", "local", "sha256:" + hashlib.sha256(local_legacy).hexdigest())
+    activation = _schema2_record(kind="activation", frontier=(repo_ref,), unknown=True)
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, repo_legacy + _jsonl(activation), local_legacy)
+
+    result = _run_topology(adapter, adopter)
+
+    assert result["snapshot_present"] is True
+    assert _condition(result, "fork")
+    assert {item["kind"] for item in result["heads"]} == {"legacy", "node"}
+    assert result["active_adoption"] == "A"
+
+
+def test_topology_activation_accepts_fresh_blank_and_missing_cross_roots(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    fresh = _schema2_record(kind="activation", adoption="Y")
+    fresh_root = tmp_path / "fresh"
+    _topology_history(fresh_root, _jsonl(fresh))
+    fresh_result = _run_topology(adapter, fresh_root)
+    assert fresh_result["active_adoption"] == "Y"
+    assert fresh_result["conditions"] == []
+
+    blank_bytes = b"\n"
+    blank_ref = _frontier("legacy", "repo", "sha256:" + hashlib.sha256(blank_bytes).hexdigest())
+    blank_activation = _schema2_record(kind="activation", adoption="Y", frontier=(blank_ref,))
+    blank_root = tmp_path / "blank"
+    _topology_history(blank_root, blank_bytes + _jsonl(blank_activation))
+    blank_result = _run_topology(adapter, blank_root)
+    assert blank_result["active_adoption"] == "Y"
+    assert not _condition(blank_result, "topology_unknown_before")
+
+    missing_ref = _frontier("legacy", "local", "sha256:" + "8" * 64)
+    missing_activation = _schema2_record(
+        kind="activation", adoption="Y", frontier=(missing_ref,), unknown=True
+    )
+    missing_root = tmp_path / "missing"
+    _topology_history(missing_root, _jsonl(missing_activation))
+    missing_result = _run_topology(adapter, missing_root)
+    assert missing_result["active_adoption"] == "Y"
+    assert _condition(missing_result, "cross_artifact_ancestry_unavailable")
+    assert missing_result["snapshot_present"] is True
+
+    swapped = _schema2_record(
+        kind="activation",
+        artifact="local",
+        adoption="Y",
+        frontier=(
+            _frontier("legacy", "repo", "sha256:" + "9" * 64),
+        ),
+        unknown=False,
+    )
+    swapped_root = tmp_path / "swapped"
+    _topology_history(swapped_root, None, _jsonl(swapped))
+    swapped_result = _run_topology(adapter, swapped_root)
+    warning = _condition(
+        swapped_result, "cross_artifact_ancestry_unavailable"
+    )[0]
+    assert warning["artifact"] == "local"
+    assert warning["reference"]["artifact"] == "repo"
+    assert swapped_result["active_adoption"] == "Y"
+
+
+def test_topology_multiple_activation_roots_remain_a_fork(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    first = _schema2_record(kind="activation", adoption="A", at="2026-01-02T00:00:00Z")
+    second = _schema2_record(
+        kind="activation", artifact="local", adoption="B", at="2026-01-03T00:00:00Z"
+    )
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, _jsonl(first), _jsonl(second))
+
+    result = _run_topology(adapter, adopter)
+
+    assert result["snapshot_present"] is True
+    assert len(result["heads"]) == 2
+    assert _condition(result, "fork")
+    assert _condition(result, "unreconciled_lineages")
+
+
+def test_topology_activation_descendant_and_mixed_anchor_are_distinct(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    activation = _schema2_record(kind="activation", adoption="A")
+    descendant = _schema2_record(
+        frontier=(_frontier("node", "repo", activation["node"]),),
+        at="2026-01-03T00:00:00Z",
+    )
+    clean_root = tmp_path / "clean"
+    _topology_history(clean_root, _jsonl(descendant, activation))
+    clean = _run_topology(adapter, clean_root)
+    assert clean["heads"] == [_frontier("node", "repo", descendant["node"])]
+    assert not _condition(clean, "fork")
+
+    first = _legacy_record("A", op="create", stage="prepared", run="one")
+    second = _legacy_record("B", op="create", stage="prepared", run="two")
+    legacy = _jsonl(first, second)
+    reference = _frontier("legacy", "repo", "sha256:" + hashlib.sha256(legacy).hexdigest())
+    mixed_activation = _schema2_record(
+        kind="activation", adoption="A", frontier=(reference,), unknown=True
+    )
+    mixed_root = tmp_path / "mixed"
+    _topology_history(mixed_root, legacy + _jsonl(mixed_activation))
+    mixed = _run_topology(adapter, mixed_root)
+    invalid = _condition(mixed, "invalid_frontier")
+    assert invalid[0]["reason"] == "invalid_activation"
+    assert invalid[0]["subjects"] == ["mixed_anchor_lineage"]
+
+
+def test_topology_result_types_are_frozen_and_one_inspect_seam_is_shipped():
+    source = (
+        REPO_ROOT / "validated_memory" / "journal" / "topology.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assert [
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
+    ] == ["inspect"]
+    returned = {
+        "FrontierReference", "SourceLocation", "Condition", "Capabilities",
+        "ArtifactSnapshot", "LegacyAnchor", "HistorySnapshot", "Inspection",
+    }
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    assert returned <= set(classes)
+    for name in returned:
+        assert any(
+            isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Name)
+            and decorator.func.id == "dataclass"
+            and any(
+                keyword.arg == "frozen"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in decorator.keywords
+            )
+            for decorator in classes[name].decorator_list
+        ), name
+
+
+@pytest.mark.parametrize(
+    ("frontier_kind", "anchor_adoption", "record_adoption", "subject"),
+    [
+        ("node", "A", "A", "node_reference"),
+        ("legacy", "A", "B", "adoption_mismatch:A:B"),
+    ],
+)
+def test_topology_invalid_activation_subjects_are_frozen(
+    frontier_kind, anchor_adoption, record_adoption, subject, tmp_path
+):
+    adapter = _topology_adapter(tmp_path)
+    legacy = _jsonl(_legacy_record(anchor_adoption))
+    digest = "sha256:" + hashlib.sha256(legacy).hexdigest()
+    activation = _schema2_record(
+        kind="activation",
+        adoption=record_adoption,
+        frontier=(_frontier(frontier_kind, "repo", digest),),
+        unknown=frontier_kind == "legacy",
+    )
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter, legacy + _jsonl(activation))
+
+    result = _run_topology(adapter, adopter)
+
+    condition = _condition(result, "invalid_frontier")[0]
+    assert condition["reason"] == "invalid_activation"
+    assert condition["subjects"] == [subject]
+    assert result["snapshot_present"] is False
+
+
+def test_topology_transaction_identity_spans_legacy_and_schema2(tmp_path):
+    adapter = _topology_adapter(tmp_path)
+    legacy_prepared = _legacy_record(
+        op="create", stage="prepared", transaction="shared", postimage="x"
+    )
+    legacy_committed = dict(legacy_prepared, stage="committed")
+    prepared, committed = _mutation_pair(artifact="local", transaction="shared")
+    adopter = tmp_path / "adopter"
+    _topology_history(
+        adopter,
+        _jsonl(legacy_prepared, legacy_committed),
+        _jsonl(prepared, committed),
+    )
+
+    result = _run_topology(adapter, adopter)
+
+    condition = _condition(result, "transaction_identity_damage")[0]
+    assert condition["transaction"] == "shared"
+    assert condition["subjects"] == [
+        "legacy:repo:transaction:shared",
+        f"node:local:{committed['node']}",
+    ]
+    assert {tuple(item.values()) for item in condition["locations"]} == {
+        ("repo", 1), ("repo", 2), ("local", 1), ("local", 2)
+    }
+
+    repo_pair = _mutation_pair(
+        artifact="repo", transaction="two-nodes", purpose="repository"
+    )
+    local_pair = _mutation_pair(
+        artifact="local", transaction="two-nodes", purpose="local"
+    )
+    two_nodes = tmp_path / "two-nodes"
+    _topology_history(two_nodes, _jsonl(*repo_pair), _jsonl(*local_pair))
+    reuse = _condition(
+        _run_topology(adapter, two_nodes), "transaction_identity_damage"
+    )[0]
+    assert reuse["subjects"] == sorted(
+        [
+            f"node:repo:{repo_pair[1]['node']}",
+            f"node:local:{local_pair[1]['node']}",
+        ]
+    )
+
+
+def test_topology_permutation_comparison_removes_only_locations_and_raw_summaries(
+    tmp_path,
+):
+    adapter = _topology_adapter(tmp_path)
+    first = _schema2_record(
+        at="2026-01-02T00:00:00Z",
+        frontier=(
+            _frontier("node", "local", "sha256:" + "7" * 64),
+        ),
+    )
+    second = _schema2_record(at="2026-01-03T00:00:00Z")
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    _topology_history(left, _jsonl(first, second))
+    _topology_history(right, _jsonl(second, first))
+
+    left_projection = _run_topology(adapter, left)
+    right_projection = _run_topology(adapter, right)
+
+    assert _condition(left_projection, "fork")
+    assert _semantic_topology_projection(left_projection) == (
+        _semantic_topology_projection(right_projection)
+    )
+    assert _condition(left_projection, "cross_artifact_ancestry_unavailable")[0][
+        "locations"
+    ] != _condition(right_projection, "cross_artifact_ancestry_unavailable")[0][
+        "locations"
+    ]
+
+
+def test_topology_shadow_is_private_pure_and_the_only_production_caller():
+    root = REPO_ROOT / "validated_memory" / "journal"
+    command_source = (root / "command.py").read_text(encoding="utf-8")
+    topology_source = (root / "topology.py").read_text(encoding="utf-8")
+    facade_source = (root / "__init__.py").read_text(encoding="utf-8")
+    assert command_source.count("# Packet B topology shadow: result intentionally discarded.") == 1
+    assert command_source.count("inspect(acquired)") == 1
+    assert "except Exception:" in command_source
+    assert "topology" not in facade_source.split("__all__ =", 1)[1]
+    assert not re.search(r"\b(open|Path|os\.|environ|getenv)\b", topology_source)
+    callers = [
+        path.name
+        for path in root.glob("*.py")
+        if path.name != "topology.py" and re.search(r"\binspect\s*\(", path.read_text(encoding="utf-8"))
+    ]
+    assert callers == ["command.py"]
+    for path in root.glob("*.py"):
+        if path.name == "topology.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "FrontierReference(" not in source, path.name
+        assert not re.search(r"['\"]frontier['\"]\s*:", source), path.name
+        assert not re.search(r"['\"]node['\"]\s*:", source), path.name
+
+
+def test_topology_shadow_fails_open_for_ordinary_exceptions(run_cli, tmp_path):
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert run_cli("init", cwd=adopter).returncode == 0
+    mutant = tmp_path / "raising-shadow"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant / "validated_memory")
+    topology = mutant / "validated_memory" / "journal" / "topology.py"
+    source = topology.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "inspect"
+    )
+    lines = source.splitlines(keepends=True)
+    lines.insert(function.body[0].lineno - 1, '    raise RuntimeError("distinctive shadow failure")\n')
+    topology.write_text("".join(lines), encoding="utf-8")
+    before = _final_tree_snapshot(adopter)
+
+    for arguments in ((), ("--check",)):
+        control = run_cli("journal", *arguments, cwd=adopter)
+        raised = _run_mutant_journal(mutant, adopter, *arguments)
+        assert (raised.returncode, raised.stdout, raised.stderr) == (
+            control.returncode,
+            control.stdout,
+            control.stderr,
+        )
+        assert "distinctive shadow failure" not in raised.stderr
+        assert _final_tree_snapshot(adopter) == before
+
+    command_tree = ast.parse(
+        (REPO_ROOT / "validated_memory" / "journal" / "command.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    shadow_tries = [
+        node
+        for node in ast.walk(command_tree)
+        if isinstance(node, ast.Try)
+        and any(
+            isinstance(statement, ast.Assign)
+            and any(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "inspect"
+                for call in ast.walk(statement)
+            )
+            for statement in node.body
+        )
+    ]
+    assert len(shadow_tries) == 1
+    assert len(shadow_tries[0].handlers) == 1
+    handler_type = shadow_tries[0].handlers[0].type
+    assert isinstance(handler_type, ast.Name)
+    assert handler_type.id == "Exception"
+
+
+def test_topology_shadow_observes_fresh_and_idempotent_adoption_without_authority(
+    run_cli, tmp_path
+):
+    adapter = _topology_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    _topology_history(adopter)
+    before = _run_topology(adapter, adopter)
+    assert before["capabilities"]["appendable"] is True
+    assert before["active_adoption"] is None
+
+    first = run_cli("init", cwd=adopter)
+    assert first.returncode == 0, (first.stdout, first.stderr)
+    assert first.stdout == (
+        "init: ignored /.validated-memory/ in .gitignore\n"
+        "init: created knowledge\n"
+        "init: created memory\n"
+        "init: created memory/MEMORY.md\n"
+        "init: created validated-memory.md\n"
+        "init: created knowledge-extension.md\n"
+        "init: 5 created, 0 kept, 0 error(s), 0 warning(s)\n"
+    )
+    assert first.stderr == ""
+    after = _run_topology(adapter, adopter)
+    assert after["snapshot_present"] is True
+    assert after["active_adoption"] is not None
+    assert _condition(after, "topology_unknown_before")
+    stable_tree = _final_tree_snapshot(adopter)
+
+    second = run_cli("init", cwd=adopter)
+    assert second.returncode == 0, (second.stdout, second.stderr)
+    assert second.stdout == (
+        "init: kept knowledge\n"
+        "init: kept memory\n"
+        "init: kept memory/MEMORY.md\n"
+        "init: kept validated-memory.md\n"
+        "init: kept knowledge-extension.md\n"
+        "init: 0 created, 5 kept, 0 error(s), 0 warning(s)\n"
+    )
+    assert second.stderr == ""
+    assert _final_tree_snapshot(adopter) == stable_tree
+    assert _run_topology(adapter, adopter) == after
+
+
+def test_topology_shadow_observes_refused_adoption_without_claiming_the_decision(
+    run_cli, tmp_path
+):
+    adapter = _topology_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert run_cli("init", cwd=adopter).returncode == 0
+    target = adopter / "validated-memory.md"
+    target.unlink()
+    target.mkdir()
+    before_projection = _run_topology(adapter, adopter)
+    before_tree = _final_tree_snapshot(adopter)
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == (
+        "init: kept knowledge\n"
+        "init: kept memory\n"
+        "init: kept memory/MEMORY.md\n"
+        "init: kept knowledge-extension.md\n"
+        "init: 0 created, 4 kept, 1 error(s), 0 warning(s)\n"
+    )
+    assert result.stderr == (
+        "ERROR: validated-memory.md: create: file could not be created: "
+        "validated-memory.md is a directory, and this create expects it to be "
+        "absent. Nothing has been written.\n"
+    )
+    assert _final_tree_snapshot(adopter) == before_tree
+    assert _run_topology(adapter, adopter) == before_projection
+
+
+def test_topology_shadow_observes_successful_and_refused_recovery(
+    run_cli, tmp_path
+):
+    adapter = _topology_adapter(tmp_path)
+    recovered = tmp_path / "recovered"
+    recovered.mkdir()
+    transaction = _diverged(recovered, kill_after=None)
+    before = _run_topology(adapter, recovered)
+
+    result = run_cli("init", cwd=recovered)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == (
+        f"init: recovered .gitignore from transaction {transaction}\n"
+        "init: created knowledge\n"
+        "init: created memory\n"
+        "init: created memory/MEMORY.md\n"
+        "init: created validated-memory.md\n"
+        "init: created knowledge-extension.md\n"
+        "init: 5 created, 0 kept, 0 error(s), 0 warning(s)\n"
+    )
+    assert result.stderr == ""
+    assert not _transactions(recovered)
+    after = _run_topology(adapter, recovered)
+    assert before["snapshot_present"] is True
+    assert after["snapshot_present"] is True
+    assert after["physical_count"] > before["physical_count"]
+
+    refused = tmp_path / "refused"
+    refused.mkdir()
+    transaction = _diverged(refused)
+    before_projection = _run_topology(adapter, refused)
+    watched = [
+        refused / "journal.jsonl",
+        refused / ".validated-memory" / "local.jsonl",
+        refused / ".validated-memory" / "transactions" / f"{transaction}.json",
+        refused / ".gitignore",
+    ]
+    before_bytes = {path: path.read_bytes() for path in watched if path.exists()}
+    result = run_cli("init", cwd=refused)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == "init: 0 created, 0 kept, 2 error(s), 0 warning(s)\n"
+    assert result.stderr == (
+        f"ERROR: .gitignore: journal: transaction {transaction} published "
+        ".gitignore, but .gitignore is a file now and not what was published; "
+        "nothing here can say whether that is wanted -- run 'validated-memory "
+        f"journal --resolve {transaction}' with one of --accept, --restore or "
+        "--abandon\n"
+        "ERROR: .gitignore: ignore-rule: the vault's ignore entry "
+        "(/.validated-memory/) could not be written: .gitignore has an "
+        f"unresolved transaction {transaction} that recovery could neither "
+        "complete nor discard; nothing may write to it until it is closed -- "
+        f"run 'validated-memory journal --resolve {transaction}' with one of "
+        "--accept, --restore or --abandon. Nothing has been written.\n"
+    )
+    assert {path: path.read_bytes() for path in watched if path.exists()} == before_bytes
+    assert _run_topology(adapter, refused) == before_projection
+
+
+@pytest.mark.parametrize("resolution", ["accept", "abandon", "restore"])
+def test_topology_shadow_observes_each_successful_resolution(
+    run_cli, tmp_path, resolution
+):
+    adapter = _topology_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    if resolution == "restore":
+        transaction = _diverged(adopter, before="build/\n")
+    else:
+        transaction = _diverged(adopter)
+    before = _run_topology(adapter, adopter)
+    before_records = _records(adopter / "journal.jsonl")
+    before_tree = _final_tree_snapshot(adopter)
+    transaction_path = (
+        adopter / ".validated-memory" / "transactions" / f"{transaction}.json"
+    )
+    wal = json.loads(transaction_path.read_text(encoding="utf-8"))
+
+    result = run_cli(
+        "journal", "--resolve", transaction, f"--{resolution}", cwd=adopter
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    if resolution == "restore":
+        kept = hashlib.sha256(b"an adopter wrote this\n").hexdigest()
+        assert result.stdout == (
+            f"journal: resolved {transaction} (--restore); the discarded bytes "
+            f"are kept at .validated-memory/preimages/{kept}\n"
+        )
+    else:
+        assert result.stdout == f"journal: resolved {transaction} (--{resolution})\n"
+    assert result.stderr == ""
+    assert not _transactions(adopter)
+    after_records = _records(adopter / "journal.jsonl")
+    after_tree = _final_tree_snapshot(adopter)
+    changed = {
+        entry[0]
+        for entry in before_tree + after_tree
+        if next((other for other in before_tree if other[0] == entry[0]), None)
+        != next(
+            (other for other in after_tree if other[0] == entry[0]),
+            None,
+        )
+    }
+    assert transaction_path.relative_to(adopter).as_posix() in changed
+    if resolution == "restore":
+        assert after_records == before_records
+        assert (adopter / ".gitignore").read_text(encoding="utf-8") == "build/\n"
+        assert changed == {
+            ".gitignore",
+            ".validated-memory/lock",
+            transaction_path.relative_to(adopter).as_posix(),
+            f".validated-memory/preimages/{kept}",
+        }
+    else:
+        assert after_records[: len(before_records)] == before_records
+        mutation = {
+            "schema": wal["schema"],
+            "version": wal["version"],
+            "run": wal["run"],
+            "adoption": wal["adoption"],
+            "transaction": transaction,
+            **wal["intention"],
+            "preimage": None,
+            "postimage": wal["postimage"]["digest"],
+        }
+        assert [
+            {key: value for key, value in record.items() if key not in {"at", "stage"}}
+            for record in after_records[len(before_records):len(before_records) + 2]
+        ] == [mutation, mutation]
+        assert [
+            record["stage"]
+            for record in after_records[len(before_records):len(before_records) + 2]
+        ] == ["prepared", "committed"]
+        observation = after_records[-1]
+        assert len(after_records) == len(before_records) + 3
+        assert set(observation) == {
+            "schema", "version", "at", "run", "adoption", "durability",
+            "op", "purpose", "path", "stage", "note",
+        }
+        assert observation["path"] == ".gitignore"
+        assert observation["op"] == "observe"
+        assert observation["stage"] == "committed"
+        expected_note = (
+            f"accepted after divergence: transaction {transaction} found file"
+            if resolution == "accept"
+            else f"abandoned: transaction {transaction}, path left as found"
+        )
+        assert observation["note"] == expected_note
+        assert (adopter / ".gitignore").read_text(encoding="utf-8") == (
+            "an adopter wrote this\n"
+        )
+        assert changed == {
+            ".validated-memory/lock",
+            "journal.jsonl",
+            transaction_path.relative_to(adopter).as_posix(),
+        }
+    after = _run_topology(adapter, adopter)
+    assert before["snapshot_present"] is True
+    assert after["snapshot_present"] is True
+
+
+def test_topology_shadow_observes_refused_resolution_without_wal_authority(
+    run_cli, tmp_path
+):
+    adapter = _topology_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction = _diverged(adopter, before="build/\n")
+    blob = next((adopter / ".validated-memory" / "preimages").iterdir())
+    blob.write_text("wrong bytes\n", encoding="utf-8")
+    before_projection = _run_topology(adapter, adopter)
+    watched = [
+        adopter / "journal.jsonl",
+        adopter / ".validated-memory" / "local.jsonl",
+        adopter / ".validated-memory" / "transactions" / f"{transaction}.json",
+        adopter / ".gitignore",
+        blob,
+    ]
+    before_bytes = {path: path.read_bytes() for path in watched if path.exists()}
+
+    result = run_cli(
+        "journal", "--resolve", transaction, "--restore", cwd=adopter
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    reference = "sha256:" + blob.name
+    assert result.stdout == ""
+    assert result.stderr == (
+        "ERROR: .gitignore: journal: the preimage of .gitignore in "
+        ".validated-memory/preimages/ does not digest to "
+        f"{reference}, the name it is filed under, so it is not the bytes this "
+        "transaction parked. Nothing has been restored.\n"
+    )
+    assert {path: path.read_bytes() for path in watched if path.exists()} == before_bytes
+    assert _run_topology(adapter, adopter) == before_projection
+
+
+def test_topology_shadow_observes_successful_and_refused_targeted_repair(
+    run_cli, tmp_path, monkeypatch
+):
+    adapter = _topology_adapter(tmp_path)
+    repaired = tmp_path / "repaired"
+    repaired.mkdir()
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, repaired, monkeypatch
+    )
+    prepared_end = payload.find(b"\n") + 1
+    history.write_bytes(payload[:prepared_end])
+    before = _run_topology(adapter, repaired)
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=repaired)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == (
+        f"journal: repaired .validated-memory/local.jsonl for transaction "
+        f"{transaction.stem}\n"
+    )
+    assert result.stderr == ""
+    assert history.read_bytes() == payload
+    assert not transaction.exists()
+    assert before["snapshot_present"] is True
+    assert _run_topology(adapter, repaired)["snapshot_present"] is True
+
+    refused = tmp_path / "repair-refused"
+    refused.mkdir()
+    transaction, _claim, _payload, history = _history_repair_fixture(
+        run_cli, refused, monkeypatch
+    )
+    changed = json.loads(transaction.read_text(encoding="utf-8"))
+    changed["history_append"]["records"][0]["path"] = "foreign/path"
+    transaction.write_text(
+        json.dumps(changed, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    before_projection = _run_topology(adapter, refused)
+    before_tree = _final_tree_snapshot(refused)
+    result = run_cli("journal", "--repair", transaction.stem, cwd=refused)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == ""
+    assert result.stderr == (
+        f"ERROR: .validated-memory/transactions/{transaction.name}: journal: "
+        f"transaction {transaction.stem} history claim is not bound to its WAL; "
+        "Nothing has been changed.\n"
+    )
+    assert history.exists() and transaction.exists()
+    assert _final_tree_snapshot(refused) == before_tree
+    assert _run_topology(adapter, refused) == before_projection
+
+
+def test_topology_shadow_cannot_change_the_public_schema2_refusal(run_cli, tmp_path):
+    adopter = tmp_path / "adopter"
+    record = _schema2_record()
+    _topology_history(adopter, _jsonl(record))
+    before = _final_tree_snapshot(adopter)
+
+    plain = run_cli("journal", cwd=adopter)
+    checked = run_cli("journal", "--check", cwd=adopter)
+
+    for result in (plain, checked):
+        assert result.returncode == 1
+        assert result.stdout == "journal: 0 record(s), 1 error(s)\n"
+        assert result.stderr == (
+            "ERROR: journal.jsonl:1: journal: record uses schema 2, newer than "
+            "this plugin understands (1); upgrade the plugin\n"
+        )
+    assert _final_tree_snapshot(adopter) == before
 
 
 def _assert_acquired_parser_uses_only_supplied_bytes(source):

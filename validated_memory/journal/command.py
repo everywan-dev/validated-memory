@@ -18,6 +18,7 @@ from .records import (
     _acquire_history_pair,
     _parse_acquired_history,
 )
+from .topology import inspect
 from .transactions import (
     PROBLEM_DAMAGED,
     classify,
@@ -69,6 +70,11 @@ def run(check, resolve, resolution, repair, stdout, stderr):
                 histories[durability] = _parse_acquired_history(raw, durability)
                 records.extend(histories[durability])
             raise acquired.error
+        try:
+            # Packet B topology shadow: result intentionally discarded.
+            topology_inspection = inspect(acquired)
+        except Exception:
+            topology_inspection = None
         for durability, raw in (
             (REPO, acquired.repository),
             (LOCAL, acquired.local),
