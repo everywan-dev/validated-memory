@@ -9,7 +9,7 @@ the write-ahead log rather than from here.
 from pathlib import Path
 
 from .paths import DIRECTORY, resolves_below, current_state
-from .records import COMMITTED, CREATE, DURABILITIES, PREPARED, STAGES, digest, read
+from .records import COMMITTED, CREATE, DURABILITIES, PREPARED, STAGES, digest
 
 
 UNAPPLIED = "unapplied"
@@ -40,7 +40,7 @@ PAIRED_FIELDS = (
 )
 
 
-def reconcile(root=Path()):
+def reconcile(histories, root=Path()):
     """Every unfinished transaction, disagreeing pair and broken pair.
 
     Returns `(unfinished, disagreements, anomalies)`: `(record, state)`
@@ -96,9 +96,6 @@ def reconcile(root=Path()):
     unfinished = []
     disagreements = []
     anomalies = []
-    histories = {
-        durability: read(root, durability) for durability in DURABILITIES
-    }
     # Transaction identity is project-wide even though each mutation belongs
     # to exactly one durability artifact. Inventory both histories before the
     # existing per-artifact reconciliation so reuse across them has one direct

@@ -1,12 +1,14 @@
-"""The crash seams and one bounded, private test-only pause.
+"""The crash seams and bounded, private test-only rendezvous points.
 
-One module owns both environment variables, so each has exactly one reader.
+One module owns every fault/test-control environment variable, so each has one
+reader.
 A grep for `fault_at` finds every line that can hard-kill the process; the
-sleeping seam is separate and cannot become a fifth crash point. Neither
-helper is exported by the package.
+sleeping and descriptor rendezvous seams are separate and cannot become extra
+crash points. No helper is exported by the package.
 """
 
 import os
+import select
 import sys
 import time
 
@@ -28,6 +30,10 @@ FAULT_POINTS = (
 _TEST_SEAM_VARIABLE = "VALIDATED_MEMORY_TEST_SEAM"
 _TEST_SEAM_SECONDS = 2
 _test_seam_used = False
+_RENDEZVOUS_VARIABLE = "VALIDATED_MEMORY_TEST_RENDEZVOUS"
+_RENDEZVOUS_READY_FD = "VALIDATED_MEMORY_TEST_READY_FD"
+_RENDEZVOUS_CONTINUE_FD = "VALIDATED_MEMORY_TEST_CONTINUE_FD"
+_RENDEZVOUS_TIMEOUT = 5
 
 
 def fault_at(point):
@@ -65,3 +71,20 @@ def sleep_at(point):
         return
     _test_seam_used = True
     time.sleep(_TEST_SEAM_SECONDS)
+
+
+def rendezvous_at(point, attempt):
+    """Meet a bounded test process at one descriptor-only read boundary."""
+    if os.environ.get(_RENDEZVOUS_VARIABLE) != point:
+        return
+    try:
+        ready = int(os.environ[_RENDEZVOUS_READY_FD])
+        proceed = int(os.environ[_RENDEZVOUS_CONTINUE_FD])
+        os.write(ready, f"{attempt}\n".encode("ascii"))
+        readable, _, _ = select.select([proceed], [], [], _RENDEZVOUS_TIMEOUT)
+        if not readable:
+            raise RuntimeError(f"test rendezvous at {point} timed out")
+        if len(os.read(proceed, 1)) != 1:
+            raise RuntimeError(f"test rendezvous at {point} received no continuation")
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        raise RuntimeError(f"test rendezvous at {point} is invalid: {error}") from error

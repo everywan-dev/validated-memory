@@ -28,14 +28,13 @@ from the ones before it:
 
 - `durable` -- the atomic publication of a file, and the barrier that makes
   the directory entry carrying its name survive a power cut.
+- `fault` -- the four crash seams and private bounded test rendezvous.
 - `records` -- the record format, the digest, the two journals' paths, and
   the reader that refuses a journal it cannot account for.
 - `paths` -- what is at one path, whether that is what a caller expected,
   whether a record may name it, and whether this user may write over it.
 - `operations` -- the five functions a caller states a mutation with, and
   the `Outcome` it gets back.
-- `fault` -- the four crash seams, and the one reader of the variable that
-  names them.
 - `lock` -- the per-adopter exclusive lock, and where it lives.
 - `transactions` -- the local write-ahead log: its four stages, its reader,
   and the classification a recovery acts on.

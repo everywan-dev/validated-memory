@@ -11,6 +11,8 @@ import hashlib
 import json
 import os
 import re
+import select
+import shutil
 import stat
 import subprocess
 import sys
@@ -248,6 +250,7 @@ JOURNAL_SOURCE = "journal"
 RAW_WRITE_MODULES = {
     "journal/durable.py",
     "journal/executor.py",
+    "journal/fault.py",
     "journal/lock.py",
     "journal/records.py",
     "journal/transactions.py",
@@ -1659,10 +1662,10 @@ def test_adoption_and_resolution_keep_their_distinct_protocols():
 # the one file that reaches every module, which is what makes it the door.
 JOURNAL_LAYERS = (
     "durable",
+    "fault",
     "records",
     "paths",
     "operations",
-    "fault",
     "lock",
     "transactions",
     "executor",
@@ -1837,8 +1840,9 @@ def test_one_record_the_reader_may_not_follow_does_not_hide_the_others(
     assert f"{len(_records(journal))} record(s)" in result.stdout, result.stdout
 
 
+@pytest.mark.parametrize("arguments", [(), ("--check",)])
 def test_a_refused_journal_still_reports_the_records_it_did_read(
-    run_cli, tmp_path
+    run_cli, tmp_path, arguments
 ):
     """A corrupt local log does not erase the readable repository record count."""
     harness_memory = tmp_path / "harness" / "memory"
@@ -1855,7 +1859,7 @@ def test_a_refused_journal_still_reports_the_records_it_did_read(
         vault.read_text(encoding="utf-8") + "{not json\n", encoding="utf-8"
     )
 
-    result = run_cli("journal", cwd=adopter)
+    result = run_cli("journal", *arguments, cwd=adopter)
 
     assert result.returncode == 1, result.stdout
     read_back = len(_records(adopter / "journal.jsonl"))
@@ -3199,15 +3203,16 @@ def test_a_later_record_with_another_adoption_id_gates_init(
 @pytest.mark.skipif(
     os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
 )
+@pytest.mark.parametrize("arguments", [(), ("--check",)])
 def test_a_journal_that_cannot_be_read_is_a_finding_not_a_traceback(
-    run_cli, tmp_path
+    run_cli, tmp_path, arguments
 ):
     """An unreadable local log gates with its path, count and no traceback."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
     vault = tmp_path / ".validated-memory"
     vault.chmod(0o000)
     try:
-        result = run_cli("journal", cwd=tmp_path)
+        result = run_cli("journal", *arguments, cwd=tmp_path)
     finally:
         vault.chmod(0o755)
 
@@ -3215,7 +3220,8 @@ def test_a_journal_that_cannot_be_read_is_a_finding_not_a_traceback(
     assert "Traceback" not in result.stderr, result.stderr
     assert "ERROR" in result.stderr, result.stderr
     assert ".validated-memory/local.jsonl" in result.stderr, result.stderr
-    assert "record(s), 1 error(s)" in result.stdout, result.stdout
+    expected = len(_records(tmp_path / "journal.jsonl"))
+    assert result.stdout == f"journal: {expected} record(s), 1 error(s)\n"
 
 
 def test_a_journal_symlinked_to_a_regular_file_is_read_and_appended_to(
@@ -6337,6 +6343,695 @@ def test_distinct_transaction_ids_across_histories_remain_clean(
     assert result.returncode == 0, (result.stdout, result.stderr)
     assert result.stderr == ""
     assert "0 error(s)" in result.stdout
+
+
+# --- one coherent generation across both permanent histories ----------------
+
+
+def _rendezvous_journal(adopter, *arguments):
+    ready_read, ready_write = os.pipe()
+    continue_read, continue_write = os.pipe()
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT),
+        "VALIDATED_MEMORY_TEST_RENDEZVOUS": "after-first-history-read",
+        "VALIDATED_MEMORY_TEST_READY_FD": str(ready_write),
+        "VALIDATED_MEMORY_TEST_CONTINUE_FD": str(continue_read),
+    }
+    process = subprocess.Popen(
+        [sys.executable, "-P", "-m", "validated_memory", "journal", *arguments],
+        cwd=adopter,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(ready_write, continue_read),
+    )
+    os.close(ready_write)
+    os.close(continue_read)
+    return process, ready_read, continue_write
+
+
+def _await_history_attempt(ready):
+    readable, _, _ = select.select([ready], [], [], 10)
+    assert readable, "the history acquisition rendezvous did not become ready"
+    return int(os.read(ready, 32).strip())
+
+
+def _records_read_failure_mutant(tmp_path, failing_calls):
+    """Copy the package and fail selected full descriptor reads after byte two."""
+    mutant_root = tmp_path / "mutant"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant_root / "validated_memory")
+    records = mutant_root / "validated_memory" / "journal" / "records.py"
+    source = records.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_read_to_eof"
+    )
+    replacement = f'''_MUTANT_READ_CALLS = 0
+
+
+def _read_to_eof(descriptor):
+    global _MUTANT_READ_CALLS
+    import errno
+    _MUTANT_READ_CALLS += 1
+    call = _MUTANT_READ_CALLS
+    chunks = []
+    size = 0
+    while True:
+        chunk = os.read(descriptor, 1)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        size += len(chunk)
+        if call in {set(failing_calls)!r} and size >= 2:
+            raise OSError(errno.EIO, "injected descriptor read failure")
+'''
+    lines = source.splitlines(keepends=True)
+    lines[function.lineno - 1:function.end_lineno] = [replacement]
+    records.write_text("".join(lines), encoding="utf-8")
+    return mutant_root
+
+
+def _records_fstat_failure_mutant(tmp_path, failing_calls):
+    """Copy the package and fail selected acquisition fstat operations."""
+    mutant_root = tmp_path / "mutant"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant_root / "validated_memory")
+    records = mutant_root / "validated_memory" / "journal" / "records.py"
+    source = records.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_descriptor_stat"
+    )
+    replacement = f'''_MUTANT_FSTAT_CALLS = 0
+
+
+def _descriptor_stat(descriptor):
+    global _MUTANT_FSTAT_CALLS
+    import errno
+    _MUTANT_FSTAT_CALLS += 1
+    if _MUTANT_FSTAT_CALLS in {set(failing_calls)!r}:
+        raise OSError(errno.EIO, "injected descriptor fstat failure")
+    return os.fstat(descriptor)
+'''
+    lines = source.splitlines(keepends=True)
+    lines[function.lineno - 1:function.end_lineno] = [replacement]
+    records.write_text("".join(lines), encoding="utf-8")
+    return mutant_root
+
+
+def _run_mutant_journal(mutant_root, adopter, *arguments):
+    return subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "journal", *arguments],
+        cwd=adopter,
+        env={**os.environ, "PYTHONPATH": str(mutant_root)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="open-name replacement is POSIX-only")
+def test_journal_retries_a_transient_pair_replacement_without_mixing_generations(
+    run_cli, tmp_path
+):
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    old_total = len(_records(repository)) + len(_records(local))
+    repository_line = repository.read_bytes().splitlines(keepends=True)[0]
+    local_line = local.read_bytes().splitlines(keepends=True)[0]
+    process, ready, proceed = _rendezvous_journal(adopter)
+    try:
+        assert _await_history_attempt(ready) == 1
+        replacement = repository.with_name("repository.next")
+        replacement.write_bytes(repository.read_bytes() + repository_line)
+        os.replace(replacement, repository)
+        replacement = local.with_name("local.next")
+        replacement.write_bytes(local.read_bytes() + local_line)
+        os.replace(replacement, local)
+        os.write(proceed, b"1")
+
+        assert _await_history_attempt(ready) == 2
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:  # pragma: no cover - only on a failure
+            process.kill()
+            process.communicate()
+
+    assert process.returncode == 0, (stdout, stderr)
+    assert stdout == f"journal: {old_total + 2} record(s)\n"
+    assert stderr == ""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="open-name replacement is POSIX-only")
+def test_journal_check_retries_a_transient_pair_replacement_cleanly(
+    run_cli, tmp_path
+):
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    total = len(_records(repository)) + len(_records(local))
+    process, ready, proceed = _rendezvous_journal(adopter, "--check")
+    try:
+        assert _await_history_attempt(ready) == 1
+        for history in (repository, local):
+            replacement = history.with_name(history.name + ".next")
+            replacement.write_bytes(history.read_bytes())
+            os.replace(replacement, history)
+        os.write(proceed, b"1")
+
+        assert _await_history_attempt(ready) == 2
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:  # pragma: no cover - only on a failure
+            process.kill()
+            process.communicate()
+
+    assert process.returncode == 0, (stdout, stderr)
+    assert stdout == f"journal: {total} record(s), 0 error(s)\n"
+    assert stderr == ""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="open-name replacement is POSIX-only")
+@pytest.mark.parametrize("arguments", [(), ("--check",)])
+def test_journal_refuses_three_unstable_pair_attempts_exactly(
+    run_cli, tmp_path, arguments
+):
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    process, ready, proceed = _rendezvous_journal(adopter, *arguments)
+    try:
+        for expected in (1, 2, 3):
+            assert _await_history_attempt(ready) == expected
+            for history in (repository, local):
+                replacement = history.with_name(history.name + f".{expected}.next")
+                replacement.write_bytes(history.read_bytes() + b"\n")
+                os.replace(replacement, history)
+            os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:  # pragma: no cover - only on a failure
+            process.kill()
+            process.communicate()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == "journal: 0 record(s), 1 error(s)\n"
+    assert stderr == (
+        "ERROR: journal.jsonl + .validated-memory/local.jsonl: journal: "
+        "journal histories changed during inspection; rerun the command\n"
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+def test_journal_retries_when_an_absent_history_name_appears(run_cli, tmp_path):
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    assert not local.exists()
+    expected = len(_records(tmp_path / "journal.jsonl"))
+    process, ready, proceed = _rendezvous_journal(tmp_path)
+    try:
+        assert _await_history_attempt(ready) == 1
+        local.write_bytes(b"")
+        os.write(proceed, b"1")
+        assert _await_history_attempt(ready) == 2
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:  # pragma: no cover - only on a failure
+            process.kill()
+            process.communicate()
+
+    assert process.returncode == 0, (stdout, stderr)
+    assert stdout == f"journal: {expected} record(s)\n"
+    assert stderr == ""
+
+
+@pytest.mark.parametrize("arguments", [(), ("--check",)])
+@pytest.mark.parametrize(
+    ("durability", "failing_calls"),
+    [("repo", {1, 3}), ("local", {2, 3})],
+)
+def test_repeatable_full_descriptor_read_errors_keep_artifact_precedence(
+    run_cli, tmp_path, arguments, durability, failing_calls
+):
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    mutant_root = _records_read_failure_mutant(tmp_path, failing_calls)
+    result = _run_mutant_journal(mutant_root, adopter, *arguments)
+    expected = 0 if durability == "repo" else len(_records(repository))
+    artifact = (
+        "journal.jsonl" if durability == "repo"
+        else ".validated-memory/local.jsonl"
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == f"journal: {expected} record(s), 1 error(s)\n"
+    assert result.stderr.startswith(f"ERROR: {artifact}: journal: ")
+    assert "injected descriptor read failure" in result.stderr
+    assert "histories changed during inspection" not in result.stderr
+
+
+def test_nonrepeatable_descriptor_read_error_retries_the_pair(run_cli, tmp_path):
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    mutant_root = _records_read_failure_mutant(tmp_path, {1})
+    result = _run_mutant_journal(mutant_root, adopter, "--check")
+    total = len(_records(repository)) + len(_records(local))
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == f"journal: {total} record(s), 0 error(s)\n"
+    assert result.stderr == ""
+
+
+def test_lseek_failure_cannot_confirm_a_repeated_read_error(run_cli, tmp_path):
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    mutant_root = _records_read_failure_mutant(tmp_path, {1, 3})
+    records = mutant_root / "validated_memory" / "journal" / "records.py"
+    source = records.read_text(encoding="utf-8")
+    source = source.replace(
+        "def _repeat_descriptor_failure(opened):",
+        '''def _mutant_lseek(descriptor):
+    import errno
+    raise OSError(errno.EIO, "injected descriptor seek failure")
+
+
+def _repeat_descriptor_failure(opened):''',
+        1,
+    ).replace(
+        "os.lseek(opened.descriptor, 0, os.SEEK_SET)",
+        "_mutant_lseek(opened.descriptor)",
+        1,
+    )
+    records.write_text(source, encoding="utf-8")
+    result = _run_mutant_journal(mutant_root, adopter, "--check")
+    total = len(_records(repository)) + len(_records(local))
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == f"journal: {total} record(s), 0 error(s)\n"
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize("arguments", [(), ("--check",)])
+@pytest.mark.parametrize(
+    ("durability", "stage", "failing_calls"),
+    [
+        ("repo", "initial", {1, 5, 6}),
+        ("local", "initial", {2, 8, 9}),
+        ("repo", "pre", {3, 6}),
+        ("local", "pre", {5, 9}),
+        ("repo", "post", {4, 7}),
+        ("local", "post", {6, 10}),
+    ],
+)
+def test_repeatable_descriptor_fstat_errors_keep_artifact_precedence(
+    run_cli, tmp_path, arguments, durability, stage, failing_calls
+):
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    mutant_root = _records_fstat_failure_mutant(tmp_path, failing_calls)
+    result = _run_mutant_journal(mutant_root, adopter, *arguments)
+    expected = 0 if durability == "repo" else len(_records(repository))
+    artifact = (
+        "journal.jsonl" if durability == "repo"
+        else ".validated-memory/local.jsonl"
+    )
+
+    assert result.returncode == 1, (stage, result.stdout, result.stderr)
+    assert result.stdout == f"journal: {expected} record(s), 1 error(s)\n"
+    assert result.stderr.startswith(f"ERROR: {artifact}: journal: ")
+    assert "injected descriptor fstat failure" in result.stderr
+    assert "histories changed during inspection" not in result.stderr
+
+
+def test_nonrepeatable_descriptor_fstat_error_retries_the_pair(run_cli, tmp_path):
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    mutant_root = _records_fstat_failure_mutant(tmp_path, {1})
+    result = _run_mutant_journal(mutant_root, adopter, "--check")
+    total = len(_records(repository)) + len(_records(local))
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == f"journal: {total} record(s), 0 error(s)\n"
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize("arguments", [(), ("--check",)])
+@pytest.mark.parametrize("durability", ["repo", "local"])
+@pytest.mark.parametrize("damage", ["corrupt", "directory"])
+def test_stable_artifact_errors_keep_repository_first_count_precedence(
+    run_cli, tmp_path, arguments, durability, damage
+):
+    adopter, repository, local = _seed_repository_and_local_histories(
+        run_cli, tmp_path
+    )
+    target = repository if durability == "repo" else local
+    if damage == "corrupt":
+        target.write_bytes(b"{not json\n")
+    else:
+        target.unlink()
+        target.mkdir()
+    expected = 0 if durability == "repo" else len(_records(repository))
+
+    result = run_cli("journal", *arguments, cwd=adopter)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == f"journal: {expected} record(s), 1 error(s)\n"
+    artifact = (
+        "journal.jsonl" if durability == "repo"
+        else ".validated-memory/local.jsonl"
+    )
+    assert result.stderr.startswith(f"ERROR: {artifact}"), result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_missing_and_present_empty_histories_keep_the_same_public_report(
+    run_cli, tmp_path
+):
+    missing = tmp_path / "missing"
+    empty = tmp_path / "empty"
+    missing.mkdir()
+    empty.mkdir()
+    (empty / "journal.jsonl").write_bytes(b"")
+    (empty / ".validated-memory").mkdir()
+    (empty / ".validated-memory" / "local.jsonl").write_bytes(b"")
+
+    missing_result = run_cli("journal", "--check", cwd=missing)
+    empty_result = run_cli("journal", "--check", cwd=empty)
+
+    assert missing_result.returncode == empty_result.returncode == 0
+    assert missing_result.stdout == empty_result.stdout == (
+        "journal: 0 record(s), 0 error(s)\n"
+    )
+    assert missing_result.stderr == empty_result.stderr == ""
+
+
+def test_history_schema_guard_refuses_before_the_first_adoption_write(tmp_path):
+    mutant_root = tmp_path / "mutant"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant_root / "validated_memory")
+    records = mutant_root / "validated_memory" / "journal" / "records.py"
+    source = records.read_text(encoding="utf-8")
+    records.write_text(
+        source.replace("HISTORY_WRITE_SCHEMA = 1", "HISTORY_WRITE_SCHEMA = 2", 1),
+        encoding="utf-8",
+    )
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    result = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        cwd=adopter,
+        env={**os.environ, "PYTHONPATH": str(mutant_root)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert (
+        "journal history write schema 2 exceeds read schema 1; the history "
+        "upgrade is incomplete"
+    ) in result.stderr
+    assert not (adopter / "journal.jsonl").exists()
+    assert not list((adopter / ".validated-memory").rglob("*.json"))
+
+
+def test_history_schema_guard_precedes_selected_resolution(tmp_path, run_cli):
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert run_cli("init", cwd=adopter).returncode == 0
+    (adopter / "validated-memory.md").unlink()
+    crashed = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        cwd=adopter,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(REPO_ROOT),
+            "VALIDATED_MEMORY_FAULT": "after-transaction",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert crashed.returncode == 70
+    transaction = next(
+        (adopter / ".validated-memory" / "transactions").glob("*.json")
+    ).stem
+
+    mutant_root = tmp_path / "mutant"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant_root / "validated_memory")
+    records = mutant_root / "validated_memory" / "journal" / "records.py"
+    records.write_text(
+        records.read_text(encoding="utf-8").replace(
+            "HISTORY_WRITE_SCHEMA = 1", "HISTORY_WRITE_SCHEMA = 2", 1
+        ),
+        encoding="utf-8",
+    )
+    watched = [
+        adopter / "journal.jsonl",
+        adopter / ".validated-memory" / "local.jsonl",
+        adopter / ".validated-memory" / "transactions" / f"{transaction}.json",
+    ]
+    before = {path: path.read_bytes() for path in watched if path.exists()}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "validated_memory",
+            "journal",
+            "--resolve",
+            transaction,
+            "--abandon",
+        ],
+        cwd=adopter,
+        env={**os.environ, "PYTHONPATH": str(mutant_root)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert (
+        "journal history write schema 2 exceeds read schema 1; the history "
+        "upgrade is incomplete"
+    ) in result.stderr
+    assert {path: path.read_bytes() for path in watched if path.exists()} == before
+    assert not (adopter / "validated-memory.md").exists()
+
+
+def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas():
+    journal_root = REPO_ROOT / "validated_memory" / "journal"
+    records_source = (journal_root / "records.py").read_text(encoding="utf-8")
+    records_tree = ast.parse(records_source)
+    constants = {
+        target.id: ast.literal_eval(node.value)
+        for node in records_tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+        and target.id in {
+            "HISTORY_READ_SCHEMA",
+            "HISTORY_WRITE_SCHEMA",
+            "WAL_SCHEMA",
+        }
+    }
+    assert constants == {
+        "HISTORY_READ_SCHEMA": 1,
+        "HISTORY_WRITE_SCHEMA": 1,
+        "WAL_SCHEMA": 1,
+    }
+    assert not any(
+        isinstance(node, ast.Name) and node.id == "SCHEMA"
+        for path in journal_root.glob("*.py")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+    )
+    assert '"schema": HISTORY_WRITE_SCHEMA' in records_source
+    # Two history validators plus the write/read compatibility guard.
+    assert records_source.count("> HISTORY_READ_SCHEMA") == 3
+    transactions_source = (
+        journal_root / "transactions.py"
+    ).read_text(encoding="utf-8")
+    assert '"schema": WAL_SCHEMA' in transactions_source
+    assert transactions_source.count("> WAL_SCHEMA") == 1
+
+    facade_source = (journal_root / "__init__.py").read_text(encoding="utf-8")
+    assert "_acquire_history_pair" not in facade_source
+    command_tree = ast.parse(
+        (journal_root / "command.py").read_text(encoding="utf-8")
+    )
+    assert sum(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_acquire_history_pair"
+        for node in ast.walk(command_tree)
+    ) == 1
+    raw_reachers = [
+        path.name
+        for path in journal_root.glob("*.py")
+        if path.name != "records.py"
+        and any(
+            name in path.read_text(encoding="utf-8")
+            for name in ("_RawHistory", "_acquire_history_pair")
+        )
+    ]
+    assert raw_reachers == ["command.py"]
+    parse_calls = [
+        node
+        for node in ast.walk(command_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_parse_acquired_history"
+    ]
+    assert len(parse_calls) == 2
+    assert all(ast.unparse(call.args[0]) == "raw" for call in parse_calls)
+    reconcile_source = (journal_root / "reconcile.py").read_text(encoding="utf-8")
+    assert "from .records import" in reconcile_source
+    assert not re.search(r"\bread\s*\(", reconcile_source)
+
+    raw_class = next(
+        node
+        for node in records_tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "_RawHistory"
+    )
+    decorator = raw_class.decorator_list[0]
+    assert isinstance(decorator, ast.Call)
+    assert ast.unparse(decorator) == "dataclass(frozen=True)"
+    acquisition = next(
+        node
+        for node in records_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_acquire_history_pair"
+    )
+    ranges = [
+        node
+        for node in ast.walk(acquisition)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "range"
+    ]
+    assert len(ranges) == 1
+    assert [ast.literal_eval(arg) for arg in ranges[0].args] == [1, 4]
+    assert "return _RawHistory(None, None, None)" in records_source
+    assert "return _RawHistory(opened.data, mode, opened.generation" in records_source
+
+    executor_tree = ast.parse(
+        (journal_root / "executor.py").read_text(encoding="utf-8")
+    )
+    functions = {
+        node.name: node
+        for node in executor_tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    for name in ("adopting_run", "resolve_transaction"):
+        lock = next(
+            node
+            for node in ast.walk(functions[name])
+            if isinstance(node, ast.With)
+            and any("Lock(" in ast.unparse(item.context_expr) for item in node.items)
+        )
+        assert ast.unparse(lock.body[0].value) == "_ensure_history_compatibility()"
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_ensure_history_compatibility"
+        for node in ast.walk(functions["repair_transaction"])
+    )
+
+
+def _assert_acquired_parser_uses_only_supplied_bytes(source):
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_parse_acquired_history"
+    )
+    calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)]
+    parse_calls = [
+        call
+        for call in calls
+        if isinstance(call.func, ast.Name)
+        and call.func.id == "_parse_history_bytes"
+    ]
+    assert len(parse_calls) == 1
+    assert all(
+        isinstance(call.func, ast.Name)
+        and call.func.id in {"_parse_history_bytes", "artifact_name"}
+        for call in calls
+    )
+    call = parse_calls[0]
+    assert isinstance(call.func, ast.Name)
+    assert call.func.id == "_parse_history_bytes"
+    assert ast.unparse(call.args[0]) == "raw.data"
+    forbidden = {"open", "read", "read_bytes", "read_text", "journal_path"}
+    assert not {
+        node.id
+        for node in ast.walk(function)
+        if isinstance(node, ast.Name) and node.id in forbidden
+    }
+    assert not {
+        node.attr
+        for node in ast.walk(function)
+        if isinstance(node, ast.Attribute) and node.attr in forbidden
+    }
+
+
+def test_acquired_history_parser_cannot_reread_a_name():
+    path = REPO_ROOT / "validated_memory" / "journal" / "records.py"
+    source = path.read_text(encoding="utf-8")
+    _assert_acquired_parser_uses_only_supplied_bytes(source)
+
+    mutant = source.replace(
+        "return _parse_history_bytes(raw.data, durability, artifact_name(durability))",
+        "return _parse_history_bytes(journal_path().read_bytes(), durability, artifact_name(durability))",
+        1,
+    )
+    assert mutant != source
+    with pytest.raises(AssertionError):
+        _assert_acquired_parser_uses_only_supplied_bytes(mutant)
+
+
+def test_paired_history_rendezvous_has_one_reader_and_one_call_site():
+    sources = {
+        path.relative_to(REPO_ROOT).as_posix(): path.read_text(encoding="utf-8")
+        for path in (REPO_ROOT / "validated_memory").rglob("*.py")
+    }
+    readers = [
+        relative
+        for relative, source in sources.items()
+        if "VALIDATED_MEMORY_TEST_RENDEZVOUS" in source
+    ]
+    assert readers == ["validated_memory/journal/fault.py"]
+    records_tree = ast.parse(sources["validated_memory/journal/records.py"])
+    calls = [
+        node
+        for node in ast.walk(records_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "rendezvous_at"
+    ]
+    assert len(calls) == 1
+    assert ast.literal_eval(calls[0].args[0]) == "after-first-history-read"
+    assert ast.unparse(calls[0].args[1]) == "attempt"
 
 
 def test_cross_history_reuse_precedes_same_artifact_multiplicity(

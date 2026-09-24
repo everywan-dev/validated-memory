@@ -12,11 +12,13 @@ import json
 import os
 import secrets
 import stat
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import __version__
 from .durable import append_bytes, ensure_owned_directory
+from .fault import rendezvous_at
 
 
 JOURNAL_FILENAME = "journal.jsonl"
@@ -24,9 +26,11 @@ VAULT_DIRNAME = ".validated-memory"
 VAULT_JOURNAL = "local.jsonl"
 
 
-# The record format. A reader that meets a higher number refuses rather than
-# guessing at fields it does not know.
-SCHEMA = 1
+# These formats evolve through separate compatibility protocols. They retain
+# the same value until those protocols are delivered.
+HISTORY_READ_SCHEMA = 1
+HISTORY_WRITE_SCHEMA = 1
+WAL_SCHEMA = 1
 
 
 REPO = "repo"
@@ -117,6 +121,42 @@ class JournalError(Exception):
         self.artifact = artifact
 
 
+_Generation = tuple[int, int, int, int, int, int]
+
+
+@dataclass(frozen=True)
+class _RawHistory:
+    data: bytes | None
+    mode: int | None
+    generation: _Generation | None
+    error: JournalError | None = None
+
+
+@dataclass(frozen=True)
+class _RawHistoryPair:
+    repository: _RawHistory
+    local: _RawHistory
+
+
+@dataclass(frozen=True)
+class _RawHistoryFailure:
+    preceding: tuple[_RawHistory, ...]
+    error: JournalError
+
+
+@dataclass
+class _OpenedHistory:
+    durability: str
+    path: Path
+    descriptor: int | None = None
+    generation: _Generation | None = None
+    data: bytes | None = None
+    error: JournalError | None = None
+    absent: bool = False
+    failure_stage: str | None = None
+    failure_error: OSError | None = None
+
+
 def digest(data):
     """The content digest of `data` (bytes), as `sha256:<hex>`."""
     return "sha256:" + hashlib.sha256(data).hexdigest()
@@ -151,7 +191,7 @@ def record(op, purpose, path, durability=REPO, stage=COMMITTED, **extra):
     if stage not in STAGES:
         raise ValueError(f"unknown stage '{stage}'")
     entry = {
-        "schema": SCHEMA,
+        "schema": HISTORY_WRITE_SCHEMA,
         "at": now(),
         "version": __version__,
         "durability": durability,
@@ -222,6 +262,18 @@ def artifact_name(durability):
     return journal_path(Path(), durability).as_posix()
 
 
+def _ensure_history_compatibility():
+    """Refuse a history writer its paired reader cannot validate."""
+    if HISTORY_WRITE_SCHEMA > HISTORY_READ_SCHEMA:
+        raise JournalError(
+            None,
+            f"journal history write schema {HISTORY_WRITE_SCHEMA} exceeds "
+            f"read schema {HISTORY_READ_SCHEMA}; the history upgrade is "
+            "incomplete",
+            JOURNAL_FILENAME,
+        )
+
+
 def validate_snapshot(data, durability, where):
     """Strictly validate an in-memory complete JSONL history snapshot."""
     if data and not data.endswith(b"\n"):
@@ -250,8 +302,8 @@ def _validate_entry(lineno, entry, durability, where):
     if missing:
         raise JournalError(lineno, f"record is missing {', '.join(missing)}", where)
     _check_types(lineno, entry, where)
-    if entry["schema"] > SCHEMA:
-        raise JournalError(lineno, f"record uses schema {entry['schema']}, newer than this plugin understands ({SCHEMA}); upgrade the plugin", where)
+    if entry["schema"] > HISTORY_READ_SCHEMA:
+        raise JournalError(lineno, f"record uses schema {entry['schema']}, newer than this plugin understands ({HISTORY_READ_SCHEMA}); upgrade the plugin", where)
     if entry["op"] not in OPS:
         raise JournalError(lineno, f"record has unknown op '{entry['op']}'", where)
     if entry["stage"] not in STAGES:
@@ -323,13 +375,26 @@ def read(root=Path(), durability=REPO, with_snapshot=False):
         # so a failure between the two closes it exactly once.
         with open(descriptor, "rb", closefd=False) as handle:
             data = handle.read()
-            text = data.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as error:
+    except OSError as error:
         raise JournalError(
             None, f"journal could not be read: {error}", where
         ) from error
     finally:
         os.close(descriptor)
+    records = _parse_history_bytes(data, durability, where)
+    if with_snapshot:
+        return records, data, stat.S_IMODE(file_mode)
+    return records
+
+
+def _parse_history_bytes(data, durability, where):
+    """Parse exact descriptor bytes with the ordinary history diagnostics."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise JournalError(
+            None, f"journal could not be read: {error}", where
+        ) from error
     if data and not data.endswith(b"\n"):
         raise JournalError(
             None,
@@ -356,11 +421,11 @@ def read(root=Path(), durability=REPO, with_snapshot=False):
                 lineno, f"record is missing {', '.join(missing)}", where
             )
         _check_types(lineno, entry, where)
-        if entry["schema"] > SCHEMA:
+        if entry["schema"] > HISTORY_READ_SCHEMA:
             raise JournalError(
                 lineno,
                 f"record uses schema {entry['schema']}, newer than this "
-                f"plugin understands ({SCHEMA}); upgrade the plugin",
+                f"plugin understands ({HISTORY_READ_SCHEMA}); upgrade the plugin",
                 where,
             )
         if entry["op"] not in OPS:
@@ -393,9 +458,248 @@ def read(root=Path(), durability=REPO, with_snapshot=False):
                 where,
             )
         records.append(entry)
-    if with_snapshot:
-        return records, data, stat.S_IMODE(file_mode)
     return records
+
+
+def _generation(info):
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _descriptor_stat(descriptor):
+    return os.fstat(descriptor)
+
+
+def _open_history(root, durability):
+    path = journal_path(root, durability)
+    opened = _OpenedHistory(durability, path)
+    try:
+        opened.descriptor = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+        )
+    except FileNotFoundError:
+        opened.absent = True
+        return opened
+    except OSError as error:
+        opened.error = JournalError(
+            None,
+            f"journal could not be read: {error}",
+            artifact_name(durability),
+        )
+        opened.failure_stage = "open"
+        opened.failure_error = error
+        return opened
+    try:
+        info = _descriptor_stat(opened.descriptor)
+        opened.generation = _generation(info)
+        if not stat.S_ISREG(info.st_mode):
+            opened.error = JournalError(
+                None,
+                "journal is not a regular file; a directory, a device or a "
+                "pipe holds no records and nothing here can read one from it",
+                artifact_name(durability),
+            )
+    except OSError as error:
+        opened.error = JournalError(
+            None,
+            f"journal could not be read: {error}",
+            artifact_name(durability),
+        )
+        opened.failure_stage = "initial-fstat"
+        opened.failure_error = error
+    return opened
+
+
+def _read_to_eof(descriptor):
+    chunks = []
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _read_descriptor(opened):
+    if opened.descriptor is None or opened.error is not None:
+        return
+    try:
+        before = _generation(_descriptor_stat(opened.descriptor))
+    except OSError as error:
+        opened.failure_stage = "pre-fstat"
+        opened.failure_error = error
+    else:
+        try:
+            data = _read_to_eof(opened.descriptor)
+        except OSError as error:
+            opened.failure_stage = "read"
+            opened.failure_error = error
+        else:
+            try:
+                after = _generation(_descriptor_stat(opened.descriptor))
+            except OSError as error:
+                opened.failure_stage = "post-fstat"
+                opened.failure_error = error
+            else:
+                if before != opened.generation or after != before:
+                    opened.generation = None
+                    return
+                opened.data = data
+                return
+    error = opened.failure_error
+    if error is not None:
+        opened.error = JournalError(
+            None,
+            f"journal could not be read: {error}",
+            artifact_name(opened.durability),
+        )
+
+
+def _repeat_descriptor_failure(opened):
+    if opened.failure_stage in {"pre-fstat", "post-fstat"}:
+        try:
+            _descriptor_stat(opened.descriptor)
+        except OSError as error:
+            return _same_error(opened.failure_error, error)
+        return False
+    if opened.failure_stage == "read":
+        try:
+            os.lseek(opened.descriptor, 0, os.SEEK_SET)
+        except OSError:
+            return False
+        try:
+            _read_to_eof(opened.descriptor)
+        except OSError as error:
+            return _same_error(opened.failure_error, error)
+    return False
+
+
+def _same_error(first, second):
+    return (
+        first is not None
+        and type(first) is type(second)
+        and first.errno == second.errno
+    )
+
+
+def _verify_history_name(opened):
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    if opened.absent:
+        try:
+            descriptor = os.open(opened.path, flags)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        else:
+            os.close(descriptor)
+            return False
+    if opened.descriptor is None:
+        try:
+            descriptor = os.open(opened.path, flags)
+        except OSError as error:
+            return _same_error(opened.failure_error, error)
+        else:
+            os.close(descriptor)
+            return False
+    if opened.failure_stage == "initial-fstat":
+        try:
+            _descriptor_stat(opened.descriptor)
+        except OSError as error:
+            if not _same_error(opened.failure_error, error):
+                return False
+        else:
+            return False
+        try:
+            replacement = os.open(opened.path, flags)
+        except OSError:
+            return False
+        try:
+            try:
+                _descriptor_stat(replacement)
+            except OSError as error:
+                return _same_error(opened.failure_error, error)
+            return False
+        finally:
+            os.close(replacement)
+    if opened.generation is None:
+        return False
+    try:
+        descriptor_fstat_failed = opened.failure_stage in {
+            "pre-fstat",
+            "post-fstat",
+        }
+        if opened.failure_stage is not None:
+            if not _repeat_descriptor_failure(opened):
+                return False
+        elif _generation(_descriptor_stat(opened.descriptor)) != opened.generation:
+            return False
+        replacement = os.open(opened.path, flags)
+        try:
+            if _generation(_descriptor_stat(replacement)) != opened.generation:
+                return False
+        finally:
+            os.close(replacement)
+        return descriptor_fstat_failed or (
+            _generation(_descriptor_stat(opened.descriptor)) == opened.generation
+        )
+    except OSError:
+        return False
+
+
+def _raw_history(opened):
+    if opened.absent:
+        return _RawHistory(None, None, None)
+    mode = (
+        stat.S_IMODE(opened.generation[2])
+        if opened.generation is not None
+        else None
+    )
+    return _RawHistory(opened.data, mode, opened.generation, opened.error)
+
+
+def _acquire_history_pair(root=Path()):
+    """Acquire one coherent descriptor-bound generation of both histories."""
+    root = Path(root)
+    for attempt in range(1, 4):
+        opened = [_open_history(root, REPO), _open_history(root, LOCAL)]
+        try:
+            _read_descriptor(opened[0])
+            rendezvous_at("after-first-history-read", attempt)
+            _read_descriptor(opened[1])
+            if not _verify_history_name(opened[0]):
+                continue
+            if opened[0].error is not None:
+                return _RawHistoryFailure((), opened[0].error)
+            repository = _raw_history(opened[0])
+            if not _verify_history_name(opened[1]):
+                continue
+            if opened[1].error is not None:
+                return _RawHistoryFailure((repository,), opened[1].error)
+            return _RawHistoryPair(repository, _raw_history(opened[1]))
+        finally:
+            for item in opened:
+                if item.descriptor is not None:
+                    os.close(item.descriptor)
+    raise JournalError(
+        None,
+        "journal histories changed during inspection; rerun the command",
+        f"{artifact_name(REPO)} + {artifact_name(LOCAL)}",
+    )
+
+
+def _parse_acquired_history(raw, durability):
+    """Validate one acquired artifact in repository/local presentation order."""
+    if raw.error is not None:
+        raise raw.error
+    if raw.data is None:
+        return []
+    return _parse_history_bytes(raw.data, durability, artifact_name(durability))
 
 
 def _check_types(lineno, entry, where):

@@ -9,7 +9,15 @@ from pathlib import Path
 from ..findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
 from .executor import repair_transaction, resolve_transaction
 from .reconcile import reconcile
-from .records import DURABILITIES, JOURNAL_FILENAME, JournalError, read
+from .records import (
+    LOCAL,
+    REPO,
+    JOURNAL_FILENAME,
+    JournalError,
+    _RawHistoryFailure,
+    _acquire_history_pair,
+    _parse_acquired_history,
+)
 from .transactions import (
     PROBLEM_DAMAGED,
     classify,
@@ -54,14 +62,21 @@ def run(check, resolve, resolution, repair, stdout, stderr):
     # records were actually read when a later one is refused.
     records = []
     try:
-        for durability in DURABILITIES:
-            records.extend(read(root, durability))
-        # `reconcile` reads both journals again, so it belongs inside this
-        # handler: a journal a concurrent writer left unreadable between the
-        # two reads must be reported the same way as anything else the
-        # reader cannot accept.
+        acquired = _acquire_history_pair(root)
+        histories = {}
+        if isinstance(acquired, _RawHistoryFailure):
+            for durability, raw in zip((REPO, LOCAL), acquired.preceding):
+                histories[durability] = _parse_acquired_history(raw, durability)
+                records.extend(histories[durability])
+            raise acquired.error
+        for durability, raw in (
+            (REPO, acquired.repository),
+            (LOCAL, acquired.local),
+        ):
+            histories[durability] = _parse_acquired_history(raw, durability)
+            records.extend(histories[durability])
         unfinished, disagreements, anomalies = (
-            reconcile(root) if check else ([], [], [])
+            reconcile(histories, root) if check else ([], [], [])
         )
         # `open_transactions` never raises -- an unreadable transaction file
         # is one of its own results, not a `JournalError` -- so it does not

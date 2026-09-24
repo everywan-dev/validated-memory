@@ -35,7 +35,7 @@ from .records import (
     OBSERVE,
     PREPARED,
     REPO,
-    SCHEMA,
+    WAL_SCHEMA,
     VAULT_DIRNAME,
     is_inside_path,
     new_id,
@@ -134,7 +134,7 @@ def open_transaction(
 
     | field            | holds                                                        |
     |------------------|---------------------------------------------------------------|
-    | `schema`         | the same `SCHEMA` a journal record uses                       |
+    | `schema`         | the write-ahead log schema                                     |
     | `at`             | when this transaction was opened                               |
     | `version`        | the plugin version that opened it                              |
     | `adoption`       | this project's adoption id                                    |
@@ -179,7 +179,7 @@ def open_transaction(
     if intention.target is not None:
         payload_intention["target"] = intention.target
     entry = {
-        "schema": SCHEMA,
+        "schema": WAL_SCHEMA,
         "at": now(),
         "version": __version__,
         "adoption": adoption,
@@ -698,9 +698,9 @@ def classify(root, item, adoption=None):
     schema = item.get("schema")
     if not isinstance(schema, int) or isinstance(schema, bool):
         return damaged("it names no schema, so nothing here knows how to read it")
-    if schema > SCHEMA:
+    if schema > WAL_SCHEMA:
         return damaged(
-            f"its schema is {schema} and this plugin reads up to {SCHEMA}; a "
+            f"its schema is {schema} and this plugin reads up to {WAL_SCHEMA}; a "
             "reader that meets a higher number refuses rather than guessing "
             "at fields it does not know"
         )

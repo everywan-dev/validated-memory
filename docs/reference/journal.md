@@ -850,6 +850,16 @@ thing they can report on themselves. `--resolve` and `--repair` are the two
 targeted modes that write: `--resolve` records an operator's decision, and
 `--repair` performs a proof-carrying history-tail repair.
 
+A reporting pass acquires the repository and local histories as one coherent
+descriptor-bound pair. If either name changes while that pair is being read,
+the command retries the complete pair a bounded number of times. If the names
+do not stabilize, both reporting modes refuse with `journal histories changed
+during inspection; rerun the command`; they report zero accepted records and
+write nothing. Here, `0 record(s)` means that no coherent pair was accepted for
+counting; it does not mean that either history is empty, corrupt or lost. A
+replacement that stabilizes within the bound is silent, and the count and
+reconciliation use that one accepted pair rather than rereading either history.
+
 **Without `--check`**, it reads both artifacts (`journal.jsonl` and
 `.validated-memory/local.jsonl`) and reports the combined count. It never
 gates on what it finds:
