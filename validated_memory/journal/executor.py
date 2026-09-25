@@ -85,7 +85,7 @@ from .records import (
     read,
     record,
     validate_snapshot,
-    _ensure_history_compatibility,
+    ensure_history_compatibility,
 )
 from .transactions import (
     ACCEPT,
@@ -2134,7 +2134,7 @@ def adopting_run(root=Path()):
     """
     root = Path(root)
     with Lock(root):
-        _ensure_history_compatibility()
+        ensure_history_compatibility()
         run = new_id()
         records = read(root, REPO)
         local = read(root, LOCAL)
@@ -2179,7 +2179,7 @@ def resolve_transaction(root, transaction_id, resolution):
         )
 
     with Lock(root):
-        _ensure_history_compatibility()
+        ensure_history_compatibility()
         item = read_transaction(root, transaction_id)
         if item is None:
             return Resolution(

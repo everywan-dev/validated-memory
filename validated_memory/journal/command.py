@@ -8,23 +8,12 @@ from pathlib import Path
 
 from ..findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
 from .executor import repair_transaction, resolve_transaction
-from .reconcile import reconcile
-from .records import (
-    LOCAL,
-    REPO,
-    JOURNAL_FILENAME,
-    JournalError,
-    _RawHistoryFailure,
-    _acquire_history_pair,
-    _parse_acquired_history,
-)
-from .topology import inspect
+from .protocol import Incompatible, Inspect, history_workflow
+from .records import JOURNAL_FILENAME, JournalError
 from .transactions import (
-    PROBLEM_DAMAGED,
-    classify,
+    DamagedWal,
+    UnsupportedWal,
     historyless_transactions_message,
-    open_transactions,
-    retained_residue,
     claimed_temporary_residue,
     transaction_artifact,
     report_word,
@@ -61,48 +50,23 @@ def run(check, resolve, resolution, repair, stdout, stderr):
         return _run_resolve(root, resolve, resolution, stdout, stderr)
     # Accumulated one artifact at a time so the summary below says how many
     # records were actually read when a later one is refused.
-    records = []
-    try:
-        acquired = _acquire_history_pair(root)
-        histories = {}
-        if isinstance(acquired, _RawHistoryFailure):
-            for durability, raw in zip((REPO, LOCAL), acquired.preceding):
-                histories[durability] = _parse_acquired_history(raw, durability)
-                records.extend(histories[durability])
-            raise acquired.error
-        try:
-            # Packet B topology shadow: result intentionally discarded.
-            topology_inspection = inspect(acquired)
-        except Exception:
-            topology_inspection = None
-        for durability, raw in (
-            (REPO, acquired.repository),
-            (LOCAL, acquired.local),
-        ):
-            histories[durability] = _parse_acquired_history(raw, durability)
-            records.extend(histories[durability])
-        unfinished, disagreements, anomalies = (
-            reconcile(histories, root) if check else ([], [], [])
-        )
-        # `open_transactions` never raises -- an unreadable transaction file
-        # is one of its own results, not a `JournalError` -- so it does not
-        # need this `try`, but reading the log alongside the two journals in
-        # one pass is what lets the summary below count everything actually
-        # read even when one of them is later refused.
-        transactions = open_transactions(root)
-        residue = retained_residue(root)
-        # The id the journals themselves carry, taken in the order `records`
-        # preserves (the repository journal first, since it is filled in
-        # `DURABILITIES` order) and never minted: a tree whose journals are
-        # empty has no adoption to compare a transaction file against, and a
-        # fresh id invented here would call every one of them foreign.
-        adoption = records[0]["adoption"] if records else None
-    except JournalError as error:
+    with history_workflow(root) as history:
+        result = history.perform(Inspect(check))
+    inspection = result.inspection
+    records = list(inspection.compatibility.records)
+    if isinstance(inspection.compatibility, Incompatible):
+        error = inspection.compatibility.error
         where = error.artifact or JOURNAL_FILENAME
         location = where if error.lineno is None else f"{where}:{error.lineno}"
         print(Finding(ERROR, location, "journal", error.message).render(), file=stderr)
         print(f"journal: {len(records)} record(s), 1 error(s)", file=stdout)
         return EXIT_ERROR
+    unfinished = inspection.unfinished
+    disagreements = inspection.disagreements
+    anomalies = inspection.anomalies
+    transactions = [observation.raw for observation in inspection.wal]
+    classifications = [observation.evidence for observation in inspection.wal]
+    residue = inspection.residue
 
     if not check:
         print(f"journal: {len(records)} record(s)", file=stdout)
@@ -156,19 +120,20 @@ def run(check, resolve, resolution, repair, stdout, stderr):
             file=stderr,
         )
     claimed_residue_count = 0
-    for item in transactions:
+    for item, evidence in zip(transactions, classifications):
         # Classified by the one function recovery itself acts on, so what
         # `--check` promises and what the next run does cannot drift apart.
-        verdict, facts = classify(root, item, adoption)
-        if verdict == PROBLEM_DAMAGED:
-            location = transaction_artifact(facts["id"])
+        verdict = evidence.verdict
+        if isinstance(evidence, (DamagedWal, UnsupportedWal)):
+            location = transaction_artifact(evidence.transaction)
             message = (
-                f"damaged transaction {facts['id']}: {facts['problem_reason']}"
+                f"damaged transaction {evidence.transaction}: "
+                f"{evidence.problem_reason}"
             )
         else:
-            location = facts["path"]
+            location = evidence.path
             message = (
-                f"open transaction {facts['id']} ({facts['stage']}) on "
+                f"open transaction {evidence.transaction} ({evidence.stage}) on "
                 f"{location}: {report_word(verdict)}"
             )
         print(Finding(ERROR, location, "journal", message).render(), file=stderr)

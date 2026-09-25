@@ -1671,6 +1671,7 @@ JOURNAL_LAYERS = (
     "transactions",
     "executor",
     "reconcile",
+    "protocol",
     "command",
 )
 
@@ -6878,15 +6879,15 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
     assert transactions_source.count("> WAL_SCHEMA") == 1
 
     facade_source = (journal_root / "__init__.py").read_text(encoding="utf-8")
-    assert "_acquire_history_pair" not in facade_source
-    command_tree = ast.parse(
-        (journal_root / "command.py").read_text(encoding="utf-8")
+    assert "acquire_history_pair" not in facade_source
+    protocol_tree = ast.parse(
+        (journal_root / "protocol.py").read_text(encoding="utf-8")
     )
     assert sum(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "_acquire_history_pair"
-        for node in ast.walk(command_tree)
+        and node.func.id == "acquire_history_pair"
+        for node in ast.walk(protocol_tree)
     ) == 1
     raw_reachers = [
         path.name
@@ -6894,16 +6895,16 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
         if path.name != "records.py"
         and any(
             name in path.read_text(encoding="utf-8")
-            for name in ("_RawHistory", "_acquire_history_pair")
+            for name in ("RawHistory", "acquire_history_pair")
         )
     ]
-    assert raw_reachers == ["command.py", "topology.py"]
+    assert sorted(raw_reachers) == ["protocol.py", "topology.py"]
     parse_calls = [
         node
-        for node in ast.walk(command_tree)
+        for node in ast.walk(protocol_tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "_parse_acquired_history"
+        and node.func.id == "parse_acquired_history"
     ]
     assert len(parse_calls) == 2
     assert all(ast.unparse(call.args[0]) == "raw" for call in parse_calls)
@@ -6914,7 +6915,7 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
     raw_class = next(
         node
         for node in records_tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "_RawHistory"
+        if isinstance(node, ast.ClassDef) and node.name == "RawHistory"
     )
     decorator = raw_class.decorator_list[0]
     assert isinstance(decorator, ast.Call)
@@ -6922,7 +6923,7 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
     acquisition = next(
         node
         for node in records_tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_acquire_history_pair"
+        if isinstance(node, ast.FunctionDef) and node.name == "acquire_history_pair"
     )
     ranges = [
         node
@@ -6931,8 +6932,8 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
     ]
     assert len(ranges) == 1
     assert [ast.literal_eval(arg) for arg in ranges[0].args] == [1, 4]
-    assert "return _RawHistory(None, None, None)" in records_source
-    assert "return _RawHistory(opened.data, mode, opened.generation" in records_source
+    assert "return RawHistory(None, None, None)" in records_source
+    assert "return RawHistory(opened.data, mode, opened.generation" in records_source
 
     executor_tree = ast.parse(
         (journal_root / "executor.py").read_text(encoding="utf-8")
@@ -6949,11 +6950,11 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
             if isinstance(node, ast.With)
             and any("Lock(" in ast.unparse(item.context_expr) for item in node.items)
         )
-        assert ast.unparse(lock.body[0].value) == "_ensure_history_compatibility()"
+        assert ast.unparse(lock.body[0].value) == "ensure_history_compatibility()"
     assert not any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "_ensure_history_compatibility"
+        and node.func.id == "ensure_history_compatibility"
         for node in ast.walk(functions["repair_transaction"])
     )
 
@@ -6967,15 +6968,11 @@ def _topology_adapter(tmp_path):
     command = mutant_root / "validated_memory" / "journal" / "command.py"
     source = command.read_text(encoding="utf-8")
     shadow = '''\
-        try:
-            # Packet B topology shadow: result intentionally discarded.
-            topology_inspection = inspect(acquired)
-        except Exception:
-            topology_inspection = None
+    inspection = result.inspection
 '''
     adapter = '''\
-        # Packet B topology shadow: result intentionally discarded.
-        topology_inspection = inspect(acquired)
+        inspection = result.inspection
+        topology_inspection = inspection.topology
         import json
 
         def topology_reference(value):
@@ -7045,6 +7042,10 @@ def _topology_adapter(tmp_path):
         stdout.write(json.dumps(projection, sort_keys=True, separators=(",", ":")) + "\\n")
         return EXIT_OK
 '''
+    adapter = "".join(
+        line[4:] if line.strip() else line
+        for line in adapter.splitlines(keepends=True)
+    )
     assert source.count(shadow) == 1
     command.write_text(source.replace(shadow, adapter), encoding="utf-8")
     return mutant_root
@@ -8142,13 +8143,19 @@ def test_topology_permutation_comparison_removes_only_locations_and_raw_summarie
 
 
 def test_topology_shadow_is_private_pure_and_the_only_production_caller():
+    """Pin pure topology ownership behind one private workflow caller.
+
+    Static source inspection reaches import direction and forbidden schema
+    construction; it does not prove the subprocess behavior pinned separately.
+    """
     root = REPO_ROOT / "validated_memory" / "journal"
     command_source = (root / "command.py").read_text(encoding="utf-8")
+    protocol_source = (root / "protocol.py").read_text(encoding="utf-8")
     topology_source = (root / "topology.py").read_text(encoding="utf-8")
     facade_source = (root / "__init__.py").read_text(encoding="utf-8")
-    assert command_source.count("# Packet B topology shadow: result intentionally discarded.") == 1
-    assert command_source.count("inspect(acquired)") == 1
-    assert "except Exception:" in command_source
+    assert command_source.count("history.perform(Inspect(check))") == 1
+    assert protocol_source.count("inspect_topology(acquired)") == 1
+    assert "except Exception as error:" in protocol_source
     assert "topology" not in facade_source.split("__all__ =", 1)[1]
     assert not re.search(r"\b(open|Path|os\.|environ|getenv)\b", topology_source)
     callers = [
@@ -8156,7 +8163,8 @@ def test_topology_shadow_is_private_pure_and_the_only_production_caller():
         for path in root.glob("*.py")
         if path.name != "topology.py" and re.search(r"\binspect\s*\(", path.read_text(encoding="utf-8"))
     ]
-    assert callers == ["command.py"]
+    assert callers == []
+    assert "from .topology import inspect as inspect_topology" in protocol_source
     for path in root.glob("*.py"):
         if path.name == "topology.py":
             continue
@@ -8166,7 +8174,736 @@ def test_topology_shadow_is_private_pure_and_the_only_production_caller():
         assert not re.search(r"['\"]node['\"]\s*:", source), path.name
 
 
+def test_protocol_vocabulary_is_private_and_command_has_one_inspection_seam():
+    """Pin the closed private vocabulary and its sole production seam.
+
+    The AST assertions reach import/call structure that CLI output cannot
+    distinguish; they do not prove runtime dispatch semantics.
+    """
+    root = REPO_ROOT / "validated_memory" / "journal"
+    protocol = (root / "protocol.py").read_text(encoding="utf-8")
+    command = (root / "command.py").read_text(encoding="utf-8")
+    facade = (root / "__init__.py").read_text(encoding="utf-8")
+    for name in (
+        "Inspect", "Adopt", "Observe", "Mutate", "RecoverAll",
+        "ResolveOne", "RepairOne", "Completed", "Noop", "Reported",
+        "Warning", "ConfirmedWithGates", "Refused", "Retained",
+        "Unsupported", "Damaged",
+    ):
+        assert f"class {name}" in protocol
+        assert name not in facade.split("__all__ =", 1)[1]
+    assert command.count("history.perform(Inspect(check))") == 1
+    for private_policy in (
+        "acquire_history_pair(", "parse_acquired_history(",
+        "inspect_topology(", "open_transactions(", "classify_evidence(",
+        "reconcile(",
+    ):
+        assert private_policy not in command
+    assert protocol.count("acquire_history_pair(self._root)") == 1
+    assert protocol.count("inspect_topology(acquired)") == 1
+    assert "history_workflow" not in facade
+    assert not any(
+        isinstance(node, ast.Attribute) and node.attr == "facts"
+        for source in (protocol, command)
+        for node in ast.walk(ast.parse(source))
+    )
+    protocol_tree = ast.parse(protocol)
+    aliases = {
+        node.targets[0].id: ast.unparse(node.value)
+        for node in protocol_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id in {"Operation", "Result"}
+    }
+    assert set(re.findall(r"\b[A-Z][A-Za-z]+\b", aliases["Operation"])) == {
+        "Inspect", "Adopt", "Observe", "Mutate", "RecoverAll",
+        "ResolveOne", "RepairOne",
+    }
+    assert set(re.findall(r"\b[A-Z][A-Za-z]+\b", aliases["Result"])) == {
+        "Completed", "Noop", "Reported", "Warning", "ConfirmedWithGates",
+        "Refused", "Retained", "Unsupported", "Damaged",
+    }
+    offenders = []
+    for path in root.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level == 1:
+                offenders.extend(
+                    f"{path.name}:{node.lineno}:{alias.name}"
+                    for alias in node.names
+                    if alias.name.startswith("_")
+                )
+    assert offenders == []
+
+
+def _protocol_projection_adapter(tmp_path):
+    mutant_root = tmp_path / "protocol-adapter"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant_root / "validated_memory")
+    command = mutant_root / "validated_memory" / "journal" / "command.py"
+    source = command.read_text(encoding="utf-8")
+    seam = "    inspection = result.inspection\n"
+    projection = '''\
+    inspection = result.inspection
+    import json
+    payload = {
+        "conditions": [
+            {
+                "identity": value.identity,
+                "subject": value.subject,
+                "pairing": list(value.pairing),
+                "detail": value.detail,
+            }
+            for value in inspection.conditions
+        ],
+        "wal": [
+            {
+                "type": type(value.evidence).__name__,
+                "target": type(value.evidence.target).__name__
+                    if hasattr(value.evidence, "target") else None,
+                "claim": getattr(value.evidence, "claim", None),
+                "occurrence": getattr(value.evidence, "occurrence", None),
+            }
+            for value in inspection.wal
+        ],
+        "immutable": [],
+    }
+    attempts = []
+    if inspection.compatibility.records:
+        attempts.append(lambda: inspection.compatibility.records[0].__setitem__("x", 1))
+    if inspection.wal:
+        attempts.append(lambda: inspection.wal[0].raw["intention"].__setitem__("path", "changed"))
+        if "history_append" in inspection.wal[0].raw:
+            attempts.append(
+                lambda: inspection.wal[0].raw["history_append"]["records"][0].__setitem__("path", "changed")
+            )
+        evidence = inspection.wal[0].evidence
+        target = evidence.target if hasattr(evidence, "target") else evidence
+        if hasattr(target, "actual"):
+            attempts.append(lambda: target.actual.__setitem__("kind", "changed"))
+    for attempt in attempts:
+        try:
+            attempt()
+        except (AttributeError, TypeError):
+            payload["immutable"].append(True)
+        else:
+            payload["immutable"].append(False)
+    stdout.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\\n")
+    return EXIT_OK
+'''
+    assert source.count(seam) == 1
+    command.write_text(source.replace(seam, projection), encoding="utf-8")
+    return mutant_root
+
+
+def _run_protocol_projection(adapter, adopter):
+    result = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "journal", "--check"],
+        cwd=adopter,
+        env={**os.environ, "PYTHONPATH": str(adapter)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stderr == ""
+    return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected"),
+    (("zero", "zero"), ("prepared", "prepared"), ("complete", "complete"),
+     ("torn", "conflicting"), ("conflicting", "conflicting"),
+     ("complete-malformed-suffix", "conflicting"),
+     ("complete-torn-suffix", "conflicting"),
+     ("complete-conflicting-suffix", "conflicting")),
+)
+def test_claimed_history_evidence_is_total_and_deterministic(
+    run_cli, tmp_path, monkeypatch, shape, expected
+):
+    """Prove valid claims classify every byte occurrence without mutation.
+
+    Two fresh CLI subprocesses expose the private projection deterministically;
+    the ordinary CLI pins released behavior.  Unreadability is exercised by a
+    separate permission-sensitive test because this matrix uses readable paths.
+    """
+    adapter = _protocol_projection_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    prefix_length = claim["prefix"]["length"]
+    prefix = history.read_bytes()[:prefix_length]
+    prepared_end = payload.find(b"\n") + 1
+    suffix = {
+        "zero": b"",
+        "prepared": payload[:prepared_end],
+        "complete": payload,
+        "torn": payload[:-5],
+        "conflicting": b"{}\n",
+        "complete-malformed-suffix": payload + b"{}\n",
+        "complete-torn-suffix": payload + b'{"schema":',
+        "complete-conflicting-suffix": payload + payload[:prepared_end],
+    }[shape]
+    history.write_bytes(prefix + suffix)
+    before = _final_tree_snapshot(adopter)
+
+    first = _run_protocol_projection(adapter, adopter)
+    second = _run_protocol_projection(adapter, adopter)
+    released = run_cli("journal", "--check", cwd=adopter)
+
+    assert first == second
+    assert first["immutable"] == [True, True, True, True]
+    assert first["wal"] == [{
+        "type": "HistoryClaimWal",
+        "target": "ReadableTargetWal",
+        "claim": "valid",
+        "occurrence": expected,
+    }]
+    assert released.returncode == 1
+    assert "Traceback" not in released.stderr
+    base_records = len(_records(adopter / "journal.jsonl")) + len(prefix.splitlines())
+    location = entry["intention"]["path"]
+    wal_line = (
+        f"ERROR: {location}: journal: open transaction {transaction.stem} "
+        f"(published) on {location}: unknown\n"
+    )
+    if shape == "zero":
+        expected_output = (f"journal: {base_records} record(s), 1 error(s)\n", wal_line)
+    elif shape == "prepared":
+        expected_output = (
+            f"journal: {base_records + 1} record(s), 2 error(s)\n",
+            f"ERROR: {location}: journal: unfinished transaction from run "
+            f"{entry['run']}: the path is applied\n" + wal_line,
+        )
+    elif shape == "complete":
+        expected_output = (f"journal: {base_records + 2} record(s), 1 error(s)\n", wal_line)
+    elif shape in {"torn", "complete-torn-suffix"}:
+        expected_output = (
+            f"journal: {base_records} record(s), 1 error(s)\n",
+            "ERROR: .validated-memory/local.jsonl: journal: non-empty history "
+            "does not end with a line feed; the final record is not appendable "
+            "without explicit targeted repair\n",
+        )
+    elif shape in {"conflicting", "complete-malformed-suffix"}:
+        line = 1 if shape == "conflicting" else 3
+        expected_output = (
+            f"journal: {base_records} record(s), 1 error(s)\n",
+            f"ERROR: .validated-memory/local.jsonl:{line}: journal: record is "
+            "missing schema, at, version, adoption, run, durability, op, "
+            "purpose, path, stage\n",
+        )
+    else:
+        expected_output = (
+            f"journal: {base_records + 3} record(s), 3 error(s)\n",
+            f"ERROR: {location}: journal: unfinished transaction from run "
+            f"{entry['run']}: the path is applied\n"
+            f"ERROR: {location}: journal: transaction {transaction.stem} is "
+            "recorded 3 times\n" + wal_line,
+        )
+    assert (released.stdout, released.stderr) == expected_output
+    assert _final_tree_snapshot(adopter) == before
+    assert transaction.exists()
+
+
+@pytest.mark.parametrize("descendant_count", (1, 2))
+def test_prepared_claim_remains_local_before_unrelated_valid_descendants(
+    run_cli, tmp_path, monkeypatch, descendant_count
+):
+    """Prove later valid transactions do not consume a prepared claim.
+
+    Genuine claim bytes followed by one or two complete, compatibility-valid
+    transaction pairs exercise the local occurrence boundary.  The private
+    projection remains shadow-only; exact released output and a whole-tree
+    snapshot prove that checked inspection neither recovers nor rewrites.
+    """
+    adapter = _protocol_projection_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    prefix = history.read_bytes()[:claim["prefix"]["length"]]
+    prepared = payload[:payload.find(b"\n") + 1]
+    descendants = []
+    for index in range(descendant_count):
+        for record in claim["records"]:
+            descendant = dict(record)
+            descendant["transaction"] = f"unrelated-{index}"
+            descendant["run"] = f"unrelated-run-{index}"
+            descendant["path"] = f"unrelated-{index}.txt"
+            descendants.append(descendant)
+    history.write_bytes(prefix + prepared + _jsonl(*descendants))
+    before = _final_tree_snapshot(adopter)
+
+    first = _run_protocol_projection(adapter, adopter)
+    second = _run_protocol_projection(adapter, adopter)
+    checked = run_cli("journal", "--check", cwd=adopter)
+
+    assert first == second
+    assert first["wal"] == [{
+        "type": "HistoryClaimWal",
+        "target": "ReadableTargetWal",
+        "claim": "valid",
+        "occurrence": "prepared",
+    }]
+    assert first["conditions"] == second["conditions"]
+    record_count = (
+        len(_records(adopter / "journal.jsonl"))
+        + len(prefix.splitlines()) + 1 + 2 * descendant_count
+    )
+    location = entry["intention"]["path"]
+    assert (checked.returncode, checked.stdout, checked.stderr) == (
+        1,
+        f"journal: {record_count} record(s), 2 error(s)\n",
+        f"ERROR: {location}: journal: unfinished transaction from run "
+        f"{entry['run']}: the path is applied\n"
+        f"ERROR: {location}: journal: open transaction {transaction.stem} "
+        f"(published) on {location}: unknown\n",
+    )
+    assert _final_tree_snapshot(adopter) == before
+
+
+@pytest.mark.parametrize("suffix_kind", ("malformed", "same-transaction"))
+def test_prepared_claim_rejects_invalid_or_same_transaction_suffix(
+    run_cli, tmp_path, monkeypatch, suffix_kind
+):
+    """Prove only complete unrelated descendants preserve prepared status.
+
+    One malformed line and one compatibility-valid but duplicate transaction
+    record cover the two adversarial suffix classes.  Projection and released
+    checked output remain read-only; this test grants no recovery authority.
+    """
+    adapter = _protocol_projection_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    prefix = history.read_bytes()[:claim["prefix"]["length"]]
+    prepared = payload[:payload.find(b"\n") + 1]
+    if suffix_kind == "malformed":
+        suffix = b"{}\n"
+    else:
+        conflicting = dict(claim["records"][0])
+        conflicting["at"] = "2099-01-01T00:00:00Z"
+        suffix = _jsonl(conflicting)
+    history.write_bytes(prefix + prepared + suffix)
+    before = _final_tree_snapshot(adopter)
+
+    projection = _run_protocol_projection(adapter, adopter)
+    checked = run_cli("journal", "--check", cwd=adopter)
+
+    assert projection["wal"] == [{
+        "type": "HistoryClaimWal",
+        "target": "ReadableTargetWal",
+        "claim": "valid",
+        "occurrence": "conflicting",
+    }]
+    location = entry["intention"]["path"]
+    if suffix_kind == "malformed":
+        expected = (
+            1,
+            f"journal: {len(_records(adopter / 'journal.jsonl')) + len(prefix.splitlines())} record(s), 1 error(s)\n",
+            "ERROR: .validated-memory/local.jsonl:2: journal: record is missing "
+            "schema, at, version, adoption, run, durability, op, purpose, path, stage\n",
+        )
+    else:
+        expected = (
+            1,
+            f"journal: {len(_records(adopter / 'journal.jsonl')) + len(prefix.splitlines()) + 2} record(s), 3 error(s)\n",
+            f"ERROR: {location}: journal: unfinished transaction from run "
+            f"{entry['run']}: the path is applied\n"
+            f"ERROR: {location}: journal: unfinished transaction from run "
+            f"{entry['run']}: the path is applied\n"
+            f"ERROR: {location}: journal: open transaction {transaction.stem} "
+            f"(published) on {location}: unknown\n",
+        )
+    assert (checked.returncode, checked.stdout, checked.stderr) == expected
+    assert _final_tree_snapshot(adopter) == before
+
+
+def test_claimless_history_claim_is_total_and_publicly_unchanged(
+    run_cli, tmp_path, monkeypatch
+):
+    """Pin claimless zero-occurrence refusal and exact released rendering.
+
+    The fixture removes only claim metadata from a real retained WAL; it proves
+    read-only classification and selected refusal, not recovery authority.
+    """
+    adapter = _protocol_projection_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, claim, _payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry.pop("history_append")
+    entry.pop("history_timestamps")
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    history.write_bytes(history.read_bytes()[:claim["prefix"]["length"]])
+    before = _final_tree_snapshot(adopter)
+
+    projection = _run_protocol_projection(adapter, adopter)
+    checked = run_cli("journal", "--check", cwd=adopter)
+    resolved = run_cli(
+        "journal", "--resolve", transaction.stem, "--accept", cwd=adopter
+    )
+
+    assert projection["wal"] == [{
+        "type": "HistoryClaimWal",
+        "target": "ReadableTargetWal",
+        "claim": "claimless",
+        "occurrence": "zero",
+    }]
+    assert projection["immutable"] == [True, True, True]
+    assert checked.returncode == 1
+    assert checked.stdout == f"journal: {len(_records(adopter / 'journal.jsonl')) + len(_records(history))} record(s), 1 error(s)\n"
+    location = entry["intention"]["path"]
+    assert checked.stderr == (
+        f"ERROR: {location}: journal: open transaction {transaction.stem} "
+        f"(published) on {location}: unknown\n"
+    )
+    assert resolved.returncode == 1
+    assert resolved.stdout == ""
+    assert "Traceback" not in resolved.stderr
+    assert "Nothing has been changed." in resolved.stderr
+    assert _final_tree_snapshot(adopter) == before
+
+
+def test_invalid_history_claim_is_conflicting_and_publicly_unchanged(
+    run_cli, tmp_path, monkeypatch
+):
+    """Prove a claim unbound from its WAL cannot describe an occurrence.
+
+    The projection observes one forged field in otherwise genuine retained
+    evidence; exact CLI output and the full tree snapshot prove read-only
+    refusal, not that every possible forgery has the same diagnostic.
+    """
+    adapter = _protocol_projection_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, _claim, _payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "history-claim"
+    entry["history_append"]["records"][0]["path"] = "foreign/path"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    before = _final_tree_snapshot(adopter)
+
+    projection = _run_protocol_projection(adapter, adopter)
+    checked = run_cli("journal", "--check", cwd=adopter)
+
+    assert projection["wal"] == [{
+        "type": "HistoryClaimWal",
+        "target": "ReadableTargetWal",
+        "claim": "invalid",
+        "occurrence": "conflicting",
+    }]
+    assert projection["immutable"] == [True, True, True, True]
+    records = len(_records(adopter / "journal.jsonl")) + len(_records(history))
+    location = entry["intention"]["path"]
+    assert (checked.returncode, checked.stdout, checked.stderr) == (
+        1,
+        f"journal: {records} record(s), 1 error(s)\n",
+        f"ERROR: {location}: journal: open transaction {transaction.stem} "
+        f"(published) on {location}: unknown\n",
+    )
+    assert _final_tree_snapshot(adopter) == before
+
+
+def test_complete_claim_ignores_an_unrelated_opposite_history_gate(
+    run_cli, tmp_path, monkeypatch
+):
+    """Prove occurrence authority is local while topology gates stay visible.
+
+    A valid complete local claim is paired with a foreign adoption only in a
+    later repository record.  The projection must retain that separate gate;
+    it does not prove the future operation may act through the gate.
+    """
+    adapter = _protocol_projection_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, _claim, _payload, _history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    repository = adopter / "journal.jsonl"
+    records = _records(repository)
+    assert len(records) > 1
+    records[-1]["adoption"] = "unrelated-foreign-adoption"
+    _rewrite(repository, records)
+    before = _final_tree_snapshot(adopter)
+
+    projection = _run_protocol_projection(adapter, adopter)
+
+    assert projection["wal"] == [{
+        "type": "HistoryClaimWal",
+        "target": "ReadableTargetWal",
+        "claim": "valid",
+        "occurrence": "complete",
+    }]
+    assert any(
+        condition["identity"].startswith("history.topology_")
+        for condition in projection["conditions"]
+    )
+    assert _final_tree_snapshot(adopter) == before
+
+
+@pytest.mark.parametrize("field", ("note", "path"))
+def test_claimless_incidental_transaction_text_is_not_an_occurrence(
+    run_cli, tmp_path, monkeypatch, field
+):
+    """Prove claimless evidence uses parsed transaction fields, not raw text.
+
+    A compatible unrelated record contains the exact WAL id in one ordinary
+    text field.  This covers those two false-positive surfaces, not arbitrary
+    damaged bytes, which have their own unavailable-state test.
+    """
+    adapter = _protocol_projection_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, claim, _payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry.pop("history_append")
+    entry.pop("history_timestamps")
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    prefix = history.read_bytes()[:claim["prefix"]["length"]]
+    unrelated = _legacy_record(
+        adoption=entry["adoption"],
+        durability="local",
+        at="2099-01-01T00:00:00Z",
+    )
+    unrelated[field] = transaction.stem
+    history.write_bytes(
+        prefix + (json.dumps(unrelated, sort_keys=True) + "\n").encode("utf-8")
+    )
+    before = _final_tree_snapshot(adopter)
+
+    projection = _run_protocol_projection(adapter, adopter)
+
+    assert projection["wal"] == [{
+        "type": "HistoryClaimWal",
+        "target": "ReadableTargetWal",
+        "claim": "claimless",
+        "occurrence": "zero",
+    }]
+    assert _final_tree_snapshot(adopter) == before
+
+
+@pytest.mark.parametrize("shape", ("prepared", "complete"))
+def test_claimless_semantic_transaction_occurrence_is_conflicting(
+    run_cli, tmp_path, monkeypatch, shape
+):
+    """Prove parsed transaction fields conflict without a stored claim.
+
+    The fixture retains a genuine prepared half or pair but removes only its
+    claim metadata.  It distinguishes semantic occurrence from incidental
+    text; malformed histories remain outside this compatible-artifact slice.
+    """
+    adapter = _protocol_projection_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry.pop("history_append")
+    entry.pop("history_timestamps")
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    prepared_end = payload.find(b"\n") + 1
+    occurrence = payload[:prepared_end] if shape == "prepared" else payload
+    history.write_bytes(history.read_bytes()[:claim["prefix"]["length"]] + occurrence)
+    before = _final_tree_snapshot(adopter)
+
+    projection = _run_protocol_projection(adapter, adopter)
+
+    assert projection["wal"] == [{
+        "type": "HistoryClaimWal",
+        "target": "ReadableTargetWal",
+        "claim": "claimless",
+        "occurrence": "conflicting",
+    }]
+    assert _final_tree_snapshot(adopter) == before
+
+
+def test_claimless_damaged_history_does_not_infer_zero_from_raw_bytes(
+    run_cli, tmp_path, monkeypatch
+):
+    """Prove incomplete parsing yields unavailable, not a byte-scan verdict.
+
+    A torn object contains the exact WAL id but establishes no complete local
+    artifact.  The private projection exposes unavailability while released
+    output remains the independent history-damage refusal.
+    """
+    adapter = _protocol_projection_adapter(tmp_path)
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, claim, _payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry.pop("history_append")
+    entry.pop("history_timestamps")
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    prefix = history.read_bytes()[:claim["prefix"]["length"]]
+    history.write_bytes(
+        prefix + f'{{"transaction":{json.dumps(transaction.stem)}'.encode("utf-8")
+    )
+    before = _final_tree_snapshot(adopter)
+
+    projection = _run_protocol_projection(adapter, adopter)
+    released = run_cli("journal", "--check", cwd=adopter)
+
+    assert projection["wal"] == [{
+        "type": "HistoryClaimWal",
+        "target": "ReadableTargetWal",
+        "claim": "claimless",
+        "occurrence": "unavailable",
+    }]
+    base_records = len(_records(adopter / "journal.jsonl")) + len(prefix.splitlines())
+    assert (released.returncode, released.stdout, released.stderr) == (
+        1,
+        f"journal: {base_records} record(s), 1 error(s)\n",
+        "ERROR: .validated-memory/local.jsonl: journal: non-empty history does "
+        "not end with a line feed; the final record is not appendable without "
+        "explicit targeted repair\n",
+    )
+    assert _final_tree_snapshot(adopter) == before
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
+def test_history_claim_unreadable_target_has_its_own_total_variant(
+    run_cli, tmp_path, monkeypatch
+):
+    """Prove an unreadable target is explicit and preserves every artifact.
+
+    Mode bits provide the black-box read failure on non-root POSIX runs; the
+    skip records that root ignores this mechanism rather than weakening the
+    classification assertion.
+    """
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert run_cli("init", cwd=adopter).returncode == 0
+    target = adopter / ".gitignore"
+    target.write_text("adopter change\n", encoding="utf-8")
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "history-claim")
+    assert run_cli("init", cwd=adopter).returncode == 1
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    adapter = _protocol_projection_adapter(tmp_path)
+    before = _final_tree_snapshot(adopter)
+    target.chmod(0o000)
+    try:
+        projection = _run_protocol_projection(adapter, adopter)
+        released = run_cli("journal", "--check", cwd=adopter)
+        assert projection["wal"] == [{
+            "type": "HistoryClaimWal",
+            "target": "UnreadableTargetWal",
+            "claim": "claimless",
+            "occurrence": "zero",
+        }]
+        assert projection["immutable"] == [True, True]
+        local = adopter / ".validated-memory" / "local.jsonl"
+        records = len(_records(adopter / "journal.jsonl")) + (
+            len(_records(local)) if local.exists() else 0
+        )
+        transaction = next(
+            (adopter / ".validated-memory" / "transactions").glob("*.json")
+        )
+        assert (released.returncode, released.stdout, released.stderr) == (
+            1,
+            f"journal: {records} record(s), 1 error(s)\n",
+            f"ERROR: .gitignore: journal: open transaction {transaction.stem} "
+            "(published) on .gitignore: unknown\n",
+        )
+    finally:
+        target.chmod(0o644)
+    assert _final_tree_snapshot(adopter) == before
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="permission bits do not bind root (CI container)"
+)
+@pytest.mark.parametrize("claim_state", ("valid", "invalid"))
+def test_claimed_history_unreadable_target_preserves_exact_public_result(
+    run_cli, tmp_path, monkeypatch, claim_state
+):
+    """Pin valid and invalid claims independently of target readability.
+
+    A genuine append-uncertain WAL supplies the valid proof, and one changed
+    record supplies the invalid case.  POSIX mode bits cannot produce this
+    read failure for root, so that platform condition is an explicit skip.
+    """
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert run_cli("init", cwd=adopter).returncode == 0
+    target = adopter / ".gitignore"
+    target.write_text("adopter change\n", encoding="utf-8")
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl")
+    assert run_cli("init", cwd=adopter).returncode == 1
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    transaction = next((adopter / ".validated-memory" / "transactions").glob("*.json"))
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "history-claim"
+    if claim_state == "invalid":
+        entry["history_append"]["records"][0]["path"] = "foreign/path"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    adapter = _protocol_projection_adapter(tmp_path)
+    before = _final_tree_snapshot(adopter)
+    target.chmod(0o000)
+    try:
+        projection = _run_protocol_projection(adapter, adopter)
+        released = run_cli("journal", "--check", cwd=adopter)
+        expected_occurrence = "complete" if claim_state == "valid" else "conflicting"
+        assert projection["wal"] == [{
+            "type": "HistoryClaimWal",
+            "target": "UnreadableTargetWal",
+            "claim": claim_state,
+            "occurrence": expected_occurrence,
+        }]
+        assert projection["immutable"] == [True, True, True]
+        local = adopter / ".validated-memory" / "local.jsonl"
+        records = len(_records(adopter / "journal.jsonl")) + (
+            len(_records(local)) if local.exists() else 0
+        )
+        assert (released.returncode, released.stdout, released.stderr) == (
+            1,
+            f"journal: {records} record(s), 1 error(s)\n",
+            f"ERROR: .gitignore: journal: open transaction {transaction.stem} "
+            "(published) on .gitignore: unknown\n",
+        )
+    finally:
+        target.chmod(0o644)
+    assert _final_tree_snapshot(adopter) == before
+
+
 def test_topology_shadow_fails_open_for_ordinary_exceptions(run_cli, tmp_path):
+    """Prove a topology implementation error cannot alter released reporting.
+
+    A copied-package mutant raises at the production call and is compared with
+    an ordinary subprocess.  This proves fail-open rendering, not recovery.
+    """
     adopter = tmp_path / "adopter"
     adopter.mkdir()
     assert run_cli("init", cwd=adopter).returncode == 0
@@ -8196,21 +8933,21 @@ def test_topology_shadow_fails_open_for_ordinary_exceptions(run_cli, tmp_path):
         assert "distinctive shadow failure" not in raised.stderr
         assert _final_tree_snapshot(adopter) == before
 
-    command_tree = ast.parse(
-        (REPO_ROOT / "validated_memory" / "journal" / "command.py").read_text(
+    protocol_tree = ast.parse(
+        (REPO_ROOT / "validated_memory" / "journal" / "protocol.py").read_text(
             encoding="utf-8"
         )
     )
     shadow_tries = [
         node
-        for node in ast.walk(command_tree)
+        for node in ast.walk(protocol_tree)
         if isinstance(node, ast.Try)
         and any(
             isinstance(statement, ast.Assign)
             and any(
                 isinstance(call, ast.Call)
                 and isinstance(call.func, ast.Name)
-                and call.func.id == "inspect"
+                and call.func.id == "inspect_topology"
                 for call in ast.walk(statement)
             )
             for statement in node.body
@@ -8572,7 +9309,7 @@ def _assert_acquired_parser_uses_only_supplied_bytes(source):
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef)
-        and node.name == "_parse_acquired_history"
+        and node.name == "parse_acquired_history"
     )
     calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)]
     parse_calls = [

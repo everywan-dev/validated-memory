@@ -23,7 +23,7 @@ from .records import (
     PREPARED,
     REPO,
     STAGES,
-    _RawHistoryPair,
+    RawHistoryPair,
     is_inside_path,
 )
 
@@ -1132,9 +1132,9 @@ def _graph(
     return tuple(inputs), active, tuple(sorted(edges, key=lambda pair: (_reference_key(pair[0]), _reference_key(pair[1]))))
 
 
-def inspect(acquired_pair: _RawHistoryPair) -> Inspection:
+def inspect(acquired_pair: RawHistoryPair) -> Inspection:
     """Return immutable semantic facts for one coherent raw history pair."""
-    if not isinstance(acquired_pair, _RawHistoryPair):
+    if not isinstance(acquired_pair, RawHistoryPair):
         raise TypeError("inspect requires a coherent raw history pair")
     conditions = _Conditions()
     artifacts = (

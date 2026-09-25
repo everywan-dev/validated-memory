@@ -14,12 +14,15 @@ change, not a move.
 """
 
 import errno
+import hashlib
 import re
 import stat
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
+from types import MappingProxyType
+from typing import Any, Mapping
 
 from .. import __version__
 from .durable import (
@@ -31,7 +34,9 @@ from .durable import (
 from .operations import INTENTION_OPS
 from .paths import own_directory, well_formed_state, current_state, satisfies
 from .records import (
+    COMMITTED,
     DURABILITIES,
+    LOCAL,
     OBSERVE,
     PREPARED,
     REPO,
@@ -375,7 +380,7 @@ def claimed_temporary_residue(root, item):
     """Return a claimed target staging entry without scanning target trees."""
     claim = item.get("temporary")
     intention = item.get("intention")
-    if not isinstance(claim, dict) or not isinstance(intention, dict):
+    if not isinstance(claim, Mapping) or not isinstance(intention, Mapping):
         return []
     target_name = claim.get("target")
     name = claim.get("name")
@@ -561,6 +566,73 @@ _RECOVERABLE_VERDICTS = (
 RECOVERABLE = "recoverable"
 
 
+@dataclass(frozen=True)
+class ClassifiedWal:
+    """One total, immutable WAL-1 classification."""
+
+    transaction: str
+    path: str | None
+    durability: str | None
+    stage: str | None
+    verdict: str
+    problem_reason: str | None
+    abort_reason: str | None
+    run: str | None
+    preimage_blob: str | None
+    prior_bytes: int | None
+    mode: int | None
+    unconfirmed: str | None
+    intention: Mapping[str, Any] | None
+    preimage: Mapping[str, Any] | None
+    postimage: Mapping[str, Any] | None
+
+
+@dataclass(frozen=True)
+class DamagedWal(ClassifiedWal):
+    pass
+
+
+@dataclass(frozen=True)
+class UnsupportedWal(ClassifiedWal):
+    found: int
+    maximum: int
+
+
+@dataclass(frozen=True)
+class TargetNotReadWal(ClassifiedWal):
+    pass
+
+
+@dataclass(frozen=True)
+class ReadableTargetWal(ClassifiedWal):
+    actual: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class UnreadableTargetWal(ClassifiedWal):
+    read_error: str
+
+
+@dataclass(frozen=True)
+class HistoryClaimWal(ClassifiedWal):
+    """A WAL stopped while its history-append proof was being persisted."""
+
+    target: ReadableTargetWal | UnreadableTargetWal
+    claim: str
+    occurrence: str
+
+    def __post_init__(self):
+        if self.claim not in {"claimless", "valid", "invalid"}:
+            raise ValueError(f"unknown history claim state '{self.claim}'")
+        if self.occurrence not in _HISTORY_OCCURRENCES:
+            raise ValueError(f"unknown history occurrence '{self.occurrence}'")
+
+
+_HISTORY_OCCURRENCES = frozenset(
+    {"zero", "prepared", "complete", "torn", "conflicting", "unavailable"}
+)
+
+
 def report_word(verdict):
     """The word a report gives one `classify` verdict.
 
@@ -621,7 +693,7 @@ class Recovery:
             raise ValueError(f"unknown recovery problem '{self.problem}'")
 
 
-def classify(root, item, adoption=None):
+def _classify_legacy(root, item, adoption=None):
     """What recovery would do with one unresolved transaction, doing none of it.
 
     Returns `(verdict, facts)`. The verdict is `VERDICT_COMPLETE`, `VERDICT_DISCARD`,
@@ -819,6 +891,12 @@ def classify(root, item, adoption=None):
         facts["actual"] = postimage
         return VERDICT_HISTORY_UNCONFIRMED, facts
     if unconfirmed == HISTORY_CLAIM_UNCONFIRMED:
+        try:
+            facts["actual"] = current_state(root, facts["path"])
+        except OSError as error:
+            facts["actual"] = None
+            facts["problem_reason"] = str(error)
+            return PROBLEM_UNKNOWN, facts
         facts["problem_reason"] = (
             "the exact history append proof was not durably recorded; "
             "history cannot be completed from this transaction"
@@ -869,6 +947,296 @@ def classify(root, item, adoption=None):
     if satisfies(actual, preimage):
         return VERDICT_DISCARD, facts
     return PROBLEM_UNKNOWN, facts
+
+
+def classify_evidence(
+    root,
+    item,
+    adoption=None,
+    *,
+    history_pair=None,
+    histories=None,
+):
+    """Return the closed WAL evidence variant used by the protocol module.
+
+    ``history_pair`` is the already acquired coherent byte pair and
+    ``histories`` is its compatibility parse.  Supplying them prevents a WAL
+    classifier from taking a second history observation.  The tuple adapter
+    below preserves the established executor contract.
+    """
+    verdict, mutable = _classify_legacy(root, item, adoption)
+    facts = mutable
+    common = dict(
+        transaction=facts["id"],
+        path=facts["path"],
+        durability=facts["durability"],
+        stage=facts["stage"],
+        verdict=verdict,
+        problem_reason=facts["problem_reason"],
+        abort_reason=facts["abort_reason"],
+        run=facts["run"],
+        preimage_blob=facts["preimage_blob"],
+        prior_bytes=facts["prior_bytes"],
+        mode=facts["mode"],
+        unconfirmed=facts["unconfirmed"],
+        intention=_freeze_mapping(facts.get("intention")),
+        preimage=_freeze_mapping(facts.get("preimage")),
+        postimage=_freeze_mapping(facts.get("postimage")),
+    )
+    if verdict == PROBLEM_DAMAGED:
+        schema = item.get("schema")
+        if (
+            isinstance(schema, int)
+            and not isinstance(schema, bool)
+            and schema >= WAL_SCHEMA + 1
+        ):
+            return UnsupportedWal(**common, found=schema, maximum=WAL_SCHEMA)
+        return DamagedWal(**common)
+
+    if "actual" not in facts:
+        target = TargetNotReadWal(**common)
+    elif facts["actual"] is None:
+        target = UnreadableTargetWal(
+            **common,
+            read_error=facts["problem_reason"] or "target state is unavailable",
+        )
+    else:
+        target = ReadableTargetWal(
+            **common,
+            actual=_freeze_mapping(facts["actual"]),
+        )
+
+    if facts.get("unconfirmed") != HISTORY_CLAIM_UNCONFIRMED:
+        return target
+
+    claim_kind = _history_claim_kind(item, facts)
+    occurrence = _history_occurrence(
+        item,
+        facts,
+        claim_kind,
+        history_pair=history_pair,
+        histories=histories,
+    )
+    return HistoryClaimWal(
+        **common,
+        target=target,
+        claim=claim_kind,
+        occurrence=occurrence,
+    )
+
+
+def classify(root, item, adoption=None):
+    """Return the established executor tuple from one typed classification."""
+    evidence = classify_evidence(root, item, adoption)
+    facts = {
+        "id": evidence.transaction,
+        "path": evidence.path,
+        "durability": evidence.durability,
+        "stage": evidence.stage,
+        "problem_reason": evidence.problem_reason,
+        "abort_reason": evidence.abort_reason,
+        "run": evidence.run,
+        "preimage_blob": evidence.preimage_blob,
+        "prior_bytes": evidence.prior_bytes,
+        "mode": evidence.mode,
+        "unconfirmed": evidence.unconfirmed,
+    }
+    for name in ("intention", "preimage", "postimage"):
+        value = getattr(evidence, name)
+        if value is not None:
+            facts[name] = _thaw(value)
+    if isinstance(evidence, ReadableTargetWal):
+        facts["actual"] = _thaw(evidence.actual)
+    elif isinstance(evidence, UnreadableTargetWal):
+        facts["actual"] = None
+    elif isinstance(evidence, HistoryClaimWal):
+        facts["actual"] = None
+    return evidence.verdict, facts
+
+
+def _freeze_value(value):
+    if isinstance(value, dict):
+        return MappingProxyType(
+            {key: _freeze_value(item) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return tuple(_freeze_value(item) for item in value)
+    return value
+
+
+def _freeze_mapping(value):
+    return None if value is None else _freeze_value(value)
+
+
+def _thaw(value):
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
+    return value
+
+
+def _history_claim_kind(item, facts):
+    claim = item.get("history_append")
+    if claim is None:
+        return "claimless"
+    if not isinstance(claim, dict):
+        return "invalid"
+    records = claim.get("records")
+    prefix = claim.get("prefix")
+    append_claim = claim.get("append")
+    timestamps = claim.get("timestamps")
+    if (
+        claim.get("artifact") not in DURABILITIES
+        or claim.get("encoding") != "json-sorted-keys-utf8-lf"
+        or not isinstance(records, list)
+        or len(records) != 2
+        or not all(isinstance(entry, dict) for entry in records)
+        or [entry.get("stage") for entry in records] != [PREPARED, COMMITTED]
+        or any(entry.get("transaction") != facts["id"] for entry in records)
+        or any(entry.get("adoption") != item.get("adoption") for entry in records)
+        or not isinstance(prefix, dict)
+        or type(prefix.get("length")) is not int
+        or prefix["length"] < 0
+        or not isinstance(prefix.get("digest"), str)
+        or not isinstance(append_claim, dict)
+        or not isinstance(timestamps, list)
+        or timestamps != item.get("history_timestamps")
+        or timestamps != [entry.get("at") for entry in records]
+    ):
+        return "invalid"
+    expected = _expected_claim_pair(item, facts["id"])
+    if expected is None:
+        return "invalid"
+    for actual, wanted in zip(records, expected):
+        if set(actual) != set(wanted) | {"at", "version"}:
+            return "invalid"
+        if any(actual.get(field) != value for field, value in wanted.items()):
+            return "invalid"
+        if not isinstance(actual.get("at"), str) or actual.get("version") != item.get("version"):
+            return "invalid"
+    payload = b"".join(
+        (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
+        for entry in records
+    )
+    if (
+        append_claim.get("length") != len(payload)
+        or append_claim.get("digest")
+        != "sha256:" + hashlib.sha256(payload).hexdigest()
+    ):
+        return "invalid"
+    return "valid"
+
+
+def _expected_claim_pair(item, transaction_id):
+    intention = item.get("intention")
+    postimage = item.get("postimage")
+    if not isinstance(intention, dict) or not isinstance(postimage, dict):
+        return None
+    required = {
+        "schema": item.get("schema"),
+        "adoption": item.get("adoption"),
+        "run": item.get("run"),
+        "durability": intention.get("durability"),
+        "op": intention.get("op"),
+        "purpose": intention.get("purpose"),
+        "path": intention.get("path"),
+        "transaction": transaction_id,
+    }
+    if any(value is None for value in required.values()):
+        return None
+    extra = {}
+    mode = item.get("published_mode")
+    if mode is None and postimage.get("kind") == "file":
+        return None
+    if mode is not None:
+        extra["mode"] = mode
+    if intention.get("note") is not None:
+        extra["note"] = intention["note"]
+    if postimage.get("kind") == "file":
+        extra["preimage"] = item.get("preimage_blob")
+        extra["postimage"] = postimage.get("digest")
+        if item.get("prior_bytes") is not None:
+            extra["prior_bytes"] = item["prior_bytes"]
+    return tuple(
+        {**required, "stage": stage, **extra}
+        for stage in (PREPARED, COMMITTED)
+    )
+
+
+def _history_occurrence(
+    item,
+    facts,
+    claim_kind,
+    *,
+    history_pair,
+    histories,
+):
+    durability = (
+        item.get("history_append", {}).get("artifact")
+        if claim_kind == "valid"
+        else facts["durability"]
+    )
+    if durability not in DURABILITIES:
+        return "conflicting"
+    records = () if histories is None else histories.get(durability, ())
+    matching = tuple(
+        entry for entry in records if entry.get("transaction") == facts["id"]
+    )
+    if claim_kind != "valid":
+        if claim_kind == "invalid":
+            return "conflicting"
+        if histories is None or durability not in histories:
+            return "unavailable"
+        return "conflicting" if matching else "zero"
+
+    raw = None
+    if history_pair is not None:
+        raw = (
+            history_pair.repository.data
+            if durability == REPO
+            else history_pair.local.data
+        )
+    if raw is None:
+        raw = b""
+    claim = item["history_append"]
+    prefix_length = claim["prefix"]["length"]
+    prefix = raw[:prefix_length]
+    expected_prefix = claim["prefix"]["digest"]
+    if (
+        len(raw) < prefix_length
+        or "sha256:" + hashlib.sha256(prefix).hexdigest()
+        != expected_prefix
+    ):
+        return "conflicting"
+    payload = b"".join(
+        (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
+        for entry in claim["records"]
+    )
+    tail = raw[prefix_length:]
+    prepared = payload[: payload.find(b"\n") + 1]
+    if not tail:
+        return "zero"
+    if tail.startswith(payload):
+        if histories is None or durability not in histories:
+            return "conflicting"
+        claimed = tuple(claim["records"])
+        if len(matching) != len(claimed) or any(
+            dict(actual) != expected
+            for actual, expected in zip(matching, claimed)
+        ):
+            return "conflicting"
+        return "complete"
+    if tail.startswith(prepared):
+        if histories is None or durability not in histories:
+            return "conflicting"
+        expected = claim["records"][0]
+        if len(matching) != 1 or dict(matching[0]) != expected:
+            return "conflicting"
+        return "prepared"
+    if payload.startswith(tail):
+        return "torn"
+    return "conflicting"
 
 
 def no_such_transaction(transaction_id):

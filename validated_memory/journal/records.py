@@ -125,7 +125,7 @@ _Generation = tuple[int, int, int, int, int, int]
 
 
 @dataclass(frozen=True)
-class _RawHistory:
+class RawHistory:
     data: bytes | None
     mode: int | None
     generation: _Generation | None
@@ -133,14 +133,14 @@ class _RawHistory:
 
 
 @dataclass(frozen=True)
-class _RawHistoryPair:
-    repository: _RawHistory
-    local: _RawHistory
+class RawHistoryPair:
+    repository: RawHistory
+    local: RawHistory
 
 
 @dataclass(frozen=True)
-class _RawHistoryFailure:
-    preceding: tuple[_RawHistory, ...]
+class RawHistoryFailure:
+    preceding: tuple[RawHistory, ...]
     error: JournalError
 
 
@@ -262,7 +262,7 @@ def artifact_name(durability):
     return journal_path(Path(), durability).as_posix()
 
 
-def _ensure_history_compatibility():
+def ensure_history_compatibility():
     """Refuse a history writer its paired reader cannot validate."""
     if HISTORY_WRITE_SCHEMA > HISTORY_READ_SCHEMA:
         raise JournalError(
@@ -654,16 +654,16 @@ def _verify_history_name(opened):
 
 def _raw_history(opened):
     if opened.absent:
-        return _RawHistory(None, None, None)
+        return RawHistory(None, None, None)
     mode = (
         stat.S_IMODE(opened.generation[2])
         if opened.generation is not None
         else None
     )
-    return _RawHistory(opened.data, mode, opened.generation, opened.error)
+    return RawHistory(opened.data, mode, opened.generation, opened.error)
 
 
-def _acquire_history_pair(root=Path()):
+def acquire_history_pair(root=Path()):
     """Acquire one coherent descriptor-bound generation of both histories."""
     root = Path(root)
     for attempt in range(1, 4):
@@ -675,13 +675,13 @@ def _acquire_history_pair(root=Path()):
             if not _verify_history_name(opened[0]):
                 continue
             if opened[0].error is not None:
-                return _RawHistoryFailure((), opened[0].error)
+                return RawHistoryFailure((), opened[0].error)
             repository = _raw_history(opened[0])
             if not _verify_history_name(opened[1]):
                 continue
             if opened[1].error is not None:
-                return _RawHistoryFailure((repository,), opened[1].error)
-            return _RawHistoryPair(repository, _raw_history(opened[1]))
+                return RawHistoryFailure((repository,), opened[1].error)
+            return RawHistoryPair(repository, _raw_history(opened[1]))
         finally:
             for item in opened:
                 if item.descriptor is not None:
@@ -693,7 +693,7 @@ def _acquire_history_pair(root=Path()):
     )
 
 
-def _parse_acquired_history(raw, durability):
+def parse_acquired_history(raw, durability):
     """Validate one acquired artifact in repository/local presentation order."""
     if raw.error is not None:
         raise raw.error
