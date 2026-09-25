@@ -182,6 +182,37 @@ def test_wal_one_recovery_and_selected_resolution_are_documented():
         assert "another WAL's provision" in prose
 
 
+def test_proof_bound_repair_successor_is_documented():
+    """C1e documents candidate authority and closed successor outcomes."""
+    cli = (REPO_ROOT / "docs" / "reference" / "cli.md").read_text(
+        encoding="utf-8"
+    )
+    journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(
+        encoding="utf-8"
+    )
+    for text in (cli, journal):
+        prose = " ".join(text.split())
+        assert "exact repaired bytes plus the raw opposite artifact" in prose
+        assert "selected transaction" in prose
+        assert "identity reuse" in prose
+        assert "adoption mismatch" in prose
+        assert "complete frozen pre-publication condition domain" in prose
+        assert "exact bytes, mode, and identity" in prose
+        assert "filesystem-byte target" in prose
+        assert "before any temporary or WAL cleanup" in prose
+        assert "journal: repair confirmed," in prose
+        assert "do not repeat the confirmed repair" in prose
+        assert "canonical checked-condition" in prose
+        assert "selected-WAL cleanup" in prose
+        assert "final coherent snapshot" in prose
+        assert "exact private duplicate" in prose
+        assert "selected WAL remains" in prose
+        assert "selected WAL is removed" in prose
+    assert "unrelated pre-existing conditions neither authorize nor forbid" in (
+        " ".join(journal.split())
+    )
+
+
 def test_journal_introduction_links_every_section():
     """The reader-journey navigation reaches every current H2 section."""
     journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(

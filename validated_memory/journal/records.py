@@ -21,6 +21,7 @@ from .durable import (
     VisibilityUnconfirmed,
     append_bytes,
     ensure_owned_directory,
+    install_bytes,
     publish_no_replace,
     reconfirm_exact_range,
     reconfirm_exact_file,
@@ -246,6 +247,68 @@ def encode_records(records):
         (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
         for entry in records
     )
+
+
+def repair_complete_prefix(data, artifact):
+    """Decode complete JSONL records while retaining an incomplete EOF tail."""
+    records = []
+    offset = 0
+    for line in data.splitlines(keepends=True):
+        if not line.endswith(b"\n"):
+            break
+        try:
+            entry = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise JournalError(
+                None,
+                f"history has interior corruption before EOF: {error}",
+                artifact,
+            ) from error
+        if not isinstance(entry, dict):
+            raise JournalError(None, "history line is not an object", artifact)
+        records.append(entry)
+        offset += len(line)
+    return records, offset, data[offset:]
+
+
+def repair_history_target(
+    path, source_data, expected_data, expected_mode, *, verify=None
+):
+    """Publish exact complete repair bytes and return the installed identity."""
+    path = Path(path)
+    link_target = os.readlink(path) if path.is_symlink() else None
+    backing = path.resolve(strict=True) if link_target is not None else path
+    before_stat = os.stat(backing)
+    if not stat.S_ISREG(before_stat.st_mode):
+        raise OSError("history target is not a regular file")
+    if backing.read_bytes() != source_data:
+        raise OSError("history snapshot changed during repair")
+    requested = {
+        item.strip()
+        for item in os.environ.get(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
+        ).split(",")
+    }
+    if f"swap-repair-history:{path.name}" in requested:
+        raise OSError("history pathname changed during repair")
+    if link_target is not None and os.readlink(path) != link_target:
+        raise OSError("history symlink was retargeted during repair")
+    after_stat = os.stat(backing)
+    if (before_stat.st_dev, before_stat.st_ino) != (
+        after_stat.st_dev,
+        after_stat.st_ino,
+    ):
+        raise OSError("history backing file was replaced during repair")
+    if stat.S_IMODE(after_stat.st_mode) != expected_mode:
+        raise OSError("history mode changed during repair")
+    _, installed = install_bytes(
+        backing,
+        expected_data,
+        mode=expected_mode,
+        verify=verify,
+        identify=True,
+    )
+    return installed
 
 
 def history_snapshot(root=Path(), durability=REPO):

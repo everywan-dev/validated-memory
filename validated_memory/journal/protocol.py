@@ -7,6 +7,9 @@ directory, or read an artifact; the submitted operation selects those effects.
 
 from __future__ import annotations
 
+import json
+import os
+import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +21,8 @@ from .durable import (
     NoReplaceUnavailable,
     StagingCleanupUnconfirmed,
     VisibilityUnconfirmed,
+    read_file_snapshot,
+    remove_name,
 )
 from .executor import (
     AppendReconfirmationNotApplicable,
@@ -30,6 +35,7 @@ from .executor import (
     IdentityRetained,
     Run,
     adopting_session,
+    bind_repair,
     bind_resolution,
 )
 from .fault import rendezvous_at
@@ -47,8 +53,10 @@ from .records import (
     REPO,
     STAGES,
     VAULT_DIRNAME,
+    WAL_SCHEMA,
     JournalError,
     RawHistoryFailure,
+    RawHistory,
     RawHistoryPair,
     acquire_history_pair,
     append,
@@ -59,6 +67,7 @@ from .records import (
     existing_adoption_id,
     ensure_history_compatibility,
     is_complete_opening,
+    is_inside_path,
     journal_path,
     new_id,
     parse_acquired_history,
@@ -66,6 +75,8 @@ from .records import (
     reconfirm_append,
     reconfirm_opening,
     record,
+    repair_complete_prefix,
+    repair_history_target,
 )
 from .topology import Inspection as TopologyInspection
 from .topology import inspect as inspect_topology
@@ -100,6 +111,7 @@ from .transactions import (
     UnsupportedWal,
     UnreadableTargetWal,
     classify_evidence,
+    cleanup_private_duplicates,
     has_transaction,
     mark_published,
     mark_unconfirmed,
@@ -107,6 +119,7 @@ from .transactions import (
     open_transactions,
     read_transaction,
     reestablish_transaction,
+    report_word,
     remove_transaction_file,
     resolution_advice,
     retained_residue,
@@ -194,6 +207,7 @@ class ProtocolCondition:
     subject: str
     pairing: tuple[str, ...]
     detail: str
+    public_message: str = ""
 
 
 @dataclass(frozen=True)
@@ -216,8 +230,36 @@ class WorkflowInspection:
 
 
 @dataclass(frozen=True)
+class RepairPresentation:
+    transaction: str
+    location: str
+    message: str | None = None
+    gates: tuple[ProtocolCondition, ...] = ()
+
+
+@dataclass(frozen=True)
+class _FrozenRepairWal:
+    path: Path
+    data: bytes
+    mode: int
+    identity: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class _FrozenRepairTemporary:
+    path: Path
+    parent_identity: tuple[int, int]
+    resolved_parent: Path
+    kind: str
+    mode: int
+    identity: tuple[int, int]
+    data: bytes
+
+
+@dataclass(frozen=True)
 class Completed:
     inspection: WorkflowInspection
+    repair: RepairPresentation | None = None
 
 
 @dataclass(frozen=True)
@@ -238,26 +280,31 @@ class Warning:
 @dataclass(frozen=True)
 class ConfirmedWithGates:
     inspection: WorkflowInspection
+    repair: RepairPresentation | None = None
 
 
 @dataclass(frozen=True)
 class Refused:
     inspection: WorkflowInspection
+    repair: RepairPresentation | None = None
 
 
 @dataclass(frozen=True)
 class Retained:
     inspection: WorkflowInspection
+    repair: RepairPresentation | None = None
 
 
 @dataclass(frozen=True)
 class Unsupported:
     inspection: WorkflowInspection
+    repair: RepairPresentation | None = None
 
 
 @dataclass(frozen=True)
 class Damaged:
     inspection: WorkflowInspection
+    repair: RepairPresentation | None = None
 
 
 Result = (
@@ -1762,6 +1809,693 @@ def resolve_one(root, transaction_id, disposition):
 bind_resolution(resolve_one)
 
 
+def _repair_expected_records(item, transaction):
+    """Derive the only record pair one proof-carrying WAL may authorize."""
+    intention = item.get("intention")
+    postimage = item.get("postimage")
+    if not isinstance(intention, Mapping) or not isinstance(postimage, Mapping):
+        return None
+    required = {
+        "schema": item.get("schema"),
+        "version": item.get("version"),
+        "adoption": item.get("adoption"),
+        "run": item.get("run"),
+        "durability": intention.get("durability"),
+        "op": intention.get("op"),
+        "purpose": intention.get("purpose"),
+        "path": intention.get("path"),
+        "transaction": transaction,
+    }
+    if any(value is None for value in required.values()):
+        return None
+    extra = {}
+    mode = item.get("published_mode")
+    if mode is None and postimage.get("kind") == FILE:
+        return None
+    if mode is not None:
+        extra["mode"] = mode
+    if intention.get("note") is not None:
+        extra["note"] = intention["note"]
+    if postimage.get("kind") == FILE:
+        extra["preimage"] = item.get("preimage_blob")
+        extra["postimage"] = postimage.get("digest")
+        if item.get("prior_bytes") is not None:
+            extra["prior_bytes"] = item["prior_bytes"]
+    return tuple(
+        {**required, "stage": stage, **extra}
+        for stage in (PREPARED, COMMITTED)
+    )
+
+
+def _repair_precondition(item, transaction):
+    """Return why one selected WAL does not carry exact repair authority."""
+    if item.get("damaged"):
+        return f"the selected WAL is damaged: {item['damaged']}"
+    if item.get("stage") != PUBLISHED or item.get("unconfirmed") not in (
+        None,
+        HISTORY_UNCONFIRMED,
+    ):
+        return "the selected WAL is not a current published history repair"
+    claim = item.get("history_append")
+    if not isinstance(claim, Mapping):
+        return "the selected WAL has no proof-carrying history append"
+    if claim.get("artifact") not in (REPO, LOCAL):
+        return "the selected WAL names an invalid history artifact"
+    if claim.get("encoding") != "json-sorted-keys-utf8-lf":
+        return "the selected WAL names an unsupported history encoding"
+    records = claim.get("records")
+    if not isinstance(records, list) or len(records) != 2:
+        return "the selected WAL does not carry exactly two history records"
+    if [entry.get("stage") for entry in records if isinstance(entry, Mapping)] != [
+        PREPARED,
+        COMMITTED,
+    ]:
+        return "the selected WAL does not carry prepared then committed records"
+    if any(
+        not isinstance(entry, Mapping)
+        or entry.get("transaction") != transaction
+        for entry in records
+    ):
+        return "the selected WAL carries a foreign history record"
+    if any(entry.get("adoption") != item.get("adoption") for entry in records):
+        return "the selected WAL carries a foreign adoption identity"
+    expected = _repair_expected_records(item, transaction)
+    if expected is None:
+        return "the selected WAL does not contain a complete intention"
+    for actual, wanted in zip(records, expected):
+        if set(actual) != set(wanted) | {"at", "version"}:
+            return "the history claim fields do not match the selected WAL"
+        if any(actual.get(field) != value for field, value in wanted.items()):
+            return "the history claim is not bound to the selected WAL"
+        if (
+            not isinstance(actual.get("at"), str)
+            or actual.get("version") != item.get("version")
+        ):
+            return "the history claim metadata is invalid"
+    shared = (
+        "run",
+        "adoption",
+        "transaction",
+        "durability",
+        "op",
+        "purpose",
+        "path",
+        "preimage",
+        "postimage",
+        "mode",
+        "prior_bytes",
+    )
+    if any(records[0].get(field) != records[1].get(field) for field in shared):
+        return "the selected WAL carries an inconsistent history pair"
+    prefix = claim.get("prefix")
+    append_claim = claim.get("append")
+    timestamps = claim.get("timestamps")
+    if not all(
+        (
+            isinstance(prefix, Mapping),
+            isinstance(append_claim, Mapping),
+            isinstance(timestamps, list),
+        )
+    ):
+        return "the selected WAL has an incomplete history proof"
+    if timestamps != item.get("history_timestamps"):
+        return "the history timestamps are not bound to the selected WAL"
+    if timestamps != [entry.get("at") for entry in records]:
+        return "the history timestamps are not proof-bound"
+    try:
+        payload = encode_records(records)
+        if (
+            append_claim.get("length") != len(payload)
+            or append_claim.get("digest") != digest(payload)
+        ):
+            return "the history append proof does not match its records"
+        prefix_length = prefix.get("length")
+        if (
+            type(prefix_length) is not int
+            or prefix_length < 0
+            or not isinstance(prefix.get("digest"), str)
+        ):
+            raise ValueError
+    except (TypeError, ValueError):
+        return "the selected WAL has an invalid history proof"
+    return None
+
+
+def _repair_candidate(root, pair, item, transaction):
+    """Build and inspect the exact candidate pair before publication."""
+    claim = item["history_append"]
+    durability = claim["artifact"]
+    selected = pair.repository if durability == REPO else pair.local
+    opposite = pair.local if durability == REPO else pair.repository
+    if selected.error is not None:
+        raise JournalError(None, selected.error.message, artifact_name(durability))
+    if selected.data is None:
+        raise ValueError(
+            "the selected history is absent; one WAL cannot reconstruct it"
+        )
+    data = selected.data
+    repair_complete_prefix(data, artifact_name(durability))
+    prefix = claim["prefix"]
+    payload_records = claim["records"]
+    payload = encode_records(payload_records)
+    prefix_length = prefix["length"]
+    if prefix_length > len(data):
+        raise ValueError("the claimed history prefix is not present")
+    if digest(data[:prefix_length]) != prefix["digest"]:
+        raise ValueError("the history prefix changed since the WAL proof")
+    tail = data[prefix_length:]
+    if tail and not payload.startswith(tail):
+        raise ValueError("history EOF bytes are not a prefix of the claimed append")
+    if len(tail) > len(payload):
+        raise ValueError("history contains unrelated bytes after the claimed frontier")
+    target = item.get("intention", {}).get("path")
+    if not isinstance(target, str):
+        raise ValueError("the selected WAL has no target path")
+    if not satisfies(current_state(root, target), item.get("postimage", {})):
+        raise ValueError("the target no longer has the WAL postimage required for repair")
+    candidate = data[:prefix_length] + payload
+    candidate_raw = RawHistory(
+        candidate,
+        selected.mode,
+        selected.generation,
+    )
+    candidate_pair = (
+        RawHistoryPair(candidate_raw, opposite)
+        if durability == REPO
+        else RawHistoryPair(opposite, candidate_raw)
+    )
+    histories = {
+        REPO: tuple(parse_acquired_history(candidate_pair.repository, REPO)),
+        LOCAL: tuple(parse_acquired_history(candidate_pair.local, LOCAL)),
+    }
+    occurrences = tuple(
+        entry
+        for records in histories.values()
+        for entry in records
+        if entry.get("transaction") == transaction
+    )
+    if occurrences != tuple(payload_records):
+        raise ValueError(
+            "the complete candidate does not contain exactly one claimed record pair"
+        )
+    identities = {
+        entry.get("adoption")
+        for records in histories.values()
+        for entry in records
+        if isinstance(entry.get("adoption"), str)
+    }
+    if identities != {item.get("adoption")}:
+        raise ValueError("the candidate pair has an adoption mismatch")
+    try:
+        topology = inspect_topology(candidate_pair)
+    except Exception as error:
+        raise ValueError(
+            "candidate topology inspection is unavailable: "
+            f"{type(error).__name__}: {error}"
+        ) from error
+    unfinished, disagreements, anomalies = reconcile(histories, root)
+    observations, residue = _observe_wal(
+        root,
+        candidate_pair,
+        histories,
+        item.get("adoption"),
+        include_stored_claim=True,
+    )
+    conditions = tuple(sorted((
+        *_topology_conditions(topology),
+        *_legacy_conditions(unfinished, disagreements, anomalies),
+        *(_wal_condition(observation) for observation in observations),
+        *(
+            ProtocolCondition(
+                (4, location, message),
+                "wal.damaged",
+                location,
+                (),
+                message,
+                message,
+            )
+            for location, message in residue
+        ),
+    )))
+    selected_key = f"transaction:{transaction}"
+    if any(
+        selected_key in condition.pairing
+        and condition.identity.startswith("history.")
+        for condition in conditions
+    ):
+        raise ValueError("the candidate pair still involves the selected transaction")
+    if any(
+        condition.detail == "transaction_identity_damage"
+        for condition in conditions
+    ):
+        raise ValueError("the candidate pair reuses a transaction identity")
+    state = WorkflowInspection(
+        candidate_pair,
+        Compatible(histories[REPO], histories[LOCAL]),
+        topology,
+        observations,
+        residue,
+        conditions,
+        tuple(unfinished),
+        tuple(disagreements),
+        tuple(anomalies),
+    )
+    return state, data, candidate, selected.mode
+
+
+def _repair_refused(root, transaction, location, reason, result=Refused):
+    inspection = _HistoryWorkflow(root)._inspect(
+        True, include_stored_claim=True
+    ).inspection
+    message = (
+        f"transaction {transaction} does not prove this repair: {reason}. "
+        "No target or permanent-history change was left by this operation. "
+        "Preserve all evidence and select a transaction carrying the required "
+        "valid proof, or restore exact trusted history."
+    )
+    return result(
+        inspection,
+        RepairPresentation(transaction, location, message),
+    )
+
+
+def _repair_classified(root, transaction, location, result, message):
+    """Return one damaged or unsupported repair result without policy inference."""
+    inspection = _HistoryWorkflow(root)._inspect(
+        True, include_stored_claim=True
+    ).inspection
+    return result(
+        inspection,
+        RepairPresentation(transaction, location, message),
+    )
+
+
+def _repair_retained(root, transaction, location, reason):
+    inspection = _HistoryWorkflow(root)._inspect(
+        True, include_stored_claim=True
+    ).inspection
+    message = (
+        "the selected repair effect is visible or may be visible, but coherent "
+        f"successor confirmation failed: {reason}. Transaction {transaction} "
+        "was retained. Preserve both histories and the WAL; rerun "
+        f"journal --repair {transaction}."
+    )
+    return Retained(
+        inspection,
+        RepairPresentation(transaction, location, message),
+    )
+
+
+def _stat_identity(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size)
+
+
+def _read_repair_wal(root, transaction):
+    """Freeze one selected WAL from a descriptor-bound locked read."""
+    path = Path(root) / transaction_artifact(transaction)
+    try:
+        data, mode, info = read_file_snapshot(path, identify=True)
+        text = data.decode("utf-8")
+        value = json.loads(text)
+        if not isinstance(value, dict):
+            raise ValueError("transaction is not a JSON object")
+    except UnicodeError as error:
+        return None, None, f"not valid UTF-8: {error}"
+    except json.JSONDecodeError as error:
+        return None, None, f"not valid JSON: {error.msg}"
+    except (OSError, ValueError) as error:
+        return None, None, str(error)
+    value["id"] = transaction
+    return value, _FrozenRepairWal(path, data, mode, _stat_identity(info)), None
+
+
+def _repair_wal_matches(frozen):
+    data, mode, info = read_file_snapshot(frozen.path, identify=True)
+    return (
+        data == frozen.data
+        and mode == frozen.mode
+        and _stat_identity(info) == frozen.identity
+    )
+
+
+def _freeze_repair_temporary(root, item):
+    """Validate and freeze the selected WAL's exact staging candidate."""
+    claim = item.get("temporary")
+    if claim is None:
+        return None
+    intention = item.get("intention")
+    postimage = item.get("postimage")
+    if not all(isinstance(value, Mapping) for value in (claim, intention, postimage)):
+        raise OSError("temporary claim is malformed")
+    target_name = claim.get("target")
+    if (
+        target_name != intention.get("path")
+        or claim.get("transaction") != item.get("transaction")
+        or claim.get("role") != "target-staging"
+        or claim.get("adoption") != item.get("adoption")
+    ):
+        raise OSError("temporary claim is not bound to the selected WAL")
+    expected_kind = "symlink" if intention.get("op") == "link" else "regular-file"
+    expected_mode = None if expected_kind == "symlink" else item.get("mode")
+    if claim.get("kind") != expected_kind or claim.get("mode") != expected_mode:
+        raise OSError("temporary claim kind or mode does not match the WAL")
+    if expected_kind == "symlink":
+        expected_target = intention.get("target")
+        if (
+            postimage.get("kind") != SYMLINK
+            or postimage.get("target") != expected_target
+            or not isinstance(expected_target, str)
+        ):
+            raise OSError("temporary symlink is not bound to the WAL postimage")
+        expected_data = os.fsencode(expected_target)
+    else:
+        if postimage.get("kind") != FILE or not isinstance(postimage.get("digest"), str):
+            raise OSError("temporary file is not bound to the WAL postimage")
+        expected_data = None
+    expected_digest = (
+        digest(expected_data) if expected_data is not None else postimage["digest"]
+    )
+    if claim.get("digest") != expected_digest:
+        raise OSError("temporary claim digest is not bound to the WAL postimage")
+    if intention.get("durability") == REPO and not is_inside_path(target_name):
+        raise OSError("temporary claim leaves the adopter root")
+    target = (
+        Path(root) / target_name
+        if intention.get("durability") == REPO
+        else Path(target_name)
+    )
+    try:
+        parent_info = target.parent.lstat()
+        if not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode):
+            raise OSError
+        parent_identity = (parent_info.st_dev, parent_info.st_ino)
+        resolved_parent = target.parent.resolve(strict=True)
+        if intention.get("durability") == REPO:
+            resolved_parent.relative_to(Path(root).resolve(strict=True))
+    except (FileNotFoundError, OSError, ValueError) as error:
+        raise OSError("temporary candidate parent is outside the validated target") from error
+    if not satisfies(current_state(root, target_name), item.get("postimage", {})):
+        raise OSError("target no longer has the WAL postimage required for cleanup")
+    name = claim.get("name")
+    if (
+        not isinstance(name, str)
+        or Path(name).name != name
+        or not name.startswith(f".{target.name}.")
+        or not name.endswith(".tmp")
+    ):
+        raise OSError("temporary claim name is outside the current staging grammar")
+    candidate = target.parent / name
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError:
+        return None
+    if claim.get("kind") == "regular-file":
+        candidate_data, candidate_mode, held = read_file_snapshot(
+            candidate, identify=True
+        )
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or digest(candidate_data) != expected_digest
+            or candidate_mode != claim.get("mode")
+            or (held.st_dev, held.st_ino) != (info.st_dev, info.st_ino)
+        ):
+            raise OSError("temporary candidate does not match its claim")
+    else:
+        candidate_data = os.fsencode(os.readlink(candidate))
+        after = candidate.lstat()
+        if (
+            not stat.S_ISLNK(info.st_mode)
+            or candidate_data != expected_data
+            or (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino)
+        ):
+            raise OSError("temporary candidate does not match its claim")
+    return _FrozenRepairTemporary(
+        candidate,
+        parent_identity,
+        resolved_parent,
+        expected_kind,
+        stat.S_IMODE(info.st_mode),
+        (info.st_dev, info.st_ino),
+        candidate_data,
+    )
+
+
+def _cleanup_frozen_temporary(frozen):
+    """Remove a staging candidate only while every frozen fact still matches."""
+    if frozen is None:
+        return
+    candidate = frozen.path
+    try:
+        parent_after = candidate.parent.lstat()
+        after = candidate.lstat()
+    except FileNotFoundError as error:
+        raise OSError("temporary candidate changed before cleanup") from error
+    if (
+        (parent_after.st_dev, parent_after.st_ino) != frozen.parent_identity
+        or (after.st_dev, after.st_ino) != frozen.identity
+        or stat.S_IMODE(after.st_mode) != frozen.mode
+        or candidate.parent.resolve(strict=True) != frozen.resolved_parent
+    ):
+        raise OSError("temporary candidate changed before cleanup")
+    if frozen.kind == "regular-file":
+        data, mode, held = read_file_snapshot(candidate, identify=True)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or data != frozen.data
+            or mode != frozen.mode
+            or (held.st_dev, held.st_ino) != frozen.identity
+        ):
+            raise OSError("temporary candidate changed before cleanup")
+    else:
+        data = os.fsencode(os.readlink(candidate))
+        final = candidate.lstat()
+        if (
+            not stat.S_ISLNK(after.st_mode)
+            or data != frozen.data
+            or (final.st_dev, final.st_ino) != frozen.identity
+        ):
+            raise OSError("temporary candidate changed before cleanup")
+    remove_name(candidate)
+
+
+def _repair_condition_domain(snapshot, transaction):
+    """Return all authoritative gates except the selected repair WAL itself."""
+    selected = f"transaction:{transaction}"
+    return frozenset(
+        condition
+        for condition in snapshot.conditions
+        if not (
+            condition.identity.startswith("wal.")
+            and selected in condition.pairing
+        )
+    )
+
+
+def repair_one(root, transaction):
+    """Own RepairOne proof, candidate inspection, successor and cleanup."""
+    root = Path(root)
+    if not has_transaction(root, transaction):
+        return _repair_refused(
+            root,
+            transaction,
+            transaction_artifact(transaction),
+            "there is no unresolved transaction with that id",
+        )
+    with Lock(root):
+        item, frozen_wal, wal_error = _read_repair_wal(root, transaction)
+        if item is None:
+            if wal_error is not None and has_transaction(root, transaction):
+                return _repair_classified(
+                    root,
+                    transaction,
+                    transaction_artifact(transaction),
+                    Damaged,
+                    f"damaged transaction evidence: {wal_error}. No target or "
+                    "permanent-history change was left by this operation. "
+                    "Preserve this evidence and restore the exact artifact from a "
+                    "trusted source before rerunning journal --repair "
+                    f"{transaction}.",
+                )
+            return _repair_refused(
+                root,
+                transaction,
+                transaction_artifact(transaction),
+                "there is no unresolved transaction with that id",
+            )
+        schema = item.get("schema")
+        if (
+            isinstance(schema, int)
+            and not isinstance(schema, bool)
+            and schema > WAL_SCHEMA
+        ):
+            return _repair_classified(
+                root,
+                transaction,
+                transaction_artifact(transaction),
+                Unsupported,
+                f"protocol {schema} is newer than this reader (maximum "
+                f"{WAL_SCHEMA}). No target or permanent-history change was "
+                "left by this operation. Install a compatible validated-memory "
+                f"version and rerun journal --repair {transaction}.",
+            )
+        reason = _repair_precondition(item, transaction)
+        location = transaction_artifact(transaction)
+        claim = item.get("history_append")
+        if isinstance(claim, Mapping) and claim.get("artifact") in (REPO, LOCAL):
+            location = artifact_name(claim["artifact"])
+        if reason is not None:
+            return _repair_refused(root, transaction, location, reason)
+        try:
+            pair = acquire_history_pair(root)
+            if isinstance(pair, RawHistoryFailure):
+                raise pair.error
+            for competing in open_transactions(root):
+                competing_claim = competing.get("history_append")
+                if (
+                    competing.get("id") != transaction
+                    and isinstance(competing_claim, Mapping)
+                    and competing_claim.get("artifact") == claim["artifact"]
+                    and competing_claim.get("prefix") == claim["prefix"]
+                ):
+                    raise ValueError("another current WAL claims the same history frontier")
+            candidate_state, source, candidate, mode = _repair_candidate(
+                root, pair, item, transaction
+            )
+            frozen_conditions = _repair_condition_domain(
+                candidate_state, transaction
+            )
+            frozen_temporary = _freeze_repair_temporary(root, item)
+            rendezvous_at("after-repair-inspection", 1)
+            if not _repair_wal_matches(frozen_wal):
+                raise ValueError("the selected WAL changed before publication")
+        except (JournalError, OSError, KeyError, TypeError, ValueError) as error:
+            return _repair_refused(root, transaction, location, str(error))
+        history = journal_path(root, claim["artifact"])
+
+        def verify(staging):
+            staged_data, staged_mode = read_file_snapshot(staging)
+            if staged_data != candidate or staged_mode != mode:
+                raise OSError("the staged repair candidate changed before publication")
+            if not _repair_wal_matches(frozen_wal):
+                raise OSError("the selected WAL changed before publication")
+            current_pair = acquire_history_pair(root)
+            if isinstance(current_pair, RawHistoryFailure) or current_pair != pair:
+                raise OSError("the coherent history pair changed before publication")
+            current_state, current_source, current_candidate, current_mode = (
+                _repair_candidate(root, current_pair, item, transaction)
+            )
+            if (
+                current_source != source
+                or current_candidate != candidate
+                or current_mode != mode
+                or _repair_condition_domain(current_state, transaction)
+                != frozen_conditions
+            ):
+                raise OSError("the repair proof changed before publication")
+
+        try:
+            installed = repair_history_target(
+                history, source, candidate, mode, verify=verify
+            )
+        except VisibilityUnconfirmed as error:
+            return _repair_retained(root, transaction, location, str(error))
+        except (JournalError, OSError, KeyError, TypeError, ValueError) as error:
+            return _repair_refused(root, transaction, location, str(error))
+        try:
+            rendezvous_at("after-repair-publication", 1)
+            successor = _workflow_snapshot(root)
+            if (
+                not isinstance(successor.compatibility, Compatible)
+                or successor.pair is None
+                or successor.topology is None
+                or isinstance(successor.topology, TopologyUnavailable)
+            ):
+                raise OSError("coherent successor inspection is unavailable")
+            selected = (
+                successor.pair.repository
+                if claim["artifact"] == REPO
+                else successor.pair.local
+            )
+            opposite = (
+                successor.pair.local
+                if claim["artifact"] == REPO
+                else successor.pair.repository
+            )
+            frozen_opposite = (
+                candidate_state.pair.local
+                if claim["artifact"] == REPO
+                else candidate_state.pair.repository
+            )
+            generation = selected.generation
+            installed_identity = (
+                installed.st_dev,
+                installed.st_ino,
+                installed.st_mode,
+                installed.st_size,
+            )
+            if (
+                selected.data != candidate
+                or selected.mode != mode
+                or generation is None
+                or generation[:4] != installed_identity
+                or opposite != frozen_opposite
+            ):
+                raise OSError("the published pair changed identity, mode, or bytes")
+            successor_conditions = _repair_condition_domain(
+                successor, transaction
+            )
+            selected_key = f"transaction:{transaction}"
+            if any(
+                selected_key in condition.pairing
+                and condition.identity.startswith("history.")
+                for condition in successor_conditions
+            ):
+                raise OSError("the selected repair condition was not discharged")
+            if not successor_conditions.issubset(frozen_conditions):
+                raise OSError("a new condition appeared after publication")
+            rendezvous_at("before-repair-cleanup", 1)
+            if not _repair_wal_matches(frozen_wal):
+                raise OSError("the selected WAL changed before cleanup")
+            _cleanup_frozen_temporary(frozen_temporary)
+            cleanup_private_duplicates(root)
+            if not _repair_wal_matches(frozen_wal):
+                raise OSError("the selected WAL changed before cleanup")
+            rendezvous_at("after-repair-auxiliary-cleanup", 1)
+            final = _workflow_snapshot(root)
+            if (
+                not isinstance(final.compatibility, Compatible)
+                or final.pair is None
+                or final.topology is None
+                or isinstance(final.topology, TopologyUnavailable)
+                or final.pair != successor.pair
+            ):
+                raise OSError("final coherent snapshot is unavailable")
+            final_conditions = _repair_condition_domain(final, transaction)
+            if any(
+                selected_key in condition.pairing
+                and condition.identity.startswith("history.")
+                for condition in final_conditions
+            ):
+                raise OSError(
+                    "the selected repair condition returned before selected WAL cleanup"
+                )
+            if not final_conditions.issubset(frozen_conditions):
+                raise OSError("a new condition appeared before selected WAL cleanup")
+            if not _repair_wal_matches(frozen_wal):
+                raise OSError("the selected WAL changed before cleanup")
+            remove_transaction_file(root, transaction)
+        except (JournalError, OSError, VisibilityUnconfirmed) as error:
+            return _repair_retained(root, transaction, location, str(error))
+        gates = tuple(sorted(final_conditions))
+        presentation = RepairPresentation(transaction, location, gates=gates)
+        if gates:
+            return ConfirmedWithGates(final, presentation)
+        return Completed(final, presentation)
+
+
+bind_repair(repair_one)
+
+
 def _identity_transition(root, run, _stale_repository, _stale_local):
     """Own the C1b identity decision and return one closed executor result."""
     root = Path(root)
@@ -1888,11 +2622,13 @@ class _HistoryWorkflow:
         self._root = root
 
     def perform(self, operation: Operation) -> Result:
-        if type(operation) is not Inspect:
-            raise NotImplementedError(
-                f"{type(operation).__name__} is not available in this workflow"
-            )
-        return self._inspect(operation.checked)
+        if type(operation) is Inspect:
+            return self._inspect(operation.checked)
+        if type(operation) is RepairOne:
+            return repair_one(self._root, operation.transaction)
+        raise NotImplementedError(
+            f"{type(operation).__name__} is not available in this workflow"
+        )
 
     def _inspect(self, checked: bool, *, include_stored_claim: bool = False) -> Result:
         try:
@@ -2026,6 +2762,7 @@ class _HistoryWorkflow:
                             location,
                             (),
                             message,
+                            message,
                         )
                         for location, message in residue
                     ),
@@ -2116,6 +2853,7 @@ def _history_error_condition(error: JournalError) -> ProtocolCondition:
         error.artifact or "journal.jsonl",
         (),
         message,
+        message,
     )
 
 
@@ -2154,10 +2892,29 @@ def _topology_conditions(topology):
                 )
             ),
             condition.code,
+            _topology_condition_message(condition),
         )
         for condition in topology.conditions
         if condition.level == "error"
     )
+
+
+def _topology_condition_message(condition):
+    """Present topology evidence without exposing its internal code."""
+    subject = (
+        f"transaction {condition.transaction}"
+        if condition.transaction
+        else f"history node {condition.node}"
+        if condition.node
+        else "history topology"
+    )
+    if condition.fields:
+        message = f"{subject} has conflicting {', '.join(condition.fields)} field(s)"
+    else:
+        message = f"{subject} has an unresolved topology condition"
+    if condition.reason:
+        message += f": {condition.reason}"
+    return message
 
 
 def _legacy_conditions(unfinished, disagreements, anomalies):
@@ -2179,6 +2936,8 @@ def _legacy_conditions(unfinished, disagreements, anomalies):
                     if item is not None
                 ),
                 state,
+                f"unfinished transaction from run {entry['run']}: "
+                f"the path is {state}",
             )
         )
     for transaction, field, entry in disagreements:
@@ -2189,6 +2948,7 @@ def _legacy_conditions(unfinished, disagreements, anomalies):
                 entry["path"],
                 (f"transaction:{transaction}",),
                 field,
+                f"records of transaction {transaction} disagree on {field}",
             )
         )
     for message, entry in anomalies:
@@ -2198,6 +2958,7 @@ def _legacy_conditions(unfinished, disagreements, anomalies):
                 "history.topology_gate",
                 entry["path"],
                 (),
+                message,
                 message,
             )
         )
@@ -2221,10 +2982,21 @@ def _wal_condition(observation: WalObservation) -> ProtocolCondition:
         identity = "wal.unknown_readable"
     else:
         identity = "wal.recoverable"
+    message = (
+        f"damaged transaction {evidence.transaction}: {evidence.problem_reason}"
+        if isinstance(evidence, (DamagedWal, UnsupportedWal))
+        else f"open transaction {evidence.transaction} ({evidence.stage}) on "
+        f"{evidence.path}: {report_word(evidence.verdict)}"
+    )
     return ProtocolCondition(
         (3, evidence.transaction, identity),
         identity,
-        evidence.path or f"transaction:{evidence.transaction}",
+        (
+            transaction_artifact(evidence.transaction)
+            if isinstance(evidence, (DamagedWal, UnsupportedWal))
+            else evidence.path
+        ),
         (f"transaction:{evidence.transaction}",),
         evidence.problem_reason or evidence.verdict,
+        message,
     )

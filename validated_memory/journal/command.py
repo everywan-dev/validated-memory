@@ -7,17 +7,17 @@ argument parser reaches.
 from pathlib import Path
 
 from ..findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
-from .executor import repair_transaction, resolve_transaction
-from .protocol import Incompatible, Inspect, history_workflow
-from .records import JOURNAL_FILENAME, JournalError
-from .transactions import (
-    DamagedWal,
-    UnsupportedWal,
-    historyless_transactions_message,
-    claimed_temporary_residue,
-    transaction_artifact,
-    report_word,
+from .executor import resolve_transaction
+from .protocol import (
+    Completed,
+    ConfirmedWithGates,
+    Incompatible,
+    Inspect,
+    RepairOne,
+    history_workflow,
 )
+from .records import JOURNAL_FILENAME, JournalError
+from .transactions import claimed_temporary_residue, historyless_transactions_message
 
 
 def run(check, resolve, resolution, repair, stdout, stderr):
@@ -94,54 +94,36 @@ def run(check, resolve, resolution, repair, stdout, stderr):
         return EXIT_ERROR
 
     for entry, state in unfinished:
-        print(
-            Finding(
-                ERROR,
-                entry["path"],
-                "journal",
-                f"unfinished transaction from run {entry['run']}: "
-                f"the path is {state}",
-            ).render(),
-            file=stderr,
+        condition = _checked_condition(
+            inspection, (2, entry["path"], entry["run"], state)
         )
+        _print_checked_condition(condition, stderr)
     for transaction, field, entry in disagreements:
-        print(
-            Finding(
-                ERROR,
-                entry["path"],
-                "journal",
-                f"records of transaction {transaction} disagree on {field}",
-            ).render(),
-            file=stderr,
+        condition = _checked_condition(
+            inspection, (2, entry["path"], transaction, field)
         )
+        _print_checked_condition(condition, stderr)
     for message, entry in anomalies:
-        print(
-            Finding(ERROR, entry["path"], "journal", message).render(),
-            file=stderr,
+        condition = _checked_condition(
+            inspection, (2, entry["path"], message)
         )
+        _print_checked_condition(condition, stderr)
     claimed_residue_count = 0
     for item, evidence in zip(transactions, classifications):
         # Classified by the one function recovery itself acts on, so what
         # `--check` promises and what the next run does cannot drift apart.
-        verdict = evidence.verdict
-        if isinstance(evidence, (DamagedWal, UnsupportedWal)):
-            location = transaction_artifact(evidence.transaction)
-            message = (
-                f"damaged transaction {evidence.transaction}: "
-                f"{evidence.problem_reason}"
-            )
-        else:
-            location = evidence.path
-            message = (
-                f"open transaction {evidence.transaction} ({evidence.stage}) on "
-                f"{location}: {report_word(verdict)}"
-            )
-        print(Finding(ERROR, location, "journal", message).render(), file=stderr)
+        condition = next(
+            condition
+            for condition in inspection.conditions
+            if condition.order[:2] == (3, evidence.transaction)
+        )
+        _print_checked_condition(condition, stderr)
         for residue_location, residue_message in claimed_temporary_residue(root, item):
             print(Finding(ERROR, residue_location, "journal", residue_message).render(), file=stderr)
             claimed_residue_count += 1
     for location, message in residue:
-        print(Finding(ERROR, location, "journal", message).render(), file=stderr)
+        condition = _checked_condition(inspection, (4, location, message))
+        _print_checked_condition(condition, stderr)
 
     total_errors = (
         len(unfinished) + len(disagreements) + len(anomalies) + len(transactions) + len(residue) + claimed_residue_count
@@ -156,19 +138,60 @@ def run(check, resolve, resolution, repair, stdout, stderr):
 def _run_repair(root, transaction_id, stdout, stderr):
     """`journal --repair`: perform one proof-carrying tail repair."""
     try:
-        outcome = repair_transaction(root, transaction_id)
+        with history_workflow(root) as history:
+            result = history.perform(RepairOne(transaction_id))
     except (JournalError, OSError) as error:
         where = getattr(error, "artifact", None) or JOURNAL_FILENAME
         print(Finding(ERROR, where, "journal", str(error)).render(), file=stderr)
         return EXIT_ERROR
-    if outcome.message is not None:
-        print(Finding(ERROR, outcome.location, "journal", outcome.message).render(), file=stderr)
+    outcome = result.repair
+    if outcome is None:
+        raise TypeError("RepairOne returned no repair presentation")
+    if not isinstance(result, (Completed, ConfirmedWithGates)):
+        print(
+            Finding(ERROR, outcome.location, "journal", outcome.message).render(),
+            file=stderr,
+        )
         return EXIT_ERROR
     print(
         f"journal: repaired {outcome.location} for transaction {transaction_id}",
         file=stdout,
     )
+    for condition in outcome.gates:
+        _print_checked_condition(
+            condition,
+            stderr,
+            suffix=(
+                " Address this condition, then run journal --check; do not "
+                "repeat the confirmed repair."
+            ),
+        )
+    if isinstance(result, ConfirmedWithGates):
+        print(
+            f"journal: repair confirmed, {len(outcome.gates)} gate(s) remain",
+            file=stdout,
+        )
+        return EXIT_ERROR
     return EXIT_OK
+
+
+def _checked_condition(inspection, order):
+    """Return the canonical checked condition at one established order key."""
+    return next(condition for condition in inspection.conditions if condition.order == order)
+
+
+def _print_checked_condition(condition, stderr, suffix=""):
+    """Render one condition identically for check and confirmed repair."""
+    separator = "" if not suffix or condition.public_message.endswith((".", "!", "?")) else "."
+    print(
+        Finding(
+            ERROR,
+            condition.subject,
+            "journal",
+            condition.public_message + separator + suffix,
+        ).render(),
+        file=stderr,
+    )
 
 
 def _run_resolve(root, transaction_id, resolution, stdout, stderr):

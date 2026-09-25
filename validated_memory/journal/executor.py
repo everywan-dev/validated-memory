@@ -15,7 +15,6 @@ puts bytes back through the same `_park_preimage`, `_publish` and
 a transaction file: those belong to execution alone.
 """
 
-import json
 import os
 import secrets
 import stat
@@ -79,7 +78,6 @@ from .records import (
     new_id,
     read,
     record,
-    validate_snapshot,
     ensure_history_compatibility,
 )
 from .transactions import (
@@ -90,7 +88,6 @@ from .transactions import (
     TARGET_UNCONFIRMED,
     Resolution,
     abort_transaction,
-    cleanup_private_duplicates,
     has_transaction,
     mark_published,
     mark_history_append,
@@ -109,12 +106,19 @@ from .transactions import (
 
 PREIMAGE_DIRNAME = "preimages"
 _protocol_resolve_one = None
+_protocol_repair_one = None
 
 
 def bind_resolution(callback):
     """Install the protocol-owned selected-resolution transition."""
     global _protocol_resolve_one
     _protocol_resolve_one = callback
+
+
+def bind_repair(callback):
+    """Install the protocol-owned proof-bound repair transition."""
+    global _protocol_repair_one
+    _protocol_repair_one = callback
 
 
 def _exact_append_claim(durability, prefix, records):
@@ -134,57 +138,6 @@ def _exact_append_claim(durability, prefix, records):
             "digest": digest(payload),
         },
     }
-
-
-def _repair_complete_prefix(data, artifact):
-    """Decode only complete JSONL records, leaving an EOF tail untouched."""
-    records = []
-    offset = 0
-    for line in data.splitlines(keepends=True):
-        if not line.endswith(b"\n"):
-            break
-        try:
-            entry = json.loads(line)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise JournalError(
-                None,
-                f"history has interior corruption before EOF: {error}",
-                artifact,
-            ) from error
-        if not isinstance(entry, dict):
-            raise JournalError(None, "history line is not an object", artifact)
-        records.append(entry)
-        offset += len(line)
-    return records, offset, data[offset:]
-
-
-def _repair_history_target(path, source_data, expected_data, expected_mode):
-    """Atomically install a complete history while preserving a symlink name."""
-    path = Path(path)
-    link_target = os.readlink(path) if path.is_symlink() else None
-    backing = path.resolve(strict=True) if link_target is not None else path
-    before_stat = os.stat(backing)
-    if not stat.S_ISREG(before_stat.st_mode):
-        raise OSError("history target is not a regular file")
-    if backing.read_bytes() != source_data:
-        raise OSError("history snapshot changed during repair")
-    requested = {
-        item.strip()
-        for item in os.environ.get("VALIDATED_MEMORY_PERSISTENCE_FAULT", "").split(",")
-        if item.strip()
-    }
-    if f"swap-repair-history:{path.name}" in requested:
-        raise OSError("history pathname changed during repair")
-    if link_target is not None and os.readlink(path) != link_target:
-        raise OSError("history symlink was retargeted during repair")
-    after_stat = os.stat(backing)
-    if (before_stat.st_dev, before_stat.st_ino) != (after_stat.st_dev, after_stat.st_ino):
-        raise OSError("history backing file was replaced during repair")
-    # The mode is a property of the resolved backing file, never of the link.
-    if stat.S_IMODE(after_stat.st_mode) != expected_mode:
-        raise OSError("history mode changed during repair")
-    install_bytes(backing, expected_data, mode=expected_mode)
-    return backing
 
 
 def _blob_matches(path, reference):
@@ -1355,291 +1308,7 @@ def resolve_transaction(root, transaction_id, resolution):
 
 
 def repair_transaction(root, transaction_id):
-    """Repair one proof-carrying history tail, or refuse without writes."""
-    root = Path(root)
-    if not has_transaction(root, transaction_id):
-        return Resolution(
-            transaction_id,
-            "repair",
-            transaction_artifact(transaction_id),
-            no_such_transaction(transaction_id),
-        )
-    with Lock(root):
-        item = read_transaction(root, transaction_id)
-        if item is None:
-            return Resolution(
-                transaction_id, "repair", transaction_artifact(transaction_id),
-                no_such_transaction(transaction_id),
-            )
-        refusal = _repair_refusal(item, transaction_id)
-        if refusal is not None:
-            return Resolution(transaction_id, "repair", transaction_artifact(transaction_id), refusal)
-        claim = item["history_append"]
-        durability = claim["artifact"]
-        history = journal_path(root, durability)
-        if not history.exists() or history.is_symlink() and not history.resolve().exists():
-            return Resolution(
-                transaction_id, "repair", artifact_name(durability),
-                "the selected history is absent; one WAL cannot reconstruct missing append-only history; Nothing has been changed.",
-            )
-        try:
-            data = history.read_bytes()
-            complete, _, _ = _repair_complete_prefix(
-                data, artifact_name(durability)
-            )
-            prefix = claim["prefix"]
-            payload_records = claim["records"]
-            payload = encode_records(payload_records)
-            identities = {
-                entry.get("adoption")
-                for entry in complete
-                if isinstance(entry, dict) and isinstance(entry.get("adoption"), str)
-            }
-            other = LOCAL if durability == REPO else REPO
-            try:
-                other_records = read(root, other)
-            except JournalError as error:
-                return _repair_refusal_result(transaction_id, artifact_name(other), str(error))
-            identities.update(
-                entry.get("adoption")
-                for entry in other_records
-                if isinstance(entry.get("adoption"), str)
-            )
-            if identities and identities != {item.get("adoption")}:
-                return _repair_refusal_result(transaction_id, artifact_name(durability), "history adoption identity does not match the selected WAL")
-            for competing in open_transactions(root):
-                competing_claim = competing.get("history_append")
-                if competing.get("id") == transaction_id or not isinstance(competing_claim, dict):
-                    continue
-                if (
-                    competing_claim.get("artifact") == durability
-                    and competing_claim.get("prefix") == prefix
-                ):
-                    return _repair_refusal_result(transaction_id, artifact_name(durability), "another current WAL claims the same history frontier")
-            prefix_length = prefix["length"]
-            # The claim boundary, rather than the parser's current EOF
-            # boundary, is the authority for an append repair.  In
-            # particular, a history may contain a complete prepared record
-            # followed by a partial committed record, while the parser's
-            # tail begins in the middle of the claimed append.
-            if prefix_length > len(data):
-                return _repair_refusal_result(transaction_id, artifact_name(durability), "the claimed history prefix is not present")
-            if digest(data[:prefix_length]) != prefix["digest"]:
-                return _repair_refusal_result(transaction_id, artifact_name(durability), "history prefix changed since the WAL proof")
-            append_tail = data[prefix_length:]
-            if append_tail and not payload.startswith(append_tail):
-                return _repair_refusal_result(transaction_id, artifact_name(durability), "history EOF bytes are not a prefix of the claimed append")
-            if len(append_tail) > len(payload):
-                return _repair_refusal_result(transaction_id, artifact_name(durability), "history contains unrelated bytes after the claimed frontier")
-            target_name = item.get("intention", {}).get("path")
-            if not isinstance(target_name, str):
-                return _repair_refusal_result(transaction_id, artifact_name(durability), "the selected WAL has no target path")
-            if not satisfies(current_state(root, target_name), item.get("postimage", {})):
-                return _repair_refusal_result(transaction_id, target_name, "the target no longer has the WAL postimage required for repair")
-            candidate = data[:prefix_length] + payload
-            try:
-                candidate_records = validate_snapshot(
-                    candidate, durability, artifact_name(durability)
-                )
-            except JournalError as error:
-                return _repair_refusal_result(transaction_id, artifact_name(durability), str(error))
-            if candidate_records.count(payload_records[0]) != 1 or candidate_records.count(payload_records[1]) != 1:
-                return _repair_refusal_result(transaction_id, artifact_name(durability), "the complete candidate does not contain exactly one claimed record pair")
-            mode = stat.S_IMODE(history.resolve(strict=True).stat().st_mode) if history.is_symlink() else stat.S_IMODE(history.stat().st_mode)
-            # Even an already complete final snapshot receives a fresh atomic
-            # publication and barrier. A prior visible append is not proof
-            # that its directory entry survived the failed confirmation.
-            _repair_history_target(history, data, candidate, mode)
-            final_data = history.read_bytes()
-            try:
-                final_records = validate_snapshot(
-                    final_data, durability, artifact_name(durability)
-                )
-            except JournalError as error:
-                return _repair_refusal_result(transaction_id, artifact_name(durability), str(error))
-            if final_data != candidate or final_records != candidate_records:
-                return _repair_refusal_result(transaction_id, artifact_name(durability), "repaired history did not reread as the claimed snapshot")
-            _cleanup_temporary_claim(root, item)
-            cleanup_private_duplicates(root)
-            remove_transaction_file(root, transaction_id)
-        except (OSError, VisibilityUnconfirmed, JournalError) as error:
-            return Resolution(
-                transaction_id, "repair", artifact_name(durability),
-                f"history repair could not be confirmed: {error}; transaction evidence was retained.",
-            )
-    return Resolution(transaction_id, "repair", artifact_name(durability), None)
-
-
-def _repair_refusal(item, transaction_id):
-    """Validate the selected WAL proof before any history read or write."""
-    if item.get("damaged"):
-        return f"transaction {transaction_id} is damaged: {item['damaged']}; Nothing has been changed."
-    if item.get("stage") != PUBLISHED or item.get("unconfirmed") not in (None, HISTORY_UNCONFIRMED):
-        return f"transaction {transaction_id} is not a current published history repair; Nothing has been changed."
-    claim = item.get("history_append")
-    if not isinstance(claim, dict):
-        return f"transaction {transaction_id} has no proof-carrying history append claim; Nothing has been changed."
-    if claim.get("artifact") not in (REPO, LOCAL):
-        return f"transaction {transaction_id} names an invalid history artifact; Nothing has been changed."
-    if claim.get("encoding") != "json-sorted-keys-utf8-lf":
-        return f"transaction {transaction_id} names an unsupported history encoding; Nothing has been changed."
-    records = claim.get("records")
-    if not isinstance(records, list) or len(records) != 2:
-        return f"transaction {transaction_id} does not carry exactly two history records; Nothing has been changed."
-    if [entry.get("stage") for entry in records if isinstance(entry, dict)] != [PREPARED, COMMITTED]:
-        return f"transaction {transaction_id} does not carry prepared then committed records; Nothing has been changed."
-    if any(not isinstance(entry, dict) or entry.get("transaction") != transaction_id for entry in records):
-        return f"transaction {transaction_id} carries a foreign history record; Nothing has been changed."
-    if any(entry.get("adoption") != item.get("adoption") for entry in records):
-        return f"transaction {transaction_id} carries a foreign adoption identity; Nothing has been changed."
-    expected = _expected_history_pair(item, transaction_id)
-    if expected is None:
-        return f"transaction {transaction_id} does not contain a complete WAL intention; Nothing has been changed."
-    for actual, wanted in zip(records, expected):
-        if set(actual) != set(wanted) | {"at", "version"}:
-            return f"transaction {transaction_id} history claim fields do not match its WAL; Nothing has been changed."
-        if any(actual.get(field) != value for field, value in wanted.items()):
-            return f"transaction {transaction_id} history claim is not bound to its WAL; Nothing has been changed."
-        if not isinstance(actual.get("at"), str) or actual.get("version") != item.get("version"):
-            return f"transaction {transaction_id} history claim metadata is invalid; Nothing has been changed."
-    shared = (
-        "run", "adoption", "transaction", "durability", "op", "purpose",
-        "path", "preimage", "postimage", "mode", "prior_bytes",
-    )
-    if any(records[0].get(field) != records[1].get(field) for field in shared):
-        return f"transaction {transaction_id} carries an inconsistent history pair; Nothing has been changed."
-    prefix = claim.get("prefix")
-    append_claim = claim.get("append")
-    timestamps = claim.get("timestamps")
-    if not isinstance(prefix, dict) or not isinstance(append_claim, dict) or not isinstance(timestamps, list):
-        return f"transaction {transaction_id} has an incomplete history proof; Nothing has been changed."
-    if timestamps != item.get("history_timestamps"):
-        return f"transaction {transaction_id} history timestamps are not bound to its WAL; Nothing has been changed."
-    if timestamps != [entry.get("at") for entry in records]:
-        return f"transaction {transaction_id} history timestamps are not proof-bound; Nothing has been changed."
-    try:
-        payload = encode_records(records)
-        if append_claim.get("length") != len(payload) or append_claim.get("digest") != digest(payload):
-            return f"transaction {transaction_id} history append proof does not match its records; Nothing has been changed."
-        prefix_length = prefix.get("length")
-        if (
-            type(prefix_length) is not int
-            or prefix_length < 0
-            or not isinstance(prefix.get("digest"), str)
-        ):
-            raise ValueError
-    except (TypeError, ValueError):
-        return f"transaction {transaction_id} has an invalid history proof; Nothing has been changed."
-    return None
-
-
-def _expected_history_pair(item, transaction_id):
-    """Derive the only history pair authorized by one WAL entry."""
-    intention = item.get("intention")
-    postimage = item.get("postimage")
-    if not isinstance(intention, dict) or not isinstance(postimage, dict):
-        return None
-    required = {
-        "schema": item.get("schema"),
-        "version": item.get("version"),
-        "adoption": item.get("adoption"),
-        "run": item.get("run"),
-        "durability": intention.get("durability"),
-        "op": intention.get("op"),
-        "purpose": intention.get("purpose"),
-        "path": intention.get("path"),
-        "transaction": transaction_id,
-    }
-    if any(value is None for value in required.values()):
-        return None
-    extra = {}
-    mode = item.get("published_mode")
-    if mode is None and postimage.get("kind") == FILE:
-        return None
-    if mode is not None:
-        extra["mode"] = mode
-    if intention.get("note") is not None:
-        extra["note"] = intention["note"]
-    if postimage.get("kind") == FILE:
-        extra["preimage"] = item.get("preimage_blob")
-        extra["postimage"] = postimage.get("digest")
-        if item.get("prior_bytes") is not None:
-            extra["prior_bytes"] = item["prior_bytes"]
-    return [
-        {**required, "stage": stage, **extra}
-        for stage in (PREPARED, COMMITTED)
-    ]
-
-
-def _repair_refusal_result(transaction_id, location, message):
-    return Resolution(transaction_id, "repair", location, f"{message}; Nothing has been changed.")
-
-
-def _cleanup_temporary_claim(root, item):
-    """Remove only an exact, no-longer-needed target staging candidate."""
-    claim = item.get("temporary")
-    if claim is None:
-        return
-    intention = item.get("intention")
-    if not isinstance(claim, dict) or not isinstance(intention, dict):
-        raise OSError("temporary claim is malformed")
-    target_name = claim.get("target")
-    if target_name != intention.get("path") or claim.get("transaction") != item.get("transaction"):
-        raise OSError("temporary claim target or transaction does not match the WAL")
-    if claim.get("role") != "target-staging" or claim.get("adoption") != item.get("adoption"):
-        raise OSError("temporary claim role or adoption does not match the WAL")
-    expected_kind = "symlink" if intention.get("op") == LINK else "regular-file"
-    if claim.get("kind") != expected_kind or claim.get("mode") != item.get("mode"):
-        raise OSError("temporary claim kind or mode does not match the WAL")
-    if intention.get("durability") == REPO and not is_inside_path(target_name):
-        raise OSError("temporary claim leaves the adopter root")
-    target = Path(root) / target_name if intention.get("durability") == REPO else Path(target_name)
-    try:
-        parent_info = target.parent.lstat()
-        if not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode):
-            raise OSError("temporary candidate parent is not a real directory")
-        parent_identity = (parent_info.st_dev, parent_info.st_ino)
-        resolved_parent = target.parent.resolve(strict=True)
-        if resolved_parent != target.parent.resolve(strict=True):
-            raise OSError("temporary candidate parent changed during validation")
-        if intention.get("durability") == REPO:
-            resolved_root = Path(root).resolve(strict=True)
-            resolved_parent.relative_to(resolved_root)
-    except (FileNotFoundError, OSError, ValueError) as error:
-        raise OSError("temporary candidate parent is outside the validated target") from error
-    actual = current_state(root, target_name)
-    if not satisfies(actual, item.get("postimage", {})):
-        raise OSError("target no longer has the WAL postimage required for cleanup")
-    name = claim.get("name")
-    if not isinstance(name, str) or Path(name).name != name or not name.startswith(f".{target.name}.") or not name.endswith(".tmp"):
-        raise OSError("temporary claim name is outside the current staging grammar")
-    candidate = target.parent / name
-    try:
-        info = candidate.lstat()
-    except FileNotFoundError:
-        return
-    if claim.get("kind") == "regular-file":
-        if not stat.S_ISREG(info.st_mode) or digest(candidate.read_bytes()) != claim.get("digest"):
-            raise OSError("temporary candidate does not match its claimed regular file")
-        if stat.S_IMODE(info.st_mode) != claim.get("mode"):
-            raise OSError("temporary candidate mode does not match its claim")
-    elif claim.get("kind") == "symlink":
-        if not stat.S_ISLNK(info.st_mode) or digest(os.readlink(candidate).encode("utf-8")) != claim.get("digest"):
-            raise OSError("temporary candidate does not match its claimed symlink")
-    else:
-        raise OSError("temporary candidate kind is not supported")
-    before_remove = (info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode))
-    try:
-        parent_info = candidate.parent.lstat()
-        after_info = candidate.lstat()
-    except FileNotFoundError as error:
-        raise OSError("temporary candidate changed before cleanup") from error
-    if (
-        stat.S_ISLNK(parent_info.st_mode)
-        or not stat.S_ISDIR(parent_info.st_mode)
-        or (parent_info.st_dev, parent_info.st_ino) != parent_identity
-        or (after_info.st_dev, after_info.st_ino, stat.S_IMODE(after_info.st_mode)) != before_remove
-        or candidate.parent.resolve(strict=True) != resolved_parent
-    ):
-        raise OSError("temporary candidate changed before cleanup")
-    remove_name(candidate)
+    """Compatibility facade for protocol-owned proof-bound repair."""
+    if _protocol_repair_one is None:
+        raise RuntimeError("repair callback is unavailable")
+    return _protocol_repair_one(root, transaction_id)

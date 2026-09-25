@@ -463,7 +463,16 @@ def install(temporary, target):
     )
 
 
-def install_bytes(path, data, mode=0o600, verify=None, temporary=None, crash_storage=False):
+def install_bytes(
+    path,
+    data,
+    mode=0o600,
+    verify=None,
+    temporary=None,
+    crash_storage=False,
+    *,
+    identify=False,
+):
     """Build complete private bytes, optionally verify them, then install."""
     path = Path(path)
     provided = temporary is not None
@@ -501,7 +510,9 @@ def install_bytes(path, data, mode=0o600, verify=None, temporary=None, crash_sto
             )
         if crash_storage:
             storage_crash("staged-before-install", temporary)
-        return install(temporary, path)
+        published_identity = os.fstat(descriptor) if identify else None
+        outcome = install(temporary, path)
+        return (outcome, published_identity) if identify else outcome
     except Exception:
         if descriptor is not None:
             os.close(descriptor)
@@ -880,7 +891,7 @@ def remove_name(path, directory=False):
     )
 
 
-def read_file_snapshot(path):
+def read_file_snapshot(path, *, identify=False):
     """Read bytes and mode from the regular file held by one descriptor."""
     path = Path(path)
     before = os.lstat(path)
@@ -908,7 +919,8 @@ def read_file_snapshot(path):
             data = handle.read()
     finally:
         os.close(descriptor)
-    return data, stat.S_IMODE(held.st_mode)
+    result = (data, stat.S_IMODE(held.st_mode))
+    return (*result, held) if identify else result
 
 
 def _swap_snapshot_for_test(path, snapshot_kind, data, mode):

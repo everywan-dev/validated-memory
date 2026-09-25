@@ -1112,11 +1112,48 @@ journal: resolved 56eeba099c335aaa (--restore); the discarded bytes are kept at 
 
 A `--repair TRANSACTION_ID` operation is the explicit proof-carrying path for
 a torn final history append. It requires an existing history and a current
-WAL claim, publishes the complete claimed snapshot atomically, and preserves
-the evidence on any confirmation failure. It is mutually exclusive with
-`--check`, `--resolve`, and resolution flags. Success is exit 0; project-state
-refusals and persistence failures are exit 1; empty or invalid combinations
-are exit 2.
+WAL claim. Before publication it constructs a candidate pair from the exact
+repaired bytes plus the raw opposite artifact and inspects that pair. A
+condition involving the selected transaction, transaction identity reuse, or
+an adoption mismatch refuses without publishing. Unrelated pre-existing
+conditions neither supply repair authority nor cancel the selected WAL's exact
+byte proof.
+
+The locked read freezes the selected WAL's exact bytes, mode, and identity.
+Repair rechecks that evidence immediately before publication and again before
+any temporary or WAL cleanup. It also validates any claimed staging name against
+the WAL intention and postimage before publication: a symlink's
+filesystem-byte target is compared directly, while a regular file must carry the postimage
+digest. Parent, type, mode, identity, and exact content are frozen. A malformed,
+unbound, or unsafe claim refuses without publication; a later replacement is
+preserved and makes the visible repair retained.
+
+After atomic publication, repair reacquires the coherent pair. The selected
+condition must be discharged, no new condition may appear, and every remaining
+condition must be a subset of the complete frozen pre-publication condition
+domain, including unrelated retained-WAL gates. The candidate pair and all
+frozen evidence are revalidated from a coherent read while the complete staged
+bytes still await installation. Only then is selected-WAL cleanup allowed. A clean result prints the repaired line and
+exits 0. If independent gates remain, it prints the repaired line, each gate,
+and `journal: repair confirmed, N gate(s) remain`; it exits 1 and the operator
+must address each named condition, run `journal --check`, and do not repeat the confirmed
+repair. Publication or readback uncertainty prints no repaired line, preserves
+the available evidence, and exits 1. The option is mutually exclusive with
+`--check`, `--resolve`, and resolution flags; empty or invalid combinations are
+exit 2.
+
+Each remaining gate uses the same canonical checked-condition presentation as
+`journal --check`, including its transaction, run, path state, disagreeing
+field, or retained-evidence reason. Repair appends only its action sentence;
+internal condition codes are not public output. After confirmed temporary and
+private-duplicate cleanup, and while the exact selected WAL remains, repair
+reacquires one final coherent snapshot. It reconfirms the published pair and
+selected discharge, rejects a newly appeared condition, and derives gates only
+from that final state. The selected WAL is removed only then, as the last
+effect. An exact private duplicate removed during cleanup therefore cannot
+remain as a stale gate; unproven residue remains a checked gate, and cleanup or
+final-confirmation uncertainty is `Retained` with the selected WAL preserved or
+identically re-established for the same targeted retry.
 
 `journal --check` enumerates retained residue; targeted repair leaves
 unclaimed residue untouched.
@@ -1127,13 +1164,13 @@ fact about this project's state. An id no unresolved transaction has is one
 of those:
 
 ```
-ERROR: .validated-memory/transactions/51de77210788b0fd.json: journal: there is no unresolved transaction 51de77210788b0fd; 'validated-memory journal --check' lists the ones there are. Nothing has been changed.
+ERROR: .validated-memory/transactions/51de77210788b0fd.json: journal: transaction 51de77210788b0fd does not prove this repair: there is no unresolved transaction with that id. No target or permanent-history change was left by this operation. Preserve all evidence and select a transaction carrying the required valid proof, or restore exact trusted history.
 ```
 
-That refusal is reached before anything is opened, so its last sentence is
-true of the tree as well as of the log: run in a directory that has never
-been adopted, it leaves no `journal.jsonl` and no `.validated-memory/`
-behind.
+That refusal is reached before a mutation lock or writable state is
+materialized, so its terminal-state sentence is true of the tree as well as
+of the log: run in a directory that has never been adopted, it leaves no
+`journal.jsonl` and no `.validated-memory/` behind.
 
 A journal that is present but cannot be parsed is refused with its line
 number, in either reporting mode:

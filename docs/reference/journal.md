@@ -1147,9 +1147,58 @@ python3 -P -m validated_memory journal --repair TRANSACTION_ID
 The command accepts only a current published/history-uncertain WAL carrying a
 valid claim. It requires an existing authoritative history, an unchanged
 claimed prefix, and a tail that is only a strict prefix or complete copy of the
-claimed append. The complete `prefix + append` snapshot is built in an
-unpredictable exclusive temporary, fsynced, revalidated, and atomically
-installed. A symlink history's resolved backing file and mode are preserved.
+claimed append. Before publication, the protocol constructs the candidate pair
+from the exact repaired bytes plus the raw opposite artifact and performs the
+same topology inspection used by the other mutating workflows. Any condition
+involving the selected transaction, transaction identity reuse, or adoption
+mismatch refuses before publication. Other unrelated pre-existing conditions
+neither authorize nor forbid the proof-bound byte repair; they are frozen for
+successor comparison. That frozen domain includes damaged, newer, diverged,
+unknown, and recoverable unrelated WAL conditions; together they form the
+complete frozen pre-publication condition domain. Only the selected repair
+WAL's own condition is excluded.
+
+The selected WAL is read under the lock through one descriptor and its exact
+bytes, mode, and identity are frozen. They are rechecked before publication and
+before any temporary or WAL cleanup. A claimed staging symlink must bind its
+filesystem-byte target and digest to the WAL intention and postimage; a claimed
+regular file must bind its digest to the WAL postimage. Parent, type, mode,
+identity, exact bytes or link target are frozen before publication. Malformed,
+unbound, or unsafe claims refuse without a history change. Cleanup removes only
+the same frozen name; a replacement is preserved and the repair is retained.
+
+The complete `prefix + append` snapshot is built in an unpredictable exclusive
+temporary, fsynced, revalidated, and atomically installed. A symlink history's
+resolved backing file and mode are preserved. Immediately before installation,
+the staging verifier reacquires the frozen pair, selected WAL, opposite raw
+artifact, staged bytes, and complete condition domain; a mismatch refuses
+before publication. Repair then reacquires both
+histories as one coherent pair. The selected condition must be discharged, no
+new condition may appear, and the remaining set must be a subset of the frozen
+pre-publication conditions. A clean successor and confirmed selected-WAL
+cleanup print the repaired line and exit 0. When only frozen independent gates
+remain, repair also prints each gate and `journal: repair confirmed, N gate(s)
+remain`, exits 1, and directs the operator to address the gates, run `journal
+--check`, and do not repeat the confirmed repair. Gate text names the human
+condition and never exposes internal condition identifiers. A visible or indeterminate
+publication whose successor or cleanup cannot be confirmed is retained,
+prints no repaired line, and keeps the available proof for the same targeted
+retry.
+
+The gate renderer is the same canonical checked-condition renderer used by
+`journal --check`. Its message retains the relevant transaction, run, path
+state, disagreeing field, or retained-evidence reason; repair adds only the
+instruction to address that condition, rerun `journal --check`, and not repeat
+the confirmed repair. After temporary cleanup and exact private duplicate
+cleanup, repair reacquires a final coherent snapshot while the exact selected
+WAL remains. The published pair and selected discharge must still hold and no
+new condition may have appeared. Only this final state supplies the reported
+gates: an exact duplicate already removed is not a stale gate, foreign residue
+remains under the normal residue contract, and cleanup or final-confirmation
+uncertainty is `Retained` with the selected WAL preserved. The selected WAL is
+removed last, only after that confirmation; an unconfirmed removal identically
+re-establishes it for the same targeted retry.
+
 Missing histories, legacy or foreign WALs, interior corruption, changed
 prefixes, unrelated tails, competing claims, unsafe artifact types, and
 retargeted links are refusals with no writes. A complete final snapshot is

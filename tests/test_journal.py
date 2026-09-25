@@ -6883,6 +6883,66 @@ def test_repair_usage_is_rejected_before_filesystem_materialization(run_cli, tmp
     assert "get ID from journal --check" in help_result.stdout
 
 
+def test_repair_unknown_id_is_inert_on_a_virgin_tree(run_cli, tmp_path):
+    """A valid targeted request does not materialize state for an absent WAL."""
+    before = _final_tree_snapshot(tmp_path)
+
+    result = run_cli("journal", "--repair", "unknown", cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        "ERROR: .validated-memory/transactions/unknown.json: journal: "
+        "transaction unknown does not prove this repair: there is no unresolved "
+        "transaction with that id. No target or permanent-history change was "
+        "left by this operation. Preserve all evidence and select a transaction "
+        "carrying the required valid proof, or restore exact trusted history.\n"
+    )
+    assert _final_tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("evidence", ("damaged", "unsupported"))
+def test_repair_classifies_unusable_selected_wal_without_writes(
+    run_cli, tmp_path, monkeypatch, evidence
+):
+    """Damaged and newer selected WALs retain their closed result category."""
+    transaction, _claim, _payload, _history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    if evidence == "damaged":
+        transaction.write_bytes(b"not json\n")
+    else:
+        entry = json.loads(transaction.read_text(encoding="utf-8"))
+        entry["schema"] = 2
+        transaction.write_text(
+            json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    before = _final_tree_snapshot(tmp_path)
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    if evidence == "damaged":
+        assert result.stderr == (
+            f"ERROR: .validated-memory/transactions/{transaction.name}: journal: "
+            "damaged transaction evidence: not valid JSON: Expecting value. "
+            "No target or permanent-history change was left by this operation. "
+            "Preserve this evidence and restore the exact artifact from a trusted "
+            "source before rerunning journal --repair "
+            f"{transaction.stem}.\n"
+        )
+    else:
+        assert result.stderr == (
+            f"ERROR: .validated-memory/transactions/{transaction.name}: journal: "
+            "protocol 2 is newer than this reader (maximum 1). No target or "
+            "permanent-history change was left by this operation. Install a "
+            "compatible validated-memory version and rerun journal --repair "
+            f"{transaction.stem}.\n"
+        )
+    assert _final_tree_snapshot(tmp_path) == before
+
+
 def _history_repair_fixture(run_cli, tmp_path, monkeypatch):
     """Create one local history WAL whose append barrier is unconfirmed."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
@@ -7059,6 +7119,48 @@ def test_exact_final_repair_republishes_and_retries_after_confirmation_failure(
     assert len(history.read_bytes().splitlines()) == 2
 
 
+@pytest.mark.parametrize(
+    ("fault", "visible"),
+    (
+        ("write:local.jsonl", False),
+        ("atomic-install:local.jsonl", False),
+        ("install:local.jsonl", True),
+    ),
+)
+def test_repair_distinguishes_prepublication_and_visible_storage_faults(
+    run_cli, tmp_path, monkeypatch, fault, visible
+):
+    """Publication faults retain proof without overstating history visibility."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    prepared = payload[: payload.find(b"\n") + 1]
+    history.write_bytes(prepared)
+    repository_before = (tmp_path / "journal.jsonl").read_bytes()
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", fault)
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    if visible:
+        assert result.stderr.startswith(
+            "ERROR: .validated-memory/local.jsonl: journal: the selected repair "
+            "effect is visible or may be visible, but coherent successor "
+            "confirmation failed: "
+        )
+        assert history.read_bytes() == payload
+    else:
+        assert result.stderr.startswith(
+            "ERROR: .validated-memory/local.jsonl: journal: transaction "
+            f"{transaction.stem} does not prove this repair: "
+        )
+        assert "No target or permanent-history change was left" in result.stderr
+        assert history.read_bytes() == prepared
+    assert transaction.exists()
+    assert (tmp_path / "journal.jsonl").read_bytes() == repository_before
+
+
 def test_repair_cleanup_visibility_failure_retains_wal_until_retry(
     run_cli, tmp_path, monkeypatch
 ):
@@ -7070,7 +7172,8 @@ def test_repair_cleanup_visibility_failure_retains_wal_until_retry(
     )
     failed = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
     assert failed.returncode == 1
-    assert "evidence was retained" in failed.stderr
+    assert "selected repair effect is visible or may be visible" in failed.stderr
+    assert f"Transaction {transaction.stem} was retained" in failed.stderr
     assert transaction.exists()
     assert history.read_bytes() == payload
 
@@ -7079,6 +7182,81 @@ def test_repair_cleanup_visibility_failure_retains_wal_until_retry(
     assert retried.returncode == 0, retried.stderr
     assert not transaction.exists()
     assert history.read_bytes() == payload
+
+
+def test_repair_refuses_forged_symlink_temporary_claim_before_publication(
+    run_cli, tmp_path, monkeypatch
+):
+    """A self-consistent foreign staging link is not bound repair evidence."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    history.write_bytes(payload[: payload.find(b"\n") + 1])
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    claim = entry["temporary"]
+    target = Path(entry["intention"]["path"])
+    candidate = target.parent / claim["name"]
+    candidate.symlink_to("foreign-target")
+    claim["digest"] = "sha256:" + hashlib.sha256(b"foreign-target").hexdigest()
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    before = _final_tree_snapshot(tmp_path.parent)
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "does not prove this repair" in result.stderr
+    assert _final_tree_snapshot(tmp_path.parent) == before
+
+
+def test_repair_refuses_forged_file_temporary_claim_before_publication(
+    run_cli, tmp_path, monkeypatch
+):
+    """A self-consistent foreign staging file cannot borrow the WAL claim."""
+    transaction_entry, history = _retained_complete_append(
+        run_cli, tmp_path, monkeypatch
+    )
+    transaction = (
+        tmp_path / ".validated-memory" / "transactions"
+        / f"{transaction_entry['transaction']}.json"
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    claim = entry["temporary"]
+    target = tmp_path / entry["intention"]["path"]
+    candidate = target.parent / claim["name"]
+    candidate.write_bytes(b"foreign temporary bytes\n")
+    candidate.chmod(claim["mode"])
+    claim["digest"] = "sha256:" + hashlib.sha256(candidate.read_bytes()).hexdigest()
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    before = _final_tree_snapshot(tmp_path)
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "does not prove this repair" in result.stderr
+    assert _final_tree_snapshot(tmp_path) == before
+
+
+def test_repair_refuses_unsafe_temporary_kind_before_publication(
+    run_cli, tmp_path, monkeypatch
+):
+    """An unsafe temporary kind refuses without first publishing history."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    history.write_bytes(payload[: payload.find(b"\n") + 1])
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["temporary"]["kind"] = "directory"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    before = _final_tree_snapshot(tmp_path)
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "does not prove this repair" in result.stderr
+    assert _final_tree_snapshot(tmp_path) == before
 
 
 def test_private_duplicate_cleanup_visibility_failure_retains_wal(
@@ -7100,12 +7278,65 @@ def test_private_duplicate_cleanup_visibility_failure_retains_wal(
     assert failed.returncode == 1
     assert transaction.exists()
     assert not duplicate.exists()
-    assert "evidence was retained" in failed.stderr
+    assert "selected repair effect is visible or may be visible" in failed.stderr
 
     monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
     retried = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
     assert retried.returncode == 0, retried.stderr
     assert not transaction.exists()
+
+
+def test_repair_derives_clean_result_after_exact_private_duplicate_cleanup(
+    run_cli, tmp_path, monkeypatch
+):
+    """A removed exact private duplicate cannot survive as a stale gate."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    directory = transaction.parent
+    duplicate = directory / f".{transaction.name}.{'a' * 32}.tmp"
+    duplicate.write_bytes(transaction.read_bytes())
+    duplicate.chmod(stat.S_IMODE(transaction.stat().st_mode))
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert (result.returncode, result.stdout, result.stderr) == (
+        0,
+        "journal: repaired .validated-memory/local.jsonl for transaction "
+        f"{transaction.stem}\n",
+        "",
+    )
+    assert history.read_bytes() == payload
+    assert not transaction.exists()
+    assert not duplicate.exists()
+
+
+def test_repair_reports_unproven_private_residue_from_final_snapshot(
+    run_cli, tmp_path, monkeypatch
+):
+    """Foreign residue remains one final canonical checked gate."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    residue = transaction.parent / ".foreign.tmp"
+    residue.write_bytes(b"foreign residue\n")
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == (
+        "journal: repaired .validated-memory/local.jsonl for transaction "
+        f"{transaction.stem}\n"
+        "journal: repair confirmed, 1 gate(s) remain\n"
+    )
+    assert result.stderr == (
+        "ERROR: .validated-memory/transactions/.foreign.tmp: journal: retained "
+        "private residue; ownership was not proven. Address this condition, "
+        "then run journal --check; do not repeat the confirmed repair.\n"
+    )
+    assert history.read_bytes() == payload
+    assert not transaction.exists()
+    assert residue.read_bytes() == b"foreign residue\n"
 
 
 def test_repair_uses_wal_published_mode_after_target_chmod(
@@ -7130,6 +7361,569 @@ def test_repair_uses_wal_published_mode_after_target_chmod(
     assert "WAL postimage" in repaired.stderr
     assert transaction.exists()
     assert (tmp_path / "journal.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("conflict", ("selected-reuse", "adoption-mismatch"))
+def test_repair_refuses_candidate_identity_conflicts_before_publication(
+    run_cli, tmp_path, monkeypatch, conflict
+):
+    """Candidate topology cannot bless selected reuse or foreign adoption."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    history.write_bytes(payload[: payload.find(b"\n") + 1])
+    repository = tmp_path / "journal.jsonl"
+    records = _records(repository)
+    if conflict == "selected-reuse":
+        extra = dict(records[-2])
+        extra["transaction"] = transaction.stem
+        extra["stage"] = "prepared"
+        repository.write_bytes(
+            repository.read_bytes()
+            + (json.dumps(extra, sort_keys=True) + "\n").encode("utf-8")
+        )
+    else:
+        changed = [{**record, "adoption": "foreign-adoption"} for record in records]
+        repository.write_bytes(_jsonl(*changed))
+    before = _final_tree_snapshot(tmp_path)
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == ""
+    assert "does not prove this repair" in result.stderr
+    assert (
+        "exactly one claimed record pair" in result.stderr
+        if conflict == "selected-reuse"
+        else "adoption mismatch" in result.stderr
+    )
+    assert _final_tree_snapshot(tmp_path) == before
+
+
+def test_repair_confirms_with_only_frozen_unrelated_gate_remaining(
+    run_cli, tmp_path, monkeypatch
+):
+    """An unrelated candidate gate survives without lending repair authority."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    history.write_bytes(payload[: payload.find(b"\n") + 1])
+    repository = tmp_path / "journal.jsonl"
+    gate = dict(_records(repository)[-2])
+    gate.update(
+        transaction="unrelated-gate",
+        run="unrelated-run",
+        stage="prepared",
+    )
+    repository.write_bytes(
+        repository.read_bytes()
+        + (json.dumps(gate, sort_keys=True) + "\n").encode("utf-8")
+    )
+    repository_before = repository.read_bytes()
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == (
+        "journal: repaired .validated-memory/local.jsonl for transaction "
+        f"{transaction.stem}\n"
+        "journal: repair confirmed, 2 gate(s) remain\n"
+    )
+    assert result.stderr == (
+        "ERROR: repo: journal: transaction unrelated-gate has an unresolved "
+        "topology condition. "
+        "Address this condition, then run journal --check; do not repeat the "
+        "confirmed repair.\n"
+        "ERROR: knowledge-extension.md: journal: unfinished transaction from "
+        "run unrelated-run: the path is applied. Address this condition, then "
+        "run journal --check; do not repeat the confirmed repair.\n"
+    )
+    assert history.read_bytes() == payload
+    assert repository.read_bytes() == repository_before
+    assert not transaction.exists()
+
+
+def test_repair_does_not_borrow_or_revoke_for_unrelated_topology_damage(
+    run_cli, tmp_path, monkeypatch
+):
+    """Frozen unrelated damage survives as gates beside a confirmed repair."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    history.write_bytes(payload[: payload.find(b"\n") + 1])
+    repository = tmp_path / "journal.jsonl"
+    prepared = dict(_records(repository)[-2])
+    prepared.update(transaction="unrelated-damage", stage="prepared")
+    committed = {**prepared, "stage": "committed", "purpose": "different"}
+    repository.write_bytes(
+        repository.read_bytes() + _jsonl(prepared, committed)
+    )
+    repository_before = repository.read_bytes()
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout.startswith(
+        "journal: repaired .validated-memory/local.jsonl for transaction "
+        f"{transaction.stem}\n"
+    )
+    assert result.stdout.endswith("gate(s) remain\n")
+    assert "records of transaction unrelated-damage disagree on purpose" in result.stderr
+    assert "do not repeat the confirmed repair" in result.stderr
+    assert history.read_bytes() == payload
+    assert repository.read_bytes() == repository_before
+    assert not transaction.exists()
+
+
+@pytest.mark.parametrize("order", ("before", "after"))
+@pytest.mark.parametrize(
+    "gate",
+    ("damaged", "newer", "diverged", "unknown", "unreadable", "recoverable"),
+)
+def test_repair_confirms_with_every_unrelated_wal_gate_in_either_order(
+    run_cli, tmp_path, monkeypatch, order, gate
+):
+    """The full frozen WAL domain survives without lending repair authority."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    history.write_bytes(payload[: payload.find(b"\n") + 1])
+    other_id = "0000000000000000" if order == "before" else "ffffffffffffffff"
+    other = tmp_path / ".validated-memory" / "transactions" / f"{other_id}.json"
+    if gate == "damaged":
+        other.write_bytes(b"not json\n")
+    elif gate == "newer":
+        _transaction_file(tmp_path, other_id, schema=2)
+    elif gate in {"diverged", "unknown"}:
+        _transaction_file(
+            tmp_path,
+            other_id,
+            stage="published" if gate == "diverged" else "prepared",
+        )
+    else:
+        target = tmp_path / ("unreadable.txt" if gate == "unreadable" else "validated-memory.md")
+        if gate == "unreadable":
+            target.write_bytes(b"unreadable target\n")
+        target_bytes = target.read_bytes()
+        target_digest = "sha256:" + hashlib.sha256(target_bytes).hexdigest()
+        entry = _transaction_file(tmp_path, other_id)
+        entry["intention"]["path"] = target.relative_to(tmp_path).as_posix()
+        entry["preimage"] = {
+            "kind": "file",
+            "digest": target_digest,
+            "mode": stat.S_IMODE(target.stat().st_mode),
+        }
+        entry["preimage_blob"] = target_digest
+        other.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+        if gate == "unreadable":
+            target.chmod(0)
+    other_bytes = other.read_bytes()
+    checked = run_cli("journal", "--check", cwd=tmp_path)
+    checked_gate = next(
+        line for line in checked.stderr.splitlines() if other_id in line
+    )
+
+    try:
+        result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+    finally:
+        if gate == "unreadable":
+            target.chmod(0o644)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout.startswith(
+        "journal: repaired .validated-memory/local.jsonl for transaction "
+        f"{transaction.stem}\n"
+    )
+    assert result.stdout.endswith("gate(s) remain\n")
+    assert "do not repeat the confirmed repair" in result.stderr
+    assert (
+        checked_gate
+        + ". Address this condition, then run journal --check; do not repeat "
+        "the confirmed repair."
+    ) in result.stderr
+    assert "wal." not in result.stderr
+    assert "_" not in result.stderr
+    assert other.read_bytes() == other_bytes
+    assert not transaction.exists()
+    assert history.read_bytes() == payload
+
+
+def _rendezvous_repair(adopter, transaction, point="after-repair-publication"):
+    """Start one repair paused at a named proof/publication boundary."""
+    ready_read, ready_write = os.pipe()
+    continue_read, continue_write = os.pipe()
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT),
+        "VALIDATED_MEMORY_TEST_RENDEZVOUS": point,
+        "VALIDATED_MEMORY_TEST_READY_FD": str(ready_write),
+        "VALIDATED_MEMORY_TEST_CONTINUE_FD": str(continue_read),
+    }
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "validated_memory",
+            "journal",
+            "--repair",
+            transaction,
+        ],
+        cwd=adopter,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(ready_write, continue_read),
+    )
+    os.close(ready_write)
+    os.close(continue_read)
+    return process, ready_read, continue_write
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+@pytest.mark.parametrize(
+    "raced", ("selected", "opposite", "wal-bytes", "wal-identity", "wal-mode")
+)
+def test_repair_refuses_frozen_evidence_race_before_publication(
+    run_cli, tmp_path, monkeypatch, raced
+):
+    """Every selected proof input is revalidated at staging verification."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    prepared = payload[: payload.find(b"\n") + 1]
+    history.write_bytes(prepared)
+    repository = tmp_path / "journal.jsonl"
+    process, ready, proceed = _rendezvous_repair(
+        tmp_path, transaction.stem, "after-repair-inspection"
+    )
+    try:
+        readable, _, _ = select.select([ready], [], [], 10)
+        assert readable
+        assert os.read(ready, 32).strip() == b"1"
+        target = (
+            history
+            if raced == "selected"
+            else repository
+            if raced == "opposite"
+            else transaction
+        )
+        if raced == "wal-identity":
+            replacement = transaction.with_suffix(".replacement")
+            replacement.write_bytes(transaction.read_bytes())
+            os.replace(replacement, transaction)
+        elif raced == "wal-bytes":
+            transaction.write_bytes(transaction.read_bytes() + b" ")
+        elif raced == "wal-mode":
+            transaction.chmod(0o640)
+        else:
+            target.write_bytes(target.read_bytes() + b"\n")
+        raced_bytes = target.read_bytes()
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == ""
+    assert "does not prove this repair" in stderr
+    assert transaction.exists()
+    assert target.read_bytes() == raced_bytes
+    if raced != "selected":
+        assert history.read_bytes() == prepared
+
+
+@pytest.mark.skipif(os.name != "posix", reason="raw symlink bytes are POSIX-only")
+def test_repair_handles_non_utf8_symlink_temporary_without_traceback(
+    run_cli, tmp_path, monkeypatch
+):
+    """Filesystem-byte symlink proof never crosses a strict UTF-8 boundary."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    history.write_bytes(payload[: payload.find(b"\n") + 1])
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    target = Path(entry["intention"]["path"])
+    target.unlink()
+    os.symlink(b"\xff", os.fsencode(target))
+    raw_target = os.fsdecode(b"\xff")
+    entry["intention"]["target"] = raw_target
+    entry["postimage"]["target"] = raw_target
+    claim = entry["temporary"]
+    claim["digest"] = "sha256:" + hashlib.sha256(b"\xff").hexdigest()
+    candidate = target.parent / claim["name"]
+    os.symlink(b"\xff", os.fsencode(candidate))
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert (result.returncode, result.stdout, result.stderr) == (
+        0,
+        "journal: repaired .validated-memory/local.jsonl for transaction "
+        f"{transaction.stem}\n",
+        "",
+    )
+    assert history.read_bytes() == payload
+    assert not transaction.exists()
+    assert not os.path.lexists(candidate)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="raw symlink bytes are POSIX-only")
+def test_repair_refuses_unbound_non_utf8_symlink_before_publication(
+    run_cli, tmp_path, monkeypatch
+):
+    """A different invalid-byte staging target preserves the whole tree."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    history.write_bytes(payload[: payload.find(b"\n") + 1])
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    target = Path(entry["intention"]["path"])
+    target.unlink()
+    os.symlink(b"\xff", os.fsencode(target))
+    raw_target = os.fsdecode(b"\xff")
+    entry["intention"]["target"] = raw_target
+    entry["postimage"]["target"] = raw_target
+    claim = entry["temporary"]
+    claim["digest"] = "sha256:" + hashlib.sha256(b"\xff").hexdigest()
+    candidate = target.parent / claim["name"]
+    os.symlink(b"\xfe", os.fsencode(candidate))
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    before = _final_tree_snapshot(tmp_path.parent)
+
+    result = run_cli("journal", "--repair", transaction.stem, cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        "ERROR: .validated-memory/local.jsonl: journal: transaction "
+        f"{transaction.stem} does not prove this repair: temporary candidate "
+        "does not match its claim. No target or permanent-history change was "
+        "left by this operation. Preserve all evidence and select a transaction "
+        "carrying the required valid proof, or restore exact trusted history.\n"
+    )
+    assert _final_tree_snapshot(tmp_path.parent) == before
+
+
+def _repair_inspector_failure_mutant(tmp_path, failing_call):
+    """Copy the package and fail one numbered topology inspection."""
+    mutant = tmp_path / f"repair-inspector-{failing_call}"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant / "validated_memory")
+    topology = mutant / "validated_memory" / "journal" / "topology.py"
+    source = topology.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "inspect"
+    )
+    lines = source.splitlines(keepends=True)
+    lines.insert(function.lineno - 1, "_repair_inspection_calls = 0\n\n")
+    offset = 2
+    insertion = function.body[0].lineno - 1 + offset
+    lines[insertion:insertion] = [
+        "    global _repair_inspection_calls\n",
+        "    _repair_inspection_calls += 1\n",
+        f"    if _repair_inspection_calls == {failing_call}:\n",
+        "        raise RuntimeError('repair topology unavailable')\n",
+    ]
+    topology.write_text("".join(lines), encoding="utf-8")
+    return mutant
+
+
+@pytest.mark.parametrize("failing_call", (1, 3, 4))
+def test_repair_inspector_failure_refuses_before_or_retains_after_publication(
+    run_cli, tmp_path, monkeypatch, failing_call
+):
+    """Candidate and successor inspection failures never become success."""
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    prepared = payload[: payload.find(b"\n") + 1]
+    history.write_bytes(prepared)
+    repository_before = (adopter / "journal.jsonl").read_bytes()
+    mutant = _repair_inspector_failure_mutant(tmp_path, failing_call)
+
+    result = _run_mutant_journal(
+        mutant, adopter, "--repair", transaction.stem
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == ""
+    assert "Traceback" not in result.stderr
+    if failing_call == 1:
+        assert "does not prove this repair" in result.stderr
+        assert "candidate topology inspection is unavailable" in result.stderr
+        assert history.read_bytes() == prepared
+    elif failing_call == 3:
+        assert "selected repair effect is visible or may be visible" in result.stderr
+        assert "coherent successor inspection is unavailable" in result.stderr
+        assert history.read_bytes() == payload
+        assert transaction.exists()
+    else:
+        assert "selected repair effect is visible or may be visible" in result.stderr
+        assert "final coherent snapshot is unavailable" in result.stderr
+        assert history.read_bytes() == payload
+        assert transaction.exists()
+    if failing_call == 1:
+        assert transaction.exists()
+    assert (adopter / "journal.jsonl").read_bytes() == repository_before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+@pytest.mark.parametrize("raced", ("opposite", "selected"))
+def test_repair_retains_wal_when_pair_changes_after_publication(
+    run_cli, tmp_path, monkeypatch, raced
+):
+    """Post-publication artifact races cannot become repaired success."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    history.write_bytes(payload[: payload.find(b"\n") + 1])
+    repository = tmp_path / "journal.jsonl"
+    repository_before = repository.read_bytes()
+    process, ready, proceed = _rendezvous_repair(tmp_path, transaction.stem)
+    try:
+        readable, _, _ = select.select([ready], [], [], 10)
+        assert readable, "repair did not reach post-publication rendezvous"
+        assert os.read(ready, 32).strip() == b"1"
+        target = repository if raced == "opposite" else history
+        target.write_bytes(target.read_bytes() + b"\n")
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == ""
+    assert stderr.startswith(
+        "ERROR: .validated-memory/local.jsonl: journal: the selected repair "
+        "effect is visible or may be visible, but coherent successor "
+        "confirmation failed: "
+    )
+    assert f"Transaction {transaction.stem} was retained" in stderr
+    assert transaction.exists()
+    assert history.read_bytes().startswith(payload)
+    if raced == "opposite":
+        assert repository.read_bytes() == repository_before + b"\n"
+    else:
+        assert repository.read_bytes() == repository_before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+@pytest.mark.parametrize(
+    "raced", ("wal-bytes", "wal-identity", "wal-mode", "temporary")
+)
+def test_repair_preserves_replacement_raced_before_cleanup(
+    run_cli, tmp_path, monkeypatch, raced
+):
+    """Cleanup removes only the still-identical frozen WAL and temporary."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    history.write_bytes(payload[: payload.find(b"\n") + 1])
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    target = Path(entry["intention"]["path"])
+    claim = entry["temporary"]
+    temporary = target.parent / claim["name"]
+    temporary.symlink_to(entry["intention"]["target"])
+    process, ready, proceed = _rendezvous_repair(
+        tmp_path, transaction.stem, "before-repair-cleanup"
+    )
+    try:
+        readable, _, _ = select.select([ready], [], [], 10)
+        assert readable
+        assert os.read(ready, 32).strip() == b"1"
+        replaced = transaction if raced.startswith("wal-") else temporary
+        if raced == "wal-identity":
+            replacement = transaction.with_suffix(".replacement")
+            replacement.write_bytes(transaction.read_bytes())
+            os.replace(replacement, transaction)
+        elif raced == "wal-bytes":
+            transaction.write_bytes(transaction.read_bytes() + b" ")
+        elif raced == "wal-mode":
+            transaction.chmod(0o640)
+        else:
+            temporary.unlink()
+            temporary.symlink_to("foreign-replacement")
+        replacement_state = (
+            replaced.read_bytes()
+            if raced.startswith("wal-")
+            else os.readlink(replaced)
+        )
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == ""
+    assert "selected repair effect is visible or may be visible" in stderr
+    assert transaction.exists()
+    if raced.startswith("wal-"):
+        assert transaction.read_bytes() == replacement_state
+        if raced == "wal-mode":
+            assert stat.S_IMODE(transaction.stat().st_mode) == 0o640
+    else:
+        assert temporary.is_symlink()
+        assert os.readlink(temporary) == replacement_state
+    assert history.read_bytes() == payload
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+def test_repair_retains_wal_for_new_gate_after_auxiliary_cleanup(
+    run_cli, tmp_path, monkeypatch
+):
+    """A gate before proof cleanup terminalizes with the selected WAL intact."""
+    transaction, _claim, payload, history = _history_repair_fixture(
+        run_cli, tmp_path, monkeypatch
+    )
+    process, ready, proceed = _rendezvous_repair(
+        tmp_path, transaction.stem, "after-repair-auxiliary-cleanup"
+    )
+    residue = transaction.parent / ".late-foreign.tmp"
+    try:
+        readable, _, _ = select.select([ready], [], [], 10)
+        assert readable
+        assert os.read(ready, 32).strip() == b"1"
+        residue.write_bytes(b"late foreign residue\n")
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == ""
+    assert stderr == (
+        "ERROR: .validated-memory/local.jsonl: journal: the selected repair "
+        "effect is visible or may be visible, but coherent successor "
+        "confirmation failed: a new condition appeared before selected WAL "
+        f"cleanup. Transaction {transaction.stem} was retained. Preserve both "
+        "histories and the WAL; rerun journal --repair "
+        f"{transaction.stem}.\n"
+    )
+    assert history.read_bytes() == payload
+    assert transaction.exists()
+    assert residue.read_bytes() == b"late foreign residue\n"
 
 
 def test_claimless_zero_history_claim_uses_released_reconstruction(
@@ -7383,7 +8177,8 @@ def test_reserved_regular_staging_replacement_does_not_mutate_foreign_entry(
     assert foreign.read_bytes() == b"foreign staging entry\n"
     assert stat.S_IMODE(foreign.stat().st_mode) == 0o640
     assert transaction.exists()
-    assert "evidence was retained" in result.stderr
+    assert "does not prove this repair" in result.stderr
+    assert "No target or permanent-history change was left" in result.stderr
 
 
 def test_private_storage_crash_seam_leaves_prefix_and_claimed_staging(
@@ -8702,12 +9497,14 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
     protocol_tree = ast.parse(
         (journal_root / "protocol.py").read_text(encoding="utf-8")
     )
+    # Workflow inspection, repair candidate acquisition, and repair's staged
+    # preinstall verifier are the three protocol-owned coherent pair reads.
     assert sum(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "acquire_history_pair"
         for node in ast.walk(protocol_tree)
-    ) == 1
+    ) == 3
     raw_reachers = [
         path.name
         for path in journal_root.glob("*.py")
@@ -8725,8 +9522,13 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
         and isinstance(node.func, ast.Name)
         and node.func.id == "parse_acquired_history"
     ]
-    assert len(parse_calls) == 2
-    assert all(ast.unparse(call.args[0]) == "raw" for call in parse_calls)
+    assert len(parse_calls) == 4
+    parsed_arguments = [ast.unparse(call.args[0]) for call in parse_calls]
+    assert parsed_arguments.count("raw") == 2
+    assert set(parsed_arguments) >= {
+        "candidate_pair.repository",
+        "candidate_pair.local",
+    }
     reconcile_source = (journal_root / "reconcile.py").read_text(encoding="utf-8")
     assert "from .records import" in reconcile_source
     assert not re.search(r"\bread\s*\(", reconcile_source)
@@ -10020,6 +10822,7 @@ def test_protocol_vocabulary_is_private_and_command_has_one_inspection_seam():
         assert f"class {name}" in protocol
         assert name not in facade.split("__all__ =", 1)[1]
     assert command.count("history.perform(Inspect(check))") == 1
+    assert command.count("history.perform(RepairOne(transaction_id))") == 1
     for private_policy in (
         "acquire_history_pair(", "parse_acquired_history(",
         "inspect_topology(", "open_transactions(", "classify_evidence(",
@@ -10062,6 +10865,37 @@ def test_protocol_vocabulary_is_private_and_command_has_one_inspection_seam():
                     if alias.name.startswith("_")
                 )
     assert offenders == []
+
+
+def test_repair_policy_has_one_protocol_owner():
+    """Pin RepairOne policy in protocol and leave executor as an adapter."""
+    journal = REPO_ROOT / "validated_memory" / "journal"
+    executor = (journal / "executor.py").read_text(encoding="utf-8")
+    protocol = (journal / "protocol.py").read_text(encoding="utf-8")
+    executor_tree = ast.parse(executor)
+    functions = {
+        node.name: node
+        for node in executor_tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    repair = functions["repair_transaction"]
+    assert ast.unparse(repair.body[-1].value).startswith("_protocol_repair_one(")
+    for obsolete in (
+        "_repair_refusal",
+        "_expected_history_pair",
+        "_repair_history_target",
+        "_cleanup_temporary_claim",
+    ):
+        assert obsolete not in functions
+    for policy_call in (
+        "read_transaction(",
+        "open_transactions(",
+        "validate_snapshot(",
+        "current_state(",
+        "remove_transaction_file(",
+    ):
+        assert policy_call not in ast.unparse(repair)
+    assert "def repair_one(" in protocol
 
 
 def _protocol_projection_adapter(tmp_path):
@@ -11198,11 +12032,16 @@ def test_topology_shadow_fails_open_for_ordinary_exceptions(run_cli, tmp_path):
             for statement in node.body
         )
     ]
-    assert len(shadow_tries) == 1
-    assert len(shadow_tries[0].handlers) == 1
-    handler_type = shadow_tries[0].handlers[0].type
+    assert len(shadow_tries) == 2
+    reporting = next(
+        node for node in shadow_tries if "TopologyUnavailable" in ast.unparse(node)
+    )
+    candidate = next(node for node in shadow_tries if node is not reporting)
+    assert len(reporting.handlers) == 1
+    handler_type = reporting.handlers[0].type
     assert isinstance(handler_type, ast.Name)
     assert handler_type.id == "Exception"
+    assert "raise ValueError" in ast.unparse(candidate.handlers[0])
 
 
 def test_topology_inspector_exception_fails_closed_before_recovery_effect(
@@ -11690,9 +12529,12 @@ def test_topology_shadow_observes_successful_and_refused_targeted_repair(
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert result.stdout == ""
     assert result.stderr == (
-        f"ERROR: .validated-memory/transactions/{transaction.name}: journal: "
-        f"transaction {transaction.stem} history claim is not bound to its WAL; "
-        "Nothing has been changed.\n"
+        "ERROR: .validated-memory/local.jsonl: journal: transaction "
+        f"{transaction.stem} does not prove this repair: the history claim is "
+        "not bound to the selected WAL. No target or permanent-history change "
+        "was left by this operation. Preserve all evidence and select a "
+        "transaction carrying the required valid proof, or restore exact "
+        "trusted history.\n"
     )
     assert history.exists() and transaction.exists()
     assert _final_tree_snapshot(refused) == before_tree
