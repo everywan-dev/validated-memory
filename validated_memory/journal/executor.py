@@ -1,7 +1,7 @@
-"""The executor: adopting runs, targeted resolution and shared mechanics.
+"""The executor: adopting sessions, targeted resolution and shared mechanics.
 
-`_bootstrap` is the one write that cannot journal itself. The adopting session is the
-whole of docs/design/2026-09-01-the-journal-core.md §4's protocol -- the
+The adopting session is the whole of
+docs/design/2026-09-01-the-journal-core.md §4's execution protocol -- the
 lock, path authorisation, the expected-state check, the preimage, the
 transaction file, the publication and its durability barriers, the mode,
 and both history records.
@@ -20,7 +20,7 @@ import os
 import secrets
 import stat
 from contextlib import contextmanager
-from dataclasses import replace as _replace
+from dataclasses import dataclass, replace as _replace
 from pathlib import Path
 
 from .durable import (
@@ -38,7 +38,7 @@ from .durable import (
     republish_file,
     swap_final_history_for_test,
 )
-from .fault import fault_at, sleep_at
+from .fault import fault_at, rendezvous_at, sleep_at
 from .lock import Lock
 from .operations import (
     OUTCOME_APPLIED,
@@ -84,6 +84,7 @@ from .records import (
     new_id,
     read,
     record,
+    existing_adoption_id,
     validate_snapshot,
     ensure_history_compatibility,
 )
@@ -206,149 +207,23 @@ def _preimages_dir(root):
     return own_directory(root, PREIMAGE_DIRNAME)
 
 
-def _bootstrap(root, run, records, local):
-    """Ensure the journal exists, and return this adoption's id.
-
-    This is the one write that cannot journal itself: a record describing
-    the journal's own creation would have nowhere to go until the journal
-    exists. So the opening record is written complete to a temporary file,
-    flushed, and atomically installed -- before any adopter mutation, so
-    there is no window in which a mutation has happened and no journal
-    exists to describe it. The temporary is plugin-owned and is not itself
-    journalled.
-
-    `run` is the invocation's run id, so the opening record -- minted only
-    the first time a project ever bootstraps -- carries the same run id as
-    every other record that invocation writes, rather than a run of its own.
-
-    `adopting_run` holds the lock across this call. Two processes
-    bootstrapping the same new adopter without it would mint two adoption
-    ids, and the second install would win in silence.
-
-    `records` and `local` are the two journals `adopting_run` has already
-    read, so the files are not read twice. Each must be exactly what
-    `read(root, ...)` returned for its durability; anything else would mint
-    a second adoption id over a journal that already has one.
-
-    Both artifacts are consulted, because only one of them is versioned.
-    `journal.jsonl` is tracked and the vault is ignored, so an ordinary
-    `git checkout` of a commit from before the adoption takes the journal
-    away and leaves the vault: minting again there would file this run's
-    records under an id the vault's preimages know nothing about, split one
-    adoption in two, and report clean throughout, since no record is
-    missing or malformed.
-    """
-    path = journal_path(root, REPO)
-    adoption = _existing_adoption_id(records, local)
-    if adoption is None:
-        adoption = new_id()
-    if records:
-        # A lone opening record may be the visible residue of an earlier
-        # failed root barrier. Republishing its exact bytes creates a fresh
-        # namespace operation whose barrier can establish durability without
-        # changing the adoption identity.
-        if (
-            len(records) == 1
-            and not path.is_symlink()
-            and records[0]["op"] == OBSERVE
-            and records[0]["path"] == JOURNAL_FILENAME
-            and records[0].get("note") == "journal opened"
-        ):
-            _republish_opening(path, records[0])
-        return adoption
-
-    # Nothing was read, so the install below is about to publish the opening
-    # record under this NAME -- and `os.replace` replaces a symlink rather
-    # than following it. A link here is the adopter's: a broken one reads as
-    # absent and a resolvable one carries no records yet, and replacing
-    # either destroys something `init` did not create and cannot put back,
-    # which is exactly the trade `init.BROKEN_SYMLINK` refuses everywhere
-    # else. A link to a journal that HAS records never reaches this line.
-    if path.is_symlink():
-        raise JournalError(
-            None,
-            f"{JOURNAL_FILENAME} is a symlink and holds no records; "
-            "installing the journal here would replace the link itself, "
-            "which is the adopter's and cannot be put back -- point it at a "
-            "journal or remove it",
-            artifact_name(REPO),
-        )
-
-    opening = record(
-        OBSERVE,
-        "init",
-        JOURNAL_FILENAME,
-        durability=REPO,
-        stage=COMMITTED,
-        adoption=adoption,
-        run=run,
-        note="journal opened",
-    )
-    ensure_owned_directory(path.parent, root)
-    _republish_opening(path, opening)
-    return adoption
+@dataclass(frozen=True)
+class IdentityConfirmed:
+    adoption: str
+    repository: tuple[dict, ...]
+    local: tuple[dict, ...]
 
 
-def _republish_opening(path, opening):
-    """Install one complete opening record, preserving its exact identity."""
-    data = (json.dumps(opening, sort_keys=True) + "\n").encode("utf-8")
-    install_bytes(path, data, mode=0o644)
+@dataclass(frozen=True)
+class IdentityRefused:
+    artifact: str
+    message: str
 
 
-def _existing_adoption_id(repository, vault):
-    """This project's adoption id, from whichever journal still carries one.
-
-    None when neither does. Every record in both artifacts participates: one
-    project has one adoption id, so a later record carrying another id is as
-    contradictory as two artifacts disagreeing. A user can reach either
-    state through a vault copied into another tree, a `journal.jsonl`
-    restored from a different clone, or a bad merge. Nothing here can
-    resolve which pre-adoption state and preimages belong to the project, so
-    the refusal names every established id and the ways out.
-    """
-    repository_ids = {entry["adoption"] for entry in repository}
-    vault_ids = {entry["adoption"] for entry in vault}
-    established = repository_ids | vault_ids
-    if len(established) <= 1:
-        return next(iter(established), None)
-
-    minted = next(iter(repository_ids)) if len(repository_ids) == 1 else None
-    kept = next(iter(vault_ids)) if len(vault_ids) == 1 else None
-    if minted is not None and kept is not None and minted != kept:
-        raise JournalError(
-            None,
-            f"the vault is filed under adoption '{kept}' while "
-            f"{JOURNAL_FILENAME} is filed under '{minted}'; one project has "
-            "one adoption id, and nothing here can say which of the two is "
-            f"this project's -- restore the {JOURNAL_FILENAME} filed under "
-            f"'{kept}', or move {VAULT_DIRNAME}/ aside to adopt afresh, "
-            "since its preimages belong to the adoption it names",
-            artifact_name(LOCAL),
-        )
-
-    descriptions = []
-    if repository_ids:
-        descriptions.append(
-            f"{JOURNAL_FILENAME} is filed under "
-            + ", ".join(f"'{identity}'" for identity in sorted(repository_ids))
-        )
-    if vault_ids:
-        descriptions.append(
-            f"{artifact_name(LOCAL)} is filed under "
-            + ", ".join(f"'{identity}'" for identity in sorted(vault_ids))
-        )
-    conflict = (
-        artifact_name(REPO) if len(repository_ids) > 1 else artifact_name(LOCAL)
-    )
-    raise JournalError(
-        None,
-        f"{'; '.join(descriptions)}; one project has one adoption id, and "
-        "nothing here can say which identity later records belong to -- "
-        "restore the histories so every record carries the same adoption "
-        f"id, or move {VAULT_DIRNAME}/ aside to adopt afresh only if its "
-        "preimages do not belong to this project",
-        conflict,
-    )
+@dataclass(frozen=True)
+class IdentityRetained:
+    artifact: str
+    message: str
 
 
 class Run:
@@ -366,8 +241,9 @@ class Run:
     `journal --check` reconciles, because a history written before this
     protocol can hold one, but nothing here writes another.
 
-    `adopting_run` owns construction and holds `Lock` around both history
-    reads, identity creation and this session's complete caller scope. Every
+    `adopting_session` owns construction and holds `Lock` around both history
+    reads, the injected identity transition and this session's complete caller
+    scope. Every
     public method below also takes the lock itself: what serialises a write
     is the lock the write itself holds, not one a caller might happen to be
     inside.
@@ -2124,7 +2000,7 @@ def repair_harness_link(path, target, anchor=Path()):
 
 
 @contextmanager
-def adopting_run(root=Path()):
+def adopting_session(identity_transition, root=Path()):
     """Yield one adopting session while holding its run-wide lock.
 
     Identity creation is part of this operation: the histories are read and
@@ -2145,16 +2021,20 @@ def adopting_run(root=Path()):
                 historyless_transactions_message(transactions),
                 f"{VAULT_DIRNAME}/transactions",
             )
-        try:
-            adoption = _bootstrap(root, run, records, local)
-        except VisibilityUnconfirmed as error:
-            raise JournalError(
-                None,
-                str(error),
-                artifact_name(REPO),
-            ) from error
-        session = Run(root, run, adoption)
-        session._survey(records, local)
+        rendezvous_at("before-identity-transition", 1)
+        result = identity_transition(root, run, records, local)
+        if isinstance(result, IdentityConfirmed):
+            confirmed = result
+        elif isinstance(result, IdentityRefused):
+            raise JournalError(None, result.message, result.artifact)
+        elif isinstance(result, IdentityRetained):
+            raise JournalError(None, result.message, result.artifact)
+        else:
+            raise TypeError(
+                "identity transition returned an unknown closed result"
+            )
+        session = Run(root, run, confirmed.adoption)
+        session._survey(confirmed.repository, confirmed.local)
         yield session
 
 
@@ -2191,7 +2071,7 @@ def resolve_transaction(root, transaction_id, resolution):
 
         records = read(root, REPO)
         local = read(root, LOCAL)
-        adoption = _existing_adoption_id(records, local)
+        adoption = existing_adoption_id(records, local)
         if adoption is None:
             artifact = transaction_artifact(transaction_id)
             return Resolution(

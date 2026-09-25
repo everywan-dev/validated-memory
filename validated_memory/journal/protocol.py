@@ -13,15 +13,39 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from .durable import (
+    BootstrapPreparationFailed,
+    NoReplaceUnavailable,
+    StagingCleanupUnconfirmed,
+    VisibilityUnconfirmed,
+)
+from .executor import (
+    IdentityConfirmed,
+    IdentityRefused,
+    IdentityRetained,
+    adopting_session,
+)
 from .reconcile import reconcile
 from .records import (
+    COMMITTED,
+    JOURNAL_FILENAME,
     LOCAL,
+    OBSERVE,
     REPO,
     JournalError,
     RawHistoryFailure,
     RawHistoryPair,
     acquire_history_pair,
+    artifact_name,
+    confirm_histories,
+    existing_adoption_id,
+    is_complete_opening,
+    journal_path,
+    new_id,
     parse_acquired_history,
+    publish_opening,
+    reconfirm_opening,
+    record,
 )
 from .topology import Inspection as TopologyInspection
 from .topology import inspect as inspect_topology
@@ -195,6 +219,130 @@ Result = (
     | Unsupported
     | Damaged
 )
+
+
+def _refused(message, artifact=JOURNAL_FILENAME):
+    return IdentityRefused(artifact, message)
+
+
+def _retained(message, artifact=JOURNAL_FILENAME):
+    return IdentityRetained(artifact, message)
+
+
+def _identity_transition(root, run, _stale_repository, _stale_local):
+    """Own the C1b identity decision and return one closed executor result."""
+    root = Path(root)
+    path = journal_path(root, REPO)
+    try:
+        current = confirm_histories(root)
+        adoption = existing_adoption_id(current.repository, current.local)
+    except JournalError as error:
+        return _refused(error.message, error.artifact or JOURNAL_FILENAME)
+
+    if current.repository:
+        if len(current.repository) == 1 and is_complete_opening(
+            current.repository[0]
+        ):
+            try:
+                current = reconfirm_opening(root, current.repository[0])
+            except VisibilityUnconfirmed as error:
+                return _retained(
+                    "the complete canonical opening was re-dirtied or its "
+                    "directory was reconfirmed, but coherent successor "
+                    f"confirmation is incomplete: {error}. Preserve the "
+                    "canonical opening; no private staging residue is known"
+                )
+            except OSError as error:
+                return _refused(
+                    "history reconfirmation refused before writing because "
+                    f"{error}. Preserve the exact canonical opening and rerun "
+                    "init after removing the obstruction"
+                )
+        return IdentityConfirmed(
+            adoption,
+            current.repository,
+            current.local,
+        )
+
+    if path.is_symlink():
+        return _refused(
+            f"{JOURNAL_FILENAME} is a symlink and holds no records; it was "
+            "preserved. Restore the correct canonical artifact under operator "
+            "control, then rerun journal --check and init"
+        )
+    if current.pair.repository.data is not None:
+        return _refused(
+            "the existing bootstrap name is not one complete validated "
+            "opening; it was preserved"
+        )
+
+    adoption = adoption or new_id()
+    opening = record(
+        OBSERVE,
+        "init",
+        JOURNAL_FILENAME,
+        durability=REPO,
+        stage=COMMITTED,
+        adoption=adoption,
+        run=run,
+        note="journal opened",
+    )
+    try:
+        current = publish_opening(root, opening, current.local)
+    except NoReplaceUnavailable:
+        return _refused(
+            "journal bootstrap requires no-replace publication, which is "
+            "unavailable on this filesystem. Nothing has been published at "
+            "the canonical name"
+        )
+    except FileExistsError:
+        return _refused(
+            "another artifact reached the canonical name before bootstrap; "
+            "it was preserved and not replaced"
+        )
+    except BootstrapPreparationFailed as error:
+        return _refused(
+            "bootstrap stopped before canonical publication because "
+            f"{error.phase} failed: {error.error}. The canonical name was not "
+            "published by this operation. Remove the environmental obstruction "
+            "and rerun init"
+        )
+    except StagingCleanupUnconfirmed as error:
+        residue = error.staging.name
+        if error.published:
+            message = (
+                "the canonical opening is visible and coherently confirmed, "
+                "but cleanup of private staging residue "
+                f"{residue} is unconfirmed; preserve the canonical name and "
+                "the named private residue"
+            )
+        else:
+            message = (
+                "bootstrap stopped before canonical publication; the "
+                "canonical name was not published by this operation, but "
+                f"cleanup of private staging residue {residue} is unconfirmed"
+            )
+        return _retained(message)
+    except VisibilityUnconfirmed:
+        staging = sorted(path.parent.glob(f".{path.name}.*.bootstrap"))
+        residue = (
+            f"; private staging residue {staging[0].name} remains"
+            if staging
+            else "; no private staging residue is known"
+        )
+        return _retained(
+            "the canonical opening is visible or may be visible, but "
+            "publication or coherent readback is unconfirmed; preserve the "
+            f"canonical name{residue}"
+        )
+    return IdentityConfirmed(adoption, current.repository, current.local)
+
+
+@contextmanager
+def adopting_run(root=Path()):
+    """Preserve the opaque facade while C1b injects identity authority."""
+    with adopting_session(_identity_transition, root) as session:
+        yield session
 
 
 class _HistoryWorkflow:

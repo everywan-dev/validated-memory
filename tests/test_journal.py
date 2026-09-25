@@ -83,7 +83,7 @@ DURABLE_MUTATORS = {
     "install", "install_bytes", "create_exclusive", "create_directory",
     "replace_symlink", "append_bytes", "remove_name", "ensure_owned_directory",
     "ensure_external_directory", "repair_symlink", "republish_file",
-    "republish_directory",
+    "republish_directory", "publish_no_replace", "reconfirm_exact_file",
 }
 FACADE = "validated_memory.journal"
 
@@ -1640,21 +1640,80 @@ def test_adoption_and_resolution_keep_their_distinct_protocols():
                 names.append(target.attr)
         return names
 
-    adopting_calls = calls(functions["adopting_run"])
+    adopting_calls = calls(functions["adopting_session"])
     resolving_calls = calls(functions["resolve_transaction"])
     resolve_one_calls = calls(functions["_resolve_one"])
-    assert adopting_calls.count("_bootstrap") == 1
-    assert sum(
-        calls(function).count("_bootstrap") for function in functions.values()
-    ) == 1
+    assert adopting_calls.count("identity_transition") == 1
     assert resolving_calls.count("has_transaction") == 1
     assert resolving_calls.count("read_transaction") == 1
     assert not {
-        "_bootstrap",
+        "identity_transition",
         "_survey",
         "open_transactions",
         "recover",
     }.intersection(resolving_calls + resolve_one_calls)
+
+
+def test_c1b_bootstrap_adapter_has_no_legacy_publication_policy():
+    """Protocol alone selects mechanics; executor consumes every closed result."""
+    root = REPO_ROOT / "validated_memory" / JOURNAL_SOURCE
+    executor_source = (root / "executor.py").read_text(encoding="utf-8")
+    executor = ast.parse(executor_source)
+    executor_functions = {
+        node.name: node for node in ast.walk(executor)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "_bootstrap" not in executor_functions
+    assert "_republish_opening" not in executor_functions
+    session = executor_functions["adopting_session"]
+    session_names = {
+        node.id for node in ast.walk(session) if isinstance(node, ast.Name)
+    }
+    assert {"IdentityConfirmed", "IdentityRefused", "IdentityRetained"} <= session_names
+    assert not {
+        "publish_opening", "reconfirm_opening", "NoReplaceUnavailable",
+        "StagingCleanupUnconfirmed", "BootstrapPreparationFailed",
+    }.intersection(session_names)
+
+    protocol_source = (root / "protocol.py").read_text(encoding="utf-8")
+    protocol = ast.parse(protocol_source)
+    transition = next(
+        node for node in ast.walk(protocol)
+        if isinstance(node, ast.FunctionDef) and node.name == "_identity_transition"
+    )
+    transition_calls = {
+        node.func.id for node in ast.walk(transition)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert {"publish_opening", "reconfirm_opening"} <= transition_calls
+    for module in root.glob("*.py"):
+        if module.name == "protocol.py":
+            continue
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        called = {
+            node.func.id for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert not {"publish_opening", "reconfirm_opening"}.intersection(called)
+
+    records = (root / "records.py").read_text(encoding="utf-8")
+    assert "def publish_opening(" in records
+    assert "publish_no_replace(path, data, 0o644, verify)" in records
+    durable = (root / "durable.py").read_text(encoding="utf-8")
+    publication = durable.split("def publish_no_replace(", 1)[1].split("\ndef ", 1)[0]
+    assert "NoReplacePublication" not in durable
+    assert "os.replace(" not in publication
+    assert "create_exclusive(" not in publication
+    assert "os.link(" in publication
+    assert publication.index("try:") < publication.index("_temporary_path(")
+    assert publication.index(
+        'preparation_phase = "canonical publication"'
+    ) < publication.index("os.link(staging, path")
+    publish_node = next(
+        node for node in ast.parse(durable).body
+        if isinstance(node, ast.FunctionDef) and node.name == "publish_no_replace"
+    )
+    assert not any(isinstance(node, ast.Return) for node in ast.walk(publish_node))
 
 
 # The journal's modules in the order `journal/__init__.py` lists them, which
@@ -1907,19 +1966,29 @@ def test_bootstrap_barrier_failure_gates_before_scaffold_and_keeps_identity(
 ):
     """A visible opening record is never described as absent or rolled back."""
     monkeypatch.setenv(
-        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "install:journal.jsonl"
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "bootstrap-publish:journal.jsonl"
     )
 
     failed = run_cli("init", cwd=tmp_path)
 
     assert failed.returncode == 1, (failed.stdout, failed.stderr)
     assert "Traceback" not in failed.stderr, failed.stderr
-    assert "visible" in failed.stderr, failed.stderr
-    assert "durability is unconfirmed" in failed.stderr, failed.stderr
     journal = tmp_path / "journal.jsonl"
     opening = _records(journal)
     assert len(opening) == 1, opening
     assert opening[0]["note"] == "journal opened", opening
+    staging = list(tmp_path.glob(".journal.jsonl.*.bootstrap"))
+    if os.name == "nt":
+        assert staging == []
+        residue = "; no private staging residue is known"
+    else:
+        assert len(staging) == 1
+        residue = f"; private staging residue {staging[0].name} remains"
+    assert failed.stderr == (
+        "ERROR: journal.jsonl: journal: the canonical opening is visible or "
+        "may be visible, but publication or coherent readback is unconfirmed; "
+        f"preserve the canonical name{residue}\n"
+    )
     assert not (tmp_path / "knowledge").exists()
     assert not (tmp_path / ".gitignore").exists()
     assert not list((tmp_path / ".validated-memory").glob("transactions/*.json"))
@@ -1931,6 +2000,598 @@ def test_bootstrap_barrier_failure_gates_before_scaffold_and_keeps_identity(
     assert {record["adoption"] for record in _records(journal)} == {
         opening[0]["adoption"]
     }
+
+
+def test_bootstrap_competitor_wins_without_replacement(run_cli, tmp_path, monkeypatch):
+    """The canonical competitor is preserved byte-for-byte before scaffold."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "bootstrap-competitor:journal.jsonl",
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stderr == (
+        "ERROR: journal.jsonl: journal: another artifact reached the "
+        "canonical name before bootstrap; it was preserved and not replaced\n"
+    )
+    assert (tmp_path / "journal.jsonl").read_bytes() == b"competitor\n"
+    assert not (tmp_path / "knowledge").exists()
+    assert not list(tmp_path.glob(".journal.jsonl.*.bootstrap"))
+
+
+@pytest.mark.parametrize(
+    "point",
+    (
+        "no-replace-unavailable",
+        "no-replace-not-implemented",
+        "no-replace-enosys",
+        "no-replace-eopnotsupp",
+        "no-replace-eperm",
+    ),
+)
+def test_bootstrap_refuses_when_no_replace_is_unavailable(
+    run_cli, tmp_path, monkeypatch, point
+):
+    """A missing publication primitive leaves no canonical opening."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        f"{point}:journal.jsonl",
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stderr == (
+        "ERROR: journal.jsonl: journal: journal bootstrap requires no-replace "
+        "publication, which is unavailable on this filesystem. Nothing has "
+        "been published at the canonical name\n"
+    )
+    assert not (tmp_path / "journal.jsonl").exists()
+    assert not (tmp_path / "knowledge").exists()
+    assert not list(tmp_path.glob(".journal.jsonl.*.bootstrap"))
+
+
+@pytest.mark.parametrize(
+    ("point", "phase"),
+    (
+        ("bootstrap-staging-create", "staging creation"),
+        ("bootstrap-write", "staging write"),
+        ("bootstrap-mode", "staging mode"),
+        ("bootstrap-file-fsync", "staging file flush"),
+        ("bootstrap-canonical-publication", "canonical publication"),
+    ),
+)
+def test_bootstrap_staging_failure_is_a_clean_prepublication_refusal(
+    run_cli, tmp_path, monkeypatch, point, phase
+):
+    """Confirmed private cleanup permits an exact unchanged-canonical claim."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", f"{point}:journal.jsonl"
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stderr == (
+        "ERROR: journal.jsonl: journal: bootstrap stopped before canonical "
+        f"publication because {phase} failed: [Errno 5] injected persistence "
+        "failure: 'journal.jsonl'. The canonical name was not published by "
+        "this operation. Remove the environmental obstruction and rerun init\n"
+    )
+    assert not (tmp_path / "journal.jsonl").exists()
+    assert not list(tmp_path.glob(".journal.jsonl.*.bootstrap"))
+    assert not (tmp_path / "knowledge").exists()
+    assert [item[0] for item in _final_tree_snapshot(tmp_path)] == [
+        ".validated-memory"
+    ]
+
+
+def test_bootstrap_identity_failure_retains_the_named_private_residue(
+    run_cli, tmp_path, monkeypatch
+):
+    """A post-create identity failure cannot claim confirmed private cleanup."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "bootstrap-staging-identity:journal.jsonl",
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    staging = list(tmp_path.glob(".journal.jsonl.*.bootstrap"))
+    assert len(staging) == 1
+    residue = staging[0].name
+    assert result.stderr == (
+        "ERROR: journal.jsonl: journal: bootstrap stopped before canonical "
+        "publication; the canonical name was not published by this operation, "
+        f"but cleanup of private staging residue {residue} is unconfirmed\n"
+    )
+    assert staging[0].read_bytes() == b""
+    assert not (tmp_path / "journal.jsonl").exists()
+    assert not (tmp_path / "knowledge").exists()
+    assert [item[0] for item in _final_tree_snapshot(tmp_path)] == [
+        residue,
+        ".validated-memory",
+    ]
+
+
+def test_bootstrap_mode_is_set_before_the_staging_file_barrier():
+    """The descriptor barrier covers both complete bytes and required mode."""
+    source = (
+        REPO_ROOT / "validated_memory" / "journal" / "durable.py"
+    ).read_text(encoding="utf-8")
+    publication = source.split("def publish_no_replace(", 1)[1].split(
+        "\ndef ", 1
+    )[0]
+    assert publication.index("handle.write(data)") < publication.index(
+        "_chmod_staging(descriptor, staging, mode)"
+    )
+    assert publication.index(
+        "_chmod_staging(descriptor, staging, mode)"
+    ) < publication.index("os.fsync(handle.fileno())")
+    assert publication.index("os.fsync(handle.fileno())") < publication.index(
+        "os.link(staging, path"
+    )
+
+
+@pytest.mark.parametrize(
+    "shape", ("zero", "blank", "partial", "malformed", "symlink", "directory")
+)
+def test_foreign_bootstrap_shapes_are_preserved_and_refused(
+    run_cli, tmp_path, shape
+):
+    """No invalid or foreign canonical bootstrap node becomes an opening."""
+    journal = tmp_path / "journal.jsonl"
+    if shape == "zero":
+        journal.write_bytes(b"")
+    elif shape == "blank":
+        journal.write_bytes(b" \n\n")
+    elif shape == "partial":
+        journal.write_bytes(b'{"schema":1')
+    elif shape == "malformed":
+        journal.write_bytes(b"{not json}\n")
+    elif shape == "symlink":
+        target = tmp_path / "foreign.jsonl"
+        target.write_bytes(b"")
+        journal.symlink_to(target.name)
+    else:
+        journal.mkdir()
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    local.parent.mkdir()
+    local.write_text(
+        json.dumps({
+            "schema": 1,
+            "at": "2026-09-25T00:00:00Z",
+            "version": "2.4.0",
+            "adoption": "edededededededed",
+            "run": "efefefefefefefef",
+            "durability": "local",
+            "op": "observe",
+            "purpose": "init",
+            "path": "/external/harness-memory",
+            "stage": "committed",
+            "note": "local witness",
+        }, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    local.chmod(0o640)
+    before = _final_tree_snapshot(tmp_path)
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    expected = {
+        "zero": (
+            "ERROR: journal.jsonl: journal: the existing bootstrap name is "
+            "not one complete validated opening; it was preserved\n"
+        ),
+        "blank": (
+            "ERROR: journal.jsonl: journal: the existing bootstrap name is "
+            "not one complete validated opening; it was preserved\n"
+        ),
+        "partial": (
+            "ERROR: journal.jsonl: journal: non-empty history does not end "
+            "with a line feed; the final record is not appendable without "
+            "explicit targeted repair\n"
+        ),
+        "malformed": (
+            "ERROR: journal.jsonl:1: journal: line is not valid JSON: "
+            "Expecting property name enclosed in double quotes\n"
+        ),
+        "symlink": (
+            "ERROR: journal.jsonl: journal: journal.jsonl is a symlink and "
+            "holds no records; it was preserved. Restore the correct canonical "
+            "artifact under operator control, then rerun journal --check and init\n"
+        ),
+        "directory": (
+            "ERROR: journal.jsonl: journal: journal is not a regular file; a "
+            "directory, a device or a pipe holds no records and nothing here "
+            "can read one from it\n"
+        ),
+    }
+    assert result.stderr == expected[shape]
+    assert not (tmp_path / "knowledge").exists()
+    after = _final_tree_snapshot(tmp_path)
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("point", "canonical"),
+    (("bootstrap-staged", False), ("bootstrap-visible", True)),
+)
+def test_hard_death_never_exposes_a_partial_bootstrap(
+    tmp_path, point, canonical
+):
+    """Staging death is private; post-publication death leaves complete bytes."""
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT),
+        "VALIDATED_MEMORY_STORAGE_CRASH": f"{point}:*",
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+    )
+
+    assert result.returncode == 71, (result.stdout, result.stderr)
+    journal = tmp_path / "journal.jsonl"
+    assert journal.exists() is canonical
+    if canonical:
+        opening = _records(journal)
+        assert len(opening) == 1 and opening[0]["note"] == "journal opened"
+    staging = list(tmp_path.glob(".journal.jsonl.*.bootstrap"))
+    expected_staging = 0 if canonical and os.name == "nt" else 1
+    assert len(staging) == expected_staging
+    if staging:
+        assert staging[0].read_bytes()
+    assert not (tmp_path / "knowledge").exists()
+
+
+@pytest.mark.parametrize(
+    "published",
+    (
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                os.name == "nt",
+                reason="Windows rename consumes the private staging name",
+            ),
+        ),
+    ),
+)
+def test_bootstrap_cleanup_uncertainty_gates_later_effects(
+    run_cli, tmp_path, monkeypatch, published
+):
+    """Unconfirmed private cleanup is retained on either side of publication."""
+    fault = "bootstrap-cleanup:*"
+    if not published:
+        fault += ",bootstrap-competitor:journal.jsonl"
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", fault)
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    staging = list(tmp_path.glob(".journal.jsonl.*.bootstrap"))
+    assert len(staging) == 1
+    residue = staging[0].name
+    assert not (tmp_path / "knowledge").exists()
+    if published:
+        canonical = tmp_path / "journal.jsonl"
+        assert len(_records(canonical)) == 1
+        assert canonical.stat().st_ino == staging[0].stat().st_ino
+        assert stat.S_IMODE(canonical.stat().st_mode) == 0o644
+        assert result.stderr == (
+            "ERROR: journal.jsonl: journal: the canonical opening is visible "
+            "and coherently confirmed, but cleanup of private staging residue "
+            f"{residue} is unconfirmed; preserve the canonical name and the "
+            "named private residue\n"
+        )
+    else:
+        canonical = tmp_path / "journal.jsonl"
+        assert canonical.read_bytes() == b"competitor\n"
+        assert stat.S_IMODE(canonical.stat().st_mode) == 0o640
+        assert canonical.stat().st_ino != staging[0].stat().st_ino
+        assert len(_records(staging[0])) == 1
+        assert result.stderr == (
+            "ERROR: journal.jsonl: journal: bootstrap stopped before canonical "
+            "publication; the canonical name was not published by this "
+            "operation, but cleanup of private staging residue "
+            f"{residue} is unconfirmed\n"
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows rename")
+def test_windows_bootstrap_rename_consumes_staging_before_cleanup(
+    run_cli, tmp_path, monkeypatch
+):
+    """Native Windows success leaves complete canonical bytes and no residue."""
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "bootstrap-cleanup:*"
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stderr == ""
+    assert len(_records(tmp_path / "journal.jsonl")) > 1
+    assert not list(tmp_path.glob(".journal.jsonl.*.bootstrap"))
+    assert (tmp_path / "knowledge").is_dir()
+
+
+def test_windows_bootstrap_branch_is_one_consuming_no_replace_rename():
+    """Pin the Windows primitive while native black-box tests own its effects."""
+    source = (
+        REPO_ROOT / "validated_memory" / "journal" / "durable.py"
+    ).read_text(encoding="utf-8")
+    publication = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "publish_no_replace"
+    )
+    platform_branch = next(
+        node
+        for node in ast.walk(publication)
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test) == "os.name == 'nt'"
+    )
+    windows_calls = [
+        ast.unparse(node)
+        for statement in platform_branch.body
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Call)
+    ]
+    posix_calls = [
+        ast.unparse(node)
+        for statement in platform_branch.orelse
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Call)
+    ]
+    assert windows_calls == ["os.rename(staging, path)"]
+    assert "os.link(staging, path, follow_symlinks=False)" in posix_calls
+    text = ast.unparse(publication)
+    assert text.index("_bootstrap_competitor_for_test(path)") < text.index(
+        "os.rename(staging, path)"
+    )
+    assert text.index("os.rename(staging, path)") < text.index("published = True")
+    assert text.index("published = True") < text.index(
+        "storage_crash('bootstrap-visible', path)"
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "opening-file-fsync:journal.jsonl",
+        "opening-directory:journal.jsonl",
+        "opening-after-barriers:journal.jsonl",
+    ),
+)
+def test_established_opening_is_reconfirmed_before_scaffold(
+    run_cli, tmp_path, monkeypatch, failure
+):
+    """A fresh process re-dirties the full lone opening before relying on it."""
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT),
+        "VALIDATED_MEMORY_STORAGE_CRASH": "bootstrap-visible:*",
+    }
+    crashed = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+    )
+    assert crashed.returncode == 71
+    journal = tmp_path / "journal.jsonl"
+    before = journal.read_bytes()
+    identity = journal.stat().st_ino
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        failure,
+    )
+
+    failed = run_cli("init", cwd=tmp_path)
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert "complete canonical opening was re-dirtied" in failed.stderr
+    assert journal.read_bytes() == before
+    assert journal.stat().st_ino == identity
+    assert not (tmp_path / "knowledge").exists()
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    completed = run_cli("init", cwd=tmp_path)
+    assert completed.returncode == 0, (completed.stdout, completed.stderr)
+    assert journal.stat().st_ino == identity
+    assert journal.read_bytes().startswith(before)
+
+
+def test_short_opening_rewrite_failure_is_retained_and_terminal(
+    run_cli, tmp_path, monkeypatch
+):
+    """The first successful byte write makes every later failure retained."""
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT),
+        "VALIDATED_MEMORY_STORAGE_CRASH": "bootstrap-visible:*",
+    }
+    crashed = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+    )
+    assert crashed.returncode == 71
+    journal = tmp_path / "journal.jsonl"
+    (tmp_path / ".validated-memory" / "lock").unlink()
+    before = _final_tree_snapshot(tmp_path)
+    identity = journal.stat().st_ino
+    mode = stat.S_IMODE(journal.stat().st_mode)
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "opening-short-write:journal.jsonl",
+    )
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    expected = (
+        "ERROR: journal.jsonl: journal: the complete canonical opening was "
+        "re-dirtied or its directory was reconfirmed, but coherent successor "
+        "confirmation is incomplete: opening-reconfirmation of "
+        "journal.jsonl is visible, but its durability is unconfirmed: "
+        "[Errno 5] injected failure after a short opening write. Preserve the "
+        "canonical opening; no private staging residue is known\n"
+    )
+    assert result.stderr == expected
+    assert _final_tree_snapshot(tmp_path) == before
+    assert journal.stat().st_ino == identity
+    assert stat.S_IMODE(journal.stat().st_mode) == mode
+    assert not (tmp_path / "knowledge").exists()
+
+
+def _rendezvous_init(adopter, point):
+    ready_read, ready_write = os.pipe()
+    continue_read, continue_write = os.pipe()
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT),
+        "VALIDATED_MEMORY_TEST_RENDEZVOUS": point,
+        "VALIDATED_MEMORY_TEST_READY_FD": str(ready_write),
+        "VALIDATED_MEMORY_TEST_CONTINUE_FD": str(continue_read),
+    }
+    process = subprocess.Popen(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        cwd=adopter,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(ready_write, continue_read),
+    )
+    os.close(ready_write)
+    os.close(continue_read)
+    return process, ready_read, continue_write
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+def test_opening_reconfirmation_rejects_identical_opposite_replacement(tmp_path):
+    """Equal opposite bytes cannot conceal a changed descriptor identity."""
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT),
+        "VALIDATED_MEMORY_STORAGE_CRASH": "bootstrap-visible:*",
+    }
+    crashed = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert crashed.returncode == 71
+    (tmp_path / ".validated-memory" / "lock").unlink()
+    repository = tmp_path / "journal.jsonl"
+    opening = _records(repository)[0]
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    local_entry = {
+        **opening,
+        "durability": "local",
+        "path": "/external/harness-memory",
+        "note": "local witness",
+    }
+    local.write_text(json.dumps(local_entry, sort_keys=True) + "\n", encoding="utf-8")
+    local.chmod(0o640)
+    repo_before = (repository.read_bytes(), repository.stat().st_ino)
+    local_before = (local.read_bytes(), local.stat().st_ino, stat.S_IMODE(local.stat().st_mode))
+    process, ready, proceed = _rendezvous_init(
+        tmp_path, "after-opening-reconfirmation"
+    )
+    try:
+        assert _await_history_attempt(ready) == 1
+        replacement = local.with_name("local.replacement")
+        replacement.write_bytes(local_before[0])
+        replacement.chmod(local_before[2])
+        os.replace(replacement, local)
+        os.write(proceed, b"x")
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert "coherent successor confirmation is incomplete" in stderr
+    assert "complete opening reconfirmation did not produce" in stderr
+    assert (repository.read_bytes(), repository.stat().st_ino) == repo_before
+    assert local.read_bytes() == local_before[0]
+    assert local.stat().st_ino != local_before[1]
+    assert stat.S_IMODE(local.stat().st_mode) == local_before[2]
+    assert not (tmp_path / "knowledge").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+def test_identity_transition_reacquires_after_executor_stale_reads(tmp_path):
+    """Survey and adoption identity come from the callback's confirmed pair."""
+    process, ready, proceed = _rendezvous_init(
+        tmp_path, "before-identity-transition"
+    )
+    adoption = "abababababababab"
+    opening = {
+        "schema": 1,
+        "at": "2026-09-25T00:00:00Z",
+        "version": "2.4.0",
+        "adoption": adoption,
+        "run": "cdcdcdcdcdcdcdcd",
+        "durability": "repo",
+        "op": "observe",
+        "purpose": "init",
+        "path": "journal.jsonl",
+        "stage": "committed",
+        "note": "journal opened",
+    }
+    try:
+        assert _await_history_attempt(ready) == 1
+        journal = tmp_path / "journal.jsonl"
+        journal.write_text(json.dumps(opening, sort_keys=True) + "\n", encoding="utf-8")
+        journal.chmod(0o644)
+        os.write(proceed, b"x")
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+    assert process.returncode == 0, (stdout, stderr)
+    assert stderr == ""
+    assert {entry["adoption"] for entry in _records(tmp_path / "journal.jsonl")} == {
+        adoption
+    }
+    assert (tmp_path / "knowledge").is_dir()
 
 
 def _orphan_transaction(tree, transaction_id, adoption="aaaaaaaaaaaaaaaa"):
@@ -2092,8 +2753,9 @@ def test_unexpected_bootstrap_directory_errors_gate_without_claiming_absence(
 
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert "Traceback" not in result.stderr, result.stderr
-    assert "durability is unconfirmed" in result.stderr, result.stderr
-    assert not (tmp_path / "journal.jsonl").exists()
+    assert "publication or coherent readback is unconfirmed" in result.stderr
+    opening = _records(tmp_path / "journal.jsonl")
+    assert len(opening) == 1 and opening[0]["note"] == "journal opened"
     assert not (tmp_path / "knowledge").exists()
 
 
@@ -4633,7 +5295,7 @@ def test_two_trees_sharing_one_journal_take_one_lock(run_cli, tmp_path):
 def test_a_broken_journal_symlink_locks_inside_the_root(run_cli, tmp_path):
     """A broken journal symlink keeps locking inside the adopter root.
 
-    `_bootstrap` then refuses the journal without creating its target parent."""
+    The identity transition preserves it without creating its target parent."""
     root = tmp_path / "adopter"
     elsewhere = tmp_path / "elsewhere"
     root.mkdir()
@@ -6943,7 +7605,7 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
         for node in executor_tree.body
         if isinstance(node, ast.FunctionDef)
     }
-    for name in ("adopting_run", "resolve_transaction"):
+    for name in ("adopting_session", "resolve_transaction"):
         lock = next(
             node
             for node in ast.walk(functions[name])
@@ -9356,7 +10018,7 @@ def test_acquired_history_parser_cannot_reread_a_name():
         _assert_acquired_parser_uses_only_supplied_bytes(mutant)
 
 
-def test_paired_history_rendezvous_has_one_reader_and_one_call_site():
+def test_history_rendezvous_has_one_reader_and_bounded_call_sites():
     sources = {
         path.relative_to(REPO_ROOT).as_posix(): path.read_text(encoding="utf-8")
         for path in (REPO_ROOT / "validated_memory").rglob("*.py")
@@ -9367,17 +10029,40 @@ def test_paired_history_rendezvous_has_one_reader_and_one_call_site():
         if "VALIDATED_MEMORY_TEST_RENDEZVOUS" in source
     ]
     assert readers == ["validated_memory/journal/fault.py"]
-    records_tree = ast.parse(sources["validated_memory/journal/records.py"])
-    calls = [
-        node
-        for node in ast.walk(records_tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "rendezvous_at"
-    ]
-    assert len(calls) == 1
-    assert ast.literal_eval(calls[0].args[0]) == "after-first-history-read"
-    assert ast.unparse(calls[0].args[1]) == "attempt"
+    calls = []
+    for relative in (
+        "validated_memory/journal/records.py",
+        "validated_memory/journal/executor.py",
+    ):
+        tree = ast.parse(sources[relative])
+        calls.extend(
+            (relative, node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "rendezvous_at"
+        )
+    observed = {
+        (relative, ast.literal_eval(call.args[0]), ast.unparse(call.args[1]))
+        for relative, call in calls
+    }
+    assert observed == {
+        (
+            "validated_memory/journal/records.py",
+            "after-first-history-read",
+            "attempt",
+        ),
+        (
+            "validated_memory/journal/records.py",
+            "after-opening-reconfirmation",
+            "1",
+        ),
+        (
+            "validated_memory/journal/executor.py",
+            "before-identity-transition",
+            "1",
+        ),
+    }
 
 
 def test_cross_history_reuse_precedes_same_artifact_multiplicity(

@@ -57,7 +57,7 @@ It exposes neither persistence primitives nor their exception types and turns
 post-visibility uncertainty into a gating `JournalError`.
 """
 
-from .executor import adopting_run, repair_harness_link, resolve_transaction
+from .executor import repair_harness_link, resolve_transaction
 from .operations import (
     OUTCOME_APPLIED,
     OUTCOME_NOOP,
@@ -77,6 +77,7 @@ from .records import (
     digest,
 )
 from .transactions import RECOVERED, RESOLUTIONS
+from .protocol import adopting_run
 from .command import run
 
 __all__ = [

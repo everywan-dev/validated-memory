@@ -42,6 +42,29 @@ class VisibilityUnconfirmed(Exception):
         )
 
 
+class NoReplaceUnavailable(Exception):
+    """The platform cannot publish a staged file without replacement."""
+
+
+class BootstrapPreparationFailed(Exception):
+    """Private bootstrap preparation failed before canonical publication."""
+
+    def __init__(self, phase, error):
+        self.phase = phase
+        self.error = error
+        super().__init__(str(error))
+
+
+class StagingCleanupUnconfirmed(Exception):
+    """Private bootstrap staging may remain after a failed cleanup."""
+
+    def __init__(self, staging, published, error):
+        self.staging = Path(staging)
+        self.published = published
+        self.error = error
+        super().__init__(str(error))
+
+
 class _Operation(Enum):
     """The closed set of namespace effects this persistence seam owns."""
 
@@ -141,6 +164,17 @@ _UNSUPPORTED_DIRECTORY_ERRORS = {
     if value is not None
 }
 
+_UNSUPPORTED_NO_REPLACE_ERRORS = {
+    value
+    for value in (
+        errno.EINVAL,
+        errno.ENOSYS,
+        getattr(errno, "ENOTSUP", None),
+        getattr(errno, "EOPNOTSUPP", None),
+    )
+    if value is not None
+}
+
 
 def _injected_error(point, path):
     """Raise a deterministic test-only I/O error at one persistence point."""
@@ -205,6 +239,52 @@ def _corrupt_staging_for_test(path, descriptor, data):
     os.lseek(descriptor, 0, os.SEEK_SET)
     os.ftruncate(descriptor, 0)
     os.write(descriptor, replacement)
+
+
+def _bootstrap_competitor_for_test(path):
+    """Create a bounded canonical competitor immediately before publication."""
+    requested = {
+        item.strip()
+        for item in os.environ.get(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
+        ).split(",")
+        if item.strip()
+    }
+    path = Path(path)
+    if f"bootstrap-competitor:{path.name}" not in requested:
+        return
+    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o640)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(b"competitor\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _cleanup_bootstrap_staging(path):
+    """Remove only the private bootstrap name and confirm its directory."""
+    path = Path(path)
+    _injected_error("bootstrap-cleanup", path)
+    path.unlink()
+    try:
+        _confirm_directory(path.parent, "bootstrap-cleanup")
+    except OSError as error:
+        raise VisibilityUnconfirmed(
+            path, "bootstrap-cleanup", True, error
+        ) from error
+
+
+def _short_opening_write_for_test(path, written):
+    """Fail after the first descriptor write for bounded retained testing."""
+    requested = {
+        item.strip()
+        for item in os.environ.get(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
+        ).split(",")
+        if item.strip()
+    }
+    path = Path(path)
+    if written and f"opening-short-write:{path.name}" in requested:
+        raise OSError(errno.EIO, "injected failure after a short opening write")
 
 
 def _confirm_directory(path, operation):
@@ -417,6 +497,189 @@ def install_bytes(path, data, mode=0o600, verify=None, temporary=None, crash_sto
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def publish_no_replace(path, data, mode, verify):
+    """Publish complete staged bytes without replacing a canonical name.
+
+    ``verify`` runs after the canonical directory barrier while the private
+    hard-link name still exists.  It must coherently confirm the permanent
+    history pair before private cleanup can turn the operation into success.
+    """
+    path = Path(path)
+    staging = None
+    descriptor = None
+    published = False
+    identity = None
+    preparation_phase = "staging creation"
+    try:
+        _injected_error("bootstrap-staging-create", path)
+        staging, descriptor = _temporary_path(
+            path.parent, path.name, ".bootstrap"
+        )
+        _injected_error("bootstrap-staging-identity", path)
+        identity = os.fstat(descriptor)
+        with os.fdopen(descriptor, "wb", closefd=False) as handle:
+            preparation_phase = "staging write"
+            _injected_error("bootstrap-write", path)
+            handle.write(data)
+            handle.flush()
+            preparation_phase = "staging mode"
+            _injected_error("bootstrap-mode", path)
+            _chmod_staging(descriptor, staging, mode)
+            preparation_phase = "staging file flush"
+            _injected_error("bootstrap-file-fsync", path)
+            os.fsync(handle.fileno())
+        if not _same_open_entry(staging, identity):
+            raise OSError(
+                errno.EBUSY,
+                "bootstrap staging entry changed before publication",
+                os.fspath(staging),
+            )
+        storage_crash("bootstrap-staged", staging)
+        preparation_phase = "canonical publication"
+        _bootstrap_competitor_for_test(path)
+        requested = os.environ.get("VALIDATED_MEMORY_PERSISTENCE_FAULT", "")
+        try:
+            _injected_error("bootstrap-canonical-publication", path)
+            selected = {item.strip() for item in requested.split(",")}
+            if f"no-replace-unavailable:{path.name}" in selected:
+                raise NoReplaceUnavailable(
+                    "no-replace publication is unavailable"
+                )
+            if f"no-replace-not-implemented:{path.name}" in selected:
+                raise NotImplementedError("hard-link publication is unavailable")
+            injected_errno = None
+            for name, value in (
+                ("no-replace-enosys", errno.ENOSYS),
+                ("no-replace-eopnotsupp", getattr(errno, "EOPNOTSUPP", errno.ENOTSUP)),
+                ("no-replace-eperm", errno.EPERM),
+            ):
+                if f"{name}:{path.name}" in selected:
+                    injected_errno = value
+                    break
+            if injected_errno is not None:
+                raise OSError(
+                    injected_errno,
+                    "injected unavailable no-replace primitive",
+                    os.fspath(path),
+                )
+            if os.name == "nt":
+                os.rename(staging, path)
+            elif hasattr(os, "link"):
+                os.link(staging, path, follow_symlinks=False)
+            else:
+                raise NoReplaceUnavailable(
+                    "no-replace publication is unavailable"
+                )
+        except NotImplementedError as error:
+            raise NoReplaceUnavailable(str(error)) from error
+        except OSError as error:
+            hard_link_unavailable = (
+                os.name != "nt" and error.errno in {errno.EPERM, errno.EXDEV}
+            )
+            if (
+                error.errno in _UNSUPPORTED_NO_REPLACE_ERRORS
+                or hard_link_unavailable
+            ):
+                raise NoReplaceUnavailable(str(error)) from error
+            raise
+        published = True
+        storage_crash("bootstrap-visible", path)
+        try:
+            _injected_error("bootstrap-publish", path)
+            _confirm_directory(path.parent, "bootstrap-publish")
+            verify(
+                (identity.st_dev, identity.st_ino),
+                stat.S_IMODE(identity.st_mode),
+                data,
+            )
+        except Exception as error:
+            if isinstance(error, VisibilityUnconfirmed):
+                raise
+            raise VisibilityUnconfirmed(
+                path, "bootstrap-publication", True, error
+            ) from error
+        if staging.exists():
+            try:
+                _cleanup_bootstrap_staging(staging)
+            except (OSError, VisibilityUnconfirmed) as error:
+                raise StagingCleanupUnconfirmed(staging, True, error) from error
+    except Exception as error:
+        if not published and staging is not None and identity is None:
+            raise StagingCleanupUnconfirmed(staging, False, error) from error
+        if (
+            not published
+            and staging is not None
+            and identity is not None
+            and _same_open_entry(staging, identity)
+        ):
+            try:
+                _cleanup_bootstrap_staging(staging)
+            except (OSError, VisibilityUnconfirmed) as cleanup_error:
+                raise StagingCleanupUnconfirmed(
+                    staging, False, cleanup_error
+                ) from error
+        if (
+            not published
+            and not isinstance(
+                error,
+                (FileExistsError, NoReplaceUnavailable, BootstrapPreparationFailed),
+            )
+        ):
+            raise BootstrapPreparationFailed(preparation_phase, error) from error
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def reconfirm_exact_file(path, data, identity, mode):
+    """Re-dirty one complete file through its non-truncating descriptor."""
+    path = Path(path)
+    descriptor = os.open(
+        path,
+        os.O_RDWR | getattr(os, "O_NONBLOCK", 0),
+    )
+    acted = False
+    try:
+        info = os.fstat(descriptor)
+        current_identity = (info.st_dev, info.st_ino)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "history is not a regular file", os.fspath(path))
+        if current_identity != identity:
+            raise OSError(errno.EBUSY, "history identity changed", os.fspath(path))
+        if stat.S_IMODE(info.st_mode) != mode:
+            raise OSError(errno.EBUSY, "history mode changed", os.fspath(path))
+        if info.st_size != len(data):
+            raise OSError(errno.EBUSY, "history bytes changed", os.fspath(path))
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        if os.read(descriptor, len(data) + 1) != data:
+            raise OSError(errno.EBUSY, "history bytes changed", os.fspath(path))
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        _injected_error("opening-rewrite", path)
+        view = memoryview(data)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "history rewrite made no progress")
+            acted = True
+            _short_opening_write_for_test(path, written)
+            view = view[written:]
+        _injected_error("opening-file-fsync", path)
+        os.fsync(descriptor)
+        _injected_error("opening-directory", path)
+        outcome = _confirm_directory(path.parent, "opening-directory")
+        _injected_error("opening-after-barriers", path)
+        return current_identity, outcome
+    except Exception as error:
+        if acted:
+            raise VisibilityUnconfirmed(
+                path, "opening-reconfirmation", True, error
+            ) from error
+        raise
+    finally:
+        os.close(descriptor)
 
 
 def create_exclusive(path, data, mode=0o666):

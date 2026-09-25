@@ -151,6 +151,26 @@ A transaction recovery cannot account for is an ERROR that gates that one
 path -- nothing may write over it until `journal --resolve` closes it -- and
 the rest of the run proceeds.
 
+The first repository history uses no-replace publication, and is published
+only after its complete opening bytes and mode have been flushed under an
+unpredictable private name in the
+same directory. On POSIX the canonical `journal.jsonl` is created by a
+hard-link operation; on Windows it is renamed only with the platform's
+refusal-to-replace semantics. If that guarantee is unavailable, or another
+artifact reaches the
+canonical name first, `init` exits 1 before scaffold work and preserves the
+canonical artifact. It never falls back to replacing the name or writing a
+partial opening directly into it.
+
+A complete lone opening left by an interrupted earlier bootstrap is retained
+as established history. Before any later adopter effect, a fresh process
+re-dirties its complete validated byte range through the same non-truncating
+file descriptor, confirms the file and carrying directory, and coherently
+reads both histories back. Any failure gates the run; `init` never unlinks or
+replaces that canonical opening. Private staging cleanup is best-effort, and
+uncertainty names the private residue without granting cleanup authority over
+`journal.jsonl`.
+
 `init` also appends one line to the repository's ignore file (`.gitignore`,
 created if missing): `/.validated-memory/`, the vault. That entry is not one
 of the adoption questionnaire's answers and is written on every adoption,

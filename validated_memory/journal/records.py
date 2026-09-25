@@ -17,7 +17,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import __version__
-from .durable import append_bytes, ensure_owned_directory
+from .durable import (
+    VisibilityUnconfirmed,
+    append_bytes,
+    ensure_owned_directory,
+    publish_no_replace,
+    reconfirm_exact_file,
+)
 from .fault import rendezvous_at
 
 
@@ -142,6 +148,13 @@ class RawHistoryPair:
 class RawHistoryFailure:
     preceding: tuple[RawHistory, ...]
     error: JournalError
+
+
+@dataclass(frozen=True)
+class ConfirmedHistories:
+    pair: RawHistoryPair
+    repository: tuple[dict, ...]
+    local: tuple[dict, ...]
 
 
 @dataclass
@@ -272,6 +285,65 @@ def ensure_history_compatibility():
             "incomplete",
             JOURNAL_FILENAME,
         )
+
+
+def is_complete_opening(entry):
+    """Whether one validated repository record is the adoption opening."""
+    return (
+        entry["op"] == OBSERVE
+        and entry["purpose"] == "init"
+        and entry["path"] == JOURNAL_FILENAME
+        and entry["durability"] == REPO
+        and entry["stage"] == COMMITTED
+        and entry.get("note") == "journal opened"
+    )
+
+
+def existing_adoption_id(repository, vault):
+    """Return the one adoption identity established across both histories."""
+    repository_ids = {entry["adoption"] for entry in repository}
+    vault_ids = {entry["adoption"] for entry in vault}
+    established = repository_ids | vault_ids
+    if len(established) <= 1:
+        return next(iter(established), None)
+
+    minted = next(iter(repository_ids)) if len(repository_ids) == 1 else None
+    kept = next(iter(vault_ids)) if len(vault_ids) == 1 else None
+    if minted is not None and kept is not None and minted != kept:
+        raise JournalError(
+            None,
+            f"the vault is filed under adoption '{kept}' while "
+            f"{JOURNAL_FILENAME} is filed under '{minted}'; one project has "
+            "one adoption id, and nothing here can say which of the two is "
+            f"this project's -- restore the {JOURNAL_FILENAME} filed under "
+            f"'{kept}', or move {VAULT_DIRNAME}/ aside to adopt afresh, "
+            "since its preimages belong to the adoption it names",
+            artifact_name(LOCAL),
+        )
+
+    descriptions = []
+    if repository_ids:
+        descriptions.append(
+            f"{JOURNAL_FILENAME} is filed under "
+            + ", ".join(f"'{identity}'" for identity in sorted(repository_ids))
+        )
+    if vault_ids:
+        descriptions.append(
+            f"{artifact_name(LOCAL)} is filed under "
+            + ", ".join(f"'{identity}'" for identity in sorted(vault_ids))
+        )
+    conflict = (
+        artifact_name(REPO) if len(repository_ids) > 1 else artifact_name(LOCAL)
+    )
+    raise JournalError(
+        None,
+        f"{'; '.join(descriptions)}; one project has one adoption id, and "
+        "nothing here can say which identity later records belong to -- "
+        "restore the histories so every record carries the same adoption "
+        f"id, or move {VAULT_DIRNAME}/ aside to adopt afresh only if its "
+        "preimages do not belong to this project",
+        conflict,
+    )
 
 
 def validate_snapshot(data, durability, where):
@@ -700,6 +772,153 @@ def parse_acquired_history(raw, durability):
     if raw.data is None:
         return []
     return _parse_history_bytes(raw.data, durability, artifact_name(durability))
+
+
+def confirm_histories(root):
+    """Return one coherent, parsed pair with descriptor identity evidence."""
+    acquired = acquire_history_pair(root)
+    if isinstance(acquired, RawHistoryFailure):
+        raise acquired.error
+    return ConfirmedHistories(
+        acquired,
+        tuple(parse_acquired_history(acquired.repository, REPO)),
+        tuple(parse_acquired_history(acquired.local, LOCAL)),
+    )
+
+
+def publish_opening(root, opening, expected_local):
+    """Publish and coherently confirm one complete opening without replacement."""
+    root = Path(root)
+    path = journal_path(root, REPO)
+    data = encode_records((opening,))
+    before = confirm_histories(root)
+    if before.pair.repository.data is not None:
+        raise FileExistsError(os.fspath(path))
+    local_before = before.pair.local
+    successor = None
+    if before.local != tuple(expected_local):
+        raise JournalError(
+            None,
+            "local history changed before opening publication",
+            artifact_name(LOCAL),
+        )
+
+    def verify(identity, _staging_mode, expected):
+        nonlocal successor
+        try:
+            info = path.lstat()
+        except OSError as error:
+            raise JournalError(
+                None, f"published opening could not be read back: {error}",
+                artifact_name(REPO),
+            ) from error
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or (info.st_dev, info.st_ino) != identity
+            or stat.S_IMODE(info.st_mode) != 0o644
+        ):
+            raise JournalError(
+                None,
+                "published opening identity or mode changed before readback",
+                artifact_name(REPO),
+            )
+        confirmed = confirm_histories(root)
+        pair = confirmed.pair
+        if (
+            pair.repository.data != expected
+            or confirmed.repository != (opening,)
+            or pair.local.data != local_before.data
+            or pair.local.mode != local_before.mode
+            or pair.local.generation != local_before.generation
+            or confirmed.local != tuple(expected_local)
+        ):
+            raise JournalError(
+                None,
+                "published opening did not become the expected coherent pair",
+                artifact_name(REPO),
+            )
+        successor = confirmed
+
+    publish_no_replace(path, data, 0o644, verify)
+    if successor is None:
+        raise RuntimeError("opening publication returned without coherent readback")
+    return successor
+
+
+def reconfirm_opening(root, opening):
+    """Re-dirty and coherently confirm one descriptor-bound complete opening."""
+    root = Path(root)
+    path = journal_path(root, REPO)
+    try:
+        named = path.lstat()
+    except OSError as error:
+        raise JournalError(
+            None, f"opening could not be inspected: {error}", artifact_name(REPO)
+        ) from error
+    if stat.S_ISLNK(named.st_mode) or not stat.S_ISREG(named.st_mode):
+        raise JournalError(
+            None,
+            "the existing bootstrap name is not a regular canonical file; it "
+            "was preserved",
+            artifact_name(REPO),
+        )
+
+    before = confirm_histories(root)
+    repository = before.repository
+    expected = encode_records((opening,))
+    if (
+        len(repository) != 1
+        or repository[0] != opening
+        or not is_complete_opening(repository[0])
+        or before.pair.repository.data != expected
+        or before.pair.repository.generation is None
+        or before.pair.repository.mode is None
+    ):
+        raise JournalError(
+            None,
+            "the existing bootstrap name is not one complete validated "
+            "opening; it was preserved",
+            artifact_name(REPO),
+        )
+    identity = (
+        before.pair.repository.generation[0],
+        before.pair.repository.generation[1],
+    )
+    opposite = before.pair.local
+    reconfirm_exact_file(
+        path,
+        expected,
+        identity,
+        before.pair.repository.mode,
+    )
+    rendezvous_at("after-opening-reconfirmation", 1)
+    try:
+        after = confirm_histories(root)
+        after_repository = after.repository
+        after_identity = (
+            after.pair.repository.generation[0],
+            after.pair.repository.generation[1],
+        ) if after.pair.repository.generation is not None else None
+        if (
+            after_identity != identity
+            or after.pair.repository.mode != before.pair.repository.mode
+            or after.pair.repository.data != expected
+            or after.pair.local.data != opposite.data
+            or after.pair.local.mode != opposite.mode
+            or after.pair.local.generation != opposite.generation
+            or after_repository != (opening,)
+        ):
+            raise JournalError(
+                None,
+                "complete opening reconfirmation did not produce the exact "
+                "coherent successor",
+                artifact_name(REPO),
+            )
+    except Exception as error:
+        raise VisibilityUnconfirmed(
+            path, "opening-reconfirmation", True, error
+        ) from error
+    return after
 
 
 def _check_types(lineno, entry, where):

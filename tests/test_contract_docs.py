@@ -102,6 +102,24 @@ def test_journal_repair_synopsis_and_writing_modes_are_documented():
     assert "`--resolve` and `--repair` are the two targeted modes" in command
 
 
+def test_bootstrap_no_replace_and_opening_reconfirmation_are_documented():
+    """The active C1b transition is explicit on both public reference paths."""
+    cli = (REPO_ROOT / "docs" / "reference" / "cli.md").read_text(
+        encoding="utf-8"
+    )
+    journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(
+        encoding="utf-8"
+    )
+    for text in (cli, journal):
+        assert "hard link" in text or "hard-link" in text
+        assert "no-replace" in text
+        assert "non-truncating" in text
+        assert "coherent" in text
+        assert "never unlinks" in text or "never unlink" in text
+    assert "zero-byte" in journal
+    assert "partial canonical opening" in journal
+
+
 def test_journal_introduction_links_every_section():
     """The reader-journey navigation reaches every current H2 section."""
     journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(

@@ -109,12 +109,39 @@ Each journal is opened once and every question is asked of that descriptor,
 never of the name again, so nothing can be swapped underneath between the
 check and the read. What is refused there is what cannot hold records at
 all: a directory, a device, a pipe. A symlink is not on that list -- an
-adopter who keeps `journal.jsonl` in a shared store and links it back is
-read through and appended through, which works because the journal is the
-one file this plugin appends to in place rather than replacing. What is
-refused instead, and at the point it matters, is bootstrapping a journal
-over a symlink that holds no records: `os.replace` would put a regular file
-where the adopter's link was, and nothing can put that link back.
+adopter who keeps an established `journal.jsonl` in a shared store and links
+it back is read through and appended through, which works because the journal
+is the one file this plugin appends to in place rather than replacing. What
+is refused instead, and at the point it matters, is bootstrapping through a
+symlink that holds no records: the symlink is the adopter's canonical artifact
+and bootstrap has no authority to replace it or publish through it.
+
+**Bootstrap never replaces the canonical history name.** It writes and
+flushes the complete opening under an unpredictable private regular-file name
+in the same directory, fixes its mode, and confirms newly created carrying
+directories before publication. POSIX publication hard-links that staging
+file to `journal.jsonl`; Windows uses rename only where an existing
+destination is refused. A missing no-replace primitive gates before canonical
+visibility. A competitor at `journal.jsonl` always wins and is preserved;
+there is no exclusive in-place write fallback and cleanup never unlinks the
+canonical name.
+
+After publication, the carrying directory and a coherent readback of both
+histories must confirm the published inode, mode, exact opening bytes and
+semantic pair before any scaffold effect. Private staging cleanup is
+best-effort and limited to the unpredictable private name. A hard death may
+therefore leave private residue, or a complete canonical opening plus that
+residue, but it cannot expose a protocol-created partial canonical opening.
+
+A complete validated lone opening is established identity-bearing history.
+Because recognizing its bytes does not prove the interrupted writer's earlier
+flush, a fresh process rewrites the identical complete range through a
+writable non-truncating descriptor, confirms the file and its directory, then
+reacquires the coherent pair. Identity, mode, both histories and every byte
+must match the frozen pre-state before later adopter effects. A zero-byte,
+blank, partial, malformed, symlinked or non-regular bootstrap name is instead
+preserved and refused; it is never repaired, replaced, truncated or removed
+by bootstrap.
 
 **The lock is taken beside the journal that is really there.** A mutating
 run holds `.validated-memory/lock` under the directory `journal.jsonl`
