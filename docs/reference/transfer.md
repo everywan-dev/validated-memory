@@ -41,7 +41,7 @@ the reached origins. Local acceptance does not bypass an applicable origin gate
 when the read scope is narrowed.
 
 Full history remains in historical `show IMPORT`. The selected material view
-below (unreleased after 2.3.0) returns complete retained semantic material for a
+below (available since 2.4.0) returns complete retained semantic material for a
 receipt member before local proposal authoring, without displaying the whole
 capsule. Keep inventory for known statuses and `resume-use` for task resumption.
 Do not edit capsule JSON, construct event hashes, or manufacture acceptance.
@@ -59,7 +59,7 @@ an authenticated person or evidence of human approval.
 | `export-transfer RECEIPT --include-workspace-history [--max-bytes N] [--assess]` | Read-only historical export. Assess returns counts, exact bytes, disclosure and `supported`; actual export emits only canonical capsule JSON plus newline. |
 | `import-transfer FILE --actor ACTOR --reason REASON` | Validate and recapture a safe local capsule, then retain one import. Return `id` and compact `inventory`; no foreign root is opened. |
 | `show-transfer IMPORT [--max-bytes N]` | Read-only bounded inventory with scope, mapping material, known statuses, affected local revisions and dependency-first recovery instructions. |
-| `show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID --material [--max-bytes N]` | Unreleased after 2.3.0: complete selected semantic material and known correction context, with exact receipt-selected binding membership. |
+| `show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID --material [--max-bytes N]` | Available since 2.4.0: complete selected semantic material and known correction context, with exact receipt-selected binding membership. |
 | `link-transfer PROPOSAL --import IMPORT --origin PROJECT_UUID:ID [--dependency ORIGIN_PROJECT:ID=DEST_ALIAS:ID] [--predecessor ORIGIN_PROJECT:ID=DEST_ALIAS:ID] [--origin-only-predecessor ORIGIN_PROJECT:ID] [--prior LINK] [--max-bytes N] --actor ACTOR --reason REASON` | Inspect complete relevant source material and retain explicit correspondence to the local proposal. Mapping flags are repeatable. |
 | `detach-transfer PROPOSAL --from LINK [--prior LINK] [--max-bytes N] --actor ACTOR --reason REASON` | Inspect inherited material/corrections and record an attributed independent canonical successor. It cannot detach the identical local revision in place. |
 
@@ -100,7 +100,7 @@ known origin; divergent histories refuse rather than silently choosing a fork.
 
 ## Selected material before proposal authoring
 
-**Unreleased after 2.3.0.** The agent selects an exact member of the imported
+**Available since 2.4.0.** The agent selects an exact member of the imported
 receipt by its returned project UUID and unit ID:
 
 ```text
@@ -384,7 +384,7 @@ retain imported b import-transfer "$transfer_demo/contribution.json" "${actor[@]
 invoke b 0 show-transfer "$imported"
 ```
 
-The next stage uses the selected material view, unreleased after 2.3.0. The agent
+The next stage uses the selected material view, available since 2.4.0. The agent
 reads the origin identity from the returned inventory and acquires complete
 selected material before creating a local proposal. It writes only explicitly
 chosen local paths; imported paths are never executed or automatically extracted.

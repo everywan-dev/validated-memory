@@ -13,7 +13,7 @@ inputs:
     required: false
     default: ""
   python-version:
-    description: Python used to run the CLI (stdlib only; any supported 3.x).
+    description: Python used to run the CLI (Python 3.11 or newer; stdlib only).
     required: false
     default: "3.12"
 runs:

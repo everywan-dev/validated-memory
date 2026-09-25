@@ -249,7 +249,7 @@ Never export an actual operational corpus merely to demonstrate the command.
 A supported capsule is historical evidence with live origin not checked.
 
 After import, use show-transfer for scope, dependencies, predecessor availability,
-known corrections and affected-link recovery. Unreleased after 2.3.0, use
+known corrections and affected-link recovery. Available since 2.4.0, use
 `show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID --material` before proposal
 authoring for complete selected semantic material, as in the public example. Both
 selector flags are required together, once each; the origin must be an exact
@@ -281,7 +281,7 @@ opt-in contract; no semantic-copy detector is implied.
 
 ## Resume an opted-in checked task
 
-**Unreleased after 2.3.0.** Follow the
+**Available since 2.4.0.** Follow the
 [shared task lifecycle and trusted handoff](../../docs/reference/task-lifecycle.md)
 and the checked
 [task-resumption workflow](../../docs/reference/everyday-workflow.md#resume-a-task)

@@ -365,7 +365,7 @@ prove source truth, live freshness or semantic sufficiency.
 
 ## Selected material view
 
-**Unreleased after 2.3.0.** This additive `show-transfer --origin ... --material`
+**Available since 2.4.0.** This additive `show-transfer --origin ... --material`
 report changes no storage schema, capsule or existing inventory/inspection bytes.
 The [command reference](transfer.md#selected-material-before-proposal-authoring)
 defines paired selector flags and refusal behavior. The selected identity must be

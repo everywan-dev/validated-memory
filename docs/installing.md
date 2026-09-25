@@ -13,6 +13,27 @@ A manifest alone is only installable by someone who already has the directory
 on disk (`claude --plugin-dir ./`); the listing is what makes it installable
 from the repository URL.
 
+## Requirements and compatibility
+
+The runtime requires **Python 3.11 or newer** and uses only the Python
+standard library. `pytest` is the only development dependency. Source installs
+follow the packaging metadata in `pyproject.toml`; this guide does not set an
+additional minimum version for build tools.
+
+Claude Code is required to install the plugin and run its hooks and skills.
+The standalone CLI can also run from a shell or CI when the package is
+installed or the checkout is on `PYTHONPATH`. The GitHub Action defaults to
+Python 3.12; set its Python input to 3.11 or newer.
+
+Some commands have narrower platform requirements than the package as a
+whole. The `recall` command requires POSIX filesystem APIs; checked
+consultation is supported on a trusted POSIX host. The journal reference
+documents its platform-specific durability and recovery behavior. The bundled
+`git_ref` probe requires Git on `PATH`; other probes do not. See
+[recall limits](reference/recall.md#limits-and-platform-requirements),
+[checked consultation](reference/consultation.md), and
+[journal recovery](reference/journal.md#recovery).
+
 ## What installing activates
 
 Installing the plugin registers three `SessionStart` hooks that run on every
@@ -72,8 +93,8 @@ repository does not ship such a file: it is left to whoever adopts it.
 
 ## Running the CLI outside the plugin
 
-The enforcement CLI is an ordinary Python package with no third-party
-dependencies, so it also runs without Claude Code — in CI, or from a shell.
+The enforcement CLI has no third-party runtime dependencies, so it also runs
+without Claude Code — in CI, or from a shell.
 Two ways to make `python3 -P -m validated_memory` importable:
 
 - **From a checkout, via `PYTHONPATH`** — no installation at all:

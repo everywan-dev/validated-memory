@@ -12,6 +12,7 @@ is written down instead of guessed.
 """
 
 import re
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -127,3 +128,99 @@ def test_journal_introduction_links_every_section():
         "journal introduction fragments differ from H2 sections: "
         f"linked={linked_fragments}, sections={section_fragments}"
     )
+
+
+def test_documentation_hub_links_every_reference_page_and_published_adr():
+    docs = REPO_ROOT / "docs"
+    hub = (docs / "README.md").read_text(encoding="utf-8")
+    for target in ("installing.md", "adoption.md", "walkthrough.md",
+                   "architecture.md", "troubleshooting.md", "release-status.md",
+                   "adr/README.md"):
+        assert f"]({target})" in hub, f"docs/README.md does not link {target}"
+    for reference in sorted((docs / "reference").glob("*.md")):
+        target = f"(reference/{reference.name})"
+        assert target in hub, f"docs/README.md does not route to {reference.name}"
+
+    adr_index = (docs / "adr" / "README.md").read_text(encoding="utf-8")
+    for decision in sorted((docs / "adr").glob("*.md")):
+        if decision.name == "README.md":
+            continue
+        assert f"({decision.name})" in adr_index, (
+            f"docs/adr/README.md does not index {decision.name}"
+        )
+
+
+def test_release_status_names_2_4_capabilities_without_exposing_private_work():
+    status = (REPO_ROOT / "docs" / "release-status.md").read_text(
+        encoding="utf-8"
+    )
+    published = _markdown_section(status, "Published release")
+    future = _markdown_section(status, "Future work")
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(
+        encoding="utf-8"
+    ))["project"]
+    assert f"**{project['version']}**" in published
+    assert "c398e77" in published
+    assert "resume-use" in published
+    assert "show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID --material" in published
+    assert "issue, design document or architecture decision" in future
+    assert "does not establish that a feature is available" in future
+    assert "public issue tracker" in future.lower()
+    assert "sessions/" not in status
+    assert "Packet C" not in status
+    assert "J9" not in status
+
+
+def _markdown_section(document, heading):
+    sections = re.findall(
+        rf"^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)",
+        document,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert len(sections) == 1, (
+        f"expected exactly one '## {heading}' section, found {len(sections)}"
+    )
+    return sections[0]
+
+
+def test_architecture_has_a_github_flow_and_equivalent_prose():
+    architecture = (REPO_ROOT / "docs" / "architecture.md").read_text(
+        encoding="utf-8"
+    )
+    diagram = re.search(r"```mermaid\s*\n(.*?)\n```", architecture, re.DOTALL)
+    assert diagram, "architecture must contain a fenced Mermaid diagram"
+    assert re.search(r"\bflowchart\s+LR\b", diagram.group(1))
+    edges = set(re.findall(
+        r"\b(Host|Plugin|CLI|Shell|Action|Project|Vault|Store)\s*"
+        r"(?:\[[^\]]*\])?\s*-->\s*"
+        r"(Host|Plugin|CLI|Shell|Action|Project|Vault|Store)\b",
+        diagram.group(1),
+        re.DOTALL,
+    ))
+    expected_edges = {
+        ("Host", "Plugin"), ("Plugin", "CLI"),
+        ("Shell", "CLI"), ("Action", "CLI"),
+        ("CLI", "Project"), ("CLI", "Vault"), ("CLI", "Store"),
+    }
+    assert expected_edges <= edges, (
+        f"architecture flow is missing edges: {sorted(expected_edges - edges)}"
+    )
+
+    prose = re.search(
+        r"The diagram in words:\s*(.*?)(?=\n\n|\Z)", architecture, re.DOTALL
+    )
+    assert prose, "architecture must provide the diagram's prose equivalent"
+    prose_text = " ".join(prose.group(1).replace("`", "").split()).lower()
+    for relationship in (
+        "claude code loads the plugin's skills and hooks, which invoke the python cli",
+        "a shell, ci job or the github action can invoke the same cli independently",
+        "the cli reads or writes the adopter repository",
+        "init also uses a clone-local vault for recovery data",
+        "checked consultation uses a separately chosen local sqlite store only when that workflow is explicitly invoked",
+    ):
+        assert relationship in prose_text, (
+            f"diagram prose is missing the relationship: {relationship}"
+        )
+    assert "not semantic truth" in architecture
+    assert "schema 2" not in architecture.lower()
+    assert "group transaction" not in architecture.lower()

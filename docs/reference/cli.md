@@ -698,7 +698,7 @@ these additions; version 2.2.0 does not provide them. Schema 2 was an unreleased
 incorporation format; 2.3.0 creates and upgrades to schema 3. Payload and
 compatibility rules are in [incorporation storage](incorporation-storage.md).
 
-Unreleased after 2.3.0, `resume-use USE --scope KEY=VALUE [--scope KEY=VALUE ...]
+Available since 2.4.0, `resume-use USE --scope KEY=VALUE [--scope KEY=VALUE ...]
 [--max-bytes N]` adds a read-only task resumption report. Requested scope is required
 and must exactly equal historical receipt scope; different scope requires a new
 complete consumer `read` and `record-use`. The one-line bounded JSON report exits
@@ -1102,7 +1102,7 @@ inspection/acceptance/incorporation remains separate. [Transfer storage](transfe
 defines closed capsules, prefix-compatible origins and receipt3 current-use gates.
 
 
-Unreleased after 2.3.0, `show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID
+Available since 2.4.0, `show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID
 --material [--max-bytes N]` returns complete selected semantic material before
 proposal authoring. Both selector flags are required together, once each; with
 neither, inventory output is unchanged. The origin must be an exact member of

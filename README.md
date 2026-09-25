@@ -7,7 +7,8 @@ Validated memory for agent projects: evidence states, supersession without
 deletion, freshness probes with a ternary verdict.
 
 [Installing](#installing) · [Quickstart](#quickstart) ·
-[CLI](#the-cli-at-a-glance) · [Skills](#skills) · [Documentation](#documentation)
+[CLI](#the-cli-at-a-glance) · [Skills](#skills) ·
+[Documentation map](docs/README.md)
 
 **Agent memory rots silently.** An agent writes down a fact in March; by June
 the world has moved on, and nothing tells you. Recall is a crowded
@@ -40,8 +41,8 @@ reaches every adopter that updates.
 
 - **Enforced, not promised** — `validate`, `lint` and `derive --check` are
   CI gates; drift from the contract fails the build.
-- **No third-party dependencies** — Python standard library only, and the
-  data is plain Markdown, readable without the plugin installed.
+- **No third-party runtime dependencies** — the CLI uses Python's standard
+  library, and the data is plain Markdown, readable without the plugin.
 - **Easy exit** — abandon the tool and you keep ordinary Markdown files.
 
 ## Installing
@@ -175,6 +176,10 @@ implicitly upgrade existing stores or change adopter Markdown.
 
 The [everyday workflow](docs/reference/everyday-workflow.md) connects initial
 incorporation, routine checked reuse, corrected successors and downstream reports.
+The published release also includes exact-scope task resumption with `resume-use`
+and selected transfer material with `show-transfer --origin ... --material`;
+see [release status](docs/release-status.md) and the
+[checked reuse workflow](docs/reference/everyday-workflow.md).
 
 ### Gate CI in three lines
 
@@ -201,9 +206,9 @@ same way:
 
 Pinning, by decreasing rigor: a full commit SHA for CI that must not trust
 a mutable ref, an immutable `vX.Y.Z` tag, or the moving `v2` major tag
-shown above for convenience. `args` is passed to
-[`status`](docs/reference/cli.md#status) verbatim; without it, structural
-consistency gates and freshness is only reported.
+shown above for convenience. `args` is split on whitespace and passed to
+[`status`](docs/reference/cli.md#status); shell quotes are not interpreted.
+Without flags, structural consistency gates and freshness is only reported.
 
 Freshness is a loop, not a flag:
 
@@ -292,25 +297,18 @@ a rule the CLI already enforces:
 
 ## Documentation
 
-| | |
-|---|---|
-| **[Installing](docs/installing.md)** | Hosts, updating, team installs, CLI without Claude Code |
-| **[Adoption guide](docs/adoption.md)** | The checklist for a real project, CI gate included |
-| **[Walkthrough](docs/walkthrough.md)** | Every layer end to end, with real file contents |
-| **[CLI reference](docs/reference/cli.md)** | The full contract of each subcommand |
-| **[Incorporation](docs/reference/incorporation.md)** | Proposals since 2.3.0, challenge review, consumer effects and tracked publication observations |
-| **[Incorporation storage](docs/reference/incorporation-storage.md)** | Lifecycle storage since 2.3.0; historical schema-2 compatibility |
-| **[Portable transfer](docs/reference/transfer.md)** | Offline historical contributions since 2.3.0 and explicit local incorporation |
-| **[Transfer storage](docs/reference/transfer-storage.md)** | Schema 3 since 2.3.0, whole-history capsules and origin-aware current checks |
-| **[Curated knowledge](docs/reference/curated-knowledge.md)** | Base contract, adopter configuration, declared extension |
-| **[Agent memory](docs/reference/agent-memory.md)** | The memory layer's rules, identity, and supersession |
-| **[Requested learning](docs/reference/learning.md)** | Scoped capture, selective review, outcome retention and interruption recovery |
-| **[Startup hooks](docs/reference/hooks.md)** | What runs at session start, and what it writes |
-| **[Journal](docs/reference/journal.md)** | The append-only record of what adoption did, and the `journal` subcommand |
-| **[Recall](docs/reference/recall.md)** | The `recall` command's full field reference, exit codes and known limitations |
-| **[Checked consultation](docs/reference/consultation.md)** | Local cross-project checked use, maintenance and honest limits |
-| **[Consultation storage](docs/reference/consultation-storage.md)** | Strict schema and retained artifact relationships |
-| **[ADRs](docs/adr)** | Decisions of record |
+The [documentation map](docs/README.md) routes the full reference by task.
+Start with [installing](docs/installing.md), then use the
+[adoption guide](docs/adoption.md) or the executable
+[walkthrough](docs/walkthrough.md). For everyday work, see
+[curated knowledge](docs/reference/curated-knowledge.md),
+[agent memory](docs/reference/agent-memory.md),
+[agent integration](docs/reference/agent-integration.md),
+[task lifecycle](docs/reference/task-lifecycle.md), and
+[checked reuse](docs/reference/everyday-workflow.md). The map also links the
+[CLI reference](docs/reference/cli.md), [troubleshooting](docs/troubleshooting.md),
+[whole-project recovery](docs/reference/recovery.md), every reference page,
+and the [ADR index](docs/adr/README.md).
 
 ## Development
 
