@@ -84,6 +84,7 @@ DURABLE_MUTATORS = {
     "replace_symlink", "append_bytes", "remove_name", "ensure_owned_directory",
     "ensure_external_directory", "repair_symlink", "republish_file",
     "republish_directory", "publish_no_replace", "reconfirm_exact_file",
+    "reconfirm_exact_range",
 }
 FACADE = "validated_memory.journal"
 
@@ -1714,6 +1715,102 @@ def test_c1b_bootstrap_adapter_has_no_legacy_publication_policy():
         if isinstance(node, ast.FunctionDef) and node.name == "publish_no_replace"
     )
     assert not any(isinstance(node, ast.Return) for node in ast.walk(publish_node))
+
+
+def test_c1c_append_reconfirmation_has_one_policy_owner():
+    """Protocol selects exact-range authority; lower layers expose mechanics."""
+    root = REPO_ROOT / "validated_memory" / JOURNAL_SOURCE
+    sources = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in root.glob("*.py")
+    }
+    trees = {name: ast.parse(source) for name, source in sources.items()}
+    callers = []
+    for name, tree in trees.items():
+        if any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "reconfirm_append"
+            for node in ast.walk(tree)
+        ):
+            callers.append(name)
+    assert callers == ["protocol.py"]
+
+    executor_functions = {
+        node.name: node
+        for node in ast.walk(trees["executor.py"])
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert "_recover_history" not in executor_functions
+    recovery = ast.get_source_segment(
+        sources["executor.py"], executor_functions["_recover_one"]
+    )
+    assert "republish_file" not in recovery
+    assert '"history_append"' not in recovery
+    assert "read(self.root" not in recovery
+    assert "incomplete claimed occurrence" not in recovery
+    for result in (
+        "AppendReconfirmationNotApplicable",
+        "AppendReconfirmed",
+        "AppendReconfirmationRefused",
+        "AppendReconfirmationRetained",
+    ):
+        assert result in recovery
+
+    transition = next(
+        node for node in ast.walk(trees["protocol.py"])
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_append_reconfirmation"
+    )
+    protocol_calls = {
+        node.func.id
+        for node in ast.walk(transition)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert {"classify_evidence", "confirm_histories", "reconfirm_append"} <= (
+        protocol_calls
+    )
+    transition_source = ast.get_source_segment(sources["protocol.py"], transition)
+    assert "include_stored_claim=True" in transition_source
+    assert "_append_deferred" in transition_source
+    assert '"complete claimed pair"' not in sources["protocol.py"]
+    assert '"claim with"' not in sources["protocol.py"]
+
+    mechanics = next(
+        node for node in trees["durable.py"].body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "reconfirm_exact_range"
+    )
+    calls = {
+        node.func.attr
+        for node in ast.walk(mechanics)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert {"write", "fsync"} <= calls
+    assert not {"replace", "rename", "link", "truncate", "ftruncate"}.intersection(calls)
+    mechanics_source = ast.get_source_segment(sources["durable.py"], mechanics)
+    assert "current_identity != identity" in mechanics_source
+    assert "O_NOFOLLOW" not in mechanics_source
+
+    transactions = sources["transactions.py"]
+    assert transactions.count("def _history_claim_kind(") == 1
+    assert "HISTORY_CLAIM_UNCONFIRMED,\n        HISTORY_UNCONFIRMED," in transactions
+
+    complete_source = ast.get_source_segment(
+        sources["executor.py"], executor_functions["_complete"]
+    )
+    assert "mark_history_append(" not in complete_source
+    execute_source = ast.get_source_segment(
+        sources["executor.py"], executor_functions["_execute"]
+    )
+    assert execute_source.index("mark_history_append(") < execute_source.index(
+        "append(history_records,"
+    )
+    uncertain = executor_functions["_recovery_uncertain"]
+    assert any(isinstance(node, ast.Return) for node in ast.walk(uncertain))
+    assert not any(isinstance(node, ast.Raise) for node in ast.walk(uncertain))
+    assert "raise error" in recovery
+    assert "raise retained" in recovery
 
 
 # The journal's modules in the order `journal/__init__.py` lists them, which
@@ -3403,10 +3500,10 @@ def test_different_mode_swap_during_target_recovery_is_gated(
 
 
 @pytest.mark.parametrize("history_kind", ("first-local", "existing-repo"))
-def test_history_barrier_failure_republishes_without_duplicate_pair(
+def test_history_barrier_failure_reconfirms_range_without_replacement(
     run_cli, tmp_path, monkeypatch, history_kind
 ):
-    """Visible history bytes are completed and atomically republished once."""
+    """A complete retained append is reconfirmed through the same artifact."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
     if history_kind == "first-local":
         harness = _external_harness_path(tmp_path, "memory")
@@ -3436,6 +3533,8 @@ def test_history_barrier_failure_republishes_without_duplicate_pair(
         if entry.get("transaction") == transaction["transaction"]
     ]
     assert [entry["stage"] for entry in visible] == ["prepared", "committed"]
+    identity = (history.stat().st_dev, history.stat().st_ino)
+    mode = stat.S_IMODE(history.stat().st_mode)
 
     monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
     recovered = run_cli(*arguments, cwd=tmp_path)
@@ -3447,71 +3546,690 @@ def test_history_barrier_failure_republishes_without_duplicate_pair(
         if entry.get("transaction") == transaction["transaction"]
     ]
     assert [entry["stage"] for entry in pair] == ["prepared", "committed"]
+    assert (history.stat().st_dev, history.stat().st_ino) == identity
+    assert stat.S_IMODE(history.stat().st_mode) == mode
     assert not _transactions(tmp_path)
 
 
-def test_history_snapshot_swap_during_recovery_is_not_overwritten(
+def test_append_reconfirmation_preserves_a_supported_history_symlink(
     run_cli, tmp_path, monkeypatch
 ):
-    """History republication cannot replace bytes that changed after validation."""
-    assert run_cli("init", cwd=tmp_path).returncode == 0
-    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
-    monkeypatch.setenv(
-        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl"
-    )
-    assert run_cli("init", cwd=tmp_path).returncode == 1
-    transaction = _transactions(tmp_path)[0]["transaction"]
-    history = tmp_path / "journal.jsonl"
-    before = history.read_bytes()
-    monkeypatch.setenv(
-        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "swap-history:journal.jsonl"
-    )
-
-    result = run_cli("init", cwd=tmp_path)
-
-    assert result.returncode == 1, (result.stdout, result.stderr)
-    assert "changed after its validated snapshot" in result.stderr
-    assert history.read_bytes() == before[:-1] + b"\r\n"
-    artifact = _transactions(tmp_path)[0]
-    assert artifact["transaction"] == transaction
-    assert artifact["unconfirmed"] == "history"
-    assert len(
-        [
-            entry
-            for entry in _records(history)
-            if entry.get("transaction") == transaction
-        ]
-    ) == 2
-
-
-def test_final_history_snapshot_without_pair_is_not_republished(
-    run_cli, tmp_path, monkeypatch
-):
-    """The exact final JSONL snapshot must contain one consistent pair."""
-    assert run_cli("init", cwd=tmp_path).returncode == 0
-    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
-    monkeypatch.setenv(
-        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl"
-    )
-    assert run_cli("init", cwd=tmp_path).returncode == 1
-    transaction = _transactions(tmp_path)[0]["transaction"]
+    """Descriptor reconfirmation follows an established shared-store history."""
+    store = tmp_path / "store"
+    store.mkdir()
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert run_cli("init", cwd=adopter).returncode == 0
+    link = adopter / "journal.jsonl"
+    history = store / "journal.jsonl"
+    link.rename(history)
+    link.symlink_to(history)
+    (adopter / "validated-memory.md").unlink()
     monkeypatch.setenv(
         "VALIDATED_MEMORY_PERSISTENCE_FAULT",
-        "swap-history-final:journal.jsonl",
+        "history-file-fsync:journal.jsonl",
     )
 
-    result = run_cli("init", cwd=tmp_path)
+    failed = run_cli("init", cwd=adopter)
 
-    assert result.returncode == 1, (result.stdout, result.stderr)
-    assert "complete consistent pair" in result.stderr
-    artifact = _transactions(tmp_path)[0]
-    assert artifact["transaction"] == transaction
-    assert artifact["unconfirmed"] == "history"
-    assert not [
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    transaction = _transactions(adopter)[0]
+    transaction_id = transaction["transaction"]
+    matching_before = [
         entry
-        for entry in _records(tmp_path / "journal.jsonl")
-        if entry.get("transaction") == transaction
+        for entry in _records(history)
+        if entry.get("transaction") == transaction_id
     ]
+    assert [entry["stage"] for entry in matching_before] == [
+        "prepared",
+        "committed",
+    ]
+    link_target = os.readlink(link)
+    identity = (history.stat().st_dev, history.stat().st_ino)
+    bytes_before = history.read_bytes()
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+
+    recovered = run_cli("init", cwd=adopter)
+
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    assert recovered.stderr == ""
+    assert link.is_symlink()
+    assert os.readlink(link) == link_target
+    assert (history.stat().st_dev, history.stat().st_ino) == identity
+    assert history.read_bytes() == bytes_before
+    matching_after = [
+        entry
+        for entry in _records(history)
+        if entry.get("transaction") == transaction_id
+    ]
+    assert matching_after == matching_before
+    assert not _transactions(adopter)
+
+
+def test_append_file_barrier_failure_uses_full_range_reconfirmation(
+    run_cli, tmp_path, monkeypatch
+):
+    """Absent file-flush proof re-dirties exactly the retained append range."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "history-file-fsync:journal.jsonl",
+    )
+
+    failed = run_cli("init", cwd=tmp_path)
+
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    transaction = _transactions(tmp_path)[0]
+    transaction_id = transaction["transaction"]
+    assert failed.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert failed.stderr == (
+        "ERROR: journal.jsonl: journal: the exact append effect may be visible, "
+        "but file-data durability is unconfirmed. Transaction "
+        f"{transaction_id} was retained. Preserve the retained transaction "
+        "and rerun init\n"
+    )
+    assert transaction["unconfirmed_reason"] == (
+        "append file-data durability unconfirmed"
+    )
+    history = tmp_path / "journal.jsonl"
+    before = _final_tree_snapshot(tmp_path)
+    identity = (history.stat().st_dev, history.stat().st_ino)
+
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "append-reconfirmation-rewrite:journal.jsonl",
+    )
+    refused = run_cli("init", cwd=tmp_path)
+
+    assert refused.returncode == 1, (refused.stdout, refused.stderr)
+    assert refused.stderr == (
+        "ERROR: journal.jsonl: journal: history reconfirmation wrote nothing "
+        "because [Errno 5] injected persistence failure: 'journal.jsonl'. The "
+        "retained transaction and both histories were preserved. Restore access "
+        "or remove the environmental obstruction, then rerun init\n"
+    )
+    assert _final_tree_snapshot(tmp_path) == before
+    assert (history.stat().st_dev, history.stat().st_ino) == identity
+
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    recovered = run_cli("init", cwd=tmp_path)
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    assert recovered.stderr == ""
+    assert not _transactions(tmp_path)
+    assert (history.stat().st_dev, history.stat().st_ino) == identity
+
+
+def test_append_directory_barrier_proof_skips_range_rewrite(
+    run_cli, tmp_path, monkeypatch
+):
+    """Exact retained file-flush proof permits directory-only confirmation."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl"
+    )
+    failed = run_cli("init", cwd=tmp_path)
+    transaction = _transactions(tmp_path)[0]
+    transaction_id = transaction["transaction"]
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    assert failed.stderr == (
+        "ERROR: journal.jsonl: journal: the exact append data is confirmed, "
+        "but its carrying-directory durability is unconfirmed. Transaction "
+        f"{transaction_id} was retained. Preserve the retained transaction "
+        "and rerun init\n"
+    )
+    assert transaction["unconfirmed_reason"] == (
+        "append file data confirmed; carrying-directory durability unconfirmed"
+    )
+    history = tmp_path / "journal.jsonl"
+    identity = (history.stat().st_dev, history.stat().st_ino)
+    modified = history.stat().st_mtime_ns
+
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "append-reconfirmation-rewrite:journal.jsonl",
+    )
+    recovered = run_cli("init", cwd=tmp_path)
+
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    assert recovered.stderr == ""
+    assert not _transactions(tmp_path)
+    assert (history.stat().st_dev, history.stat().st_ino) == identity
+    assert history.stat().st_mtime_ns == modified
+
+
+def test_only_exact_directory_barrier_proof_skips_range_rewrite(
+    run_cli, tmp_path, monkeypatch
+):
+    """A generic legacy reason cannot silently acquire directory-only authority."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl"
+    )
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    transaction_path = next(
+        (tmp_path / ".validated-memory" / "transactions").glob("*.json")
+    )
+    transaction = json.loads(transaction_path.read_text(encoding="utf-8"))
+    transaction["unconfirmed_reason"] = "legacy history uncertainty"
+    transaction_path.write_text(
+        json.dumps(transaction, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    before = _final_tree_snapshot(tmp_path)
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "append-reconfirmation-rewrite:journal.jsonl",
+    )
+
+    refused = run_cli("init", cwd=tmp_path)
+
+    assert refused.returncode == 1, (refused.stdout, refused.stderr)
+    assert refused.stderr == (
+        "ERROR: journal.jsonl: journal: history reconfirmation wrote nothing "
+        "because [Errno 5] injected persistence failure: 'journal.jsonl'. The "
+        "retained transaction and both histories were preserved. Restore access "
+        "or remove the environmental obstruction, then rerun init\n"
+    )
+    assert _final_tree_snapshot(tmp_path) == before
+
+
+def test_directory_only_reconfirmation_failure_is_terminal_and_retained(
+    run_cli, tmp_path, monkeypatch
+):
+    """A failed fresh directory barrier retains exact proof and gates scaffold."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl"
+    )
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    transaction = _transactions(tmp_path)[0]
+    history = tmp_path / "journal.jsonl"
+    before = _final_tree_snapshot(tmp_path)
+    identity = (history.stat().st_dev, history.stat().st_ino)
+    modified = history.stat().st_mtime_ns
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "append-reconfirmation-directory:journal.jsonl",
+    )
+
+    retained = run_cli("init", cwd=tmp_path)
+
+    assert retained.returncode == 1, (retained.stdout, retained.stderr)
+    assert retained.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert "selected append range was re-dirtied or its directory was reconfirmed" in retained.stderr
+    assert f"Transaction {transaction['transaction']} was retained" in retained.stderr
+    assert _final_tree_snapshot(tmp_path) == before
+    assert (history.stat().st_dev, history.stat().st_ino) == identity
+    assert history.stat().st_mtime_ns == modified
+    assert _transactions(tmp_path)[0]["unconfirmed_reason"] == (
+        "append file data confirmed; carrying-directory durability unconfirmed"
+    )
+
+
+def test_append_reconfirmation_cleanup_uncertainty_keeps_wal_and_stops_run(
+    run_cli, tmp_path, monkeypatch
+):
+    """Confirmed history alone cannot turn uncertain WAL cleanup into success."""
+    transaction, history = _retained_complete_append(
+        run_cli, tmp_path, monkeypatch
+    )
+    transaction_id = transaction["transaction"]
+    later = tmp_path / "knowledge-extension.md"
+    later.unlink()
+    history_before = history.read_bytes()
+    identity = (history.stat().st_dev, history.stat().st_ino)
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        f"remove:{transaction_id}.json",
+    )
+
+    retained = run_cli("init", cwd=tmp_path)
+
+    assert retained.returncode == 1, (retained.stdout, retained.stderr)
+    assert retained.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert retained.stderr.startswith(
+        "ERROR: journal.jsonl: journal: the selected append range was coherently "
+        "confirmed, but transaction cleanup is incomplete: "
+    )
+    assert retained.stderr.endswith(
+        f"Transaction {transaction_id} was retained. The append is already "
+        "confirmed and must not be repeated. Preserve the retained transaction "
+        "and rerun init\n"
+    )
+    kept = _transactions(tmp_path)
+    assert len(kept) == 1
+    assert kept[0]["transaction"] == transaction_id
+    assert kept[0]["unconfirmed"] == "cleanup"
+    assert not later.exists()
+    assert history.read_bytes() == history_before
+    assert (history.stat().st_dev, history.stat().st_ino) == identity
+
+
+def _retained_complete_append(run_cli, tree, monkeypatch):
+    assert run_cli("init", cwd=tree).returncode == 0
+    (tree / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        "history-file-fsync:journal.jsonl",
+    )
+    failed = run_cli("init", cwd=tree)
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    transaction = _transactions(tree)[0]
+    return transaction, tree / "journal.jsonl"
+
+
+@pytest.mark.parametrize("occurrence", ("zero", "prepared"))
+def test_hard_death_with_incomplete_claim_stays_outside_c1c_authority(
+    run_cli, tmp_path, monkeypatch, occurrence
+):
+    """C1c neither replaces a durable claim nor replays an incomplete one."""
+    prefix_length = 0
+    if occurrence == "prepared":
+        calibration = tmp_path / "calibration"
+        calibration.mkdir()
+        assert run_cli("init", cwd=calibration).returncode == 0
+        (calibration / ".gitignore").write_text(
+            "adopter line\n", encoding="utf-8"
+        )
+        monkeypatch.setenv(
+            "VALIDATED_MEMORY_STORAGE_CRASH", "history-prefix:0"
+        )
+        assert run_cli("init", cwd=calibration).returncode == 71
+        claim = _transactions(calibration)[0]["history_append"]
+        prefix_length = len(
+            (json.dumps(claim["records"][0], sort_keys=True) + "\n").encode(
+                "utf-8"
+            )
+        )
+        monkeypatch.delenv("VALIDATED_MEMORY_STORAGE_CRASH")
+
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert run_cli("init", cwd=adopter).returncode == 0
+    (adopter / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_STORAGE_CRASH",
+        f"history-prefix:{prefix_length}",
+    )
+
+    crashed = run_cli("init", cwd=adopter)
+
+    assert crashed.returncode == 71, (crashed.stdout, crashed.stderr)
+    transaction_path = next(
+        (adopter / ".validated-memory" / "transactions").glob("*.json")
+    )
+    transaction = json.loads(transaction_path.read_text(encoding="utf-8"))
+    transaction_id = transaction["transaction"]
+    claim = transaction["history_append"]
+    history = adopter / "journal.jsonl"
+    matching = [
+        entry
+        for entry in _records(history)
+        if entry.get("transaction") == transaction_id
+    ]
+    expected = [] if occurrence == "zero" else [claim["records"][0]]
+    assert matching == expected
+    wal_before = transaction_path.read_bytes()
+    history_before = history.read_bytes()
+    tree_before = [
+        item
+        for item in _final_tree_snapshot(adopter)
+        if item[0] != ".validated-memory/lock"
+    ]
+    monkeypatch.delenv("VALIDATED_MEMORY_STORAGE_CRASH")
+
+    retried = run_cli("init", cwd=adopter)
+
+    assert retried.returncode == 1, (retried.stdout, retried.stderr)
+    assert retried.stdout == (
+        "init: kept knowledge\n"
+        "init: kept memory\n"
+        "init: kept memory/MEMORY.md\n"
+        "init: kept validated-memory.md\n"
+        "init: kept knowledge-extension.md\n"
+        "init: 0 created, 5 kept, 1 error(s), 0 warning(s)\n"
+    )
+    assert retried.stderr == (
+        "ERROR: journal.jsonl: journal: history reconfirmation wrote nothing "
+        "because the retained append is "
+        f"{'incomplete' if occurrence == 'prepared' else 'absent'} "
+        f"in the current history. Transaction {transaction_id} and both histories "
+        "were preserved. This operation does not complete or replay an append. "
+        "Restore the affected history from a trusted copy, then rerun init\n"
+    )
+    assert "Traceback" not in retried.stderr
+    assert "journal could not be opened" not in retried.stderr
+    assert transaction_path.read_bytes() == wal_before
+    assert history.read_bytes() == history_before
+    assert [
+        item
+        for item in _final_tree_snapshot(adopter)
+        if item[0] != ".validated-memory/lock"
+    ] == tree_before
+    assert [
+        entry
+        for entry in _records(history)
+        if entry.get("transaction") == transaction_id
+    ] == expected
+
+
+def test_append_reconfirmation_preserves_complete_valid_suffix(
+    run_cli, tmp_path, monkeypatch
+):
+    """A later complete pair remains byte-identical outside the claimed range."""
+    transaction, history = _retained_complete_append(
+        run_cli, tmp_path, monkeypatch
+    )
+    claim = transaction["history_append"]
+    descendants = []
+    for entry in claim["records"]:
+        descendants.append(
+            {
+                **entry,
+                "transaction": "descendant-transaction",
+                "run": "descendant-run",
+                "path": "descendant-path",
+            }
+        )
+    suffix = b"".join(
+        (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
+        for entry in descendants
+    )
+    history.write_bytes(history.read_bytes() + suffix)
+    before = history.read_bytes()
+    identity = (history.stat().st_dev, history.stat().st_ino)
+
+    recovered = run_cli("init", cwd=tmp_path)
+
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    assert recovered.stderr == ""
+    assert history.read_bytes() == before
+    assert history.read_bytes().endswith(suffix)
+    assert (history.stat().st_dev, history.stat().st_ino) == identity
+    assert not _transactions(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected_stderr"),
+    (
+        (
+            b'{"schema":',
+            "ERROR: journal.jsonl: journal: non-empty history does not end "
+            "with a line feed; the final record is not appendable without "
+            "explicit targeted repair\n",
+        ),
+        (
+            b"{\n",
+            "ERROR: journal.jsonl:{line}: journal: line is not valid JSON: "
+            "Expecting property name enclosed in double quotes\n",
+        ),
+    ),
+)
+def test_append_reconfirmation_refuses_malformed_or_torn_suffix(
+    run_cli, tmp_path, monkeypatch, suffix, expected_stderr
+):
+    """A WAL grants no authority over an incomplete or malformed suffix."""
+    transaction, history = _retained_complete_append(
+        run_cli, tmp_path, monkeypatch
+    )
+    line = history.read_bytes().count(b"\n") + 1
+    history.write_bytes(history.read_bytes() + suffix)
+    before = _final_tree_snapshot(tmp_path)
+
+    refused = run_cli("init", cwd=tmp_path)
+
+    assert refused.returncode == 1, (refused.stdout, refused.stderr)
+    assert refused.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert refused.stderr == expected_stderr.format(line=line)
+    assert transaction["transaction"] in (
+        path.stem for path in (tmp_path / ".validated-memory" / "transactions").glob("*.json")
+    )
+    assert _final_tree_snapshot(tmp_path) == before
+
+
+def test_append_reconfirmation_refuses_conflicting_suffix(
+    run_cli, tmp_path, monkeypatch
+):
+    """A complete but conflicting suffix is preserved without a range write."""
+    transaction, history = _retained_complete_append(
+        run_cli, tmp_path, monkeypatch
+    )
+    conflicting = (
+        json.dumps(transaction["history_append"]["records"][0], sort_keys=True)
+        + "\n"
+    ).encode("utf-8")
+    history.write_bytes(history.read_bytes() + conflicting)
+    before = _final_tree_snapshot(tmp_path)
+
+    refused = run_cli("init", cwd=tmp_path)
+
+    assert refused.returncode == 1, (refused.stdout, refused.stderr)
+    assert refused.stderr == (
+        "ERROR: journal.jsonl: journal: history reconfirmation wrote nothing "
+        "because the retained append is mismatched in the current history. "
+        f"Transaction {transaction['transaction']} and both histories were "
+        "preserved. This operation does not complete or replay an append. "
+        "Restore the affected history from a trusted copy, then rerun init\n"
+    )
+    assert _final_tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("change", ("prefix-bytes", "prefix-digest"))
+def test_append_reconfirmation_requires_exact_prefix_proof(
+    run_cli, tmp_path, monkeypatch, change
+):
+    """Neither current bytes nor retained digest may change before authority."""
+    transaction, history = _retained_complete_append(
+        run_cli, tmp_path, monkeypatch
+    )
+    transaction_path = next(
+        (tmp_path / ".validated-memory" / "transactions").glob("*.json")
+    )
+    if change == "prefix-digest":
+        entry = json.loads(transaction_path.read_text(encoding="utf-8"))
+        entry["history_append"]["prefix"]["digest"] = "sha256:" + "0" * 64
+        transaction_path.write_text(
+            json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    else:
+        records = _records(history)
+        records[0] = {**records[0], "note": "changed prefix evidence"}
+        _rewrite(history, records)
+    before = _final_tree_snapshot(tmp_path)
+
+    refused = run_cli("init", cwd=tmp_path)
+
+    assert refused.returncode == 1, (refused.stdout, refused.stderr)
+    assert refused.stderr == (
+        "ERROR: journal.jsonl: journal: history reconfirmation wrote nothing "
+        "because the retained append is mismatched in the current history. "
+        f"Transaction {transaction['transaction']} and both histories were "
+        "preserved. This operation does not complete or replay an append. "
+        "Restore the affected history from a trusted copy, then rerun init\n"
+    )
+    assert _final_tree_snapshot(tmp_path) == before
+    assert _transactions(tmp_path)[0]["transaction"] == transaction["transaction"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "append-reconfirmation-short-write",
+        "append-reconfirmation-file-fsync",
+        "append-reconfirmation-after-barriers",
+    ),
+)
+def test_post_write_append_reconfirmation_failure_is_terminal_and_retained(
+    run_cli, tmp_path, monkeypatch, fault
+):
+    """Any failure after the first range write retains the WAL and gates scaffold."""
+    transaction, history = _retained_complete_append(
+        run_cli, tmp_path, monkeypatch
+    )
+    before = _final_tree_snapshot(tmp_path)
+    identity = (history.stat().st_dev, history.stat().st_ino)
+    mode = stat.S_IMODE(history.stat().st_mode)
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        f"{fault}:journal.jsonl",
+    )
+
+    retained = run_cli("init", cwd=tmp_path)
+
+    transaction_id = transaction["transaction"]
+    assert retained.returncode == 1, (retained.stdout, retained.stderr)
+    assert retained.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert retained.stderr.startswith(
+        "ERROR: journal.jsonl: journal: the selected append range was "
+        "re-dirtied or its directory was reconfirmed, but coherent successor "
+        "confirmation is incomplete: append-reconfirmation of journal.jsonl "
+        "is visible, but its durability is unconfirmed: "
+    )
+    assert retained.stderr.endswith(
+        f"Transaction {transaction_id} was retained. Preserve the selected WAL "
+        "and both histories; rerun init. Do not replace or truncate either "
+        "history\n"
+    )
+    assert _final_tree_snapshot(tmp_path) == before
+    assert (history.stat().st_dev, history.stat().st_ino) == identity
+    assert stat.S_IMODE(history.stat().st_mode) == mode
+    assert _transactions(tmp_path)[0]["transaction"] == transaction_id
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+@pytest.mark.parametrize("change", ("identity", "mode", "opposite"))
+def test_append_reconfirmation_refuses_pair_change_before_range_action(
+    run_cli, tmp_path, monkeypatch, change
+):
+    """Frozen identities and modes are checked again before the first write."""
+    transaction, history = _retained_complete_append(
+        run_cli, tmp_path, monkeypatch
+    )
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    opening = _records(history)[0]
+    local_entry = {
+        **opening,
+        "durability": "local",
+        "path": "/external/harness-memory",
+        "note": "local witness",
+    }
+    local.write_text(json.dumps(local_entry, sort_keys=True) + "\n", encoding="utf-8")
+    local.chmod(0o640)
+    process, ready, proceed = _rendezvous_init(
+        tmp_path, "before-append-reconfirmation"
+    )
+    try:
+        assert _await_history_attempt(ready) == 1
+        if change == "identity":
+            replacement = history.with_name("journal.replacement")
+            replacement.write_bytes(history.read_bytes())
+            replacement.chmod(stat.S_IMODE(history.stat().st_mode))
+            os.replace(replacement, history)
+        elif change == "mode":
+            history.chmod(0o600)
+        else:
+            replacement = local.with_name("local.replacement")
+            replacement.write_bytes(local.read_bytes())
+            replacement.chmod(stat.S_IMODE(local.stat().st_mode))
+            os.replace(replacement, local)
+        frozen_after_race = [
+            item for item in _final_tree_snapshot(tmp_path)
+            if item[0] != ".validated-memory/lock"
+        ]
+        selected_identity = (history.stat().st_dev, history.stat().st_ino)
+        selected_mode = stat.S_IMODE(history.stat().st_mode)
+        os.write(proceed, b"x")
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == (
+        "init: kept knowledge\n"
+        "init: kept memory\n"
+        "init: kept memory/MEMORY.md\n"
+        "init: kept validated-memory.md\n"
+        "init: kept knowledge-extension.md\n"
+        "init: 0 created, 5 kept, 1 error(s), 0 warning(s)\n"
+    )
+    assert stderr == (
+        "ERROR: journal.jsonl: journal: history reconfirmation wrote nothing "
+        "because the coherent history pair changed before append "
+        "reconfirmation. The retained transaction and both histories were "
+        "preserved. Wait for the other writer to finish, then rerun init\n"
+    )
+    assert [
+        item for item in _final_tree_snapshot(tmp_path)
+        if item[0] != ".validated-memory/lock"
+    ] == frozen_after_race
+    assert (history.stat().st_dev, history.stat().st_ino) == selected_identity
+    assert stat.S_IMODE(history.stat().st_mode) == selected_mode
+    assert _transactions(tmp_path)[0]["transaction"] == transaction["transaction"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+def test_append_reconfirmation_gates_opposite_replacement_during_readback(
+    run_cli, tmp_path, monkeypatch
+):
+    """An identical-byte opposite replacement after action is retained."""
+    transaction, history = _retained_complete_append(
+        run_cli, tmp_path, monkeypatch
+    )
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    opening = _records(history)[0]
+    local_entry = {
+        **opening,
+        "durability": "local",
+        "path": "/external/harness-memory",
+        "note": "local witness",
+    }
+    local.write_text(json.dumps(local_entry, sort_keys=True) + "\n", encoding="utf-8")
+    local.chmod(0o640)
+    selected_identity = (history.stat().st_dev, history.stat().st_ino)
+    process, ready, proceed = _rendezvous_init(
+        tmp_path, "after-append-reconfirmation"
+    )
+    try:
+        assert _await_history_attempt(ready) == 1
+        former_identity = (local.stat().st_dev, local.stat().st_ino)
+        replacement = local.with_name("local.replacement")
+        replacement.write_bytes(local.read_bytes())
+        replacement.chmod(stat.S_IMODE(local.stat().st_mode))
+        os.replace(replacement, local)
+        after_race = [
+            item for item in _final_tree_snapshot(tmp_path)
+            if item[0] != ".validated-memory/lock"
+        ]
+        os.write(proceed, b"x")
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert "coherent successor confirmation is incomplete" in stderr
+    assert "append reconfirmation did not produce the exact coherent successor" in stderr
+    assert f"Transaction {transaction['transaction']} was retained" in stderr
+    assert [
+        item for item in _final_tree_snapshot(tmp_path)
+        if item[0] != ".validated-memory/lock"
+    ] == after_race
+    assert (history.stat().st_dev, history.stat().st_ino) == selected_identity
+    assert (local.stat().st_dev, local.stat().st_ino) != former_identity
+    assert _transactions(tmp_path)[0]["transaction"] == transaction["transaction"]
+    assert not (tmp_path / "new-later-effect").exists()
 
 
 def test_missing_history_after_unconfirmed_append_is_not_reconstructed(
@@ -3535,7 +4253,13 @@ def test_missing_history_after_unconfirmed_append_is_not_reconstructed(
     result = run_cli("init", "--harness-memory", str(harness), cwd=tmp_path)
 
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert "cannot reconstruct missing append-only history" in result.stderr
+    assert result.stderr == (
+        "ERROR: .validated-memory/local.jsonl: journal: history reconfirmation "
+        "wrote nothing because the retained append is absent in the current "
+        f"history. Transaction {transaction} and both histories were preserved. "
+        "This operation does not complete or replay an append. Restore the "
+        "affected history from a trusted copy, then rerun init\n"
+    )
     assert not history.exists()
     assert _transactions(tmp_path)[0]["transaction"] == transaction
 
@@ -3577,7 +4301,13 @@ def test_inconsistent_history_after_unconfirmed_append_remains_gated(
     result = run_cli("init", cwd=tmp_path)
 
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert "inconsistent record set" in result.stderr
+    assert result.stderr == (
+        "ERROR: journal.jsonl: journal: history reconfirmation wrote nothing "
+        "because the retained append is mismatched in the current history. "
+        f"Transaction {transaction} and both histories were preserved. This "
+        "operation does not complete or replay an append. Restore the affected "
+        "history from a trusted copy, then rerun init\n"
+    )
     assert _transactions(tmp_path)[0]["transaction"] == transaction
 
 
@@ -3613,10 +4343,10 @@ def test_cleanup_barrier_failure_retries_without_duplicate_history(
     assert not _transactions(tmp_path)
 
 
-def test_recovery_advances_uncertainty_through_history_and_cleanup(
+def test_target_recovery_history_failure_retains_claimless_boundary(
     run_cli, tmp_path, monkeypatch
 ):
-    """Each failed recovery step records the step that actually remains."""
+    """Legacy completion does not mint C1c authority during target recovery."""
     monkeypatch.setenv(
         "VALIDATED_MEMORY_PERSISTENCE_FAULT", "create-exclusive:.gitignore"
     )
@@ -3631,9 +4361,24 @@ def test_recovery_advances_uncertainty_through_history_and_cleanup(
         history_failed.stdout,
         history_failed.stderr,
     )
-    artifact = _transactions(tmp_path)[0]
+    retained = _transactions(tmp_path)
+    assert len(retained) == 2
+    artifact = next(
+        item for item in retained if item["transaction"] == transaction
+    )
+    assert artifact["transaction"] == transaction
     assert artifact["unconfirmed"] == "history", artifact
+    assert "history_append" not in artifact
+    assert "history_timestamps" not in artifact
+    later = next(
+        item for item in retained if item["transaction"] != transaction
+    )
+    assert later["intention"]["path"] == "knowledge"
+    assert later["unconfirmed"] == "history"
+    assert later["history_append"]["artifact"] == "repo"
     assert "history" in history_failed.stderr
+    assert (tmp_path / "knowledge").is_dir()
+    assert not (tmp_path / "memory").exists()
     pair = [
         entry
         for entry in _records(tmp_path / "journal.jsonl")
@@ -3641,34 +4386,135 @@ def test_recovery_advances_uncertainty_through_history_and_cleanup(
     ]
     assert [entry["stage"] for entry in pair] == ["prepared", "committed"]
 
-    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "remove:*")
-    cleanup_failed = run_cli("init", cwd=tmp_path)
-    assert cleanup_failed.returncode == 1, (
-        cleanup_failed.stdout,
-        cleanup_failed.stderr,
-    )
-    artifact = _transactions(tmp_path)[0]
-    assert artifact["unconfirmed"] == "cleanup", artifact
-    assert "cleanup" in cleanup_failed.stderr
-    assert len(
-        [
-            entry
-            for entry in _records(tmp_path / "journal.jsonl")
-            if entry.get("transaction") == transaction
-        ]
-    ) == 2
+
+@pytest.mark.parametrize("phase", ("target", "restore", "cleanup"))
+def test_non_c1c_recovery_uncertainty_continues_to_an_independent_wal(
+    run_cli, tmp_path, monkeypatch, phase
+):
+    """Legacy recovery uncertainty remains per-item, not run-terminal."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    if phase in {"target", "restore"}:
+        (tmp_path / ".gitignore").write_text(
+            "adopter line\n", encoding="utf-8"
+        )
+        monkeypatch.setenv(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", "install:.gitignore"
+        )
+        assert run_cli("init", cwd=tmp_path).returncode == 1
+    else:
+        (tmp_path / ".gitignore").write_text(
+            "adopter line\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "remove:*")
+        assert run_cli("init", cwd=tmp_path).returncode == 1
 
     monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
-    recovered = run_cli("init", cwd=tmp_path)
-    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
-    assert not _transactions(tmp_path)
-    assert len(
-        [
-            entry
-            for entry in _records(tmp_path / "journal.jsonl")
-            if entry.get("transaction") == transaction
-        ]
-    ) == 2
+    primary_path = next(
+        (tmp_path / ".validated-memory" / "transactions").glob("*.json")
+    )
+    primary = json.loads(primary_path.read_text(encoding="utf-8"))
+    if phase == "restore":
+        blob = (
+            tmp_path
+            / ".validated-memory"
+            / "preimages"
+            / primary["preimage_blob"].removeprefix("sha256:")
+        )
+        restored = tmp_path / "restored-independent.txt"
+        restored.write_bytes(blob.read_bytes())
+        restored.chmod(primary["preimage"]["mode"])
+        primary["intention"] = {
+            **primary["intention"],
+            "path": restored.name,
+        }
+        primary["unconfirmed"] = "restore"
+        primary["unconfirmed_reason"] = "fixture"
+        primary_path.write_text(
+            json.dumps(primary, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    assert primary["unconfirmed"] == phase
+    transaction_id = primary["transaction"]
+    secondary_id = "f" * 16
+    assert transaction_id < secondary_id
+    secondary = {
+        **primary,
+        "transaction": secondary_id,
+        "stage": "aborted",
+        "reason": "independent fixture",
+        "intention": {
+            **primary["intention"],
+            "path": "independent-path",
+        },
+    }
+    for key in (
+        "history_append",
+        "history_timestamps",
+        "temporary",
+        "unconfirmed",
+        "unconfirmed_reason",
+    ):
+        secondary.pop(key, None)
+    secondary_path = primary_path.with_name(f"{secondary_id}.json")
+    secondary_path.write_text(
+        json.dumps(secondary, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    histories_before = (
+        (tmp_path / "journal.jsonl").read_bytes(),
+        (tmp_path / ".validated-memory" / "local.jsonl").read_bytes()
+        if (tmp_path / ".validated-memory" / "local.jsonl").exists()
+        else None,
+    )
+    target_before = (tmp_path / ".gitignore").read_bytes()
+    recovery_path = primary["intention"]["path"]
+
+    if phase == "cleanup":
+        fault = f"remove:{primary_path.name}"
+        operation = "remove"
+        artifact = primary_path.relative_to(tmp_path).as_posix()
+    else:
+        fault = f"install:{Path(recovery_path).name}"
+        operation = "install"
+        artifact = recovery_path
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", fault)
+
+    result = run_cli("init", cwd=tmp_path)
+
+    failure = (
+        f"{operation} of {artifact} is visible, but its durability is "
+        f"unconfirmed: [Errno 5] injected persistence failure: '{artifact}'"
+    )
+    reason = (
+        f"recovery of {recovery_path} could not confirm {phase}: {failure}"
+    )
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == (
+        "init: kept knowledge\n"
+        "init: kept memory\n"
+        "init: kept memory/MEMORY.md\n"
+        "init: kept validated-memory.md\n"
+        "init: kept knowledge-extension.md\n"
+        "init: 0 created, 5 kept, 1 error(s), 0 warning(s)\n"
+    )
+    assert result.stderr == (
+        f"ERROR: {recovery_path}: journal: {reason}; transaction "
+        f"{transaction_id} is retained for recovery\n"
+    )
+    assert not secondary_path.exists()
+    expected_primary = {
+        **primary,
+        "unconfirmed": phase,
+        "unconfirmed_reason": reason,
+    }
+    assert primary_path.read_bytes() == (
+        json.dumps(expected_primary, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    assert (tmp_path / ".gitignore").read_bytes() == target_before
+    if phase == "restore":
+        restored = tmp_path / recovery_path
+        assert restored.read_bytes() == blob.read_bytes()
+    assert (tmp_path / "journal.jsonl").read_bytes() == histories_before[0]
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    assert (local.read_bytes() if local.exists() else None) == histories_before[1]
 
 
 def test_visible_restore_barrier_failure_never_claims_nothing_was_restored(
@@ -4221,10 +5067,10 @@ def _recovers_to_exactly_one_pair(run_cli, tree, path, monkeypatch):
     return records
 
 
-def test_recovery_completes_a_history_holding_only_the_prepared_half(
+def test_legacy_claimless_recovery_completes_a_prepared_half(
     run_cli, tmp_path, monkeypatch
 ):
-    """Recovery appends only the missing committed half of a torn history pair.
+    """Released claimless recovery still appends its missing committed half.
 
     The rebuilt pair preserves stage order plus the original transaction and
     run IDs."""
@@ -4238,6 +5084,15 @@ def test_recovery_completes_a_history_holding_only_the_prepared_half(
     last = json.loads(lines[-1])
     assert (last["path"], last["stage"]) == (".gitignore", "committed"), last
     journal.write_text("".join(lines[:-1]), encoding="utf-8")
+    transaction_path = next(
+        (tmp_path / ".validated-memory" / "transactions").glob("*.json")
+    )
+    claimless = json.loads(transaction_path.read_text(encoding="utf-8"))
+    claimless.pop("history_append")
+    claimless.pop("history_timestamps")
+    transaction_path.write_text(
+        json.dumps(claimless, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
     recovered = _recovers_to_exactly_one_pair(
         run_cli, tmp_path, ".gitignore", monkeypatch
@@ -8972,6 +9827,90 @@ def _run_protocol_projection(adapter, adopter):
     return json.loads(result.stdout)
 
 
+def _legacy_classification_adapter(tmp_path):
+    """Expose the unchanged tuple adapter through an isolated CLI subprocess."""
+    mutant_root = tmp_path / "legacy-classification-adapter"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant_root / "validated_memory")
+    command = mutant_root / "validated_memory" / "journal" / "command.py"
+    source = command.read_text(encoding="utf-8")
+    seam = "    inspection = result.inspection\n"
+    projection = '''\
+    inspection = result.inspection
+    import json
+    from .transactions import classify, open_transactions
+    item = open_transactions(root)[0]
+    verdict, facts = classify(root, item)
+    stdout.write(json.dumps({
+        "verdict": verdict,
+        "facts": facts,
+        "schema": item["schema"],
+    }, sort_keys=True, separators=(",", ":")) + "\\n")
+    return EXIT_OK
+'''
+    assert source.count(seam) == 1
+    command.write_text(source.replace(seam, projection), encoding="utf-8")
+    return mutant_root
+
+
+def test_history_unconfirmed_typed_evidence_preserves_legacy_tuple_and_bytes(
+    run_cli, tmp_path, monkeypatch
+):
+    """The C1c evidence extension changes no WAL-1 or released check contract."""
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, history = _retained_complete_append(
+        run_cli, adopter, monkeypatch
+    )
+    transaction_path = next(
+        (adopter / ".validated-memory" / "transactions").glob("*.json")
+    )
+    wal_before = transaction_path.read_bytes()
+    history_before = history.read_bytes()
+    tree_before = _final_tree_snapshot(adopter)
+    adapter = _legacy_classification_adapter(tmp_path)
+
+    projection = _run_protocol_projection(
+        _protocol_projection_adapter(tmp_path), adopter
+    )
+    legacy = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "journal", "--check"],
+        cwd=adopter,
+        env={**os.environ, "PYTHONPATH": str(adapter)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    checked = run_cli("journal", "--check", cwd=adopter)
+
+    assert projection["wal"] == [{
+        "type": "HistoryClaimWal",
+        "target": "ReadableTargetWal",
+        "claim": "valid",
+        "occurrence": "complete",
+    }]
+    assert legacy.returncode == 0, (legacy.stdout, legacy.stderr)
+    assert legacy.stderr == ""
+    legacy_payload = json.loads(legacy.stdout)
+    assert legacy_payload["verdict"] == "confirm-history"
+    assert legacy_payload["schema"] == 1
+    assert legacy_payload["facts"]["actual"] == transaction["postimage"]
+    assert "history_append" not in legacy_payload["facts"]
+    assert checked.returncode == 1
+    assert checked.stderr == (
+        f"ERROR: {transaction['intention']['path']}: journal: open transaction "
+        f"{transaction['transaction']} (published) on "
+        f"{transaction['intention']['path']}: recoverable\n"
+    )
+    record_count = len(_records(adopter / "journal.jsonl"))
+    local = adopter / ".validated-memory" / "local.jsonl"
+    if local.exists():
+        record_count += len(_records(local))
+    assert checked.stdout == f"journal: {record_count} record(s), 1 error(s)\n"
+    assert transaction_path.read_bytes() == wal_before
+    assert history.read_bytes() == history_before
+    assert _final_tree_snapshot(adopter) == tree_before
+
+
 @pytest.mark.parametrize(
     ("shape", "expected"),
     (("zero", "zero"), ("prepared", "prepared"), ("complete", "complete"),
@@ -10055,6 +10994,16 @@ def test_history_rendezvous_has_one_reader_and_bounded_call_sites():
         (
             "validated_memory/journal/records.py",
             "after-opening-reconfirmation",
+            "1",
+        ),
+        (
+            "validated_memory/journal/records.py",
+            "before-append-reconfirmation",
+            "1",
+        ),
+        (
+            "validated_memory/journal/records.py",
+            "after-append-reconfirmation",
             "1",
         ),
         (

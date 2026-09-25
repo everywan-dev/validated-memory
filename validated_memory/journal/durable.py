@@ -9,7 +9,6 @@ rename or mkdir has already happened.
 """
 
 import errno
-import json
 import os
 import stat
 import tempfile
@@ -285,6 +284,22 @@ def _short_opening_write_for_test(path, written):
     path = Path(path)
     if written and f"opening-short-write:{path.name}" in requested:
         raise OSError(errno.EIO, "injected failure after a short opening write")
+
+
+def _short_append_reconfirmation_for_test(path, view):
+    """Select a strict first range-write prefix for retained fault coverage."""
+    requested = {
+        item.strip()
+        for item in os.environ.get(
+            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
+        ).split(",")
+        if item.strip()
+    }
+    path = Path(path)
+    selected = f"append-reconfirmation-short-write:{path.name}" in requested
+    if not selected or len(view) <= 1:
+        return view, False
+    return view[: max(1, len(view) // 2)], True
 
 
 def _confirm_directory(path, operation):
@@ -682,6 +697,66 @@ def reconfirm_exact_file(path, data, identity, mode):
         os.close(descriptor)
 
 
+def reconfirm_exact_range(path, snapshot, offset, data, identity, mode, *, rewrite):
+    """Confirm one retained append range without replacing or truncating it."""
+    path = Path(path)
+    descriptor = os.open(
+        path,
+        os.O_RDWR
+        | getattr(os, "O_NONBLOCK", 0),
+    )
+    acted = False
+    try:
+        info = os.fstat(descriptor)
+        current_identity = (info.st_dev, info.st_ino)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "history is not a regular file", os.fspath(path))
+        if current_identity != identity:
+            raise OSError(errno.EBUSY, "history identity changed", os.fspath(path))
+        if stat.S_IMODE(info.st_mode) != mode:
+            raise OSError(errno.EBUSY, "history mode changed", os.fspath(path))
+        if info.st_size != len(snapshot):
+            raise OSError(errno.EBUSY, "history bytes changed", os.fspath(path))
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        if os.read(descriptor, len(snapshot) + 1) != snapshot:
+            raise OSError(errno.EBUSY, "history bytes changed", os.fspath(path))
+        if snapshot[offset : offset + len(data)] != data:
+            raise OSError(errno.EBUSY, "authorized append range changed", os.fspath(path))
+
+        if rewrite:
+            os.lseek(descriptor, offset, os.SEEK_SET)
+            _injected_error("append-reconfirmation-rewrite", path)
+            view = memoryview(data)
+            while view:
+                chunk, fail_after = _short_append_reconfirmation_for_test(path, view)
+                written = os.write(descriptor, chunk)
+                if written <= 0:
+                    raise OSError(errno.EIO, "history rewrite made no progress")
+                acted = True
+                if fail_after:
+                    raise OSError(
+                        errno.EIO,
+                        "injected failure after a short append-range write",
+                    )
+                view = view[written:]
+            _injected_error("append-reconfirmation-file-fsync", path)
+            os.fsync(descriptor)
+
+        acted = True
+        _injected_error("append-reconfirmation-directory", path)
+        outcome = _confirm_directory(path.parent, "append-reconfirmation-directory")
+        _injected_error("append-reconfirmation-after-barriers", path)
+        return current_identity, outcome
+    except Exception as error:
+        if acted:
+            raise VisibilityUnconfirmed(
+                path, "append-reconfirmation", True, error
+            ) from error
+        raise
+    finally:
+        os.close(descriptor)
+
+
 def create_exclusive(path, data, mode=0o666):
     """Create and flush one complete file without replacing an existing name."""
     path = Path(path)
@@ -779,6 +854,7 @@ def append_bytes(path, data):
                 storage_prefix(path, data, handle)
                 handle.write(data)
                 handle.flush()
+                _injected_error("history-file-fsync", path)
                 os.fsync(handle.fileno())
         except OSError as error:
             raise VisibilityUnconfirmed(
@@ -852,37 +928,8 @@ def _swap_snapshot_for_test(path, snapshot_kind, data, mode):
         os.symlink(backing.name, path)
     elif f"swap-target-mode:{name}" in requested:
         os.chmod(path, 0o600 if mode != 0o600 else 0o644)
-    elif f"swap-history:{name}" in requested:
-        data = Path(path).read_bytes()
-        changed = data[:-1] + b"\r\n" if data.endswith(b"\n") else data + b"\r\n"
-        with Path(path).open("wb") as handle:
-            handle.write(changed)
-            handle.flush()
-            os.fsync(handle.fileno())
     elif f"swap-{snapshot_kind}:{name}" in requested:
         Path(path).write_bytes(b"adversarial swap\n")
-
-
-def swap_final_history_for_test(path, transaction):
-    """Remove one pair before final snapshot validation when tests request it."""
-    path = Path(path)
-    requested = {
-        item.strip()
-        for item in os.environ.get(
-            "VALIDATED_MEMORY_PERSISTENCE_FAULT", ""
-        ).split(",")
-        if item.strip()
-    }
-    if f"swap-history-final:{path.name}" not in requested:
-        return
-    kept = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip() or json.loads(line).get("transaction") != transaction:
-            kept.append(line)
-    with path.open("w", encoding="utf-8") as handle:
-        handle.write("\n".join(kept) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
 
 
 def republish_file(path, data, mode, snapshot_kind):

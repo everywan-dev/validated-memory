@@ -120,6 +120,34 @@ def test_bootstrap_no_replace_and_opening_reconfirmation_are_documented():
     assert "partial canonical opening" in journal
 
 
+def test_append_range_reconfirmation_is_documented():
+    """The active C1c transition is explicit on both public references."""
+    cli = (REPO_ROOT / "docs" / "reference" / "cli.md").read_text(
+        encoding="utf-8"
+    )
+    journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(
+        encoding="utf-8"
+    )
+    for text in (cli, journal):
+        assert "exact" in text
+        assert "non-truncating" in text
+        assert "directory" in text
+        assert "coherent pair" in text
+        assert "suffix" in text
+        assert "opposite artifact" in text
+    assert "directory-only" in journal
+    assert "never replaces or truncates" in journal
+    for text in (cli, journal):
+        prose = " ".join(text.split())
+        assert "absent, incomplete, or mismatched" in prose
+        assert "does not complete or replay" in prose
+        assert "trusted copy" in prose
+        assert "environmental" in prose or "access obstruction" in prose
+        assert "must not be repeated" in prose
+    assert "complete claimed pair" not in journal
+    assert "atomically republishes\nthe exact complete" not in journal
+
+
 def test_journal_introduction_links_every_section():
     """The reader-journey navigation reaches every current H2 section."""
     journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(

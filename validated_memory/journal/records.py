@@ -22,6 +22,7 @@ from .durable import (
     append_bytes,
     ensure_owned_directory,
     publish_no_replace,
+    reconfirm_exact_range,
     reconfirm_exact_file,
 )
 from .fault import rendezvous_at
@@ -917,6 +918,83 @@ def reconfirm_opening(root, opening):
     except Exception as error:
         raise VisibilityUnconfirmed(
             path, "opening-reconfirmation", True, error
+        ) from error
+    return after
+
+
+def reconfirm_append(root, before, claim, *, rewrite):
+    """Reconfirm one exact retained append range and its frozen coherent pair."""
+    root = Path(root)
+    durability = claim["artifact"]
+    path = journal_path(root, durability)
+    selected = (
+        before.pair.repository if durability == REPO else before.pair.local
+    )
+    opposite = before.pair.local if durability == REPO else before.pair.repository
+    snapshot = selected.data
+    offset = claim["prefix"]["length"]
+    payload = encode_records(claim["records"])
+    if (
+        snapshot is None
+        or selected.generation is None
+        or selected.mode is None
+        or len(snapshot) < offset + len(payload)
+        or digest(snapshot[:offset]) != claim["prefix"]["digest"]
+        or snapshot[offset : offset + len(payload)] != payload
+    ):
+        raise JournalError(
+            None,
+            "the retained prefix or exact append range is no longer present",
+            artifact_name(durability),
+        )
+    identity = (selected.generation[0], selected.generation[1])
+    rendezvous_at("before-append-reconfirmation", 1)
+    current = confirm_histories(root)
+    if current.pair != before.pair or (
+        current.repository != before.repository or current.local != before.local
+    ):
+        raise JournalError(
+            None,
+            "the coherent history pair changed before append reconfirmation",
+            artifact_name(durability),
+        )
+    reconfirm_exact_range(
+        path,
+        snapshot,
+        offset,
+        payload,
+        identity,
+        selected.mode,
+        rewrite=rewrite,
+    )
+    rendezvous_at("after-append-reconfirmation", 1)
+    try:
+        after = confirm_histories(root)
+        final = after.pair.repository if durability == REPO else after.pair.local
+        final_opposite = (
+            after.pair.local if durability == REPO else after.pair.repository
+        )
+        final_identity = (
+            (final.generation[0], final.generation[1])
+            if final.generation is not None
+            else None
+        )
+        if (
+            final_identity != identity
+            or final.mode != selected.mode
+            or final.data != snapshot
+            or final_opposite != opposite
+            or after.repository != before.repository
+            or after.local != before.local
+        ):
+            raise JournalError(
+                None,
+                "append reconfirmation did not produce the exact coherent successor",
+                artifact_name(durability),
+            )
+    except Exception as error:
+        raise VisibilityUnconfirmed(
+            path, "append-reconfirmation", True, error
         ) from error
     return after
 

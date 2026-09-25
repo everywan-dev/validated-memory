@@ -262,9 +262,10 @@ transaction at its exact postimage remains recoverable after a hard crash
 before the marker. The marker proves publication after a later writer makes
 the target diverge. `aborted` is closed: it published nothing, it is never
 inverted by a reversal, and it disappears with its file. `unconfirmed` is a
-local recovery fact, never a permanent-history field: recovery performs a
-fresh namespace operation appropriate to that phase instead of treating a
-second bare `fsync` as proof about the first one.
+local recovery fact, never a permanent-history field. Target phases use a
+fresh namespace operation. A complete exact history append instead uses the
+descriptor-bound range reconfirmation below; it never treats a second bare
+`fsync` as proof about the first one.
 
 `prior_bytes` is in the file for recovery alone. The inverse of an `append`
 is "truncate to the recorded prior length", and recovery, rebuilding that
@@ -1038,15 +1039,37 @@ exclusive file creation fails while writing its content, absence is claimed
 only after removal of the visible name and its carrying-directory barrier are
 confirmed; uncertain cleanup retains a target-phase WAL instead.
 
-A history barrier failure also retains the WAL. Recovery requires the
-append-only history to remain present, readable and internally consistent. It
-adds a missing stage idempotently where possible, then atomically republishes
-the exact complete, readable byte snapshot after verifying the pathname did not
-change before installation. The pair's stage order and field agreement are
-validated from the same final records-and-bytes snapshot that is republished;
-a later valid JSONL snapshot lacking the pair remains gated. It never reconstructs a lost
-history from one WAL, and it never treats a torn tail as an incomplete pair;
-torn-tail repair belongs to a separate maintenance operation.
+A history barrier failure also retains the WAL. Descriptor-bound append
+reconfirmation is available only when that WAL carries valid exact retained
+evidence and the complete retained append is present at its proven range. Recovery acquires and
+parses both histories coherently, freezes their identities, modes and complete
+bytes, and requires the proven prefix plus a complete compatibility-valid
+suffix with no conflicting semantic condition. A changed prefix or digest,
+malformed or torn suffix, duplicate or conflicting record, changed mode or
+identity, or changed opposite artifact refuses before the range action.
+
+If the retained append is absent, incomplete, or mismatched in the current
+history, reconfirmation writes nothing and does not complete or replay it. The
+transaction and both histories are preserved, and the diagnostic directs the
+operator to restore the affected history from a trusted copy before rerunning
+`init`. Other pre-write refusals distinguish an observed competing writer
+(wait for it to finish) from an I/O or access obstruction (restore access or
+remove the obstruction). They do not recommend removing a writer unless a race
+was actually observed.
+
+When file-data durability was not confirmed, recovery writes the identical
+claimed bytes at their exact offset through a writable, non-truncating
+descriptor, without touching the frozen prefix or suffix, then confirms the
+file and carrying directory. Only an exact retained proof that the file-data
+barrier completed permits the directory-only path, which performs no byte
+rewrite. Both paths reacquire the coherent pair and require the selected
+identity and mode, exact prefix/range/suffix, opposite artifact and semantic
+successor to match the frozen pre-state. Only then may the selected WAL be
+removed. A failure after the first byte write or directory confirmation retains
+the WAL and gates later adopter effects. Recovery never replaces or truncates a
+history, overwrites a valid suffix, reconstructs a missing history from one WAL,
+or treats a torn tail as an incomplete pair; torn-tail repair belongs to the
+separate maintenance operation below.
 
 A cleanup barrier failure occurs only after target and history confirmation.
 The WAL is republished as recovery evidence when its first removal is
@@ -1054,6 +1077,11 @@ unconfirmed; the next run repeats cleanup without duplicating the history
 pair. An operator restore uses the same rule for its exact restored preimage.
 If retaining the phase fact is itself unconfirmed, the diagnostic reports both
 failures and promises only that every artifact still available was kept.
+For append reconfirmation, an initial data or directory failure tells the
+operator to preserve the retained transaction and rerun `init`. If cleanup is
+uncertain after the append was confirmed, the diagnostic says that the append
+must not be repeated and again directs the operator to preserve the retained
+transaction and rerun `init`.
 
 ## Explicit repair of a torn history append
 

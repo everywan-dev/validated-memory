@@ -36,7 +36,6 @@ from .durable import (
     replace_symlink,
     republish_directory,
     republish_file,
-    swap_final_history_for_test,
 )
 from .fault import fault_at, rendezvous_at, sleep_at
 from .lock import Lock
@@ -136,6 +135,25 @@ from .transactions import (
 PREIMAGE_DIRNAME = "preimages"
 
 
+def _exact_append_claim(durability, prefix, records):
+    """Bind a complete record pair to its exact history prefix and bytes."""
+    payload = encode_records(records)
+    return {
+        "artifact": durability,
+        "prefix": {
+            "length": len(prefix),
+            "digest": digest(prefix),
+        },
+        "records": records,
+        "timestamps": [entry["at"] for entry in records],
+        "encoding": "json-sorted-keys-utf8-lf",
+        "append": {
+            "length": len(payload),
+            "digest": digest(payload),
+        },
+    }
+
+
 def _repair_complete_prefix(data, artifact):
     """Decode only complete JSONL records, leaving an EOF tail untouched."""
     records = []
@@ -226,6 +244,36 @@ class IdentityRetained:
     message: str
 
 
+@dataclass(frozen=True)
+class AppendUnconfirmed:
+    artifact: str
+    retained_reason: str
+    message: str
+
+
+@dataclass(frozen=True)
+class AppendReconfirmed:
+    repository: tuple[dict, ...]
+    local: tuple[dict, ...]
+
+
+@dataclass(frozen=True)
+class AppendReconfirmationRefused:
+    artifact: str
+    message: str
+
+
+@dataclass(frozen=True)
+class AppendReconfirmationRetained:
+    artifact: str
+    message: str
+
+
+@dataclass(frozen=True)
+class AppendReconfirmationNotApplicable:
+    pass
+
+
 class Run:
     """One invocation's journalling context.
 
@@ -249,10 +297,19 @@ class Run:
     inside.
     """
 
-    def __init__(self, root, run, adoption):
+    def __init__(
+        self,
+        root,
+        run,
+        adoption,
+        append_failure=None,
+        append_reconfirmation=None,
+    ):
         self.root = Path(root)
         self.run = run
         self.adoption = adoption
+        self._append_failure = append_failure
+        self._append_reconfirmation = append_reconfirmation
 
     def _survey(self, records, local):
         """Take stock of what the histories and the open transactions say.
@@ -862,21 +919,11 @@ class Run:
                 for stage in (PREPARED, COMMITTED)
             ]
             prefix = history_snapshot(self.root, intention.durability)
-            payload = encode_records(history_records)
-            claim = {
-                "artifact": intention.durability,
-                "prefix": {
-                    "length": len(prefix),
-                    "digest": digest(prefix),
-                },
-                "records": history_records,
-                "timestamps": [entry["at"] for entry in history_records],
-                "encoding": "json-sorted-keys-utf8-lf",
-                "append": {
-                    "length": len(payload),
-                    "digest": digest(payload),
-                },
-            }
+            claim = _exact_append_claim(
+                intention.durability,
+                prefix,
+                history_records,
+            )
             mark_history_append(self.root, transaction, claim)
         except (OSError, VisibilityUnconfirmed) as error:
             raise self._uncertainty(
@@ -888,11 +935,22 @@ class Run:
         try:
             append(history_records, self.root, intention.durability)
         except (OSError, VisibilityUnconfirmed) as error:
+            if self._append_failure is None:
+                raise
+            retained = self._append_failure(
+                transaction,
+                intention.durability,
+                error,
+            )
+            if not isinstance(retained, AppendUnconfirmed):
+                raise TypeError("append failure callback returned an unknown result")
             raise self._uncertainty(
                 transaction,
                 HISTORY_UNCONFIRMED,
-                f"the complete history pair for {location} is visible or may "
-                f"be visible, but its durability is unconfirmed: {error}",
+                retained.message,
+                retained_reason=retained.retained_reason,
+                artifact=retained.artifact,
+                complete=True,
             ) from error
         fault_at("after-history")
 
@@ -929,11 +987,25 @@ class Run:
             mode=mode,
         )
 
-    def _uncertainty(self, transaction, phase, message):
+    def _uncertainty(
+        self,
+        transaction,
+        phase,
+        message,
+        *,
+        retained_reason=None,
+        artifact=None,
+        complete=False,
+    ):
         """Retain a phase fact and build one truthful gating journal error."""
         secondary = ""
         try:
-            mark_unconfirmed(self.root, transaction, phase, message)
+            mark_unconfirmed(
+                self.root,
+                transaction,
+                phase,
+                message if retained_reason is None else retained_reason,
+            )
         except (OSError, VisibilityUnconfirmed) as error:
             secondary = (
                 "; recording that recovery fact was itself unconfirmed: "
@@ -941,9 +1013,14 @@ class Run:
             )
         error = JournalError(
             None,
-            f"{message}; transaction {transaction} is retained for recovery"
-            f"{secondary}",
-            transaction_artifact(transaction),
+            f"{message}"
+            + (
+                ""
+                if complete
+                else f"; transaction {transaction} is retained for recovery"
+            )
+            + secondary,
+            artifact or transaction_artifact(transaction),
         )
         error.visibility_unconfirmed = True
         return error
@@ -1255,14 +1332,41 @@ class Run:
             )
 
         if verdict == VERDICT_HISTORY_UNCONFIRMED:
-            try:
-                self._recover_history(facts, histories)
-            except (OSError, VisibilityUnconfirmed, JournalError) as error:
-                return self._recovery_uncertain(facts, HISTORY_UNCONFIRMED, error)
+            if self._append_reconfirmation is None:
+                raise RuntimeError("append reconfirmation callback is unavailable")
+            result = self._append_reconfirmation(self.root, item)
+            if isinstance(result, AppendReconfirmationRefused):
+                return Recovery(
+                    transaction_id,
+                    result.artifact,
+                    durability,
+                    problem=PROBLEM_UNKNOWN,
+                    message=result.message,
+                )
+            if isinstance(result, AppendReconfirmationRetained):
+                error = JournalError(None, result.message, result.artifact)
+                error.visibility_unconfirmed = True
+                raise error
+            if not isinstance(result, AppendReconfirmed):
+                raise TypeError(
+                    "append reconfirmation callback returned an unknown result"
+                )
+            histories[REPO] = list(result.repository)
+            histories[LOCAL] = list(result.local)
             try:
                 self._remove_after_confirmed_history(facts)
             except (OSError, VisibilityUnconfirmed, JournalError) as error:
-                return self._recovery_uncertain(facts, CLEANUP_UNCONFIRMED, error)
+                retained = JournalError(
+                    None,
+                    "the selected append range was coherently confirmed, but "
+                    f"transaction cleanup is incomplete: {error}. Transaction "
+                    f"{transaction_id} was retained. The append is already "
+                    "confirmed and must not be repeated. Preserve the retained "
+                    "transaction and rerun init",
+                    artifact_name(durability),
+                )
+                retained.visibility_unconfirmed = True
+                raise retained from error
             return Recovery(
                 transaction_id,
                 path,
@@ -1270,7 +1374,7 @@ class Run:
                 action=RECOVERED,
                 appended=False,
                 message=(
-                    f"transaction {transaction_id} republished and confirmed "
+                    f"transaction {transaction_id} reconfirmed "
                     f"its complete {artifact_name(durability)} history"
                 ),
             )
@@ -1311,6 +1415,21 @@ class Run:
             )
 
         if verdict == VERDICT_COMPLETE:
+            if self._append_reconfirmation is None:
+                raise RuntimeError("append reconfirmation callback is unavailable")
+            boundary = self._append_reconfirmation(self.root, item)
+            if isinstance(boundary, AppendReconfirmationRefused):
+                return Recovery(
+                    transaction_id,
+                    boundary.artifact,
+                    durability,
+                    problem=PROBLEM_UNKNOWN,
+                    message=boundary.message,
+                )
+            if not isinstance(boundary, AppendReconfirmationNotApplicable):
+                raise TypeError(
+                    "append reconfirmation callback returned an unknown result"
+                )
             try:
                 appended = self._complete(facts, histories)
             except VisibilityUnconfirmed as error:
@@ -1440,83 +1559,6 @@ class Run:
                 None,
                 f"the restored state of {facts['path']} cannot be republished",
                 transaction_artifact(facts["id"]),
-            )
-
-    def _recover_history(self, facts, histories):
-        """Complete readable history, then atomically republish its exact bytes."""
-        path = journal_path(self.root, facts["durability"])
-        if not os.path.exists(path):
-            raise JournalError(
-                None,
-                f"{artifact_name(facts['durability'])} is absent; one WAL "
-                "cannot reconstruct missing append-only history",
-                artifact_name(facts["durability"]),
-            )
-        records = read(self.root, facts["durability"])
-        self._validate_history_pair(facts, records, complete=False)
-        histories[facts["durability"]] = records
-        self._complete(facts, histories)
-        path = path.resolve() if path.is_symlink() else path
-        swap_final_history_for_test(path, facts["id"])
-        records, data, mode = read(
-            self.root, facts["durability"], with_snapshot=True
-        )
-        if data is None:
-            raise JournalError(
-                None,
-                f"{artifact_name(facts['durability'])} is absent; one WAL "
-                "cannot reconstruct missing append-only history",
-                artifact_name(facts["durability"]),
-            )
-        self._validate_history_pair(facts, records, complete=True)
-        histories[facts["durability"]] = records
-        republish_file(path, data, mode, "history")
-
-    def _validate_history_pair(self, facts, records, complete):
-        """Require a consistent transaction pair in one validated record set."""
-        matching = [
-            entry
-            for entry in records
-            if entry.get("transaction") == facts["id"]
-        ]
-        stages = [entry["stage"] for entry in matching]
-        pair_fields = (
-            "op",
-            "purpose",
-            "path",
-            "durability",
-            "preimage",
-            "postimage",
-            "note",
-            "prior_bytes",
-            "mode",
-        )
-        disagrees = (
-            len(matching) == 2
-            and any(
-                matching[0].get(field) != matching[1].get(field)
-                for field in pair_fields
-            )
-        )
-        if (
-            len(matching) > 2
-            or len(stages) != len(set(stages))
-            or stages == [COMMITTED]
-            or (len(stages) == 2 and stages != [PREPARED, COMMITTED])
-            or disagrees
-            or (complete and stages != [PREPARED, COMMITTED])
-        ):
-            detail = (
-                "does not contain one complete consistent pair"
-                if complete
-                else "has an inconsistent record set"
-            )
-            raise JournalError(
-                None,
-                f"{artifact_name(facts['durability'])} {detail} for "
-                f"transaction {facts['id']}; append-only "
-                "history is not reconstructed from one WAL",
-                artifact_name(facts["durability"]),
             )
 
     def _remove_after_confirmed_history(self, facts):
@@ -2000,7 +2042,12 @@ def repair_harness_link(path, target, anchor=Path()):
 
 
 @contextmanager
-def adopting_session(identity_transition, root=Path()):
+def adopting_session(
+    identity_transition,
+    append_failure,
+    append_reconfirmation,
+    root=Path(),
+):
     """Yield one adopting session while holding its run-wide lock.
 
     Identity creation is part of this operation: the histories are read and
@@ -2033,7 +2080,13 @@ def adopting_session(identity_transition, root=Path()):
             raise TypeError(
                 "identity transition returned an unknown closed result"
             )
-        session = Run(root, run, confirmed.adoption)
+        session = Run(
+            root,
+            run,
+            confirmed.adoption,
+            append_failure,
+            append_reconfirmation,
+        )
         session._survey(confirmed.repository, confirmed.local)
         yield session
 

@@ -171,6 +171,27 @@ replaces that canonical opening. Private staging cleanup is best-effort, and
 uncertainty names the private residue without granting cleanup authority over
 `journal.jsonl`.
 
+When a retained WAL proves an exact complete history append whose durability
+was not confirmed, `init` reconfirms only that byte range through a writable,
+non-truncating descriptor. It freezes both coherent histories, their identities
+and modes, the proven prefix and complete valid suffix, and the opposite artifact.
+Without exact file-flush proof it writes the identical retained range
+and confirms the file and directory; when the retained proof isolates only the
+directory barrier, it skips the rewrite and confirms the directory. It then
+reacquires the coherent pair before removing the WAL or performing a later
+adopter effect. A mismatch before the action is refused; uncertainty after a
+write or directory confirmation retains the WAL and gates the rest of the run.
+No path is replaced or truncated, and a valid suffix is never overwritten.
+An initial data or directory failure tells the operator to preserve the retained
+transaction and rerun `init`. A pre-write refusal recommends waiting only when
+another writer was observed, restoring the affected history from a trusted copy
+for absent or mismatched evidence, or restoring access/removing an environmental
+obstruction for an I/O failure. If the retained append is absent, incomplete, or
+mismatched, reconfirmation writes nothing, preserves the transaction and both
+histories, and does not complete or replay the append. If cleanup becomes
+uncertain after confirmation, the append must not be repeated; preserve the
+retained transaction and rerun `init`.
+
 `init` also appends one line to the repository's ignore file (`.gitignore`,
 created if missing): `/.validated-memory/`, the vault. That entry is not one
 of the adoption questionnaire's answers and is written on every adoption,

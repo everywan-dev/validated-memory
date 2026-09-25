@@ -20,6 +20,11 @@ from .durable import (
     VisibilityUnconfirmed,
 )
 from .executor import (
+    AppendReconfirmationNotApplicable,
+    AppendReconfirmationRefused,
+    AppendReconfirmationRetained,
+    AppendReconfirmed,
+    AppendUnconfirmed,
     IdentityConfirmed,
     IdentityRefused,
     IdentityRetained,
@@ -44,6 +49,7 @@ from .records import (
     new_id,
     parse_acquired_history,
     publish_opening,
+    reconfirm_append,
     reconfirm_opening,
     record,
 )
@@ -229,6 +235,188 @@ def _retained(message, artifact=JOURNAL_FILENAME):
     return IdentityRetained(artifact, message)
 
 
+_APPEND_DATA_UNCONFIRMED = "append file-data durability unconfirmed"
+_APPEND_DIRECTORY_UNCONFIRMED = (
+    "append file data confirmed; carrying-directory durability unconfirmed"
+)
+
+
+def _append_failure(transaction, durability, error):
+    """Retain the exact proof boundary reached by one failed append."""
+    artifact = artifact_name(durability)
+    if isinstance(error, VisibilityUnconfirmed) and error.complete:
+        reason = _APPEND_DIRECTORY_UNCONFIRMED
+        message = (
+            "the exact append data is confirmed, but its carrying-directory "
+            f"durability is unconfirmed. Transaction {transaction} was "
+            "retained. Preserve the retained transaction and rerun init"
+        )
+    else:
+        reason = _APPEND_DATA_UNCONFIRMED
+        message = (
+            "the exact append effect may be visible, but file-data durability "
+            f"is unconfirmed. Transaction {transaction} was retained. "
+            "Preserve the retained transaction and rerun init"
+        )
+    return AppendUnconfirmed(artifact, reason, message)
+
+
+def _append_refused(artifact, reason, category="evidence"):
+    actions = {
+        "race": "Wait for the other writer to finish, then rerun init",
+        "evidence": (
+            "Restore the affected history from a trusted copy, then rerun init"
+        ),
+        "environment": (
+            "Restore access or remove the environmental obstruction, then "
+            "rerun init"
+        ),
+    }
+    return AppendReconfirmationRefused(
+        artifact,
+        f"history reconfirmation wrote nothing because {reason}. The retained "
+        f"transaction and both histories were preserved. {actions[category]}",
+    )
+
+
+def _append_deferred(artifact, transaction, state):
+    return AppendReconfirmationRefused(
+        artifact,
+        "history reconfirmation wrote nothing because the retained append is "
+        f"{state} in the current history. Transaction {transaction} and both "
+        "histories were preserved. This operation does not complete or replay "
+        "an append. Restore the affected history from a trusted copy, then "
+        "rerun init",
+    )
+
+
+def _append_refusal_category(error):
+    reason = str(error)
+    if any(
+        text in reason
+        for text in (
+            "changed before append reconfirmation",
+            "history identity changed",
+            "history mode changed",
+            "history bytes changed",
+            "authorized append range changed",
+        )
+    ):
+        return "race"
+    if isinstance(error, OSError):
+        return "environment"
+    return "evidence"
+
+
+def _append_retained(artifact, transaction, reason):
+    return AppendReconfirmationRetained(
+        artifact,
+        "the selected append range was re-dirtied or its directory was "
+        "reconfirmed, but coherent successor confirmation is incomplete: "
+        f"{reason}. Transaction {transaction} was retained. Preserve the "
+        "selected WAL and both histories; rerun init. Do not replace or "
+        "truncate either history",
+    )
+
+
+def _semantic_append_precondition(root, pair, histories):
+    topology = inspect_topology(pair)
+    unfinished, disagreements, anomalies = reconcile(histories, root)
+    if topology.snapshot is None:
+        return "the coherent pair has damaged topology"
+    errors = tuple(
+        condition.code for condition in topology.conditions
+        if condition.level == "error"
+    )
+    if errors:
+        return "the current histories have a conflicting semantic state"
+    if unfinished or disagreements or anomalies:
+        return "the coherent pair has an unfinished or conflicting history condition"
+    return None
+
+
+def _append_reconfirmation(root, item):
+    """Own exact retained append authority and return one closed result."""
+    transaction = item.get("transaction", item.get("id", "unknown"))
+    projected = classify_evidence(root, item, include_stored_claim=True)
+    if not isinstance(projected, HistoryClaimWal):
+        return AppendReconfirmationNotApplicable()
+    claim = item.get("history_append")
+    durability = claim.get("artifact") if isinstance(claim, Mapping) else REPO
+    artifact = (
+        artifact_name(durability)
+        if durability in {REPO, LOCAL}
+        else JOURNAL_FILENAME
+    )
+    try:
+        before = confirm_histories(root)
+        histories = {
+            REPO: before.repository,
+            LOCAL: before.local,
+        }
+        adoption = existing_adoption_id(before.repository, before.local)
+        evidence = classify_evidence(
+            root,
+            item,
+            adoption,
+            history_pair=before.pair,
+            histories=histories,
+            include_stored_claim=True,
+        )
+        if evidence.unconfirmed is None:
+            if (
+                evidence.claim == "valid"
+                and evidence.occurrence in {"zero", "prepared"}
+            ):
+                return _append_deferred(
+                    artifact,
+                    transaction,
+                    "absent" if evidence.occurrence == "zero" else "incomplete",
+                )
+            return AppendReconfirmationNotApplicable()
+        if (
+            not isinstance(evidence, HistoryClaimWal)
+            or evidence.claim != "valid"
+            or evidence.occurrence != "complete"
+        ):
+            state = "mismatched"
+            if isinstance(evidence, HistoryClaimWal):
+                if evidence.occurrence == "zero":
+                    state = "absent"
+                elif evidence.occurrence in {"prepared", "torn"}:
+                    state = "incomplete"
+            return _append_deferred(artifact, transaction, state)
+        precondition = _semantic_append_precondition(root, before.pair, histories)
+        if precondition is not None:
+            return _append_refused(artifact, precondition)
+        rewrite = item.get("unconfirmed_reason") != _APPEND_DIRECTORY_UNCONFIRMED
+        after = reconfirm_append(root, before, dict(claim), rewrite=rewrite)
+    except VisibilityUnconfirmed as error:
+        return _append_retained(artifact, transaction, error)
+    except (JournalError, OSError, KeyError, TypeError, ValueError) as error:
+        return _append_refused(
+            artifact,
+            error,
+            _append_refusal_category(error),
+        )
+
+    try:
+        after_histories = {
+            REPO: after.repository,
+            LOCAL: after.local,
+        }
+        postcondition = _semantic_append_precondition(
+            root,
+            after.pair,
+            after_histories,
+        )
+        if postcondition is not None:
+            return _append_retained(artifact, transaction, postcondition)
+    except Exception as error:
+        return _append_retained(artifact, transaction, error)
+    return AppendReconfirmed(after.repository, after.local)
+
+
 def _identity_transition(root, run, _stale_repository, _stale_local):
     """Own the C1b identity decision and return one closed executor result."""
     root = Path(root)
@@ -340,8 +528,13 @@ def _identity_transition(root, run, _stale_repository, _stale_local):
 
 @contextmanager
 def adopting_run(root=Path()):
-    """Preserve the opaque facade while C1b injects identity authority."""
-    with adopting_session(_identity_transition, root) as session:
+    """Preserve the opaque facade while protocol transitions are injected."""
+    with adopting_session(
+        _identity_transition,
+        _append_failure,
+        _append_reconfirmation,
+        root,
+    ) as session:
         yield session
 
 

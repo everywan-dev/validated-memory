@@ -615,7 +615,7 @@ class UnreadableTargetWal(ClassifiedWal):
 
 @dataclass(frozen=True)
 class HistoryClaimWal(ClassifiedWal):
-    """A WAL stopped while its history-append proof was being persisted."""
+    """A WAL projected with its typed history-append evidence."""
 
     target: ReadableTargetWal | UnreadableTargetWal
     claim: str
@@ -956,12 +956,15 @@ def classify_evidence(
     *,
     history_pair=None,
     histories=None,
+    include_stored_claim=False,
 ):
     """Return the closed WAL evidence variant used by the protocol module.
 
     ``history_pair`` is the already acquired coherent byte pair and
     ``histories`` is its compatibility parse.  Supplying them prevents a WAL
-    classifier from taking a second history observation.  The tuple adapter
+    classifier from taking a second history observation.  The opt-in
+    ``include_stored_claim`` also projects a claim outside the two legacy
+    history phases for protocol-owned boundary decisions.  The tuple adapter
     below preserves the established executor contract.
     """
     verdict, mutable = _classify_legacy(root, item, adoption)
@@ -1006,7 +1009,13 @@ def classify_evidence(
             actual=_freeze_mapping(facts["actual"]),
         )
 
-    if facts.get("unconfirmed") != HISTORY_CLAIM_UNCONFIRMED:
+    claim_phase = facts.get("unconfirmed") in {
+        HISTORY_CLAIM_UNCONFIRMED,
+        HISTORY_UNCONFIRMED,
+    }
+    if not claim_phase and not (
+        include_stored_claim and "history_append" in item
+    ):
         return target
 
     claim_kind = _history_claim_kind(item, facts)
@@ -1045,9 +1054,15 @@ def classify(root, item, adoption=None):
         value = getattr(evidence, name)
         if value is not None:
             facts[name] = _thaw(value)
-    if isinstance(evidence, ReadableTargetWal):
-        facts["actual"] = _thaw(evidence.actual)
-    elif isinstance(evidence, UnreadableTargetWal):
+    legacy_target = (
+        evidence.target
+        if isinstance(evidence, HistoryClaimWal)
+        and evidence.unconfirmed == HISTORY_UNCONFIRMED
+        else evidence
+    )
+    if isinstance(legacy_target, ReadableTargetWal):
+        facts["actual"] = _thaw(legacy_target.actual)
+    elif isinstance(legacy_target, UnreadableTargetWal):
         facts["actual"] = None
     elif isinstance(evidence, HistoryClaimWal):
         facts["actual"] = None
