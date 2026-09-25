@@ -79,6 +79,17 @@ reversal across the join still refuses. A successful reversal route includes
 every branch effect and revalidates its recorded post-state against the
 filesystem; a join node alone never makes reversal safe.
 
+Typed reconciliation is also reserved for a clone-local join when an activated
+repository head does not already account for that clone's distinct local legacy
+anchor. An ordinary observation cannot silently join those two histories. If
+the repository activation root already names that exact local anchor, a later
+local observation may follow the root without performing reconciliation; if it
+does not, the future reconciliation operation must account for both inputs.
+This decision reserves that semantic role only. It does not fix the record
+grammar, lineage-selection fields, late schema-1 suffix policy or the
+representation of reversal obligations; those require a separate accepted
+decision before a join writer exists.
+
 Adoption ids identify the lineage in which records originated. One ordinary,
 unforked lineage still has one stable adoption id. Different ids are valid in
 one merged repository history only when the topology retains their separate
@@ -96,18 +107,24 @@ resolution and the future reversal planner use that same inspection result,
 so mutation and reporting cannot apply different identity or fork rules. The
 public facade accepted by ADR 0024 does not change as part of this decision.
 
-Schema 1 records are never rewritten. Each artifact's complete schema 1 prefix
-becomes an opaque legacy anchor, identified by its exact byte digest; the first
-schema 2 node observes both available anchors in its frontier. A schema 1
-record after a schema 2 node is invalid. Every such snapshot permanently
-carries `topology_unknown_before` for the anchored region: an ordinary first
-schema 2 mutation can extend a clean single-id prefix, but it neither
-reconciles that prefix nor makes it reversal-ready. `journal --check` and
-`init` report the same bounded legacy condition, and reversal across it
-refuses unless a future explicit checkpoint accounts for the old effects and
-preimages. Multiple-id legacy prefixes still require explicit reconciliation
-before a new mutation. No operation infers old causality from line order or
-silently clears the unknown condition.
+Schema 1 records are never semantically rewritten: no operation may change,
+truncate, reorder, migrate or reconstruct their record bytes. Descriptor-bound
+rewriting of an identical, exactly proven byte range solely to create a new
+physical data-durability event is not semantic history rewriting. It is allowed
+only by the bounded identity, range, barrier and coherent-readback authority of
+ADR 0028; it cannot change a legacy anchor digest or authorize a history repair.
+
+Each artifact's complete schema 1 prefix becomes an opaque legacy anchor,
+identified by its exact byte digest; the first schema 2 node observes both
+available anchors in its frontier. A schema 1 record after a schema 2 node is
+invalid. Every such snapshot permanently carries `topology_unknown_before` for
+the anchored region: an ordinary first schema 2 mutation can extend a clean
+single-id prefix, but it neither reconciles that prefix nor makes it ready for
+reversal. `journal --check` and `init` report the same bounded legacy condition,
+and reversal across it refuses unless a future explicit checkpoint accounts for
+the old effects and preimages. Multiple-id legacy prefixes still require
+explicit reconciliation before a new mutation. No operation infers old
+causality from line order or silently clears the unknown condition.
 
 `init` will ensure the adopter's `.gitattributes` contains the canonical rule
 `journal.jsonl merge=union`. It remains deliberately unanchored so an adopter
