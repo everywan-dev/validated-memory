@@ -291,6 +291,48 @@ def mark_unconfirmed(root, transaction_id, phase, reason):
     return entry
 
 
+def reestablish_transaction(root, transaction_id, expected):
+    """Durably re-install the selected WAL's identical current bytes.
+
+    A history-claim uncertainty says the proof-bearing WAL itself crossed an
+    uncertain durability boundary.  Recovery may trust it only after the
+    exact selected entry has been installed and confirmed again; this
+    primitive neither edits fields nor manufactures a successor entry.
+    """
+    path = _transaction_path(root, transaction_id)
+    data = path.read_bytes()
+    try:
+        current = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise OSError(
+            errno.EINVAL,
+            f"transaction {transaction_id} is no longer valid JSON evidence",
+            os.fspath(path),
+        ) from error
+    if not isinstance(current, dict):
+        raise OSError(
+            errno.EINVAL,
+            f"transaction {transaction_id} is no longer an object",
+            os.fspath(path),
+        )
+    expected_file = dict(expected)
+    expected_file.pop("id", None)
+    if current != expected_file:
+        raise OSError(
+            errno.EAGAIN,
+            f"transaction {transaction_id} changed before WAL re-establishment",
+            os.fspath(path),
+        )
+    install_bytes(path, data)
+    if path.read_bytes() != data:
+        raise OSError(
+            errno.EIO,
+            f"transaction {transaction_id} was not identically re-established",
+            os.fspath(path),
+        )
+    return data
+
+
 def abort_transaction(root, transaction_id, reason):
     """Close a transaction that will never publish, recording why."""
     path = _transaction_path(root, transaction_id)
@@ -1245,7 +1287,16 @@ def _history_occurrence(
     if tail.startswith(prepared):
         if histories is None or durability not in histories:
             return "conflicting"
-        expected = claim["records"][0]
+        claimed = tuple(claim["records"])
+        if len(matching) == 2 and all(
+            dict(actual) == expected
+            for actual, expected in zip(matching, claimed)
+        ):
+            # Recovery appends the stored committed line at EOF. Unrelated
+            # valid descendants may therefore remain between the two exact
+            # claimed lines without losing the claim's local authority.
+            return "complete"
+        expected = claimed[0]
         if len(matching) != 1 or dict(matching[0]) != expected:
             return "conflicting"
         return "prepared"
@@ -1315,3 +1366,4 @@ class Resolution:
     location: str
     message: str | None = None
     kept: str | None = None
+    gates: tuple[tuple[str, str], ...] = ()

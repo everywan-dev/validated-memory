@@ -148,6 +148,40 @@ def test_append_range_reconfirmation_is_documented():
     assert "atomically republishes\nthe exact complete" not in journal
 
 
+def test_wal_one_recovery_and_selected_resolution_are_documented():
+    """C1d documents local authority, exact replay and terminal uncertainty."""
+    cli = (REPO_ROOT / "docs" / "reference" / "cli.md").read_text(
+        encoding="utf-8"
+    )
+    journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(
+        encoding="utf-8"
+    )
+    for text in (cli, journal):
+        prose = " ".join(text.split())
+        assert "stored exact" in prose
+        assert "prepared" in prose and "descendants" in prose
+        assert "claimless" in prose and "reconstruction" in prose
+        assert "cannot authorize" in prose
+        assert "terminal" in prose
+    assert "fresh coherent-pair read" in " ".join(journal.split())
+    assert "never recovers another transaction" in journal
+    for text in (cli, journal):
+        prose = " ".join(text.split())
+        assert "independently valid current-adoption WALs" in prose
+        assert "fail closed" in prose
+        assert "identical bytes" in prose
+        assert "unchanged opposite" in prose
+        assert "exact restored target" in prose
+        assert "claimless occurrence evidence" in prose
+        assert "per-item" in prose
+        assert "missing usable" in prose
+        assert "recovery or targeted-resolution" in prose
+        assert "target, history, observation or cleanup" in prose
+        assert "later WALs remain untouched" in prose
+        assert "unknown" in prose and "all three dispositions" in prose
+        assert "another WAL's provision" in prose
+
+
 def test_journal_introduction_links_every_section():
     """The reader-journey navigation reaches every current H2 section."""
     journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(

@@ -45,8 +45,6 @@ from .operations import (
     OUTCOME_REFUSED,
     Outcome,
     Intention,
-    link_to,
-    replace_file,
 )
 from .paths import (
     ABSENT,
@@ -64,13 +62,11 @@ from .paths import (
 from .records import (
     APPEND,
     COMMITTED,
-    JOURNAL_FILENAME,
     LINK,
     LOCAL,
     OBSERVE,
     PREPARED,
     REPO,
-    STAGES,
     VAULT_DIRNAME,
     JournalError,
     is_inside_path,
@@ -83,35 +79,19 @@ from .records import (
     new_id,
     read,
     record,
-    existing_adoption_id,
     validate_snapshot,
     ensure_history_compatibility,
 )
 from .transactions import (
-    ACCEPT,
-    DISCARDED,
     CLEANUP_UNCONFIRMED,
     HISTORY_CLAIM_UNCONFIRMED,
     HISTORY_UNCONFIRMED,
-    PROBLEM_DAMAGED,
-    PROBLEM_DIVERGED,
-    PROBLEM_UNKNOWN,
     PUBLISHED,
-    RECOVERABLE,
-    RECOVERED,
-    REMOVED,
-    RESOLUTIONS,
-    RESTORE,
-    RESTORE_UNCONFIRMED,
     TARGET_UNCONFIRMED,
-    Recovery,
     Resolution,
     abort_transaction,
-    classify,
     cleanup_private_duplicates,
     has_transaction,
-    VERDICT_COMPLETE,
-    VERDICT_DISCARD,
     mark_published,
     mark_history_append,
     mark_temporary_claim,
@@ -121,11 +101,6 @@ from .transactions import (
     open_transactions,
     historyless_transactions_message,
     read_transaction,
-    VERDICT_REMOVE,
-    VERDICT_TARGET_UNCONFIRMED,
-    VERDICT_HISTORY_UNCONFIRMED,
-    VERDICT_CLEANUP_UNCONFIRMED,
-    VERDICT_RESTORE_UNCONFIRMED,
     resolution_advice,
     remove_transaction_file,
     transaction_artifact,
@@ -133,6 +108,13 @@ from .transactions import (
 
 
 PREIMAGE_DIRNAME = "preimages"
+_protocol_resolve_one = None
+
+
+def bind_resolution(callback):
+    """Install the protocol-owned selected-resolution transition."""
+    global _protocol_resolve_one
+    _protocol_resolve_one = callback
 
 
 def _exact_append_claim(durability, prefix, records):
@@ -303,13 +285,13 @@ class Run:
         run,
         adoption,
         append_failure=None,
-        append_reconfirmation=None,
+        recover_all=None,
     ):
         self.root = Path(root)
         self.run = run
         self.adoption = adoption
         self._append_failure = append_failure
-        self._append_reconfirmation = append_reconfirmation
+        self._recover_all = recover_all
 
     def _survey(self, records, local):
         """Take stock of what the histories and the open transactions say.
@@ -1186,321 +1168,12 @@ class Run:
     # --- recovery and resolution: closing what an earlier run left open -------
 
     def recover(self):
-        """Resolve every transaction an earlier run left behind; report each.
-
-        Explicit, and not a side effect of `__init__`: a constructor that
-        completes half-finished mutations is a constructor with a
-        filesystem's worth of failure modes, and targeted resolution must
-        not recover -- an operator closing one transaction by hand must not
-        have the others silently closed underneath.
-
-        `init` calls this immediately after opening its adopting scope, under the
-        run-wide lock and BEFORE its own first intention. Recovery only ever
-        completes or closes what an earlier run began, and unlinks the
-        files that said so, so it reduces what is on disk rather than adding
-        to it -- and an open transaction on `.gitignore` itself is settled
-        before the new `.gitignore` intention is formed.
-
-        Idempotent over the same residue, in both directions. A transaction
-        this resolves leaves the disk, so a second pass never sees it again;
-        and completing one appends only the history records that are not
-        already there, checked by transaction id AND stage, because a crash
-        between `append` and `remove_transaction_file` leaves a `published`
-        transaction whose records exist. Appending them again would double
-        the mutation in a versioned, append-only file, where nothing takes
-        it back.
-
-        A problem leaves the transaction file exactly where it is. That is
-        the point: `diverged`, `unknown` and `damaged` are the three states
-        nothing here may decide for the user, and the file is what keeps the
-        path gated and the evidence available until they do.
-        """
-        with Lock(self.root):
-            histories = {}
-            results = [
-                self._recover_one(item, histories)
-                for item in open_transactions(self.root)
-            ]
-            self._survey(read(self.root, REPO), read(self.root, LOCAL))
-            return results
-
-    def _recover_one(self, item, histories):
-        """Act on `classify`'s verdict for one transaction; return a `Recovery`.
-
-        `histories` caches each journal's records across a recovery pass, so
-        a tree with several open transactions reads each file once. A
-        caller completing a single transaction passes none.
-        """
-        verdict, facts = classify(self.root, item, self.adoption)
-        transaction_id = facts["id"]
-        path = facts["path"]
-        durability = facts["durability"]
-
-        if verdict == PROBLEM_DAMAGED:
-            return Recovery(
-                transaction_id,
-                path,
-                durability,
-                problem=PROBLEM_DAMAGED,
-                message=(
-                    f"damaged transaction {transaction_id}: {facts['problem_reason']}; "
-                    f"nothing here can say what it did, so "
-                    f"{transaction_artifact(transaction_id)} "
-                    "is left for inspection"
-                ),
-            )
-
-        if verdict == VERDICT_REMOVE:
-            reason = facts["abort_reason"]
-            try:
-                remove_transaction_file(self.root, transaction_id)
-            except VisibilityUnconfirmed as error:
-                return Recovery(
-                    transaction_id,
-                    path,
-                    durability,
-                    problem=PROBLEM_UNKNOWN,
-                    message=(
-                        f"transaction {transaction_id} remains aborted, but "
-                        f"removal durability is unconfirmed: {error}; its "
-                        "artifact was republished for another cleanup attempt"
-                    ),
-                )
-            said = f" ({reason})" if reason is not None else ""
-            return Recovery(
-                transaction_id,
-                path,
-                durability,
-                action=REMOVED,
-                message=(
-                    f"transaction {transaction_id} on {path} was closed "
-                    f"aborted{said} and published nothing; its file has been "
-                    "removed"
-                ),
-            )
-
-        if verdict == VERDICT_DISCARD:
-            try:
-                remove_transaction_file(self.root, transaction_id)
-            except VisibilityUnconfirmed as error:
-                return Recovery(
-                    transaction_id,
-                    path,
-                    durability,
-                    problem=PROBLEM_UNKNOWN,
-                    message=(
-                        f"transaction {transaction_id} still has its preimage, "
-                        f"but removal durability is unconfirmed: {error}; its "
-                        "artifact was republished for another cleanup attempt"
-                    ),
-                )
-            return Recovery(
-                transaction_id,
-                path,
-                durability,
-                action=DISCARDED,
-                message=(
-                    f"transaction {transaction_id} never published, so {path} "
-                    "is as it was and nothing has been recorded"
-                ),
-            )
-
-        if verdict == VERDICT_TARGET_UNCONFIRMED:
-            try:
-                self._republish_target(facts)
-                mark_published(self.root, transaction_id)
-            except (OSError, VisibilityUnconfirmed, JournalError) as error:
-                return self._recovery_uncertain(facts, TARGET_UNCONFIRMED, error)
-            try:
-                appended = self._complete(facts, histories)
-            except (OSError, VisibilityUnconfirmed, JournalError) as error:
-                return self._recovery_uncertain(facts, HISTORY_UNCONFIRMED, error)
-            try:
-                self._remove_after_confirmed_history(facts)
-            except (OSError, VisibilityUnconfirmed, JournalError) as error:
-                return self._recovery_uncertain(facts, CLEANUP_UNCONFIRMED, error)
-            return Recovery(
-                transaction_id,
-                path,
-                durability,
-                action=RECOVERED,
-                appended=appended,
-                message=(
-                    f"transaction {transaction_id} republished and confirmed "
-                    f"{path}; its history was completed exactly once"
-                ),
-            )
-
-        if verdict == VERDICT_HISTORY_UNCONFIRMED:
-            if self._append_reconfirmation is None:
-                raise RuntimeError("append reconfirmation callback is unavailable")
-            result = self._append_reconfirmation(self.root, item)
-            if isinstance(result, AppendReconfirmationRefused):
-                return Recovery(
-                    transaction_id,
-                    result.artifact,
-                    durability,
-                    problem=PROBLEM_UNKNOWN,
-                    message=result.message,
-                )
-            if isinstance(result, AppendReconfirmationRetained):
-                error = JournalError(None, result.message, result.artifact)
-                error.visibility_unconfirmed = True
-                raise error
-            if not isinstance(result, AppendReconfirmed):
-                raise TypeError(
-                    "append reconfirmation callback returned an unknown result"
-                )
-            histories[REPO] = list(result.repository)
-            histories[LOCAL] = list(result.local)
-            try:
-                self._remove_after_confirmed_history(facts)
-            except (OSError, VisibilityUnconfirmed, JournalError) as error:
-                retained = JournalError(
-                    None,
-                    "the selected append range was coherently confirmed, but "
-                    f"transaction cleanup is incomplete: {error}. Transaction "
-                    f"{transaction_id} was retained. The append is already "
-                    "confirmed and must not be repeated. Preserve the retained "
-                    "transaction and rerun init",
-                    artifact_name(durability),
-                )
-                retained.visibility_unconfirmed = True
-                raise retained from error
-            return Recovery(
-                transaction_id,
-                path,
-                durability,
-                action=RECOVERED,
-                appended=False,
-                message=(
-                    f"transaction {transaction_id} reconfirmed "
-                    f"its complete {artifact_name(durability)} history"
-                ),
-            )
-
-        if verdict == VERDICT_CLEANUP_UNCONFIRMED:
-            try:
-                remove_transaction_file(self.root, transaction_id)
-            except (OSError, VisibilityUnconfirmed) as error:
-                return self._recovery_uncertain(facts, CLEANUP_UNCONFIRMED, error)
-            return Recovery(
-                transaction_id,
-                path,
-                durability,
-                action=REMOVED,
-                message=(
-                    f"transaction {transaction_id} had confirmed target and "
-                    "history; cleanup is now confirmed"
-                ),
-            )
-
-        if verdict == VERDICT_RESTORE_UNCONFIRMED:
-            try:
-                self._republish_restore(facts)
-                remove_transaction_file(self.root, transaction_id)
-            except (OSError, VisibilityUnconfirmed, JournalError) as error:
-                return self._recovery_uncertain(
-                    facts, RESTORE_UNCONFIRMED, error
-                )
-            return Recovery(
-                transaction_id,
-                path,
-                durability,
-                action=REMOVED,
-                message=(
-                    f"transaction {transaction_id} has its exact restored "
-                    "preimage confirmed and its WAL removed"
-                ),
-            )
-
-        if verdict == VERDICT_COMPLETE:
-            if self._append_reconfirmation is None:
-                raise RuntimeError("append reconfirmation callback is unavailable")
-            boundary = self._append_reconfirmation(self.root, item)
-            if isinstance(boundary, AppendReconfirmationRefused):
-                return Recovery(
-                    transaction_id,
-                    boundary.artifact,
-                    durability,
-                    problem=PROBLEM_UNKNOWN,
-                    message=boundary.message,
-                )
-            if not isinstance(boundary, AppendReconfirmationNotApplicable):
-                raise TypeError(
-                    "append reconfirmation callback returned an unknown result"
-                )
-            try:
-                appended = self._complete(facts, histories)
-            except VisibilityUnconfirmed as error:
-                return self._recovery_uncertain(
-                    facts, HISTORY_UNCONFIRMED, error
-                )
-            try:
-                self._remove_after_confirmed_history(facts)
-            except (OSError, VisibilityUnconfirmed) as error:
-                return self._recovery_uncertain(
-                    facts, CLEANUP_UNCONFIRMED, error
-                )
-            return Recovery(
-                transaction_id,
-                path,
-                durability,
-                action=RECOVERED,
-                appended=appended,
-                message=(
-                    f"transaction {transaction_id} published {path}, and its "
-                    "two history records have been appended"
-                    if appended
-                    else f"transaction {transaction_id} published {path} and "
-                    "was already recorded; only its file was left to remove"
-                ),
-            )
-
-        if verdict == PROBLEM_DIVERGED:
-            message = (
-                f"transaction {transaction_id} published {path}, but {path} "
-                f"is {describe(facts['actual'])} now and not what was "
-                "published; nothing here can say whether that is wanted -- "
-                f"{resolution_advice(transaction_id)}"
-            )
-        elif facts["actual"] is None and facts["stage"] == PUBLISHED:
-            # The stage is most of what is known about a transaction whose
-            # path cannot be read, and the two stages are not the same
-            # trouble: a `prepared` one may never have run, where a
-            # `published` one certainly did and only its records were lost.
-            # One sentence for both would tell the milder story about the
-            # graver state, so there are two.
-            message = (
-                f"transaction {transaction_id} published {path}, and {path} "
-                f"cannot be read: {facts['problem_reason']}; nothing here can say "
-                "whether what it published is still there -- "
-                f"{resolution_advice(transaction_id)}"
-            )
-        elif facts["actual"] is None:
-            message = (
-                f"transaction {transaction_id} prepared a mutation of {path}, "
-                f"and {path} cannot be read: {facts['problem_reason']}; nothing here "
-                "can say whether it ran -- "
-                f"{resolution_advice(transaction_id)}"
-            )
-        elif facts.get("unconfirmed") == TARGET_UNCONFIRMED:
-            message = (
-                f"transaction {transaction_id} left {path} with unconfirmed "
-                "target durability, but it no longer has the exact postimage "
-                "recorded by the transaction; recovery left the WAL in place"
-            )
-        else:
-            message = (
-                f"transaction {transaction_id} prepared a mutation of {path}, "
-                f"and {path} is {describe(facts['actual'])} now, which is "
-                "neither the state it was to change from nor the one it was "
-                "to change to; nothing here can say whether it ran -- "
-                f"{resolution_advice(transaction_id)}"
-            )
-        return Recovery(
-            transaction_id, path, durability, problem=verdict, message=message
-        )
+        """Adapt the opaque adopting session to protocol-owned recovery."""
+        if self._recover_all is None:
+            raise RuntimeError("recovery callback is unavailable")
+        results, repository, local = self._recover_all(self)
+        self._survey(list(repository), list(local))
+        return results
 
     def _republish_target(self, facts):
         """Establish and confirm a fresh namespace operation for the postimage."""
@@ -1561,440 +1234,23 @@ class Run:
                 transaction_artifact(facts["id"]),
             )
 
-    def _remove_after_confirmed_history(self, facts):
-        """Record cleanup intent, then confirm removal of the WAL name."""
-        mark_unconfirmed(
-            self.root,
-            facts["id"],
-            CLEANUP_UNCONFIRMED,
-            "target and history confirmed; transaction cleanup pending",
-        )
-        remove_transaction_file(self.root, facts["id"])
-
-    def _recovery_uncertain(self, facts, phase, error):
-        """Retain a failed recovery phase and return one actionable problem."""
-        journal_error = self._uncertainty(
-            facts["id"],
-            phase,
-            f"recovery of {facts['path']} could not confirm {phase}: {error}",
-        )
-        return Recovery(
-            facts["id"],
-            facts["path"],
-            facts["durability"],
-            problem=PROBLEM_UNKNOWN,
-            message=journal_error.message,
-        )
-
-    def _complete(self, facts, histories=None, published=None):
-        """Append whichever of the mutation's two records is not there yet.
-
-        Returns whether anything was appended, so the caller can say which
-        of the two shapes of `completed` this was.
-
-        The records are rebuilt from `classify`'s facts and the state the
-        mutation PUBLISHED. Recovery passes nothing for `published` and the
-        state is the one the path is in now, which `classify` has just
-        proven is that postimage; `_resolve_one` passes the transaction's
-        own postimage, because a `diverged` transaction did publish and
-        something wrote over it afterwards, and the mode of that later
-        write is not a fact about the mutation. `op`, `purpose`, `path`,
-        `durability` and `note` come from the intention; `preimage` (the
-        parked blob's reference) and `prior_bytes` from the facts, already
-        type-checked there;
-        `postimage` from the postimage STATE's own digest, which is the
-        same value `_execute` wrote; `mode` from the published node, unless
-        that node is a symlink, whose mode is 0777 and means nothing. Both
-        halves carry the `transaction`, exactly as `_execute` writes them,
-        because that id is the only thing that survives the file to say the
-        two lines are one act. `run` is the crashed run's: it is the run
-        that wrote the bytes.
-
-        `adoption` is NOT taken from the file. One project has one adoption
-        id (`_adoption_id`), this run has already established which, and a
-        record filed under any other would attach a mutation of this tree to
-        somebody else's history.
-
-        `missing` is ordered by `STAGES`, so the two are appended
-        `prepared` then `committed`, as `_execute` writes them. A history
-        already holding the `committed` half alone -- which no writer in
-        this package can produce, only a hand edit or a torn merge -- would
-        therefore get its `prepared` half appended AFTER it, and
-        `reconcile`, which pairs in file order, would go on reporting it as
-        unfinished. That is the honest outcome: the file order of an
-        append-only journal is not something recovery may rearrange.
-        """
-        transaction_id = facts["id"]
-        durability = facts["durability"]
-        location = facts["path"]
-        intention = facts["intention"]
-        postimage = facts["postimage"]
-        if histories is None:
-            histories = {}
-        if durability not in histories:
-            histories[durability] = read(self.root, durability)
-        records = histories[durability]
-        present = {
-            entry["stage"]
-            for entry in records
-            if entry.get("transaction") == transaction_id
-        }
-        missing = [stage for stage in STAGES if stage not in present]
-        if not missing:
-            return False
-
-        fields = {"transaction": transaction_id}
-        state = facts["actual"] if published is None else published
-        mode = state.get("mode")
-        # A symlink's mode is 0777 on every platform this runs on and means
-        # nothing, so it is not a fact these records may carry -- the same
-        # rule `_execute` applies to a link's preimage mode and to the mode
-        # `_publish` reports. Recovery rebuilds the records `_execute` would
-        # have written, and that includes the field it would have omitted.
-        if mode is not None and state.get("kind") != SYMLINK:
-            fields["mode"] = mode
-        if intention.get("note") is not None:
-            fields["note"] = intention["note"]
-        if postimage["kind"] == FILE and "digest" in postimage:
-            # A byte-publishing mutation, and the only kind whose records
-            # carry digests. `preimage` is the blob reference, null for a
-            # path that did not exist -- the same null `_execute` writes,
-            # and the same one that distinguishes "undo by truncating" from
-            # "undo by removing".
-            fields["preimage"] = facts["preimage_blob"]
-            fields["postimage"] = postimage["digest"]
-            if facts["prior_bytes"] is not None:
-                fields["prior_bytes"] = facts["prior_bytes"]
-        built = [
-            self._record(
-                intention["op"],
-                intention["purpose"],
-                location,
-                durability,
-                stage,
-                run=facts["run"],
-                **fields,
-            )
-            for stage in missing
-        ]
-        append(built, self.root, durability)
-        records.extend(built)
-        return True
-
-    def _resolve_one(self, item, resolution):
-        """Resolve the already-read named transaction under the caller's lock."""
-        transaction_id = item["id"]
-        artifact = transaction_artifact(transaction_id)
-        verdict, facts = classify(self.root, item, self.adoption)
-        if verdict == PROBLEM_DAMAGED:
-            return Resolution(
-                transaction_id,
-                resolution,
-                artifact,
-                f"transaction {transaction_id} is damaged "
-                f"({facts['problem_reason']}), so nothing here can say what it did "
-                f"or what to record about it; inspect {artifact} and remove "
-                "it by hand. Nothing has been changed.",
-            )
-
-        if verdict not in (PROBLEM_DIVERGED, PROBLEM_UNKNOWN):
-            # Recovery can account for this one, so an operator must not
-            # close it: `--accept` and `--abandon` would write an `observe`
-            # about a path the PLUGIN created and throw away the mutation's
-            # record pair for ever, and `--restore` would undo a mutation
-            # the next run is about to finish recording. The three flags
-            # exist for the states nothing can decide, and this is not one.
-            return Resolution(
-                transaction_id,
-                resolution,
-                facts["path"],
-                f"transaction {transaction_id} on {facts['path']} is "
-                f"{RECOVERABLE}: the next 'validated-memory init' closes it "
-                "on its own, and closing it by hand would lose the record "
-                "of the mutation it carries. --accept, --restore and "
-                "--abandon are for a transaction recovery cannot account "
-                "for. Nothing has been changed.",
-            )
-
-        if facts["actual"] is None:
-            # `unknown` because the path could not be read at all. All three
-            # flags need to know what is there: `--accept` records the state
-            # it accepted, `--abandon` records that the path was left as
-            # found, and `--restore` parks what it is about to discard. None
-            # of them may be answered out of a state nothing established.
-            return Resolution(
-                transaction_id,
-                resolution,
-                facts["path"],
-                f"{facts['path']} could not be read ({facts['problem_reason']}), so "
-                "nothing here can say what state is being closed over. "
-                "Nothing has been changed.",
-            )
-
-        if resolution == RESTORE:
-            return self._restore(facts)
-
-        # `diverged` is a `published` transaction: its bytes reached the
-        # disk and only the two history records were lost, and what the
-        # verdict adds is that something wrote the path AFTERWARDS. The
-        # mutation happened, so it is a fact about this project whichever
-        # way the operator closes it, and its own pair goes into the
-        # history FIRST -- the same pair recovery would have appended, the
-        # crashed run's id and all -- with the resolution's `observe` after
-        # it. Closing with the observe alone would leave published bytes
-        # with no record at all, in an append-only history where nothing
-        # puts them back: the lie the executor exists to stop manufacturing.
-        # Idempotent per record, as recovery is -- `_complete` appends only
-        # the halves that are not already there -- and the postimage is
-        # passed because the mode of whatever wrote the path afterwards is
-        # not a fact about the mutation. `unknown` gets no pair: it is a
-        # `prepared` transaction whose path matches neither of its states,
-        # and nothing there says the mutation ever ran.
-        if verdict == PROBLEM_DIVERGED:
-            self._complete(facts, published=facts["postimage"])
-
-        # `classify` read the path under this same lock, so this is the
-        # state the verdict was reached on and not a second, later reading.
-        found = facts["actual"]["kind"]
-        note = (
-            f"accepted after divergence: transaction {transaction_id} "
-            f"found {found}"
-            if resolution == ACCEPT
-            else f"abandoned: transaction {transaction_id}, path left as found"
-        )
-        append(
-            [
-                self._record(
-                    OBSERVE,
-                    facts["intention"]["purpose"],
-                    facts["path"],
-                    facts["durability"],
-                    COMMITTED,
-                    note=note,
-                )
-            ],
-            self.root,
-            facts["durability"],
-        )
-        remove_transaction_file(self.root, transaction_id)
-        return Resolution(transaction_id, resolution, facts["path"])
-
-    def _restore(self, facts):
-        """Put the preimage back, or refuse and leave everything alone.
-
-        Two refusals come first, and both leave the transaction open.
-
-        A transaction whose records are ALREADY in the history is not one
-        recovery may reverse. The `committed` record means the mutation
-        happened and is history; taking the bytes back without taking the
-        record back would make the journal describe a state that is not
-        there, and the record cannot be taken back -- the history is
-        append-only. `--accept` or `--abandon` is the answer.
-
-        A preimage blob that is missing, or whose bytes do not digest to the
-        name it is filed under, refuses. This is the case
-        docs/design/2026-09-01-the-journal-core.md §10 says must never be
-        confused with the other one: for a CLOSED history record a
-        missing blob is normal, because the journal travels and the vault
-        does not, and it means only that this clone cannot reverse that
-        mutation. For an OPEN transaction the blob is the sole copy of
-        the bytes the plugin was about to overwrite, parked and verified
-        moments before -- its absence is a damaged log, and writing
-        something else over the path would be writing wrong bytes.
-
-        The publication is the executor's own (`_publish`), so a restore is
-        as atomic and as durable as the mutation it reverses. The mode comes
-        from the transaction file, which recorded the preimage's own -- not
-        from whatever is at the path now, which may be the plugin's
-        replacement or a third party's file. The read-only bit is NOT
-        consulted: `write_denied` exists so a mutation never quietly
-        overwrites what an adopter marked unwritable, and this is the
-        opposite -- an operator's explicit instruction to put that adopter's
-        own bytes back.
-
-        What the restore DISCARDS is parked before it is discarded. The
-        operator has chosen to throw the current state away, and that
-        choice is honoured -- but a regular file at the path is bytes
-        somebody wrote, and no command here destroys bytes without leaving
-        a copy: they go into the same content-addressed, verified preimage
-        store the executor parks into, and the success line names the blob.
-        That covers both directions symmetrically -- putting a file back
-        over them, and taking the path away because the preimage says it
-        was never there. A symlink is unlinked with nothing parked and its
-        target is NOT kept anywhere: a link is a name and a target rather
-        than bytes, there is nothing for a content-addressed store to hold,
-        and the bytes it resolved to belong to the path it named, which
-        this does not touch. The transaction file does not hold that target
-        either -- what it records is the PREIMAGE's, and a link a third
-        party put there afterwards is exactly the case `--restore` is being
-        asked about. Where the target is written down is the finding that
-        reported the divergence: `journal --check` and `init` both describe
-        the state they found, symlinks by their target. A directory has no
-        bytes of its own, and `_unpublish` refuses a non-empty one rather
-        than parking anything.
-
-        Nothing is recorded. A path returned to the state a record would
-        have described the departure from is not a fact about the project.
-        The parked blob is not a record either: it is a copy in the vault,
-        which the vault is for.
-        """
-        transaction_id = facts["id"]
-        location = facts["path"]
-        durability = facts["durability"]
-        # The state `classify` reached its verdict on, read under this
-        # same lock -- what is about to be discarded.
-        present = facts["actual"]
-
-        def refuse(message):
-            return Resolution(transaction_id, RESTORE, location, message)
-
-        if any(
-            entry.get("transaction") == transaction_id
-            for entry in read(self.root, durability)
-        ):
-            return refuse(
-                f"transaction {transaction_id} is already recorded in "
-                f"{artifact_name(durability)}: the mutation happened, and an "
-                "append-only history is not taken back. Close it with "
-                "--accept or --abandon instead. Nothing has been restored."
-            )
-
-        preimage = facts["preimage"]
-        kind = preimage["kind"]
-        if kind == DIRECTORY:
-            return refuse(
-                f"the preimage of {location} is a directory, and nothing "
-                "here rebuilds one: its contents were never parked. Close "
-                "the transaction with --accept or --abandon. Nothing has "
-                "been restored."
-            )
-
-        intention = None
-        data = None
-        replacing_mode = None
-        if kind == FILE:
-            reference = facts["preimage_blob"]
-            if reference is None:
-                return refuse(
-                    f"transaction {transaction_id} says {location} was a "
-                    "file and names no preimage for it, so the bytes it was "
-                    "about to overwrite were never parked; this log is "
-                    "damaged. Nothing has been restored."
-                )
-            blob = _preimages_dir(self.root) / reference.replace("sha256:", "")
-            if not blob.exists():
-                return refuse(
-                    f"the preimage of {location}, {reference}, is not in "
-                    f"{VAULT_DIRNAME}/{PREIMAGE_DIRNAME}/. This transaction "
-                    "is still OPEN, so that blob is the only copy of the "
-                    "bytes it was about to overwrite: this is a damaged "
-                    "log, not a clone whose vault stayed behind. Nothing "
-                    "has been restored."
-                )
-            if not _blob_matches(blob, reference):
-                return refuse(
-                    f"the preimage of {location} in "
-                    f"{VAULT_DIRNAME}/{PREIMAGE_DIRNAME}/ does not digest to "
-                    f"{reference}, the name it is filed under, so it is not "
-                    "the bytes this transaction parked. Nothing has been "
-                    "restored."
-                )
-            mode = facts["mode"]
-            if mode is None:
-                mode = preimage.get("mode")
-            if not isinstance(mode, int) or isinstance(mode, bool):
-                return refuse(
-                    f"transaction {transaction_id} records no mode for the "
-                    f"preimage of {location}, and bytes are not put back "
-                    "under a mode nobody chose. Nothing has been restored."
-                )
-            data = blob.read_bytes()
-            replacing_mode = mode
-            intention = replace_file(
-                purpose=facts["intention"]["purpose"],
-                path=location,
-                durability=durability,
-                expected=preimage,
-                content=data,
-            )
-        elif kind == SYMLINK:
-            target = preimage.get("target")
-            if not isinstance(target, str):
-                return refuse(
-                    f"transaction {transaction_id} says {location} was a "
-                    "symlink and does not say where it pointed; this log is "
-                    "damaged. Nothing has been restored."
-                )
-            intention = link_to(
-                purpose=facts["intention"]["purpose"],
-                path=location,
-                durability=durability,
-                expected=preimage,
-                target=target,
-            )
-
-        # A regular file, and only a regular file, has bytes to keep. A
-        # node that is neither a directory, a symlink nor a regular file
-        # carries no `digest` (`current_state`) and must not be read at
-        # all: reading through a FIFO can block for ever, and there is
-        # nothing there for a later reader to want back.
+    def _restore_effect(
+        self, location, present, intention, replacing_mode=None, data=None
+    ):
+        """Publish one already-authorized restore and retain displaced bytes."""
         kept = None
         if present["kind"] == FILE and "digest" in present:
-            try:
-                reference = self._park_preimage(location)
-            except VisibilityUnconfirmed as error:
-                return refuse(
-                    f"the bytes now at {location} remain visible and were not "
-                    f"discarded, but their parked copy is unconfirmed: {error}. "
-                    "Nothing has been restored."
-                )
-            except OSError as error:
-                return refuse(
-                    f"the bytes now at {location} could not be parked, and "
-                    f"nothing here discards bytes it has not kept: {error}. "
-                    "Nothing has been restored."
-                )
+            reference = self._park_preimage(location)
             if reference is not None:
                 kept = (
                     f"{VAULT_DIRNAME}/{PREIMAGE_DIRNAME}/"
                     f"{reference.replace('sha256:', '')}"
                 )
-
-        try:
-            if intention is not None:
-                self._publish(intention, location, replacing_mode, data)
-            else:
-                self._unpublish(location, present)
-        except VisibilityUnconfirmed as error:
-            journal_error = self._uncertainty(
-                transaction_id,
-                RESTORE_UNCONFIRMED,
-                f"the restored state of {location} is visible or may be "
-                f"visible, but its durability is unconfirmed: {error}",
-            )
-            return refuse(journal_error.message)
-        except OSError as error:
-            return refuse(
-                f"{location} could not be put back: {error}. Nothing has "
-                "been restored."
-            )
-        try:
-            mark_unconfirmed(
-                self.root,
-                transaction_id,
-                RESTORE_UNCONFIRMED,
-                "restored preimage confirmed; transaction cleanup pending",
-            )
-            remove_transaction_file(self.root, transaction_id)
-        except (OSError, VisibilityUnconfirmed) as error:
-            journal_error = self._uncertainty(
-                transaction_id,
-                RESTORE_UNCONFIRMED,
-                f"the restored state of {location} is confirmed, but WAL "
-                f"cleanup is unconfirmed: {error}",
-            )
-            return refuse(journal_error.message)
-        return Resolution(transaction_id, RESTORE, location, kept=kept)
+        if intention is not None:
+            self._publish(intention, location, replacing_mode, data)
+        else:
+            self._unpublish(location, present)
+        return kept
 
     def _unpublish(self, location, actual):
         """Take the published node away: the inverse of an `absent` preimage.
@@ -2045,7 +1301,7 @@ def repair_harness_link(path, target, anchor=Path()):
 def adopting_session(
     identity_transition,
     append_failure,
-    append_reconfirmation,
+    recover_all,
     root=Path(),
 ):
     """Yield one adopting session while holding its run-wide lock.
@@ -2085,60 +1341,17 @@ def adopting_session(
             run,
             confirmed.adoption,
             append_failure,
-            append_reconfirmation,
+            recover_all,
         )
         session._survey(confirmed.repository, confirmed.local)
         yield session
 
 
 def resolve_transaction(root, transaction_id, resolution):
-    """Resolve exactly one existing transaction without adopting the tree.
-
-    The exact name is probed deliberately outside the lock. Acquiring the
-    filesystem lock creates its parent directory, so an absent transaction
-    must be answered before that materializing action. A present artifact is
-    read under the lock; only that result is acted on.
-    """
-    if resolution not in RESOLUTIONS:
-        raise ValueError(f"unknown resolution '{resolution}'")
-
-    root = Path(root)
-    if not has_transaction(root, transaction_id):
-        return Resolution(
-            transaction_id,
-            resolution,
-            transaction_artifact(transaction_id),
-            no_such_transaction(transaction_id),
-        )
-
-    with Lock(root):
-        ensure_history_compatibility()
-        item = read_transaction(root, transaction_id)
-        if item is None:
-            return Resolution(
-                transaction_id,
-                resolution,
-                transaction_artifact(transaction_id),
-                no_such_transaction(transaction_id),
-            )
-
-        records = read(root, REPO)
-        local = read(root, LOCAL)
-        adoption = existing_adoption_id(records, local)
-        if adoption is None:
-            artifact = transaction_artifact(transaction_id)
-            return Resolution(
-                transaction_id,
-                resolution,
-                artifact,
-                f"transaction {transaction_id} has no adoption history in "
-                f"{JOURNAL_FILENAME} or {artifact_name(LOCAL)}; a transaction "
-                "cannot establish which adopter it belongs to. Nothing has "
-                "been changed.",
-            )
-
-        session = Run(root, new_id(), adoption)
-        return session._resolve_one(item, resolution)
+    """Compatibility facade for protocol-owned selected resolution."""
+    if _protocol_resolve_one is None:
+        raise RuntimeError("resolution callback is unavailable")
+    return _protocol_resolve_one(root, transaction_id, resolution)
 
 
 def repair_transaction(root, transaction_id):

@@ -147,6 +147,37 @@ that is already complete, so the recovery that finds it removes the file,
 gains nothing and says nothing: "recovered" about it would announce a
 mutation the journal already carried.
 
+A retained valid append proof replays only its stored exact bytes: both lines
+when absent, only the stored committed line after a prepared line (even with
+valid descendants after it), and no line for an already complete pair. A
+claimless WAL follows the released reconstruction rules. Before a proof whose
+WAL durability was uncertain authorizes any recovery or targeted-resolution
+history, target, observation or cleanup action, the selected workflow durably
+re-installs that WAL's identical bytes and reads the proof back. A write or
+directory-barrier failure is terminal: none of those actions follows and later
+WALs remain untouched. Provisions are local: independently valid
+current-adoption WALs bind only an exact prepared occurrence whose adoption,
+transaction, run, path, durability, operation, purpose, preimage, postimage,
+note, prior byte count and mode all match reconstructible evidence or an exact
+stored claim. Conflicting, torn, unavailable and claimless occurrence evidence
+provides no provision and cannot authorize another WAL's action. Every non-cleanup effect requires an available
+topology inspection with no unprovided history error; an inspector exception is
+fail closed here even though read-only journal reporting remains fail-open. A
+pre-existing refusal remains per-item and independent cleanup-only WALs continue
+in either order. Uncertainty
+created by recovery itself is terminal: it retains the evidence, exits 1 and
+stops the run; preserve it and rerun `init`.
+
+Every recovered or selected append freezes its expected coherent successor.
+Before cleanup or a later append, `init` verifies the selected history bytes,
+identity and mode, the unchanged opposite history, and the exact expected
+condition discharge with no new condition. Restore recovery likewise rereads
+the pair and exact restored target before cleanup. A post-effect mismatch is
+terminal, retains the selected WAL, and never reports success or advances to a
+later transaction. Topology unavailability, a missing usable snapshot,
+incompatibility or a wrong condition transition at that readback is a mismatch,
+not an empty successful condition set.
+
 A transaction recovery cannot account for is an ERROR that gates that one
 path -- nothing may write over it until `journal --resolve` closes it -- and
 the rest of the run proceeds.
@@ -1060,6 +1091,13 @@ own pair first and their `observe` after it: closing the divergence answers
 for the path and does not take the write out of the history. See [Resolving
 a transaction](journal.md#resolving-a-transaction) for what each flag
 records and what `--restore` refuses.
+
+An `unknown` selected WAL that exactly provisions its own prepared history
+condition is refused for all three dispositions before target, history,
+observation or cleanup effects. Neither a generic committed observation nor
+another WAL's provision can discharge or lend that authority. Preserve the
+selected WAL and histories, restore an accepted exact history state from a
+trusted source, then run `journal --check`.
 
 ```
 journal: resolved 51de77210788b0fd (--accept)

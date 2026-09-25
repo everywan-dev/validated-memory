@@ -218,4 +218,15 @@ def _run_resolve(root, transaction_id, resolution, stdout, stderr):
         # find is not a copy.
         line += f"; the discarded bytes are kept at {outcome.kept}"
     print(line, file=stdout)
-    return EXIT_OK
+    for location, message in outcome.gates:
+        print(
+            Finding(
+                ERROR,
+                location,
+                "journal",
+                f"{message}. This condition was left untouched; the confirmed "
+                "effect is reported separately.",
+            ).render(),
+            file=stderr,
+        )
+    return EXIT_ERROR if outcome.gates else EXIT_OK

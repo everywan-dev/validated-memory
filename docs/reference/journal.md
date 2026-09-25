@@ -715,13 +715,26 @@ other command that writes through the executor, and it deliberately does
 **not** recover: an operator answering for one transaction must not have the
 others closed underneath them.
 
-It reads the write-ahead log, not the two journals. Each unresolved
-transaction is classified by the file's own record of how far it got, not
-inferred from a filesystem some later process may have changed:
+It acquires the two histories as one coherent pair and classifies every WAL
+against that snapshot. A valid WAL provision suppresses only the unfinished
+condition bound to that WAL; it never lends append or cleanup authority to a
+different transaction. The binding is exact in adoption, transaction, run,
+path, durability, operation, purpose, preimage, postimage, note, prior byte
+count, mode and prepared occurrence. It is derived only from independently
+valid current-adoption WALs: either every reconstructible field matches the
+prepared history record or an exact stored claim proves it. Conflicting, torn,
+unavailable and claimless occurrence evidence provides no provision.
+Before any non-cleanup transition, topology inspection must be available and
+every error condition not discharged by its exact provision must be absent.
+Topology implementation failures remain fail-open for read-only reporting but
+fail closed before mutation. Such a pre-existing gate is a per-item refusal,
+not current-effect uncertainty: recovery continues to independent items,
+including cleanup-only items in either WAL order. Each semantic transition is followed by a fresh
+coherent-pair read before the next transition:
 
 | Verdict | Reached when | What recovery does |
 |---|---|---|
-| `recoverable` -- *complete* | The file says `published` and the path is in the postimage state; or it says `prepared` and the path is in the postimage state and not in the preimage state | Appends whichever of the two history records is missing and removes the file. `init` prints `init: recovered <path> from transaction <id>` when a record was appended, and nothing when both were already there -- the residue of a crash between the append and the unlink |
+| `recoverable` -- *complete* | The file says `published` and the path is in the postimage state; or it says `prepared` and the path is in the postimage state and not in the preimage state | A claimless WAL uses the released reconstruction. A valid claim replays its stored exact pair at zero occurrence, only its stored exact committed line after a prepared occurrence (including after valid descendants), or no bytes after a complete occurrence. `init` prints `init: recovered <path> from transaction <id>` only when records were appended |
 | `recoverable` -- *discard* | The file says `prepared` and the path is in the preimage state and not in the postimage state | Removes the file. Nothing happened and nothing is recorded, so nothing is printed |
 | `recoverable` -- *remove* | The file says `aborted` | Removes the file. It published nothing |
 | `diverged` | The file says `published` and the path is not in the postimage state -- something wrote it afterwards | Nothing. The file stays, and an ERROR names the path and the way out |
@@ -744,9 +757,10 @@ ERROR: .validated-memory/transactions/6666666666666666.json: journal: damaged tr
 `adoption` is compared only when the journals say what this project's id is.
 When both permanent histories are empty, any transaction artifact instead
 gates `init` and `journal --check` before a new identity or scaffold write.
-The artifact is restoration evidence, not authority to reconstruct missing
-append-only history: restore matching repository or local history, then rerun
-normal recovery. A surviving history in either location remains authoritative.
+The artifact is restoration evidence, not authority to mint an adoption
+identity. A valid claim may re-establish its own exact zero occurrence only
+after the other permanent history establishes the adopter; otherwise restore
+matching repository or local history before normal recovery.
 
 **Exactly one pair of records per mutation, whatever happens.** Completing a
 transaction appends only the records that are not already there, checked by
@@ -755,14 +769,15 @@ leaves a `published` file whose records exist and a second pass adds
 nothing. Recovery is idempotent in the other direction too: a transaction it
 resolves leaves the disk, so a second pass never sees it again.
 
-**Only the affected path gates.** A path an unresolved transaction names is
+**Pre-existing gates stay path-local; current uncertainty is terminal.** A path
+an unresolved transaction names is
 refused by the executor -- writing over it would destroy the evidence the
 operator needs and would record a preimage that was already gone -- and the
-refusal names the transaction and the three flags. The rest of the run
-proceeds: a single-path transaction can be reasoned about piecewise, and
-blocking every mutation would brick the session hook over one stale file.
-The refusal is an ERROR, so the run's exit code gates even though the other
-items were created.
+refusal names the transaction and the three flags. Independent items may
+proceed after that pre-existing gate. If recovery itself leaves a target,
+history append, restore or cleanup effect visible or indeterminate, the WAL is
+retained and the mutating run stops; rerun `init` rather than starting a later
+intention. Either condition is an ERROR and exits 1.
 
 The harness symlink is the one thing that overrides that refusal, after its
 project-memory target has independently been found eligible inside the adopter.
@@ -807,8 +822,20 @@ read again under the lock, and both histories must already establish the one
 adoption it belongs to. An artifact with neither repository nor local adoption
 history is contradictory residue: it is refused, left byte-for-byte unchanged,
 and no `journal.jsonl` is created from it. Only `init`'s adopting run may create
-that opening history. Resolution reads only the named artifact and never
-recovers another transaction in the same operation.
+that opening history. Resolution gives action authority only to the named
+artifact and never recovers another transaction. It classifies the coherent
+pair and all provisions so independent gates remain visible after a confirmed
+selected effect, but another WAL's provision cannot authorize the selected
+append or cleanup.
+
+An `unknown` selected WAL that exactly provisions its own prepared history
+condition is refused for all three dispositions (`--accept`, `--abandon` and
+`--restore`) before any
+target, history, observation or cleanup effect. A resolution observation's
+generic committed shape cannot discharge that prepared condition, and another
+WAL's provision cannot be borrowed. Preserve the selected WAL and both
+histories, restore an accepted exact history state from a trusted source, then
+run `journal --check`.
 
 - **`--accept`** -- the state the path is in is what the user wants. It
   writes **one `observe`** whose note says it was accepted after divergence
@@ -820,7 +847,9 @@ recovers another transaction in the same operation.
   from is not a fact about the project.
 
 Over a `diverged` transaction, `--accept` and `--abandon` write the
-**mutation's own record pair first**, and their `observe` after it. That
+**mutation's own record pair first**, and their `observe` after it. A valid
+stored claim supplies those exact bytes; a claimless legacy WAL uses the
+released reconstruction. That
 transaction is `published`: its bytes reached the disk, only the two history
 records were lost, and the divergence says something wrote the path
 *afterwards* -- not that the write never ran. The pair is the one recovery
@@ -1077,6 +1106,23 @@ unconfirmed; the next run repeats cleanup without duplicating the history
 pair. An operator restore uses the same rule for its exact restored preimage.
 If retaining the phase fact is itself unconfirmed, the diagnostic reports both
 failures and promises only that every artifact still available was kept.
+Before a WAL retained with uncertain history-claim durability authorizes any
+recovery or targeted-resolution history, target, observation or cleanup action,
+the selected workflow durably re-installs that WAL's identical bytes and reads
+the same valid claim back against the unchanged coherent pair. A WAL write or
+carrying-directory barrier failure is terminal: no target, history, observation
+or cleanup action follows, and later WALs remain untouched. Each ordinary
+recovery or resolution append freezes the exact successor
+history bytes, selected identity and mode, unchanged opposite artifact, and
+expected condition discharge before acting; cleanup and any later transition
+require the reacquired pair to match that successor with no new condition.
+Restore recovery applies the same boundary to both the exact restored target
+and the unchanged history pair. A race at any of these post-effect boundaries
+retains the selected WAL, reports no success, and leaves later WALs untouched.
+An unavailable topology inspector, missing usable topology snapshot,
+incompatible pair or wrong condition transition after an effect is the same
+terminal retained result; absence of reported conditions never counts as
+success when inspection itself was unavailable.
 For append reconfirmation, an initial data or directory failure tells the
 operator to preserve the retained transaction and rerun `init`. If cleanup is
 uncertain after the append was confirmed, the diagnostic says that the append

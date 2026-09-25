@@ -254,6 +254,7 @@ RAW_WRITE_MODULES = {
     "journal/fault.py",
     "journal/lock.py",
     "journal/records.py",
+    "journal/protocol.py",
     "journal/transactions.py",
 }
 
@@ -1621,13 +1622,15 @@ def test_the_adopting_session_exposes_only_its_three_operations():
 
 def test_adoption_and_resolution_keep_their_distinct_protocols():
     """Only adoption bootstraps; targeted resolution never surveys or recovers."""
-    source = (
-        REPO_ROOT / "validated_memory" / JOURNAL_SOURCE / "executor.py"
-    ).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    functions = {
-        node.name: node
-        for node in ast.walk(tree)
+    root = REPO_ROOT / "validated_memory" / JOURNAL_SOURCE
+    executor = ast.parse((root / "executor.py").read_text(encoding="utf-8"))
+    protocol = ast.parse((root / "protocol.py").read_text(encoding="utf-8"))
+    executor_functions = {
+        node.name: node for node in ast.walk(executor)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    protocol_functions = {
+        node.name: node for node in ast.walk(protocol)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
@@ -1641,9 +1644,8 @@ def test_adoption_and_resolution_keep_their_distinct_protocols():
                 names.append(target.attr)
         return names
 
-    adopting_calls = calls(functions["adopting_session"])
-    resolving_calls = calls(functions["resolve_transaction"])
-    resolve_one_calls = calls(functions["_resolve_one"])
+    adopting_calls = calls(executor_functions["adopting_session"])
+    resolving_calls = calls(protocol_functions["resolve_one"])
     assert adopting_calls.count("identity_transition") == 1
     assert resolving_calls.count("has_transaction") == 1
     assert resolving_calls.count("read_transaction") == 1
@@ -1652,7 +1654,10 @@ def test_adoption_and_resolution_keep_their_distinct_protocols():
         "_survey",
         "open_transactions",
         "recover",
-    }.intersection(resolving_calls + resolve_one_calls)
+    }.intersection(resolving_calls)
+    assert not {
+        "_recover_one", "_complete", "_resolve_one", "_restore"
+    }.intersection(executor_functions)
 
 
 def test_c1b_bootstrap_adapter_has_no_legacy_publication_policy():
@@ -1717,51 +1722,39 @@ def test_c1b_bootstrap_adapter_has_no_legacy_publication_policy():
     assert not any(isinstance(node, ast.Return) for node in ast.walk(publish_node))
 
 
-def test_c1c_append_reconfirmation_has_one_policy_owner():
-    """Protocol selects exact-range authority; lower layers expose mechanics."""
+def test_c1d_recovery_and_resolution_have_one_policy_owner():
+    """Protocol owns WAL decisions; executor exposes only bounded adapters."""
     root = REPO_ROOT / "validated_memory" / JOURNAL_SOURCE
     sources = {
         path.name: path.read_text(encoding="utf-8")
         for path in root.glob("*.py")
     }
     trees = {name: ast.parse(source) for name, source in sources.items()}
-    callers = []
-    for name, tree in trees.items():
-        if any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "reconfirm_append"
-            for node in ast.walk(tree)
-        ):
-            callers.append(name)
-    assert callers == ["protocol.py"]
-
     executor_functions = {
         node.name: node
         for node in ast.walk(trees["executor.py"])
         if isinstance(node, ast.FunctionDef)
     }
-    assert "_recover_history" not in executor_functions
-    recovery = ast.get_source_segment(
-        sources["executor.py"], executor_functions["_recover_one"]
-    )
-    assert "republish_file" not in recovery
-    assert '"history_append"' not in recovery
-    assert "read(self.root" not in recovery
-    assert "incomplete claimed occurrence" not in recovery
-    for result in (
-        "AppendReconfirmationNotApplicable",
-        "AppendReconfirmed",
-        "AppendReconfirmationRefused",
-        "AppendReconfirmationRetained",
-    ):
-        assert result in recovery
+    assert not {
+        "_recover_one", "_complete", "_resolve_one", "_restore", "_recover_history"
+    }.intersection(executor_functions)
+    recover = executor_functions["recover"]
+    recover_calls = {
+        node.func.attr
+        for node in ast.walk(recover)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert recover_calls == {"_recover_all", "_survey"}
 
-    transition = next(
-        node for node in ast.walk(trees["protocol.py"])
+    protocol_functions = {
+        node.name: node
+        for node in ast.walk(trees["protocol.py"])
         if isinstance(node, ast.FunctionDef)
-        and node.name == "_append_reconfirmation"
+    }
+    assert {"_recover_all", "_recover_item", "_recover_claimed", "resolve_one"} <= (
+        set(protocol_functions)
     )
+    transition = protocol_functions["_append_reconfirmation"]
     protocol_calls = {
         node.func.id
         for node in ast.walk(transition)
@@ -1770,49 +1763,19 @@ def test_c1c_append_reconfirmation_has_one_policy_owner():
     assert {"classify_evidence", "confirm_histories", "reconfirm_append"} <= (
         protocol_calls
     )
-    transition_source = ast.get_source_segment(sources["protocol.py"], transition)
-    assert "include_stored_claim=True" in transition_source
-    assert "_append_deferred" in transition_source
-    assert '"complete claimed pair"' not in sources["protocol.py"]
-    assert '"claim with"' not in sources["protocol.py"]
-
-    mechanics = next(
-        node for node in trees["durable.py"].body
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "reconfirm_exact_range"
+    assert "include_stored_claim=True" in ast.get_source_segment(
+        sources["protocol.py"], transition
     )
-    calls = {
-        node.func.attr
-        for node in ast.walk(mechanics)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    }
-    assert {"write", "fsync"} <= calls
-    assert not {"replace", "rename", "link", "truncate", "ftruncate"}.intersection(calls)
-    mechanics_source = ast.get_source_segment(sources["durable.py"], mechanics)
-    assert "current_identity != identity" in mechanics_source
-    assert "O_NOFOLLOW" not in mechanics_source
-
-    transactions = sources["transactions.py"]
-    assert transactions.count("def _history_claim_kind(") == 1
-    assert "HISTORY_CLAIM_UNCONFIRMED,\n        HISTORY_UNCONFIRMED," in transactions
-
-    complete_source = ast.get_source_segment(
-        sources["executor.py"], executor_functions["_complete"]
+    successor = ast.get_source_segment(
+        sources["protocol.py"], protocol_functions["_append_successor"]
     )
-    assert "mark_history_append(" not in complete_source
+    assert 'record.get("transaction") == evidence.transaction' in successor
     execute_source = ast.get_source_segment(
         sources["executor.py"], executor_functions["_execute"]
     )
     assert execute_source.index("mark_history_append(") < execute_source.index(
         "append(history_records,"
     )
-    uncertain = executor_functions["_recovery_uncertain"]
-    assert any(isinstance(node, ast.Return) for node in ast.walk(uncertain))
-    assert not any(isinstance(node, ast.Raise) for node in ast.walk(uncertain))
-    assert "raise error" in recovery
-    assert "raise retained" in recovery
-
-
 # The journal's modules in the order `journal/__init__.py` lists them, which
 # is also the order they may import in. The facade itself is not here: it is
 # the one file that reaches every module, which is what makes it the door.
@@ -3823,10 +3786,10 @@ def _retained_complete_append(run_cli, tree, monkeypatch):
 
 
 @pytest.mark.parametrize("occurrence", ("zero", "prepared"))
-def test_hard_death_with_incomplete_claim_stays_outside_c1c_authority(
+def test_hard_death_with_incomplete_claim_replays_stored_exact_bytes(
     run_cli, tmp_path, monkeypatch, occurrence
 ):
-    """C1c neither replaces a durable claim nor replays an incomplete one."""
+    """C1d completes zero/prepared claims without rebuilding timestamps."""
     prefix_length = 0
     if occurrence == "prepared":
         calibration = tmp_path / "calibration"
@@ -3873,48 +3836,33 @@ def test_hard_death_with_incomplete_claim_stays_outside_c1c_authority(
     ]
     expected = [] if occurrence == "zero" else [claim["records"][0]]
     assert matching == expected
-    wal_before = transaction_path.read_bytes()
     history_before = history.read_bytes()
-    tree_before = [
-        item
-        for item in _final_tree_snapshot(adopter)
-        if item[0] != ".validated-memory/lock"
-    ]
     monkeypatch.delenv("VALIDATED_MEMORY_STORAGE_CRASH")
 
     retried = run_cli("init", cwd=adopter)
 
-    assert retried.returncode == 1, (retried.stdout, retried.stderr)
+    assert retried.returncode == 0, (retried.stdout, retried.stderr)
     assert retried.stdout == (
+        f"init: recovered .gitignore from transaction {transaction_id}\n"
         "init: kept knowledge\n"
         "init: kept memory\n"
         "init: kept memory/MEMORY.md\n"
         "init: kept validated-memory.md\n"
         "init: kept knowledge-extension.md\n"
-        "init: 0 created, 5 kept, 1 error(s), 0 warning(s)\n"
+        "init: 0 created, 5 kept, 0 error(s), 0 warning(s)\n"
     )
-    assert retried.stderr == (
-        "ERROR: journal.jsonl: journal: history reconfirmation wrote nothing "
-        "because the retained append is "
-        f"{'incomplete' if occurrence == 'prepared' else 'absent'} "
-        f"in the current history. Transaction {transaction_id} and both histories "
-        "were preserved. This operation does not complete or replay an append. "
-        "Restore the affected history from a trusted copy, then rerun init\n"
+    assert retried.stderr == ""
+    assert not transaction_path.exists()
+    replay = b"".join(
+        (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
+        for entry in claim["records"][(1 if occurrence == "prepared" else 0):]
     )
-    assert "Traceback" not in retried.stderr
-    assert "journal could not be opened" not in retried.stderr
-    assert transaction_path.read_bytes() == wal_before
-    assert history.read_bytes() == history_before
-    assert [
-        item
-        for item in _final_tree_snapshot(adopter)
-        if item[0] != ".validated-memory/lock"
-    ] == tree_before
+    assert history.read_bytes() == history_before + replay
     assert [
         entry
         for entry in _records(history)
         if entry.get("transaction") == transaction_id
-    ] == expected
+    ] == claim["records"]
 
 
 def test_append_reconfirmation_preserves_complete_valid_suffix(
@@ -4232,10 +4180,10 @@ def test_append_reconfirmation_gates_opposite_replacement_during_readback(
     assert not (tmp_path / "new-later-effect").exists()
 
 
-def test_missing_history_after_unconfirmed_append_is_not_reconstructed(
+def test_valid_claim_replays_exact_pair_when_history_occurrence_is_zero(
     run_cli, tmp_path, monkeypatch
 ):
-    """One WAL cannot stand in for a lost append-only local history."""
+    """A valid stored claim, unlike reconstruction, owns its exact zero replay."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
     harness = _external_harness_path(tmp_path, "memory")
     monkeypatch.setenv(
@@ -4245,23 +4193,23 @@ def test_missing_history_after_unconfirmed_append_is_not_reconstructed(
         run_cli("init", "--harness-memory", str(harness), cwd=tmp_path).returncode
         == 1
     )
-    transaction = _transactions(tmp_path)[0]["transaction"]
+    retained = _transactions(tmp_path)[0]
+    transaction = retained["transaction"]
+    expected = b"".join(
+        (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
+        for entry in retained["history_append"]["records"]
+    )
     history = tmp_path / ".validated-memory" / "local.jsonl"
     history.unlink()
     monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
 
     result = run_cli("init", "--harness-memory", str(harness), cwd=tmp_path)
 
-    assert result.returncode == 1, (result.stdout, result.stderr)
-    assert result.stderr == (
-        "ERROR: .validated-memory/local.jsonl: journal: history reconfirmation "
-        "wrote nothing because the retained append is absent in the current "
-        f"history. Transaction {transaction} and both histories were preserved. "
-        "This operation does not complete or replay an append. Restore the "
-        "affected history from a trusted copy, then rerun init\n"
-    )
-    assert not history.exists()
-    assert _transactions(tmp_path)[0]["transaction"] == transaction
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stderr == ""
+    assert f"recovered {retained['intention']['path']} from transaction {transaction}" in result.stdout
+    assert history.read_bytes() == expected
+    assert not _transactions(tmp_path)
 
 
 @pytest.mark.parametrize("damage", ("duplicate", "disagreement"))
@@ -4343,10 +4291,10 @@ def test_cleanup_barrier_failure_retries_without_duplicate_history(
     assert not _transactions(tmp_path)
 
 
-def test_target_recovery_history_failure_retains_claimless_boundary(
+def test_target_recovery_history_failure_terminalizes_before_later_effect(
     run_cli, tmp_path, monkeypatch
 ):
-    """Legacy completion does not mint C1c authority during target recovery."""
+    """A current unconfirmed recovery effect stops before another intention."""
     monkeypatch.setenv(
         "VALIDATED_MEMORY_PERSISTENCE_FAULT", "create-exclusive:.gitignore"
     )
@@ -4362,7 +4310,7 @@ def test_target_recovery_history_failure_retains_claimless_boundary(
         history_failed.stderr,
     )
     retained = _transactions(tmp_path)
-    assert len(retained) == 2
+    assert len(retained) == 1
     artifact = next(
         item for item in retained if item["transaction"] == transaction
     )
@@ -4370,14 +4318,8 @@ def test_target_recovery_history_failure_retains_claimless_boundary(
     assert artifact["unconfirmed"] == "history", artifact
     assert "history_append" not in artifact
     assert "history_timestamps" not in artifact
-    later = next(
-        item for item in retained if item["transaction"] != transaction
-    )
-    assert later["intention"]["path"] == "knowledge"
-    assert later["unconfirmed"] == "history"
-    assert later["history_append"]["artifact"] == "repo"
     assert "history" in history_failed.stderr
-    assert (tmp_path / "knowledge").is_dir()
+    assert not (tmp_path / "knowledge").exists()
     assert not (tmp_path / "memory").exists()
     pair = [
         entry
@@ -4388,10 +4330,10 @@ def test_target_recovery_history_failure_retains_claimless_boundary(
 
 
 @pytest.mark.parametrize("phase", ("target", "restore", "cleanup"))
-def test_non_c1c_recovery_uncertainty_continues_to_an_independent_wal(
+def test_current_recovery_uncertainty_stops_before_an_independent_wal(
     run_cli, tmp_path, monkeypatch, phase
 ):
-    """Legacy recovery uncertainty remains per-item, not run-terminal."""
+    """Current effect uncertainty is terminal; a later WAL remains untouched."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
     if phase in {"target", "restore"}:
         (tmp_path / ".gitignore").write_text(
@@ -4483,31 +4425,16 @@ def test_non_c1c_recovery_uncertainty_continues_to_an_independent_wal(
         f"{operation} of {artifact} is visible, but its durability is "
         f"unconfirmed: [Errno 5] injected persistence failure: '{artifact}'"
     )
-    reason = (
-        f"recovery of {recovery_path} could not confirm {phase}: {failure}"
-    )
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert result.stdout == (
-        "init: kept knowledge\n"
-        "init: kept memory\n"
-        "init: kept memory/MEMORY.md\n"
-        "init: kept validated-memory.md\n"
-        "init: kept knowledge-extension.md\n"
-        "init: 0 created, 5 kept, 1 error(s), 0 warning(s)\n"
-    )
+    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
     assert result.stderr == (
-        f"ERROR: {recovery_path}: journal: {reason}; transaction "
-        f"{transaction_id} is retained for recovery\n"
+        f"ERROR: .validated-memory/transactions/{transaction_id}.json: journal: "
+        f"recovery of {recovery_path} left its {phase} effect visible or "
+        f"indeterminate: {failure}. Transaction {transaction_id} and all "
+        "available evidence were retained; preserve them and rerun init\n"
     )
-    assert not secondary_path.exists()
-    expected_primary = {
-        **primary,
-        "unconfirmed": phase,
-        "unconfirmed_reason": reason,
-    }
-    assert primary_path.read_bytes() == (
-        json.dumps(expected_primary, sort_keys=True) + "\n"
-    ).encode("utf-8")
+    assert secondary_path.exists()
+    assert json.loads(primary_path.read_text(encoding="utf-8"))["unconfirmed"] == phase
     assert (tmp_path / ".gitignore").read_bytes() == target_before
     if phase == "restore":
         restored = tmp_path / recovery_path
@@ -4547,6 +4474,126 @@ def test_visible_restore_barrier_failure_never_claims_nothing_was_restored(
     assert final.startswith("before adoption\n")
     assert final.count("/.validated-memory/") == 1
     assert not _transactions(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+@pytest.mark.parametrize("race", ("target", "opposite-history"))
+def test_restore_recovery_requires_exact_target_and_pair_before_cleanup(
+    run_cli, tmp_path, monkeypatch, race
+):
+    """A post-restore race retains both the selected and later WALs."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "install:.gitignore")
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    primary_path = next(
+        (tmp_path / ".validated-memory" / "transactions").glob("*.json")
+    )
+    primary = json.loads(primary_path.read_text(encoding="utf-8"))
+    blob = (
+        tmp_path / ".validated-memory" / "preimages"
+        / primary["preimage_blob"].removeprefix("sha256:")
+    )
+    restored = tmp_path / "restored-race.txt"
+    restored.write_bytes(blob.read_bytes())
+    restored.chmod(primary["preimage"]["mode"])
+    primary["intention"] = {**primary["intention"], "path": restored.name}
+    primary["unconfirmed"] = "restore"
+    primary["unconfirmed_reason"] = "fixture"
+    primary_path.write_text(json.dumps(primary, sort_keys=True) + "\n", encoding="utf-8")
+    secondary_id = "f" * 16
+    secondary = {
+        **primary,
+        "transaction": secondary_id,
+        "stage": "aborted",
+        "reason": "independent fixture",
+    }
+    secondary.pop("unconfirmed", None)
+    secondary.pop("unconfirmed_reason", None)
+    secondary_path = primary_path.with_name(f"{secondary_id}.json")
+    secondary_path.write_text(json.dumps(secondary, sort_keys=True) + "\n", encoding="utf-8")
+    secondary_before = secondary_path.read_bytes()
+    process, ready, proceed = _rendezvous_init(
+        tmp_path, "after-selected-restore-recovery"
+    )
+    try:
+        assert os.read(ready, 2) == b"1\n"
+        if race == "target":
+            restored.write_text("raced target\n", encoding="utf-8")
+        else:
+            (tmp_path / ".validated-memory" / "local.jsonl").write_bytes(b"")
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert "exact restored target and coherent history pair" in stderr
+    assert primary_path.exists()
+    assert secondary_path.read_bytes() == secondary_before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+def test_post_restore_topology_failure_is_terminal_and_retains_later_wal(
+    run_cli, tmp_path, monkeypatch
+):
+    """Unavailable topology cannot confirm a published restore successor."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    (tmp_path / ".gitignore").write_text("adopter line\n", encoding="utf-8")
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "install:.gitignore")
+    assert run_cli("init", cwd=tmp_path).returncode == 1
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    primary_path = next(
+        (tmp_path / ".validated-memory" / "transactions").glob("*.json")
+    )
+    primary = json.loads(primary_path.read_text(encoding="utf-8"))
+    blob = (
+        tmp_path / ".validated-memory" / "preimages"
+        / primary["preimage_blob"].removeprefix("sha256:")
+    )
+    restored = tmp_path / "restored-topology.txt"
+    restored.write_bytes(blob.read_bytes())
+    restored.chmod(primary["preimage"]["mode"])
+    primary["intention"] = {**primary["intention"], "path": restored.name}
+    primary["unconfirmed"] = "restore"
+    primary["unconfirmed_reason"] = "fixture"
+    primary_path.write_text(json.dumps(primary, sort_keys=True) + "\n", encoding="utf-8")
+    later = primary_path.with_name("ffffffffffffffff.json")
+    later_entry = {**primary, "transaction": "ffffffffffffffff", "stage": "aborted"}
+    later_entry.pop("unconfirmed", None)
+    later_entry.pop("unconfirmed_reason", None)
+    later.write_text(json.dumps(later_entry, sort_keys=True) + "\n", encoding="utf-8")
+    later_before = later.read_bytes()
+    marker = tmp_path / "fail-restore-topology"
+    mutant = _topology_marker_mutant(tmp_path, marker)
+    process, ready, proceed = _rendezvous_mutant_init(
+        tmp_path, mutant, "after-selected-restore-recovery"
+    )
+    try:
+        assert os.read(ready, 2) == b"1\n"
+        marker.write_text("fail\n", encoding="utf-8")
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert "Traceback" not in stderr
+    assert "exact restored target and coherent history pair" in stderr
+    assert primary_path.exists()
+    assert later.read_bytes() == later_before
+    assert restored.read_bytes() == blob.read_bytes()
 
 
 @pytest.mark.parametrize("damage", ("unknown-phase", "missing-reason"))
@@ -6537,7 +6584,12 @@ def test_resolving_one_transaction_does_not_recover_another(run_cli, tmp_path):
 
     result = run_cli("journal", "--resolve", target, "--accept", cwd=tmp_path)
 
-    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == f"journal: resolved {target} (--accept)\n"
+    assert result.stderr == (
+        "ERROR: other.txt: journal: unknown. This condition was left "
+        "untouched; the confirmed effect is reported separately.\n"
+    )
     assert artifact.read_bytes() == artifact_before
     assert other_path.read_bytes() == path_before
     assert [entry["transaction"] for entry in _transactions(tmp_path)] == [other]
@@ -6545,6 +6597,70 @@ def test_resolving_one_transaction_does_not_recover_another(run_cli, tmp_path):
         record
         for record in _records(tmp_path / "journal.jsonl")
         if record.get("transaction") == other
+    ]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+def test_resolution_locked_reread_does_not_adopt_a_new_unrelated_transaction(
+    tmp_path,
+):
+    """A WAL appearing after the inert probe supplies no selected authority."""
+    selected = _diverged(tmp_path)
+    ready_read, ready_write = os.pipe()
+    continue_read, continue_write = os.pipe()
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT),
+        "VALIDATED_MEMORY_TEST_RENDEZVOUS": "before-resolution-lock",
+        "VALIDATED_MEMORY_TEST_READY_FD": str(ready_write),
+        "VALIDATED_MEMORY_TEST_CONTINUE_FD": str(continue_read),
+    }
+    process = subprocess.Popen(
+        [
+            sys.executable, "-P", "-m", "validated_memory", "journal",
+            "--resolve", selected, "--accept",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(ready_write, continue_read),
+    )
+    os.close(ready_write)
+    os.close(continue_read)
+    try:
+        assert os.read(ready_read, 2) == b"1\n"
+        unrelated = "ffffffffffffffff"
+        _transaction_file(
+            tmp_path,
+            unrelated,
+            intention={
+                "op": "replace",
+                "purpose": "init",
+                "path": "unrelated.txt",
+                "durability": "repo",
+            },
+        )
+        artifact = (
+            tmp_path / ".validated-memory" / "transactions" / f"{unrelated}.json"
+        )
+        before = artifact.read_bytes()
+        os.write(continue_write, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready_read)
+        os.close(continue_write)
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == f"journal: resolved {selected} (--accept)\n"
+    assert artifact.read_bytes() == before
+    assert [item["transaction"] for item in _transactions(tmp_path)] == [unrelated]
+    assert not [
+        entry for entry in _records(tmp_path / "journal.jsonl")
+        if entry.get("transaction") == unrelated
     ]
 
 
@@ -7016,9 +7132,15 @@ def test_repair_uses_wal_published_mode_after_target_chmod(
     assert (tmp_path / "journal.jsonl").read_bytes() == before
 
 
-def test_history_claim_persistence_failure_never_appends_or_recovers(
+def test_claimless_zero_history_claim_uses_released_reconstruction(
     run_cli, tmp_path, monkeypatch
 ):
+    """Prove released fields rebuild one exact pair, then clean only its WAL.
+
+    A real history-claim fault removes stored claim metadata while keeping the
+    target postimage. The exact two stages and selected cleanup distinguish
+    released reconstruction from replay, refusal, or unrelated mutation.
+    """
     assert run_cli("init", cwd=tmp_path).returncode == 0
     target = tmp_path / ".gitignore"
     target.write_text("adopter change\n", encoding="utf-8")
@@ -7035,10 +7157,190 @@ def test_history_claim_persistence_failure_never_appends_or_recovers(
     assert (tmp_path / "journal.jsonl").read_bytes() == before
 
     monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
-    blocked = run_cli("init", cwd=tmp_path)
-    assert blocked.returncode == 1
-    assert (tmp_path / "journal.jsonl").read_bytes() == before
-    assert transaction.exists()
+    recovered = run_cli("init", cwd=tmp_path)
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    assert recovered.stderr == ""
+    assert f"recovered .gitignore from transaction {entry['transaction']}" in recovered.stdout
+    matching = [
+        record for record in _records(tmp_path / "journal.jsonl")
+        if record.get("transaction") == entry["transaction"]
+    ]
+    assert [record["stage"] for record in matching] == ["prepared", "committed"]
+    assert not transaction.exists()
+
+
+def _uncertain_resolution_fixture(run_cli, adopter, monkeypatch, occurrence):
+    """Build one diverged valid claim at the requested history occurrence."""
+    assert run_cli("init", cwd=adopter).returncode == 0
+    target = adopter / ".gitignore"
+    target.write_text("preimage bytes\n", encoding="utf-8")
+    monkeypatch.setenv("VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl")
+    failed = run_cli("init", cwd=adopter)
+    assert failed.returncode == 1, (failed.stdout, failed.stderr)
+    monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
+    transaction = next(
+        (adopter / ".validated-memory" / "transactions").glob("*.json")
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    claim = entry["history_append"]
+    payload = b"".join(
+        (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+        for record in claim["records"]
+    )
+    history = adopter / "journal.jsonl"
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    prefix = history.read_bytes()[:claim["prefix"]["length"]]
+    prepared_end = payload.find(b"\n") + 1
+    history.write_bytes(
+        prefix
+        + {
+            "zero": b"",
+            "prepared": payload[:prepared_end],
+            "complete": payload,
+        }[occurrence]
+    )
+    target.write_text("operator divergence\n", encoding="utf-8")
+    _transaction_file(
+        adopter,
+        "ffffffffffffffff",
+        stage="aborted",
+        reason="independent retained fixture",
+    )
+    return transaction
+
+
+@pytest.mark.parametrize("occurrence", ("zero", "prepared", "complete"))
+@pytest.mark.parametrize("resolution", ("accept", "abandon", "restore"))
+@pytest.mark.parametrize("fault", ("write:{wal}", "install:transactions"))
+def test_resolution_reestablishes_uncertain_claim_before_any_disposition(
+    run_cli, tmp_path, monkeypatch, occurrence, resolution, fault
+):
+    """An uncertain proof-WAL failure precedes every resolution effect.
+
+    The three stored-claim occurrences and both WAL persistence boundaries
+    prove that target, histories, observation, cleanup, and an unrelated WAL
+    remain exact when re-establishment cannot be confirmed.
+    """
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction = _uncertain_resolution_fixture(
+        run_cli, adopter, monkeypatch, occurrence
+    )
+    before = _final_tree_snapshot(tmp_path)
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        fault.format(wal=transaction.name),
+    )
+
+    result = run_cli(
+        "journal", "--resolve", transaction.stem, f"--{resolution}", cwd=adopter
+    )
+
+    failed_path = (
+        f".validated-memory/transactions/{transaction.name}"
+        if fault.startswith("write:")
+        else ".validated-memory/transactions"
+    )
+    reason = (
+        f"[Errno 5] injected persistence failure: '{failed_path}'"
+        if fault.startswith("write:")
+        else "install of .validated-memory/transactions/"
+        f"{transaction.name} is visible, but its durability is unconfirmed: "
+        f"[Errno 5] injected persistence failure: '{failed_path}'"
+    )
+    assert (result.returncode, result.stdout, result.stderr) == (
+        1,
+        "",
+        f"ERROR: .validated-memory/transactions/{transaction.name}: journal: "
+        "the selected resolution cannot continue because retained evidence "
+        "could not be durably and coherently confirmed: "
+        f"{reason}. Transaction "
+        f"{transaction.stem} and all available evidence were retained; preserve "
+        "them and rerun init\n",
+    )
+    assert _final_tree_snapshot(tmp_path) == before
+
+
+def _unknown_selected_provision(adopter, other_order):
+    """Make an unknown claimless WAL and an independent exact provision."""
+    transaction, prepared, history = _claimless_prepared_provision(adopter)
+    (adopter / ".validated-memory" / "lock").unlink(missing_ok=True)
+    selected = json.loads(transaction.read_text(encoding="utf-8"))
+    selected["stage"] = "prepared"
+    transaction.write_text(
+        json.dumps(selected, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    target = adopter / selected["intention"]["path"]
+    if target.is_dir():
+        target.rmdir()
+    elif target.exists() or target.is_symlink():
+        target.unlink()
+    target.write_text("selected unknown state\n", encoding="utf-8")
+    other_id = "0000000000000000" if other_order == "before" else "ffffffffffffffff"
+    other = {
+        **selected,
+        "at": (
+            "1900-01-01T00:00:00Z"
+            if other_order == "before"
+            else "2999-01-01T00:00:00Z"
+        ),
+        "run": "independent-run",
+        "transaction": other_id,
+        "intention": {**selected["intention"], "path": "independent.txt"},
+    }
+    transaction.with_name(f"{other_id}.json").write_text(
+        json.dumps(other, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    other_prepared = {
+        **prepared,
+        "at": other["at"],
+        "run": other["run"],
+        "transaction": other_id,
+        "path": "independent.txt",
+    }
+    records = _records(history)
+    selected_index = next(
+        index
+        for index, record in enumerate(records)
+        if record.get("transaction") == transaction.stem
+    )
+    records.insert(
+        selected_index if other_order == "before" else selected_index + 1,
+        other_prepared,
+    )
+    _rewrite(history, records)
+    return transaction
+
+
+@pytest.mark.parametrize("resolution", ("accept", "abandon", "restore"))
+@pytest.mark.parametrize("other_order", ("before", "after"))
+def test_unknown_selected_provision_refuses_before_every_disposition(
+    run_cli, tmp_path, resolution, other_order
+):
+    """A selected prepared gap cannot borrow or be discharged by other work.
+
+    Both orders include an independent exact provision. Whole-tree equality
+    proves every disposition refuses before target, observation, cleanup, or
+    an unrelated provision changes.
+    """
+    transaction = _unknown_selected_provision(tmp_path, other_order)
+    before = _final_tree_snapshot(tmp_path)
+
+    result = run_cli(
+        "journal", "--resolve", transaction.stem, f"--{resolution}", cwd=tmp_path
+    )
+
+    assert (result.returncode, result.stdout, result.stderr) == (
+        1,
+        "",
+        f"ERROR: .gitignore: journal: transaction {transaction.stem} cannot be "
+        "resolved because its exact prepared history provision remains "
+        "unfinished while its target state is unknown. Preserve the WAL and "
+        "histories; restore an accepted exact history state from a trusted "
+        "source, then run journal --check. Nothing has been changed.\n",
+    )
+    assert _final_tree_snapshot(tmp_path) == before
 
 
 def test_symlink_staging_collision_preserves_foreign_entry(
@@ -8455,15 +8757,23 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
     executor_tree = ast.parse(
         (journal_root / "executor.py").read_text(encoding="utf-8")
     )
-    functions = {
+    executor_functions = {
         node.name: node
         for node in executor_tree.body
         if isinstance(node, ast.FunctionDef)
     }
-    for name in ("adopting_session", "resolve_transaction"):
+    protocol_functions = {
+        node.name: node
+        for node in protocol_tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    for function in (
+        executor_functions["adopting_session"],
+        protocol_functions["resolve_one"],
+    ):
         lock = next(
             node
-            for node in ast.walk(functions[name])
+            for node in ast.walk(function)
             if isinstance(node, ast.With)
             and any("Lock(" in ast.unparse(item.context_expr) for item in node.items)
         )
@@ -8472,7 +8782,7 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "ensure_history_compatibility"
-        for node in ast.walk(functions["repair_transaction"])
+        for node in ast.walk(executor_functions["repair_transaction"])
     )
 
 
@@ -10072,6 +10382,340 @@ def test_prepared_claim_remains_local_before_unrelated_valid_descendants(
     assert _final_tree_snapshot(adopter) == before
 
 
+def test_prepared_claim_replays_stored_commit_after_valid_descendants(
+    run_cli, tmp_path, monkeypatch
+):
+    """Recovery appends only the stored committed line after descendants."""
+    adopter = tmp_path / "adopter-replay"
+    adopter.mkdir()
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    prefix = history.read_bytes()[:claim["prefix"]["length"]]
+    prepared_end = payload.find(b"\n") + 1
+    prepared = payload[:prepared_end]
+    descendants = []
+    for record in claim["records"]:
+        descendant = {
+            **record,
+            "transaction": "independent-descendant",
+            "run": "independent-run",
+            "path": "independent.txt",
+        }
+        descendants.append(descendant)
+    descendant_bytes = _jsonl(*descendants)
+    history.write_bytes(prefix + prepared + descendant_bytes)
+    before = history.read_bytes()
+    committed = (
+        json.dumps(claim["records"][1], sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+    recovered = run_cli("init", cwd=adopter)
+
+    assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+    assert recovered.stderr == ""
+    assert history.read_bytes() == before + committed
+    assert history.read_bytes()[len(prefix + prepared):].startswith(descendant_bytes)
+    assert not transaction.exists()
+
+
+@pytest.mark.parametrize("shape", ("zero", "prepared", "complete"))
+@pytest.mark.parametrize("fault", ("write:{wal}", "install:transactions"))
+def test_uncertain_claim_requires_identical_wal_reestablishment_before_history(
+    run_cli, tmp_path, monkeypatch, shape, fault
+):
+    """A failed proof-WAL barrier permits no append or cleanup."""
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    prefix = history.read_bytes()[:claim["prefix"]["length"]]
+    prepared_end = payload.find(b"\n") + 1
+    history.write_bytes(
+        prefix
+        + {
+            "zero": b"",
+            "prepared": payload[:prepared_end],
+            "complete": payload,
+        }[shape]
+    )
+    history_before = history.read_bytes()
+    wal_before = transaction.read_bytes()
+    monkeypatch.setenv(
+        "VALIDATED_MEMORY_PERSISTENCE_FAULT",
+        fault.format(wal=transaction.name),
+    )
+
+    result = run_cli("init", cwd=adopter)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert "retained evidence could not be durably and coherently confirmed" in result.stderr
+    assert history.read_bytes() == history_before
+    assert transaction.read_bytes() == wal_before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+@pytest.mark.parametrize("replacement", (b"\xff\n", b'{"broken":\n'))
+def test_claim_reestablishment_rejects_substituted_invalid_wal_without_traceback(
+    run_cli, tmp_path, monkeypatch, replacement
+):
+    """Invalid replacement bytes retain both histories and later work."""
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, claim, _payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    history.write_bytes(history.read_bytes()[:claim["prefix"]["length"]])
+    history_before = history.read_bytes()
+    repository_before = (adopter / "journal.jsonl").read_bytes()
+    later = transaction.with_name("ffffffffffffffff.json")
+    later_entry = {**entry, "transaction": "ffffffffffffffff", "stage": "aborted"}
+    later_entry.pop("unconfirmed", None)
+    later_entry.pop("unconfirmed_reason", None)
+    later.write_text(json.dumps(later_entry, sort_keys=True) + "\n", encoding="utf-8")
+    later_before = later.read_bytes()
+    process, ready, proceed = _rendezvous_init(
+        adopter, "before-claim-reestablishment"
+    )
+    try:
+        assert os.read(ready, 2) == b"1\n"
+        transaction.write_bytes(replacement)
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert "Traceback" not in stderr
+    assert "retained evidence could not be durably and coherently confirmed" in stderr
+    assert transaction.read_bytes() == replacement
+    assert later.read_bytes() == later_before
+    assert history.read_bytes() == history_before
+    assert (adopter / "journal.jsonl").read_bytes() == repository_before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+def test_recovery_retains_wal_when_appended_history_identity_changes(
+    run_cli, tmp_path, monkeypatch
+):
+    """An exact-byte name replacement is not the frozen append successor."""
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    history.write_bytes(history.read_bytes()[:claim["prefix"]["length"]])
+    process, ready, proceed = _rendezvous_init(
+        adopter, "after-selected-history-append"
+    )
+    try:
+        assert os.read(ready, 2) == b"1\n"
+        appended = history.read_bytes()
+        assert appended.endswith(payload)
+        replacement = history.with_name("history.replacement")
+        replacement.write_bytes(appended)
+        os.replace(replacement, history)
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert "exact frozen coherent successor" in stderr
+    assert transaction.exists()
+    assert history.read_bytes() == appended
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+def test_resolution_stops_before_observation_when_opposite_history_changes(
+    run_cli, tmp_path
+):
+    """The mutation append must confirm its frozen opposite before observe."""
+    assert run_cli("init", cwd=tmp_path).returncode == 0
+    harness = _external_harness_path(tmp_path, "resolution-opposite")
+    assert run_cli(
+        "init", "--harness-memory", str(harness), cwd=tmp_path
+    ).returncode == 0
+    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
+    transaction_id = _diverged(tmp_path)
+    transaction = (
+        tmp_path / ".validated-memory" / "transactions" / f"{transaction_id}.json"
+    )
+    repository = tmp_path / "journal.jsonl"
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    observations_before = sum(
+        record["op"] == "observe" for record in _records(repository)
+    )
+    process_env_point = "after-selected-history-append"
+    ready_read, ready_write = os.pipe()
+    continue_read, continue_write = os.pipe()
+    process = subprocess.Popen(
+        [
+            sys.executable, "-P", "-m", "validated_memory", "journal",
+            "--resolve", transaction_id, "--accept",
+        ],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(REPO_ROOT),
+            "VALIDATED_MEMORY_TEST_RENDEZVOUS": process_env_point,
+            "VALIDATED_MEMORY_TEST_READY_FD": str(ready_write),
+            "VALIDATED_MEMORY_TEST_CONTINUE_FD": str(continue_read),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(ready_write, continue_read),
+    )
+    os.close(ready_write)
+    os.close(continue_read)
+    try:
+        assert os.read(ready_read, 2) == b"1\n"
+        repository_after_mutation = repository.read_bytes()
+        local_before = local.read_bytes()
+        replacement = local.with_name("local.replacement")
+        replacement.write_bytes(local_before)
+        os.replace(replacement, local)
+        os.write(continue_write, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready_read)
+        os.close(continue_write)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == ""
+    assert "exact frozen coherent successor" in stderr
+    assert transaction.exists()
+    assert repository.read_bytes() == repository_after_mutation
+    assert local.read_bytes() == local_before
+    assert sum(
+        record["op"] == "observe" for record in _records(repository)
+    ) == observations_before
+
+
+def _topology_marker_mutant(tmp_path, marker):
+    """Return a package whose topology inspector fails after marker creation."""
+    mutant = tmp_path / "topology-marker-mutant"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant / "validated_memory")
+    topology = mutant / "validated_memory" / "journal" / "topology.py"
+    source = topology.read_text(encoding="utf-8")
+    source = source.replace(
+        "import json\n",
+        "import json\nfrom pathlib import Path\n",
+        1,
+    )
+    function = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "inspect"
+    )
+    lines = source.splitlines(keepends=True)
+    lines.insert(
+        function.body[0].lineno - 1,
+        f"    if Path({str(marker)!r}).exists():\n"
+        "        raise RuntimeError('post-effect topology failure')\n",
+    )
+    topology.write_text("".join(lines), encoding="utf-8")
+    return mutant
+
+
+def _rendezvous_mutant_init(adopter, mutant, point):
+    """Start mutant init paused at one protocol successor boundary."""
+    ready_read, ready_write = os.pipe()
+    continue_read, continue_write = os.pipe()
+    process = subprocess.Popen(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        cwd=adopter,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(mutant),
+            "VALIDATED_MEMORY_TEST_RENDEZVOUS": point,
+            "VALIDATED_MEMORY_TEST_READY_FD": str(ready_write),
+            "VALIDATED_MEMORY_TEST_CONTINUE_FD": str(continue_read),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(ready_write, continue_read),
+    )
+    os.close(ready_write)
+    os.close(continue_read)
+    return process, ready_read, continue_write
+
+
+@pytest.mark.skipif(os.name != "posix", reason="descriptor rendezvous is POSIX-only")
+def test_post_append_topology_failure_is_terminal_and_retains_later_wal(
+    run_cli, tmp_path, monkeypatch
+):
+    """Unavailable topology cannot masquerade as a valid append successor."""
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction, claim, payload, history = _history_repair_fixture(
+        run_cli, adopter, monkeypatch
+    )
+    entry = json.loads(transaction.read_text(encoding="utf-8"))
+    entry["unconfirmed"] = "history-claim"
+    transaction.write_text(json.dumps(entry, sort_keys=True) + "\n", encoding="utf-8")
+    history.write_bytes(history.read_bytes()[:claim["prefix"]["length"]])
+    later = transaction.with_name("ffffffffffffffff.json")
+    later_entry = {**entry, "transaction": "ffffffffffffffff", "stage": "aborted"}
+    later_entry.pop("unconfirmed", None)
+    later_entry.pop("unconfirmed_reason", None)
+    later.write_text(json.dumps(later_entry, sort_keys=True) + "\n", encoding="utf-8")
+    later_before = later.read_bytes()
+    marker = tmp_path / "fail-topology"
+    mutant = _topology_marker_mutant(tmp_path, marker)
+    process, ready, proceed = _rendezvous_mutant_init(
+        adopter, mutant, "after-selected-history-append"
+    )
+    try:
+        assert os.read(ready, 2) == b"1\n"
+        marker.write_text("fail\n", encoding="utf-8")
+        os.write(proceed, b"1")
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert "Traceback" not in stderr
+    assert "exact frozen coherent successor" in stderr
+    assert transaction.exists()
+    assert later.read_bytes() == later_before
+    assert history.read_bytes().endswith(payload)
+
+
 @pytest.mark.parametrize("suffix_kind", ("malformed", "same-transaction"))
 def test_prepared_claim_rejects_invalid_or_same_transaction_suffix(
     run_cli, tmp_path, monkeypatch, suffix_kind
@@ -10559,6 +11203,176 @@ def test_topology_shadow_fails_open_for_ordinary_exceptions(run_cli, tmp_path):
     handler_type = shadow_tries[0].handlers[0].type
     assert isinstance(handler_type, ast.Name)
     assert handler_type.id == "Exception"
+
+
+def test_topology_inspector_exception_fails_closed_before_recovery_effect(
+    run_cli, tmp_path
+):
+    """A shadow failure remains fail-open only for read-only inspection."""
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    transaction = _diverged(adopter, kill_after=None)
+    mutant = tmp_path / "raising-recovery-shadow"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant / "validated_memory")
+    topology = mutant / "validated_memory" / "journal" / "topology.py"
+    source = topology.read_text(encoding="utf-8")
+    function = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "inspect"
+    )
+    lines = source.splitlines(keepends=True)
+    lines.insert(
+        function.body[0].lineno - 1,
+        '    raise RuntimeError("distinctive recovery shadow failure")\n',
+    )
+    topology.write_text("".join(lines), encoding="utf-8")
+    transaction_path = (
+        adopter / ".validated-memory" / "transactions" / f"{transaction}.json"
+    )
+    wal_before = transaction_path.read_bytes()
+    target_before = (adopter / ".gitignore").read_bytes()
+
+    result = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        cwd=adopter,
+        env={**os.environ, "PYTHONPATH": str(mutant)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "distinctive recovery shadow failure" in result.stderr
+    assert f"transaction {transaction}" in result.stderr
+    assert "visible or may be visible" not in result.stderr
+    assert transaction_path.read_bytes() == wal_before
+    assert (adopter / ".gitignore").read_bytes() == target_before
+    assert not any(
+        record.get("transaction") == transaction
+        for record in _records(adopter / "journal.jsonl")
+    )
+
+
+def _claimless_prepared_provision(adopter):
+    """Create one claimless WAL and its independently reconstructible gap."""
+    transaction_id = _diverged(adopter, kill_after=None)
+    transaction = (
+        adopter / ".validated-memory" / "transactions" / f"{transaction_id}.json"
+    )
+    wal = json.loads(transaction.read_text(encoding="utf-8"))
+    intention = wal["intention"]
+    prepared = {
+        "schema": 1,
+        "at": "2000-01-01T00:00:00Z",
+        "version": wal["version"],
+        "adoption": wal["adoption"],
+        "run": wal["run"],
+        "transaction": transaction_id,
+        "durability": intention["durability"],
+        "op": intention["op"],
+        "purpose": intention["purpose"],
+        "path": intention["path"],
+        "stage": "prepared",
+        "mode": stat.S_IMODE((adopter / intention["path"]).stat().st_mode),
+        "preimage": wal["preimage_blob"],
+        "postimage": wal["postimage"]["digest"],
+    }
+    if wal["prior_bytes"] is not None:
+        prepared["prior_bytes"] = wal["prior_bytes"]
+    if intention.get("note") is not None:
+        prepared["note"] = intention["note"]
+    history = adopter / "journal.jsonl"
+    history.write_bytes(history.read_bytes() + _jsonl(prepared))
+    return transaction, prepared, history
+
+
+@pytest.mark.parametrize("other_at", ("1900-01-01T00:00:00Z", "2999-01-01T00:00:00Z"))
+def test_exact_claimless_provision_is_order_independent(run_cli, tmp_path, other_at):
+    """WAL sort order cannot change exact prepared-gap authorization."""
+    transaction, _prepared, _history = _claimless_prepared_provision(tmp_path)
+    selected = json.loads(transaction.read_text(encoding="utf-8"))
+    other = {**selected, "at": other_at, "transaction": "ffffffffffffffff", "stage": "aborted"}
+    other["reason"] = "independent fixture"
+    other_path = transaction.with_name("ffffffffffffffff.json")
+    other_path.write_text(json.dumps(other, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert not transaction.exists()
+    assert not other_path.exists()
+
+
+@pytest.mark.parametrize(
+    "field,replacement",
+    (
+        ("adoption", "foreign"),
+        ("run", "foreign-run"),
+        ("path", "foreign.txt"),
+        ("durability", "local"),
+        ("op", "append"),
+        ("purpose", "foreign-purpose"),
+        ("note", "foreign note"),
+        ("preimage", "sha256:" + "1" * 64),
+        ("postimage", "sha256:" + "2" * 64),
+        ("prior_bytes", 999),
+        ("mode", 0o600),
+    ),
+)
+def test_mismatched_claimless_gap_never_becomes_a_provision(
+    run_cli, tmp_path, field, replacement
+):
+    """Every reconstructible field participates in provision identity."""
+    transaction, prepared, history = _claimless_prepared_provision(tmp_path)
+    records = _records(history)
+    records[-1] = {**prepared, field: replacement}
+    _rewrite(history, records)
+    wal_before = transaction.read_bytes()
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert transaction.read_bytes() == wal_before
+    assert not any(
+        record.get("transaction") == transaction.stem
+        and record["stage"] == "committed"
+        for record in _records(history)
+    )
+
+
+@pytest.mark.parametrize("cleanup_at", ("1900-01-01T00:00:00Z", "2999-01-01T00:00:00Z"))
+def test_unprovided_gate_is_per_item_and_cleanup_order_independent(
+    run_cli, tmp_path, cleanup_at
+):
+    """A refused append neither terminalizes nor lends authority to cleanup."""
+    transaction, prepared, history = _claimless_prepared_provision(tmp_path)
+    records = _records(history)
+    records[-1] = {**prepared, "purpose": "mismatched-purpose"}
+    _rewrite(history, records)
+    selected = json.loads(transaction.read_text(encoding="utf-8"))
+    cleanup = {
+        **selected,
+        "at": cleanup_at,
+        "transaction": "ffffffffffffffff",
+        "stage": "aborted",
+        "reason": "cleanup-only fixture",
+    }
+    cleanup_path = transaction.with_name("ffffffffffffffff.json")
+    cleanup_path.write_text(json.dumps(cleanup, sort_keys=True) + "\n", encoding="utf-8")
+    wal_before = transaction.read_bytes()
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "visible or may be visible" not in result.stderr
+    assert transaction.read_bytes() == wal_before
+    assert not cleanup_path.exists()
+    assert not any(
+        record.get("transaction") == transaction.stem
+        and record["stage"] == "committed"
+        for record in _records(history)
+    )
 
 
 def test_topology_shadow_observes_fresh_and_idempotent_adoption_without_authority(
@@ -11278,15 +12092,16 @@ def test_a_safe_nonhex_filename_stem_remains_a_resolvable_transaction_id(
     assert not artifact.exists()
 
 
+@pytest.mark.parametrize("resolution", ("accept", "abandon", "restore"))
 def test_resolving_an_id_nothing_carries_leaves_a_virgin_tree_virgin(
-    run_cli, tmp_path
+    run_cli, tmp_path, resolution
 ):
     """Resolving an unknown ID leaves a virgin tree filesystem-empty.
 
     The exact refusal, absent journal and absent vault pin the resolver's
     non-materializing missing-transaction path."""
     result = run_cli(
-        "journal", "--resolve", "deadbeefdeadbeef", "--accept", cwd=tmp_path
+        "journal", "--resolve", "deadbeefdeadbeef", f"--{resolution}", cwd=tmp_path
     )
 
     assert result.returncode == 1, (result.stdout, result.stderr)
