@@ -96,16 +96,8 @@ def test_hook_creates_the_symlink_for_an_adopter_project(tmp_path):
     ).read_text(encoding="utf-8")
 
 
-def test_hook_restores_the_symlink_over_a_corrupt_journal(tmp_path):
-    """The hook's own contract, measured at the seam it is claimed at.
-
-    `journal.jsonl` is versioned and append-only, so a merge conflict or a
-    botched resolution leaves a file `init` refuses to read -- an ERROR that
-    exits 1. The hook must still come back with the link restored and its
-    own exit code 0: it is a `SessionStart` hook, and a session that loses
-    its agent memory because a record could not be parsed is exactly the
-    failure this hook exists to prevent.
-    """
+def test_hook_does_not_repair_over_a_corrupt_journal(tmp_path):
+    """The shell hook stays fail-open, but damaged history grants no repair."""
     project_dir = tmp_path / "project"
     memory_dir = _write_adopter_project(project_dir)
     config_dir = tmp_path / "config"
@@ -121,12 +113,20 @@ def test_hook_restores_the_symlink_over_a_corrupt_journal(tmp_path):
     journal.write_text(
         journal.read_text(encoding="utf-8") + "{not json\n", encoding="utf-8"
     )
+    journal_before = journal.read_bytes()
 
     result = _run_hook(environment)
 
     assert result.returncode == 0, result.stderr
-    assert harness_memory.is_symlink()
-    assert harness_memory.resolve() == memory_dir.resolve()
+    assert result.stdout == ""
+    assert result.stderr == (
+        "ERROR: journal.jsonl:11: journal: line is not valid JSON: "
+        "Expecting property name enclosed in double quotes. No target or "
+        "permanent-history change was left by this operation\n"
+    )
+    assert not harness_memory.exists() and not harness_memory.is_symlink()
+    assert journal.read_bytes() == journal_before
+    assert memory_dir.is_dir()
 
 
 # --- non-adopter project: a clean no-op ---------------------------------------
@@ -380,9 +380,12 @@ def test_post_park_link_failure_names_the_exact_backup_through_the_hook(
     assert result.returncode == 0
     assert result.stdout == ""
     assert result.stderr.splitlines() == [
-        f"WARNING: {harness_memory}: symlink: could not be linked to "
-        f"'{memory_dir.resolve()}': [Errno 17] File exists: "
-        f"'{memory_dir.resolve()}' -> '{sentinel}'; harness memory was "
+        f"ERROR: {harness_memory}: journal: could not be linked to "
+        f"'{memory_dir.resolve()}': {harness_memory} could not be written: "
+        "[Errno 17] File exists: "
+        f"'{memory_dir.resolve()}' -> '{sentinel}'. The harness link was not "
+        "published; "
+        "harness memory was "
         f"parked at '{backup}' and remains there for recovery"
     ]
     assert not harness_memory.exists()
@@ -433,9 +436,12 @@ def test_conflict_warning_survives_post_park_link_failure_through_the_hook(
         f"WARNING: {memory_dir / 'coffee-preference.md'}: adopt: this project "
         "already has a different 'coffee-preference.md'; the project's copy "
         f"was kept and the harness's is preserved at '{backup_file}'",
-        f"WARNING: {harness_memory}: symlink: could not be linked to "
-        f"'{memory_dir.resolve()}': [Errno 17] File exists: "
-        f"'{memory_dir.resolve()}' -> '{sentinel}'; harness memory was "
+        f"ERROR: {harness_memory}: journal: could not be linked to "
+        f"'{memory_dir.resolve()}': {harness_memory} could not be written: "
+        "[Errno 17] File exists: "
+        f"'{memory_dir.resolve()}' -> '{sentinel}'. The harness link was not "
+        "published; "
+        "harness memory was "
         f"parked at '{backup}' and remains there for recovery",
     ]
     assert (memory_dir / "coffee-preference.md").read_bytes() == project_bytes
@@ -469,9 +475,12 @@ def test_post_empty_directory_removal_link_failure_names_the_exact_state(
     assert result.returncode == 0
     assert result.stdout == ""
     assert result.stderr.splitlines() == [
-        f"WARNING: {harness_memory}: symlink: could not be linked to "
-        f"'{memory_dir.resolve()}': [Errno 17] File exists: "
-        f"'{memory_dir.resolve()}' -> '{sentinel}'; the empty harness "
+        f"ERROR: {harness_memory}: journal: could not be linked to "
+        f"'{memory_dir.resolve()}': {harness_memory} could not be written: "
+        "[Errno 17] File exists: "
+        f"'{memory_dir.resolve()}' -> '{sentinel}'. The harness link was not "
+        "published; "
+        "the empty harness "
         "directory was removed, no memory data was parked, and the harness "
         "path is absent; clear the link publication error and rerun init"
     ]

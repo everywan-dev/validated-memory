@@ -201,13 +201,12 @@ def run(harness_memory, view, stdout, stderr, app=False):
     gate -- see `_ensure_views`.
 
     A journal failure is the one ERROR that is not about a single item, and
-    it is not fail-open: required history that cannot be read is exit 1 (ADR
-    0008). What it gates is the journalled part of the run -- the scaffold,
-    which must not mutate the adopter tree while nothing can record what it
-    did. The harness symlink is not part of that: it runs afterwards, on its
-    own after independently validating the project-memory target, and reports
-    the record it could not write. A real harness directory is not a symlink
-    restoration and remains untouched after this gate.
+    required history that cannot be read is exit 1 (ADR 0008). Only genuine
+    journal unavailability before any adopting effect retains the narrow
+    fail-open harness repair. A readable semantic, identity, topology,
+    bootstrap, unsupported or damaged refusal, and uncertainty after a current
+    effect, stop the run without it. A real harness directory is never a
+    symlink restoration and remains untouched after either outcome.
 
     The vault's ignore entry is the other ERROR that is not about a single
     item (`_ensure_ignored`), and it gates the same journalled part plus the
@@ -230,9 +229,9 @@ def run(harness_memory, view, stdout, stderr, app=False):
     rather than putting new ones there.
     """
     findings = []
-    created = 0
-    kept = 0
+    confirmed = 0
     unignored = False
+    adoption_stopped = False
 
     # Everything that journals -- the scaffold and the harness symlink --
     # runs in one adopting scope: `init` is deliberately re-runnable at
@@ -249,12 +248,23 @@ def run(harness_memory, view, stdout, stderr, app=False):
             # settled before the new `.gitignore` intention is formed. A
             # transaction it cannot account for is an ERROR that gates that
             # ONE path in the recovery report, not the run.
-            findings.extend(_report_recovery(session, stdout))
+            recovery_findings, recovery_confirmed = _report_recovery(
+                session, stdout
+            )
+            findings.extend(recovery_findings)
+            confirmed += recovery_confirmed
             # First, because it is what keeps the vault out of the
             # repository, and the vault is written to from here on.
-            ignore_findings = _ensure_ignored(session, stdout)
+            if session.path_is_gated(ignore.FILENAME, journal.REPO):
+                ignore_findings = []
+                unignored = not _vault_is_ignored()
+            else:
+                ignore_findings, ignore_confirmed = _ensure_ignored(
+                    session, stdout
+                )
+                confirmed += ignore_confirmed
             findings.extend(ignore_findings)
-            unignored = any(
+            unignored = unignored or any(
                 finding.severity == ERROR for finding in ignore_findings
             )
             if not unignored:
@@ -278,22 +288,24 @@ def run(harness_memory, view, stdout, stderr, app=False):
                         findings.append(finding)
                         continue
                     print(f"init: {outcome} {item}", file=stdout)
-                    if outcome == "created":
-                        created += 1
-                    else:
-                        kept += 1
+                    confirmed += 1
 
                 if harness_memory is not None:
-                    findings.extend(
-                        _sync_symlink(harness_memory, stdout, session)
+                    link_findings, link_confirmed = _sync_symlink(
+                        harness_memory, stdout, session
                     )
+                    findings.extend(link_findings)
+                    confirmed += link_confirmed
     except _HarnessSyncFailure as failure:
         findings.extend(failure.findings)
         error = failure.error
-        journal_failure = Finding(
-            ERROR, _journal_artifact(error), "journal", error.message
-        )
+        adoption_stopped = getattr(error, "stops_adoption", False)
+        if not getattr(error, "already_reported", False):
+            journal_failure = Finding(
+                ERROR, _journal_artifact(error), "journal", error.message
+            )
     except journal.JournalError as error:
+        adoption_stopped = getattr(error, "stops_adoption", False)
         journal_failure = Finding(
             ERROR, _journal_artifact(error), "journal", error.message
         )
@@ -322,44 +334,40 @@ def run(harness_memory, view, stdout, stderr, app=False):
         findings.append(journal_failure)
     elif view and not unignored:
         view_created, view_kept, view_findings = _ensure_views(stdout, app)
-        created += view_created
-        kept += view_kept
+        confirmed += view_created + view_kept
         findings.extend(view_findings)
 
-    # Neither of the two whole-run ERRORs reached the harness path inside
-    # the block, and both leave an existing or missing link to be considered
-    # here. `_sync_symlink` first validates the project target: the journal
-    # is the
-    # record of what `init` did, not what a session needs to keep working,
-    # and an unignored vault is a reason not to write a record, not a reason
-    # to leave the harness pointing at a project it no longer names. Outside
-    # the lock is safe on both -- there is no journal to serialise access
-    # to, and re-pointing a symlink at the target it already has is
-    # idempotent, which is what makes this harmless when the journal failed
-    # after the link had already been restored above.
-    if harness_memory is not None and (journal_failure is not None or unignored):
-        findings.extend(
-            _sync_symlink(
-                harness_memory,
-                stdout,
-                None,
-                # The take-over moves the adopter's own data, so it belongs
-                # to the run that gated, not to the promise that survives
-                # it: a real directory at the harness path is left alone.
-                absorb=False,
-                unrecorded=UNRECORDED_VAULT if unignored else UNRECORDED_JOURNAL,
-            )
+    # Only the accepted fail-open boundaries reach this unrecorded path: a
+    # genuinely unavailable journal before an adopting effect, and an
+    # unignored vault. `_sync_symlink` independently validates the project
+    # target and never absorbs a real directory here. Semantic and post-effect
+    # failures set `adoption_stopped` and categorically suppress this fallback.
+    if (
+        harness_memory is not None
+        and not adoption_stopped
+        and (journal_failure is not None or unignored)
+    ):
+        link_findings, link_confirmed = _sync_symlink(
+            harness_memory,
+            stdout,
+            None,
+            # The take-over moves the adopter's own data, so it belongs
+            # to the run that gated, not to the promise that survives
+            # it: a real directory at the harness path is left alone.
+            absorb=False,
+            unrecorded=UNRECORDED_VAULT if unignored else UNRECORDED_JOURNAL,
         )
+        findings.extend(link_findings)
+        confirmed += link_confirmed
 
     errors = [finding for finding in findings if finding.severity == ERROR]
-    warnings = [finding for finding in findings if finding.severity == WARNING]
     for finding in findings:
         print(finding.render(), file=stderr)
-    print(
-        f"init: {created} created, {kept} kept, "
-        f"{len(errors)} error(s), {len(warnings)} warning(s)",
-        file=stdout,
-    )
+    if errors:
+        print(
+            f"init: {confirmed} item(s) confirmed, {len(errors)} gate(s)",
+            file=stdout,
+        )
     return EXIT_ERROR if errors else EXIT_OK
 
 
@@ -385,12 +393,39 @@ def _report_recovery(session, stdout):
     to find out.
     """
     findings = []
-    for recovery in session.recover():
+    confirmed = 0
+    result = session.recover()
+    conditions = {}
+    for condition in result.inspection.conditions:
+        for pairing in condition.pairing:
+            if pairing.startswith("transaction:"):
+                conditions.setdefault(pairing, []).append(condition)
+    for recovery in result.value:
         if recovery.problem is not None:
+            candidates = conditions.get(
+                f"transaction:{recovery.transaction}", ()
+            )
+            condition = next(
+                (
+                    item for item in candidates
+                    if recovery.message.startswith("history reconfirmation")
+                    and item.identity.startswith("history.")
+                ),
+                candidates[-1] if candidates else None,
+            )
+            subject = condition.subject if condition is not None else (
+                recovery.path or recovery.transaction
+            )
+            if recovery.message.startswith("history reconfirmation"):
+                subject = (
+                    journal.JOURNAL_FILENAME
+                    if recovery.durability == journal.REPO
+                    else f"{journal.VAULT_DIRNAME}/local.jsonl"
+                )
             findings.append(
                 Finding(
                     ERROR,
-                    recovery.path or recovery.transaction,
+                    subject,
                     "journal",
                     recovery.message,
                 )
@@ -401,7 +436,8 @@ def _report_recovery(session, stdout):
                 f"{recovery.transaction}",
                 file=stdout,
             )
-    return findings
+            confirmed += 1
+    return findings, confirmed
 
 
 def _journal_artifact(error):
@@ -453,16 +489,26 @@ def _ensure_ignored(session, stdout):
                 f"init: ignored {ignore.ENTRY} in {ignore.FILENAME}",
                 file=stdout,
             )
+            return [], 1
     if missing is None:
-        return []
+        return [], 0
     if ignore.ignored_elsewhere():
         print(
             f"init: {ignore.ENTRY} already ignored by "
             f"{ignore.EXCLUDE_PATH.as_posix()}",
             file=stdout,
         )
-        return []
-    return [Finding(ERROR, ignore.FILENAME, "ignore-rule", missing)]
+        return [], 1
+    return [Finding(ERROR, ignore.FILENAME, "ignore-rule", missing)], 0
+
+
+def _vault_is_ignored():
+    """Read-only safety check used when a WAL gate owns `.gitignore`."""
+    try:
+        current = Path(ignore.FILENAME).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        current = ""
+    return ignore.carries_entry(current) or ignore.ignored_elsewhere()
 
 
 def _refusal(outcome, prefix):
@@ -685,13 +731,28 @@ def _sync_symlink(
     project_memory = Path("memory")
     try:
         if not project_memory.is_dir():
-            return [Finding(WARNING, location, "symlink", NO_PROJECT_MEMORY)]
+            return [Finding(WARNING, location, "symlink", NO_PROJECT_MEMORY)], 0
         target = project_memory.resolve()
         adopter_root = Path().resolve()
     except (OSError, RuntimeError):
-        return [Finding(WARNING, location, "symlink", NO_PROJECT_MEMORY)]
+        return [Finding(WARNING, location, "symlink", NO_PROJECT_MEMORY)], 0
     if not target.is_relative_to(adopter_root):
-        return [Finding(ERROR, location, "symlink", PROJECT_MEMORY_OUTSIDE)]
+        return [Finding(ERROR, location, "symlink", PROJECT_MEMORY_OUTSIDE)], 0
+
+    # Recovery has already rendered the one canonical finding for this exact
+    # path. Consult that retained authority before even inspecting the harness
+    # leaf: a directory must not be copied, indexed, parked or removed, and an
+    # already-correct link must not be republished as a no-op.
+    if session is not None and session.path_is_gated(location, journal.LOCAL):
+        stopped = journal.JournalError(
+            None,
+            f"{location} has an unresolved transaction; no harness action "
+            "was attempted",
+            location,
+        )
+        stopped.stops_adoption = True
+        stopped.already_reported = True
+        raise _HarnessSyncFailure(stopped, ())
 
     # The target is eligible before the harness leaf is inspected. That
     # ordering is the rule: an invalid project target may not create the
@@ -720,18 +781,18 @@ def _sync_symlink(
         if was_symlink and path.resolve() == target:
             relink()
             print(f"init: kept symlink {location}", file=stdout)
-            return []
+            return [], 1
         # A real path that is not a symlink: `adopt` decides whether it holds
         # agent memory this project can absorb, or must be left alone.
         if not was_symlink and path.exists():
             if not absorb:
-                return [Finding(WARNING, location, "symlink", UNABSORBED)]
+                return [Finding(WARNING, location, "symlink", UNABSORBED)], 0
             take_over = adopt.take_over(path, target, stdout)
             findings = list(take_over.findings)
             parked = take_over.parked
             take_over_effect = take_over.effect
             if not take_over.freed:
-                return findings
+                return findings, 0
         findings.extend(
             _record_symlink(
                 session, path, previous, target, relink, unrecorded
@@ -739,24 +800,40 @@ def _sync_symlink(
         )
         verb = "re-pointed" if was_symlink else "created"
         print(f"init: {verb} symlink {location} -> {target}", file=stdout)
-        return findings
+        return findings, 1
     except journal.JournalError as error:
-        if getattr(error, "visibility_unconfirmed", False):
+        if (
+            getattr(error, "visibility_unconfirmed", False)
+            or getattr(error, "stops_adoption", False)
+        ):
             if session is not None:
+                if take_over_effect is not adopt.TakeOverEffect.NONE:
+                    stopped = journal.JournalError(
+                        None,
+                        _link_failure_message(
+                            target, error, take_over_effect, parked
+                        ),
+                        location,
+                    )
+                    stopped.stops_adoption = True
+                    stopped.already_reported = getattr(
+                        error, "already_reported", False
+                    )
+                    error = stopped
                 raise _HarnessSyncFailure(error, findings) from error
             return [
                 *findings,
                 Finding(ERROR, location, "symlink", error.message),
-            ]
+            ], 0
         message = _link_failure_message(
             target, error, take_over_effect, parked
         )
-        return [*findings, Finding(WARNING, location, "symlink", message)]
+        return [*findings, Finding(WARNING, location, "symlink", message)], 0
     except OSError as error:
         message = _link_failure_message(
             target, error, take_over_effect, parked
         )
-        return [*findings, Finding(WARNING, location, "symlink", message)]
+        return [*findings, Finding(WARNING, location, "symlink", message)], 0
 
 
 class _HarnessSyncFailure(Exception):
@@ -770,7 +847,12 @@ class _HarnessSyncFailure(Exception):
 
 def _link_failure_message(target, error, take_over_effect, parked):
     """Name recovery truth after take-over, or retain the ordinary warning."""
-    prefix = f"could not be linked to '{target}': {error}"
+    detail = str(error).rstrip(".")
+    if take_over_effect is not adopt.TakeOverEffect.NONE:
+        detail = detail.replace(
+            "Nothing has been published", "The harness link was not published"
+        )
+    prefix = f"could not be linked to '{target}': {detail}"
     if take_over_effect is adopt.TakeOverEffect.PARKED:
         return (
             f"{prefix}; harness memory was parked at '{parked}' and remains "
@@ -791,7 +873,7 @@ def _previous_target(previous):
 
 
 def _record_symlink(session, path, previous, target, relink, unrecorded):
-    """Publish the harness link through the executor, or fail open. Returns findings.
+    """Publish through a live session, or use the bounded fail-open repair.
 
     The link is the one mutation `init` performs that the executor may not
     have the last word on.
@@ -805,22 +887,14 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
     `execute` whenever the journal is healthy, and only the repair
     survives when it is not.
 
-    Three answers, and the link is pointing at this project's `memory/`
-    after all three:
+    There are three outcomes:
 
     - `applied` -- the executor published the symlink itself, atomically,
       and both records are in the vault under one transaction. Nothing is
       reported: the caller prints the line.
-    - `refused`, or a journal that cannot be written at all -- a WARNING
-      carrying the executor's own message and the previous target, then
-      `relink()`, which publishes the same link the same way and records
-      nothing. That covers the refusal an unresolved transaction on this
-      path produces too, and overriding it is the ruling rather than an
-      oversight: the transaction file still holds the previous target, so
-      the evidence an operator needs to resolve it is not what the relink
-      destroys, and leaving a session without its memory to protect a file
-      nothing has read yet is not a trade the `SessionStart` hook may
-      make.
+    - `refused` from a live session is a gate. In particular, an unresolved
+      transaction on this exact path retains authority over its preimage;
+      neither the link nor the WAL is changed and no unrecorded repair runs.
     - `session is None` -- nothing may be written to the journal at all
       (it failed earlier in the run, or the vault holding this record is
       not ignored, and `unrecorded` says which). The same WARNING, with
@@ -857,9 +931,16 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
                 )
             )
         except (OSError, journal.JournalError) as error:
-            if getattr(error, "visibility_unconfirmed", False):
+            if isinstance(error, journal.JournalError):
+                error.stops_adoption = True
                 raise
-            unrecorded = getattr(error, "message", None) or str(error)
+            stopped = journal.JournalError(
+                None,
+                f"the harness link record was refused before publication: {error}",
+                location,
+            )
+            stopped.stops_adoption = True
+            raise stopped from error
         else:
             # `noop` cannot be reached from here -- the caller returns
             # early when the link already resolves to `target`, and a link
@@ -868,7 +949,16 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
             # is nothing to repair and nothing to report either.
             if outcome.status in (journal.OUTCOME_APPLIED, journal.OUTCOME_NOOP):
                 return []
-            unrecorded = outcome.message
+            stopped = journal.JournalError(
+                None,
+                outcome.message,
+                location,
+            )
+            stopped.stops_adoption = True
+            stopped.already_reported = session.path_is_gated(
+                location, journal.LOCAL
+            )
+            raise stopped
 
     relink()
     return [

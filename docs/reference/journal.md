@@ -452,7 +452,7 @@ two. Both are declared in the design and pinned by name in
 
 | Write | By | Why it is an exception |
 |---|---|---|
-| the fail-open repair of the harness symlink | `init.relink` | After the CLI usage preflight accepts PATH, an eligible in-adopter project-memory target is required before every sync action. The contract then requires the link back when the journal cannot be read or written **at all** -- that is the `SessionStart` hook's only job -- and an executor that requires a working journal cannot serve it. An outside-root project target reaches no repair. The record goes through the executor whenever the journal is healthy; only the repair survives when it is not. The repair creates only the supplied parent chain, republishes the link atomically and requests the same durability barriers. A pre-visibility failure remains a WARNING naming the previous target; a visible effect whose barrier fails is an ERROR and cannot become a clean retry. |
+| the fail-open repair of the harness symlink | `init.relink` | After the CLI usage preflight accepts PATH, an eligible in-adopter project-memory target is required before every sync action. The contract requires the link back only when the journal is genuinely unavailable before an adopting effect, or when the vault's ignore entry cannot be established -- that is the `SessionStart` hook's narrow exception. A readable semantic, topology, identity, bootstrap, unsupported or damaged gate reaches no repair, and neither does current-effect uncertainty. An outside-root project target also reaches no repair. The repair creates only the supplied parent chain, republishes the link atomically and requests the same durability barriers. A pre-visibility failure remains a WARNING naming the previous target; a visible effect whose barrier fails is an ERROR and cannot become a clean retry. |
 | the harness take-over | `adopt.take_over`, and its `_absorb`, `_reconcile_index` and `_park` | It recognises a tree, copies conditionally, reconciles an index and renames the source, and its published contract tolerates a per-file conflict and continues. That needs its own planner before the executor can apply it. |
 
 **Not recorded at all**, because what is written is not adopter data: a
@@ -724,12 +724,22 @@ count, mode and prepared occurrence. It is derived only from independently
 valid current-adoption WALs: either every reconstructible field matches the
 prepared history record or an exact stored claim proves it. Conflicting, torn,
 unavailable and claimless occurrence evidence provides no provision.
-Before any non-cleanup transition, topology inspection must be available and
-every error condition not discharged by its exact provision must be absent.
-Topology implementation failures remain fail-open for read-only reporting but
-fail closed before mutation. Such a pre-existing gate is a per-item refusal,
-not current-effect uncertainty: recovery continues to independent items,
-including cleanup-only items in either WAL order. Each semantic transition is followed by a fresh
+Before any transition, topology inspection must be available and every
+permanent-history error condition not discharged by its exact provision must be
+absent. Topology implementation failures remain fail-open for an unchecked
+report but fail closed for checked inspection and before adoption effects. A
+permanent-history or topology gate stops the adopting workflow before recovery,
+scaffold, no-op target decisions, harness mutation, or cleanup. This is distinct
+from the documented fail-open harness-link repair when the journal itself is
+unavailable: a usable journal that proves a semantic gate grants no such
+exception. A pre-existing
+WAL-1 gate whose permanent-history condition is absent or exactly provisioned
+remains a per-item, path-local gate: recovery continues to independent eligible items in either
+WAL order. Confirmed item lines precede every gate, and an adopting run with a
+surviving gate ends stdout with `init: N item(s) confirmed, M gate(s)`; clean
+and warning-only adoption has no aggregate summary. Each printed successful
+harness-symlink action counts as one confirmed item, including a confirmed
+fail-open restoration. Each semantic transition is followed by a fresh
 coherent-pair read before the next transition:
 
 | Verdict | Reached when | What recovery does |
@@ -741,9 +751,11 @@ coherent-pair read before the next transition:
 | `unknown` | The file says `prepared` and the path matches neither state -- or matches both, which only a hand-written file can do; or the path's bytes cannot be read at all, whatever the stage, in which case the message names the stage the transaction reached and carries the reason instead of the state | Nothing. The file stays, and an ERROR names the path and the way out |
 | `damaged` | The file is not a well-formed transaction **of this project**: it could not be read, is not valid UTF-8, is not JSON, is not an object, names a `schema` this reader does not know, calls itself an id that is not its own file's name, is filed under another `adoption`, names an operation no intention carries (which includes `observe`, since an observation opens no transaction), or holds a preimage or postimage that is not a state | Nothing. The file stays for inspection, and the ERROR names the file rather than a path, because it names none |
 
-`journal --check` reports exactly these verdicts, from the same
-classification, so what `--check` promises and what the next `init` does
-cannot drift apart. The `damaged` reasons read as sentences about the file:
+`journal --check` renders the authoritative deterministic condition set used by
+adoption, including coherent-pair, topology, permanent-history, WAL and retained
+residue conditions. It uses the same classification and condition identities,
+so what `--check` promises and what the next quiescent `init` gates on cannot
+drift apart. The `damaged` reasons read as sentences about the file:
 
 ```
 ERROR: .validated-memory/transactions/1111111111111111.json: journal: damaged transaction 1111111111111111: its schema is 999 and this plugin reads up to 1; a reader that meets a higher number refuses rather than guessing at fields it does not know
@@ -779,14 +791,16 @@ history append, restore or cleanup effect visible or indeterminate, the WAL is
 retained and the mutating run stops; rerun `init` rather than starting a later
 intention. Either condition is an ERROR and exits 1.
 
-The harness symlink is the one thing that overrides that refusal, after its
-project-memory target has independently been found eligible inside the adopter.
-The `SessionStart` hook's only job is to give a session its memory back, the
-transaction file still holds the previous target the record would have carried,
-and leaving a session with no memory to protect a file nothing has read yet is
-not a trade this hook may make. The link is restored, and a WARNING says it was
-not recorded and what the previous target was. An outside-root project-memory
-target instead produces its stable harness-path ERROR before repair begins.
+The harness symlink's unrecorded fail-open repair is narrower than a journal
+refusal. It applies only when the journal is genuinely unavailable before any
+adopting effect, or when the vault's ignore entry could not be established,
+after the project-memory target has independently been found eligible inside
+the adopter. A readable journal's semantic, identity, topology, bootstrap,
+unsupported or damaged gate does not permit it; neither does uncertainty after
+a current effect. The link is restored in the two accepted cases, and a WARNING
+says it was not recorded and what the previous target was. An outside-root
+project-memory target instead produces its stable harness-path ERROR before
+repair begins.
 
 ## Resolving a transaction
 
@@ -1014,7 +1028,8 @@ The hard-crash environment variable is **`VALIDATED_MEMORY_FAULT`**.
 Set to the name of a protocol seam, the process dies there with `os._exit`
 -- no `finally` clause runs, no lock is released, no temporary is cleaned
 up, which is what a real crash looks like and what makes an assertion about
-the residue honest. The four seams are the whole of the executor's protocol:
+the residue honest. The four seams are the whole of the protocol-selected
+mechanical mutation sequence:
 
 | Point | Where the process dies |
 |---|---|

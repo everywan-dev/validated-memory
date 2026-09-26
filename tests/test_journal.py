@@ -707,8 +707,37 @@ def test_a_path_the_journal_already_knows_is_never_observed_as_pre_existing(
         )
     ]
     journal.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    harness = tmp_path.parent / "gated-harness-memory"
+    harness.symlink_to(tmp_path.parent / "foreign-memory")
+    previous_target = os.readlink(harness)
+    unfinished = next(
+        entry
+        for entry in _records(journal)
+        if entry["path"] == "knowledge" and entry["stage"] == "prepared"
+    )
+    checked_error = (
+        "ERROR: knowledge: journal: unfinished transaction from run "
+        f"{unfinished['run']}: the path is applied"
+    )
+    checked = run_cli("journal", "--check", cwd=tmp_path)
+    assert (checked.returncode, checked.stdout, checked.stderr) == (
+        1,
+        f"journal: {len(_records(journal))} record(s), 1 error(s)\n",
+        checked_error + "\n",
+    )
 
-    assert run_cli("init", cwd=tmp_path).returncode == 0
+    before = _final_tree_snapshot(tmp_path)
+    gated = run_cli(
+        "init", "--harness-memory", str(harness), cwd=tmp_path
+    )
+    assert (gated.returncode, gated.stdout, gated.stderr) == (
+        1,
+        "init: 0 item(s) confirmed, 1 gate(s)\n",
+        checked_error
+        + ". No target or permanent-history change was left by this operation\n",
+    )
+    assert _final_tree_snapshot(tmp_path) == before
+    assert os.readlink(harness) == previous_target
 
     records = _records(journal)
     assert not [
@@ -716,9 +745,11 @@ def test_a_path_the_journal_already_knows_is_never_observed_as_pre_existing(
     ], records
     # The interrupted transaction is still open, and still reported.
     result = run_cli("journal", "--check", cwd=tmp_path)
-    assert result.returncode == 1, result.stdout
-    assert "knowledge" in result.stderr, result.stderr
-    assert "applied" in result.stderr, result.stderr
+    assert (result.returncode, result.stdout, result.stderr) == (
+        checked.returncode,
+        checked.stdout,
+        checked.stderr,
+    )
 
 
 def test_journal_reports_the_log_and_exits_clean(run_cli, tmp_path):
@@ -1600,8 +1631,8 @@ def test_journal_source_boundary_is_a_package_prefix():
     assert not _inside_journal("journalish/module.py")
 
 
-def test_the_adopting_session_exposes_only_its_three_operations():
-    """The opaque session cannot grow a second resolution or lock interface."""
+def test_executor_exposes_only_protocol_selected_mechanics():
+    """The protocol's mechanic has no second policy or lock interface."""
     source = (
         REPO_ROOT / "validated_memory" / JOURNAL_SOURCE / "executor.py"
     ).read_text(encoding="utf-8")
@@ -1617,7 +1648,35 @@ def test_the_adopting_session_exposes_only_its_three_operations():
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and not node.name.startswith("_")
     )
-    assert methods == sorted(PERMITTED_RUN_METHODS)
+    assert methods == sorted({
+        *PERMITTED_RUN_METHODS,
+        "build_record",
+        "path_is_gated",
+        "republish_restore",
+        "republish_target",
+        "restore_effect",
+        "survey",
+    })
+
+
+def test_protocol_never_calls_executor_private_methods():
+    """Cross-module mechanics are honest public names, including survey."""
+    source = (
+        REPO_ROOT / "validated_memory" / JOURNAL_SOURCE / "protocol.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    private_calls = sorted({
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id in {"session", "mechanics"}
+        and node.func.attr.startswith("_")
+    })
+    assert private_calls == []
+    assert ".survey(" in source
+    assert "._survey(" not in source
 
 
 def test_adoption_and_resolution_keep_their_distinct_protocols():
@@ -1644,9 +1703,9 @@ def test_adoption_and_resolution_keep_their_distinct_protocols():
                 names.append(target.attr)
         return names
 
-    adopting_calls = calls(executor_functions["adopting_session"])
+    adopting_calls = calls(protocol_functions["adopting_run"])
     resolving_calls = calls(protocol_functions["resolve_one"])
-    assert adopting_calls.count("identity_transition") == 1
+    assert adopting_calls.count("_identity_transition") == 1
     assert resolving_calls.count("has_transaction") == 1
     assert resolving_calls.count("read_transaction") == 1
     assert not {
@@ -1671,7 +1730,13 @@ def test_c1b_bootstrap_adapter_has_no_legacy_publication_policy():
     }
     assert "_bootstrap" not in executor_functions
     assert "_republish_opening" not in executor_functions
-    session = executor_functions["adopting_session"]
+    assert "adopting_session" not in executor_functions
+    protocol_source = (root / "protocol.py").read_text(encoding="utf-8")
+    protocol = ast.parse(protocol_source)
+    session = next(
+        node for node in ast.walk(protocol)
+        if isinstance(node, ast.FunctionDef) and node.name == "adopting_run"
+    )
     session_names = {
         node.id for node in ast.walk(session) if isinstance(node, ast.Name)
     }
@@ -1681,8 +1746,6 @@ def test_c1b_bootstrap_adapter_has_no_legacy_publication_policy():
         "StagingCleanupUnconfirmed", "BootstrapPreparationFailed",
     }.intersection(session_names)
 
-    protocol_source = (root / "protocol.py").read_text(encoding="utf-8")
-    protocol = ast.parse(protocol_source)
     transition = next(
         node for node in ast.walk(protocol)
         if isinstance(node, ast.FunctionDef) and node.name == "_identity_transition"
@@ -1744,7 +1807,7 @@ def test_c1d_recovery_and_resolution_have_one_policy_owner():
         for node in ast.walk(recover)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
-    assert recover_calls == {"_recover_all", "_survey"}
+    assert recover_calls == {"_recover_all", "survey"}
 
     protocol_functions = {
         node.name: node
@@ -1773,8 +1836,8 @@ def test_c1d_recovery_and_resolution_have_one_policy_owner():
     execute_source = ast.get_source_segment(
         sources["executor.py"], executor_functions["_execute"]
     )
-    assert execute_source.index("mark_history_append(") < execute_source.index(
-        "append(history_records,"
+    assert execute_source.index("self._claim_history(") < execute_source.index(
+        "self._append_history(history_records,"
     )
 # The journal's modules in the order `journal/__init__.py` lists them, which
 # is also the order they may import in. The facade itself is not here: it is
@@ -2064,22 +2127,34 @@ def test_bootstrap_barrier_failure_gates_before_scaffold_and_keeps_identity(
 
 def test_bootstrap_competitor_wins_without_replacement(run_cli, tmp_path, monkeypatch):
     """The canonical competitor is preserved byte-for-byte before scaffold."""
+    harness = _external_harness_path(tmp_path, "memory")
+    harness.parent.mkdir(parents=True)
+    stale = harness.parent / "stale"
+    stale.mkdir()
+    harness.symlink_to(stale, target_is_directory=True)
+    harness_text = os.readlink(harness)
     monkeypatch.setenv(
         "VALIDATED_MEMORY_PERSISTENCE_FAULT",
         "bootstrap-competitor:journal.jsonl",
     )
 
-    result = run_cli("init", cwd=tmp_path)
+    result = run_cli("init", "--harness-memory", str(harness), cwd=tmp_path)
 
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert result.stderr == (
         "ERROR: journal.jsonl: journal: another artifact reached the "
-        "canonical name before bootstrap; it was preserved and not replaced\n"
+        "canonical name before bootstrap; it was preserved and not replaced. "
+        "Preserve it. If it may be a valid established opening, rerun init so "
+        "the classifier decides. Otherwise restore the correct exact canonical "
+        "artifact from a trusted source under operator control, then rerun "
+        "journal --check and init. The plugin does not remove or rename it\n"
     )
     assert (tmp_path / "journal.jsonl").read_bytes() == b"competitor\n"
     assert not (tmp_path / "knowledge").exists()
     assert not list(tmp_path.glob(".journal.jsonl.*.bootstrap"))
+    assert harness.is_symlink() and os.readlink(harness) == harness_text
+    assert "symlink" not in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -2104,11 +2179,12 @@ def test_bootstrap_refuses_when_no_replace_is_unavailable(
     result = run_cli("init", cwd=tmp_path)
 
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert result.stderr == (
         "ERROR: journal.jsonl: journal: journal bootstrap requires no-replace "
         "publication, which is unavailable on this filesystem. Nothing has "
-        "been published at the canonical name\n"
+        "been published at the canonical name. Use a supported local filesystem "
+        "or platform, then rerun init\n"
     )
     assert not (tmp_path / "journal.jsonl").exists()
     assert not (tmp_path / "knowledge").exists()
@@ -2136,7 +2212,7 @@ def test_bootstrap_staging_failure_is_a_clean_prepublication_refusal(
     result = run_cli("init", cwd=tmp_path)
 
     assert result.returncode == 1
-    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert result.stderr == (
         "ERROR: journal.jsonl: journal: bootstrap stopped before canonical "
         f"publication because {phase} failed: [Errno 5] injected persistence "
@@ -2163,7 +2239,7 @@ def test_bootstrap_identity_failure_retains_the_named_private_residue(
     result = run_cli("init", cwd=tmp_path)
 
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     staging = list(tmp_path.glob(".journal.jsonl.*.bootstrap"))
     assert len(staging) == 1
     residue = staging[0].name
@@ -2246,7 +2322,7 @@ def test_foreign_bootstrap_shapes_are_preserved_and_refused(
     result = run_cli("init", cwd=tmp_path)
 
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     expected = {
         "zero": (
             "ERROR: journal.jsonl: journal: the existing bootstrap name is "
@@ -2259,11 +2335,13 @@ def test_foreign_bootstrap_shapes_are_preserved_and_refused(
         "partial": (
             "ERROR: journal.jsonl: journal: non-empty history does not end "
             "with a line feed; the final record is not appendable without "
-            "explicit targeted repair\n"
+            "explicit targeted repair. No target or permanent-history change "
+            "was left by this operation\n"
         ),
         "malformed": (
             "ERROR: journal.jsonl:1: journal: line is not valid JSON: "
-            "Expecting property name enclosed in double quotes\n"
+            "Expecting property name enclosed in double quotes. No target or "
+            "permanent-history change was left by this operation\n"
         ),
         "symlink": (
             "ERROR: journal.jsonl: journal: journal.jsonl is a symlink and "
@@ -2273,7 +2351,8 @@ def test_foreign_bootstrap_shapes_are_preserved_and_refused(
         "directory": (
             "ERROR: journal.jsonl: journal: journal is not a regular file; a "
             "directory, a device or a pipe holds no records and nothing here "
-            "can read one from it\n"
+            "can read one from it. No target or permanent-history change was "
+            "left by this operation\n"
         ),
     }
     assert result.stderr == expected[shape]
@@ -2344,7 +2423,7 @@ def test_bootstrap_cleanup_uncertainty_gates_later_effects(
     result = run_cli("init", cwd=tmp_path)
 
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     staging = list(tmp_path.glob(".journal.jsonl.*.bootstrap"))
     assert len(staging) == 1
     residue = staging[0].name
@@ -2512,7 +2591,7 @@ def test_short_opening_rewrite_failure_is_retained_and_terminal(
     result = run_cli("init", cwd=tmp_path)
 
     assert result.returncode == 1
-    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     expected = (
         "ERROR: journal.jsonl: journal: the complete canonical opening was "
         "re-dirtied or its directory was reconfirmed, but coherent successor "
@@ -2602,7 +2681,7 @@ def test_opening_reconfirmation_rejects_identical_opposite_replacement(tmp_path)
             process.communicate()
 
     assert process.returncode == 1, (stdout, stderr)
-    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert "coherent successor confirmation is incomplete" in stderr
     assert "complete opening reconfirmation did not produce" in stderr
     assert (repository.read_bytes(), repository.stat().st_ino) == repo_before
@@ -2691,6 +2770,13 @@ def test_wal_without_history_refuses_init_before_any_write(
     run_cli, tmp_path, shape
 ):
     """WAL residue is restoration evidence, never authority to adopt."""
+    (tmp_path / "memory").mkdir()
+    harness = _external_harness_path(tmp_path, "memory")
+    harness.parent.mkdir(parents=True)
+    stale = harness.parent / "stale"
+    stale.mkdir()
+    harness.symlink_to(stale, target_is_directory=True)
+    harness_text = os.readlink(harness)
     first = _orphan_transaction(tmp_path, "1111111111111111")
     if shape == "empty-history-files":
         (tmp_path / "journal.jsonl").write_bytes(b"")
@@ -2707,7 +2793,7 @@ def test_wal_without_history_refuses_init_before_any_write(
         if path.is_file()
     }
 
-    result = run_cli("init", cwd=tmp_path)
+    result = run_cli("init", "--harness-memory", str(harness), cwd=tmp_path)
 
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert "Traceback" not in result.stderr, result.stderr
@@ -2729,6 +2815,8 @@ def test_wal_without_history_refuses_init_before_any_write(
         assert (tmp_path / "journal.jsonl").read_bytes() == b""
     else:
         assert not (tmp_path / "journal.jsonl").exists()
+    assert harness.is_symlink() and os.readlink(harness) == harness_text
+    assert "symlink" not in result.stdout
 
 
 def test_journal_check_uses_the_same_orphan_wal_truth(run_cli, tmp_path):
@@ -2919,10 +3007,23 @@ def test_missing_harness_parent_is_confirmed_before_a_link_transaction(
     )
 
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert "durability is unconfirmed" in result.stderr
+    assert result.stdout == (
+        "init: kept knowledge\n"
+        "init: kept memory\n"
+        "init: kept memory/MEMORY.md\n"
+        "init: kept validated-memory.md\n"
+        "init: kept knowledge-extension.md\n"
+        "init: 5 item(s) confirmed, 1 gate(s)\n"
+    )
+    assert result.stderr == (
+        "ERROR: .validated-memory/local.jsonl: journal: the harness parent may "
+        "be visible, but its durability is unconfirmed: confirmation of "
+        f"{harness.parent} is visible, but its durability is unconfirmed: "
+        f"[Errno 5] injected persistence failure: '{harness.parent}'. No link "
+        "transaction was opened\n"
+    )
     assert harness.parent.is_dir()
-    assert harness.is_symlink()
-    assert harness.resolve() == (tmp_path / "memory").resolve()
+    assert not harness.exists() and not harness.is_symlink()
     assert not _transactions(tmp_path)
     local = tmp_path / ".validated-memory" / "local.jsonl"
     assert not local.exists()
@@ -2967,8 +3068,7 @@ def test_partial_harness_repair_cannot_become_a_clean_unconfirmed_noop(
     )
 
     assert first.returncode == 1, (first.stdout, first.stderr)
-    assert harness.is_symlink()
-    assert harness.resolve() == (tmp_path / "memory").resolve()
+    assert not harness.exists() and not harness.is_symlink()
     assert "durability is unconfirmed" in first.stderr
     assert not _transactions(tmp_path)
     local = tmp_path / ".validated-memory" / "local.jsonl"
@@ -2985,8 +3085,7 @@ def test_partial_harness_repair_cannot_become_a_clean_unconfirmed_noop(
     assert retry.returncode == 1, (retry.stdout, retry.stderr)
     assert "durability is unconfirmed" in retry.stderr
     assert "kept symlink" not in retry.stdout
-    assert harness.is_symlink()
-    assert harness.resolve() == (tmp_path / "memory").resolve()
+    assert not harness.exists() and not harness.is_symlink()
     assert not _transactions(tmp_path)
     assert not local.exists()
 
@@ -2996,9 +3095,9 @@ def test_partial_harness_repair_cannot_become_a_clean_unconfirmed_noop(
     )
 
     assert repaired.returncode == 0, (repaired.stdout, repaired.stderr)
-    assert "kept symlink" in repaired.stdout
+    assert "created symlink" in repaired.stdout
     assert not _transactions(tmp_path)
-    assert not local.exists()
+    assert local.exists()
 
 
 def test_link_publication_does_not_create_ancestry_inside_publish():
@@ -3310,7 +3409,8 @@ def test_nonempty_unconfirmed_directory_is_not_replaced_by_recovery(
         "VALIDATED_MEMORY_PERSISTENCE_FAULT", "create-directory:knowledge"
     )
     assert run_cli("init", cwd=tmp_path).returncode == 1
-    transaction = _transactions(tmp_path)[0]["transaction"]
+    retained = _transactions(tmp_path)[0]
+    transaction = retained["transaction"]
     child = target / "added-after-failure.md"
     child.write_text("keep me\n", encoding="utf-8")
     monkeypatch.delenv("VALIDATED_MEMORY_PERSISTENCE_FAULT")
@@ -3585,7 +3685,7 @@ def test_append_file_barrier_failure_uses_full_range_reconfirmation(
     assert failed.returncode == 1, (failed.stdout, failed.stderr)
     transaction = _transactions(tmp_path)[0]
     transaction_id = transaction["transaction"]
-    assert failed.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert failed.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert failed.stderr == (
         "ERROR: journal.jsonl: journal: the exact append effect may be visible, "
         "but file-data durability is unconfirmed. Transaction "
@@ -3721,7 +3821,7 @@ def test_directory_only_reconfirmation_failure_is_terminal_and_retained(
     retained = run_cli("init", cwd=tmp_path)
 
     assert retained.returncode == 1, (retained.stdout, retained.stderr)
-    assert retained.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert retained.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert "selected append range was re-dirtied or its directory was reconfirmed" in retained.stderr
     assert f"Transaction {transaction['transaction']} was retained" in retained.stderr
     assert _final_tree_snapshot(tmp_path) == before
@@ -3752,7 +3852,7 @@ def test_append_reconfirmation_cleanup_uncertainty_keeps_wal_and_stops_run(
     retained = run_cli("init", cwd=tmp_path)
 
     assert retained.returncode == 1, (retained.stdout, retained.stderr)
-    assert retained.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert retained.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert retained.stderr.startswith(
         "ERROR: journal.jsonl: journal: the selected append range was coherently "
         "confirmed, but transaction cleanup is incomplete: "
@@ -3849,7 +3949,7 @@ def test_hard_death_with_incomplete_claim_replays_stored_exact_bytes(
         "init: kept memory/MEMORY.md\n"
         "init: kept validated-memory.md\n"
         "init: kept knowledge-extension.md\n"
-        "init: 0 created, 5 kept, 0 error(s), 0 warning(s)\n"
+        ""
     )
     assert retried.stderr == ""
     assert not transaction_path.exists()
@@ -3908,12 +4008,14 @@ def test_append_reconfirmation_preserves_complete_valid_suffix(
             b'{"schema":',
             "ERROR: journal.jsonl: journal: non-empty history does not end "
             "with a line feed; the final record is not appendable without "
-            "explicit targeted repair\n",
+            "explicit targeted repair. No target or permanent-history change "
+            "was left by this operation\n",
         ),
         (
             b"{\n",
             "ERROR: journal.jsonl:{line}: journal: line is not valid JSON: "
-            "Expecting property name enclosed in double quotes\n",
+            "Expecting property name enclosed in double quotes. No target or "
+            "permanent-history change was left by this operation\n",
         ),
     ),
 )
@@ -3931,7 +4033,7 @@ def test_append_reconfirmation_refuses_malformed_or_torn_suffix(
     refused = run_cli("init", cwd=tmp_path)
 
     assert refused.returncode == 1, (refused.stdout, refused.stderr)
-    assert refused.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert refused.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert refused.stderr == expected_stderr.format(line=line)
     assert transaction["transaction"] in (
         path.stem for path in (tmp_path / ".validated-memory" / "transactions").glob("*.json")
@@ -3956,12 +4058,11 @@ def test_append_reconfirmation_refuses_conflicting_suffix(
     refused = run_cli("init", cwd=tmp_path)
 
     assert refused.returncode == 1, (refused.stdout, refused.stderr)
+    assert refused.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert refused.stderr == (
-        "ERROR: journal.jsonl: journal: history reconfirmation wrote nothing "
-        "because the retained append is mismatched in the current history. "
-        f"Transaction {transaction['transaction']} and both histories were "
-        "preserved. This operation does not complete or replay an append. "
-        "Restore the affected history from a trusted copy, then rerun init\n"
+        "ERROR: .gitignore: journal: unfinished transaction from run "
+        f"{transaction['run']}: the path is applied. No target or "
+        "permanent-history change was left by this operation\n"
     )
     assert _final_tree_snapshot(tmp_path) == before
 
@@ -4030,7 +4131,7 @@ def test_post_write_append_reconfirmation_failure_is_terminal_and_retained(
 
     transaction_id = transaction["transaction"]
     assert retained.returncode == 1, (retained.stdout, retained.stderr)
-    assert retained.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert retained.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert retained.stderr.startswith(
         "ERROR: journal.jsonl: journal: the selected append range was "
         "re-dirtied or its directory was reconfirmed, but coherent successor "
@@ -4106,7 +4207,7 @@ def test_append_reconfirmation_refuses_pair_change_before_range_action(
         "init: kept memory/MEMORY.md\n"
         "init: kept validated-memory.md\n"
         "init: kept knowledge-extension.md\n"
-        "init: 0 created, 5 kept, 1 error(s), 0 warning(s)\n"
+        "init: 5 item(s) confirmed, 1 gate(s)\n"
     )
     assert stderr == (
         "ERROR: journal.jsonl: journal: history reconfirmation wrote nothing "
@@ -4166,7 +4267,7 @@ def test_append_reconfirmation_gates_opposite_replacement_during_readback(
             process.communicate()
 
     assert process.returncode == 1, (stdout, stderr)
-    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert "coherent successor confirmation is incomplete" in stderr
     assert "append reconfirmation did not produce the exact coherent successor" in stderr
     assert f"Transaction {transaction['transaction']} was retained" in stderr
@@ -4212,6 +4313,462 @@ def test_valid_claim_replays_exact_pair_when_history_occurrence_is_zero(
     assert not _transactions(tmp_path)
 
 
+def test_exact_harness_wal_gate_never_falls_through_to_unrecorded_relink(
+    run_cli, tmp_path
+):
+    """A retained local WAL owns its exact external link path."""
+    harness = _external_harness_path(tmp_path, "memory")
+    assert (
+        run_cli("init", "--harness-memory", str(harness), cwd=tmp_path).returncode
+        == 0
+    )
+    stale = harness.parent / "stale"
+    stale.mkdir()
+    harness.unlink()
+    harness.symlink_to(stale, target_is_directory=True)
+
+    killed = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "validated_memory",
+            "init",
+            "--harness-memory",
+            str(harness),
+        ],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(REPO_ROOT),
+            "VALIDATED_MEMORY_FAULT": "after-published",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert killed.returncode == 70, (killed.stdout, killed.stderr)
+    retained = _transactions(tmp_path)
+    assert len(retained) == 1
+    assert retained[0]["intention"]["durability"] == "local"
+    assert retained[0]["intention"]["path"] == harness.as_posix()
+    transaction = retained[0]["transaction"]
+    wal = (
+        tmp_path
+        / ".validated-memory"
+        / "transactions"
+        / f"{transaction}.json"
+    )
+
+    diverged = harness.parent / "diverged"
+    diverged.mkdir()
+    harness.unlink()
+    harness.symlink_to(diverged, target_is_directory=True)
+    link_before = os.readlink(harness)
+    wal_before = wal.read_bytes()
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    local_before = local.read_bytes()
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness), cwd=tmp_path
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout.endswith("init: 5 item(s) confirmed, 1 gate(s)\n")
+    assert "WARNING:" not in result.stderr
+    assert result.stderr.count("ERROR:") == 1
+    assert transaction in result.stderr
+    assert "created symlink" not in result.stdout
+    assert "re-pointed symlink" not in result.stdout
+    assert os.readlink(harness) == link_before
+    assert wal.read_bytes() == wal_before
+    assert local.read_bytes() == local_before
+
+
+@pytest.mark.parametrize("contents", ("recognizable", "empty"))
+def test_exact_harness_wal_gate_precedes_directory_takeover(
+    run_cli, tmp_path, contents
+):
+    """A gated directory is not copied, indexed, parked or removed."""
+    harness = _external_harness_path(tmp_path, "memory")
+    assert (
+        run_cli("init", "--harness-memory", str(harness), cwd=tmp_path).returncode
+        == 0
+    )
+    stale = harness.parent / "stale"
+    stale.mkdir()
+    harness.unlink()
+    harness.symlink_to(stale, target_is_directory=True)
+    killed = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "validated_memory",
+            "init",
+            "--harness-memory",
+            str(harness),
+        ],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(REPO_ROOT),
+            "VALIDATED_MEMORY_FAULT": "after-published",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert killed.returncode == 70, (killed.stdout, killed.stderr)
+    transaction = _transactions(tmp_path)[0]
+    wal = (
+        tmp_path
+        / ".validated-memory"
+        / "transactions"
+        / f"{transaction['transaction']}.json"
+    )
+    harness.unlink()
+    harness.mkdir()
+    if contents == "recognizable":
+        (harness / "native.md").write_text(
+            "---\nname: native\ndescription: Native memory.\n"
+            "metadata:\n  type: project\n---\n\nNative body.\n",
+            encoding="utf-8",
+        )
+        (harness / "MEMORY.md").write_text(
+            "# Agent memory\n\n- [Native](native.md) — Native memory.\n",
+            encoding="utf-8",
+        )
+    before_project = [
+        item
+        for item in _final_tree_snapshot(tmp_path)
+        if item[0] != ".validated-memory/lock"
+    ]
+    before_harness = _final_tree_snapshot(harness.parent)
+    wal_before = wal.read_bytes()
+    backups_before = tuple(sorted(harness.parent.glob("memory.bak*")))
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness), cwd=tmp_path
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout.endswith("init: 5 item(s) confirmed, 1 gate(s)\n")
+    assert "WARNING:" not in result.stderr
+    assert result.stderr.count("ERROR:") == 1
+    assert transaction["transaction"] in result.stderr
+    assert "symlink" not in result.stdout
+    assert "adopted" not in result.stdout
+    assert "parked" not in result.stdout
+    assert [
+        item
+        for item in _final_tree_snapshot(tmp_path)
+        if item[0] != ".validated-memory/lock"
+    ] == before_project
+    assert _final_tree_snapshot(harness.parent) == before_harness
+    assert wal.read_bytes() == wal_before
+    assert tuple(sorted(harness.parent.glob("memory.bak*"))) == backups_before
+
+
+@pytest.mark.parametrize("damage", ("unterminated", "invalid-utf8"))
+def test_non_line_numbered_history_damage_never_grants_harness_repair(
+    run_cli, tmp_path, damage
+):
+    """Available invalid bytes are damaged history, not unavailability."""
+    harness = _external_harness_path(tmp_path, "memory")
+    assert (
+        run_cli("init", "--harness-memory", str(harness), cwd=tmp_path).returncode
+        == 0
+    )
+    stale = harness.parent / "stale"
+    stale.mkdir()
+    harness.unlink()
+    harness.symlink_to(stale, target_is_directory=True)
+    link_before = os.readlink(harness)
+    later = tmp_path / "knowledge-extension.md"
+    later.unlink()
+    history = tmp_path / "journal.jsonl"
+    suffix = b'{"unterminated":true}' if damage == "unterminated" else b"\xff\n"
+    history.write_bytes(history.read_bytes() + suffix)
+    history_before = history.read_bytes()
+    local = tmp_path / ".validated-memory" / "local.jsonl"
+    local_before = local.read_bytes()
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness), cwd=tmp_path
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
+    assert result.stderr.count("ERROR:") == 1
+    assert "WARNING:" not in result.stderr
+    assert "No target or permanent-history change was left" in result.stderr
+    assert "created symlink" not in result.stdout
+    assert "re-pointed symlink" not in result.stdout
+    assert os.readlink(harness) == link_before
+    assert history.read_bytes() == history_before
+    assert local.read_bytes() == local_before
+    assert not later.exists()
+
+
+def test_genuinely_unavailable_history_retains_narrow_harness_fail_open(
+    run_cli, tmp_path
+):
+    """A repeatable open failure still restores only the harness link."""
+    harness = _external_harness_path(tmp_path, "memory")
+    assert (
+        run_cli("init", "--harness-memory", str(harness), cwd=tmp_path).returncode
+        == 0
+    )
+    stale = harness.parent / "stale"
+    stale.mkdir()
+    harness.unlink()
+    harness.symlink_to(stale, target_is_directory=True)
+    history = tmp_path / "journal.jsonl"
+    history.unlink()
+    history.symlink_to("journal.jsonl")
+
+    result = run_cli(
+        "init", "--harness-memory", str(harness), cwd=tmp_path
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == (
+        f"init: re-pointed symlink {harness} -> {(tmp_path / 'memory').resolve()}\n"
+        "init: 1 item(s) confirmed, 1 gate(s)\n"
+    )
+    assert result.stderr.count("ERROR:") == 1
+    assert result.stderr.count("WARNING:") == 1
+    assert "journal could not be read" in result.stderr
+    assert "could not be recorded" in result.stderr
+    assert harness.resolve() == (tmp_path / "memory").resolve()
+    assert history.is_symlink() and os.readlink(history) == "journal.jsonl"
+
+
+def _permission_open_mutant(tmp_path):
+    """Return a package copy whose repository-history open is denied."""
+    mutant = tmp_path / "permission-open-mutant"
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant / "validated_memory")
+    records = mutant / "validated_memory" / "journal" / "records.py"
+    source = records.read_text(encoding="utf-8")
+    seam = "def _open_failure_kind(path):\n"
+    helper = '''\
+_original_history_open = os.open
+
+
+def _test_history_open(path, flags, *args, **kwargs):
+    if not isinstance(path, int) and Path(path).name == JOURNAL_FILENAME:
+        raise PermissionError(13, "simulated history access denial", os.fspath(path))
+    return _original_history_open(path, flags, *args, **kwargs)
+
+
+os.open = _test_history_open
+
+
+'''
+    assert source.count(seam) == 1
+    source = source.replace(seam, helper + seam)
+    records.write_text(source, encoding="utf-8")
+    return mutant
+
+
+def _permission_open_target_race_mutant(tmp_path):
+    """Return the denied-open mutant with a target swap between stat calls."""
+    mutant = _permission_open_mutant(tmp_path)
+    records = mutant / "validated_memory" / "journal" / "records.py"
+    source = records.read_text(encoding="utf-8")
+    seam = "        first_target = os.stat(path)\n"
+    replacement = seam + (
+        "        os.unlink(path)\n"
+        "        os.symlink('history-race-target', path)\n"
+    )
+    assert source.count(seam) == 1
+    records.write_text(source.replace(seam, replacement), encoding="utf-8")
+    return mutant
+
+
+@pytest.mark.parametrize(
+    "node_kind",
+    ("directory", "regular", "symlink-directory", "symlink-regular"),
+)
+def test_permission_denied_open_uses_visible_history_node_kind(
+    run_cli, tmp_path, node_kind
+):
+    """Visible nonregular history is damage; a regular file is unavailable."""
+    source = tmp_path / "source"
+    source.mkdir()
+    assert run_cli("init", cwd=source).returncode == 0
+    adopter = tmp_path / node_kind
+    adopter.mkdir()
+    (adopter / "memory").mkdir()
+    history = adopter / "journal.jsonl"
+    target = None
+    if node_kind in ("directory", "symlink-directory"):
+        target = adopter / "history-target"
+        target.mkdir()
+        (target / "sentinel").write_bytes(b"directory history evidence\n")
+        if node_kind == "directory":
+            target.rename(history)
+        else:
+            history.symlink_to(target.name, target_is_directory=True)
+    elif node_kind == "regular":
+        history.write_bytes((source / "journal.jsonl").read_bytes())
+    else:
+        target = adopter / "history-target"
+        target.write_bytes((source / "journal.jsonl").read_bytes())
+        history.symlink_to(target.name)
+    harness = _external_harness_path(adopter, "memory")
+    harness.parent.mkdir(parents=True)
+    stale = harness.parent / "stale"
+    stale.mkdir()
+    harness.symlink_to(stale, target_is_directory=True)
+    before_harness = _final_tree_snapshot(harness.parent)
+    mutant = _permission_open_mutant(tmp_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "validated_memory",
+            "init",
+            "--harness-memory",
+            str(harness),
+        ],
+        cwd=adopter,
+        env={**os.environ, "PYTHONPATH": str(mutant)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "simulated history access denial" in result.stderr
+    assert result.stderr.count("ERROR:") == 1
+    if node_kind in ("directory", "symlink-directory"):
+        assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
+        assert "WARNING:" not in result.stderr
+        assert _final_tree_snapshot(harness.parent) == before_harness
+        if node_kind == "directory":
+            assert history.is_dir() and not history.is_symlink()
+        else:
+            assert history.is_symlink() and os.readlink(history) == target.name
+        assert (history / "sentinel").read_bytes() == b"directory history evidence\n"
+        assert not (adopter / "knowledge").exists()
+        assert not (adopter / "validated-memory.md").exists()
+        assert not (adopter / "knowledge-extension.md").exists()
+    else:
+        assert result.stdout == (
+            f"init: re-pointed symlink {harness} -> "
+            f"{(adopter / 'memory').resolve()}\n"
+            "init: 1 item(s) confirmed, 1 gate(s)\n"
+        )
+        assert result.stderr.count("WARNING:") == 1
+        assert harness.resolve() == (adopter / "memory").resolve()
+        assert history.read_bytes() == (source / "journal.jsonl").read_bytes()
+        assert not (adopter / "knowledge").exists()
+        assert not (adopter / "validated-memory.md").exists()
+        assert not (adopter / "knowledge-extension.md").exists()
+        if node_kind == "symlink-regular":
+            assert history.is_symlink() and os.readlink(history) == target.name
+
+
+def test_permission_denied_symlink_target_race_fails_closed(run_cli, tmp_path):
+    """A target identity/type race grants no fail-open harness repair."""
+    source = tmp_path / "source"
+    source.mkdir()
+    assert run_cli("init", cwd=source).returncode == 0
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    (adopter / "memory").mkdir()
+    regular_target = adopter / "history-target"
+    regular_target.write_bytes((source / "journal.jsonl").read_bytes())
+    race_target = adopter / "history-race-target"
+    race_target.mkdir()
+    (race_target / "sentinel").write_bytes(b"racing directory evidence\n")
+    history = adopter / "journal.jsonl"
+    history.symlink_to(regular_target.name)
+    harness = _external_harness_path(adopter, "memory")
+    harness.parent.mkdir(parents=True)
+    stale = harness.parent / "stale"
+    stale.mkdir()
+    harness.symlink_to(stale, target_is_directory=True)
+    harness_before = _final_tree_snapshot(harness.parent)
+    mutant = _permission_open_target_race_mutant(tmp_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "validated_memory",
+            "init",
+            "--harness-memory",
+            str(harness),
+        ],
+        cwd=adopter,
+        env={**os.environ, "PYTHONPATH": str(mutant)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
+    assert result.stderr.count("ERROR:") == 1
+    assert "WARNING:" not in result.stderr
+    assert "simulated history access denial" in result.stderr
+    assert _final_tree_snapshot(harness.parent) == harness_before
+    assert history.is_symlink() and os.readlink(history) == race_target.name
+    assert not (adopter / "knowledge").exists()
+
+
+def test_permission_denied_stable_dangling_history_is_unavailable(
+    run_cli, tmp_path
+):
+    """A repeatable unresolved target retains the bounded fail-open policy."""
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    (adopter / "memory").mkdir()
+    history = adopter / "journal.jsonl"
+    history.symlink_to("missing-history")
+    harness = _external_harness_path(adopter, "memory")
+    harness.parent.mkdir(parents=True)
+    stale = harness.parent / "stale"
+    stale.mkdir()
+    harness.symlink_to(stale, target_is_directory=True)
+    mutant = _permission_open_mutant(tmp_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "validated_memory",
+            "init",
+            "--harness-memory",
+            str(harness),
+        ],
+        cwd=adopter,
+        env={**os.environ, "PYTHONPATH": str(mutant)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == (
+        f"init: re-pointed symlink {harness} -> "
+        f"{(adopter / 'memory').resolve()}\n"
+        "init: 1 item(s) confirmed, 1 gate(s)\n"
+    )
+    assert result.stderr.count("ERROR:") == 1
+    assert result.stderr.count("WARNING:") == 1
+    assert harness.resolve() == (adopter / "memory").resolve()
+    assert history.is_symlink() and os.readlink(history) == "missing-history"
+    assert not (adopter / "knowledge").exists()
+
+
 @pytest.mark.parametrize("damage", ("duplicate", "disagreement"))
 def test_inconsistent_history_after_unconfirmed_append_remains_gated(
     run_cli, tmp_path, monkeypatch, damage
@@ -4223,7 +4780,8 @@ def test_inconsistent_history_after_unconfirmed_append_remains_gated(
         "VALIDATED_MEMORY_PERSISTENCE_FAULT", "append:journal.jsonl"
     )
     assert run_cli("init", cwd=tmp_path).returncode == 1
-    transaction = _transactions(tmp_path)[0]["transaction"]
+    retained = _transactions(tmp_path)[0]
+    transaction = retained["transaction"]
     history = tmp_path / "journal.jsonl"
     lines = history.read_text(encoding="utf-8").splitlines()
     matching = [
@@ -4249,12 +4807,15 @@ def test_inconsistent_history_after_unconfirmed_append_remains_gated(
     result = run_cli("init", cwd=tmp_path)
 
     assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
+    detail = (
+        f"unfinished transaction from run {retained['run']}: the path is applied"
+        if damage == "duplicate"
+        else f"records of transaction {transaction} disagree on purpose"
+    )
     assert result.stderr == (
-        "ERROR: journal.jsonl: journal: history reconfirmation wrote nothing "
-        "because the retained append is mismatched in the current history. "
-        f"Transaction {transaction} and both histories were preserved. This "
-        "operation does not complete or replay an append. Restore the affected "
-        "history from a trusted copy, then rerun init\n"
+        f"ERROR: .gitignore: journal: {detail}. No target or permanent-history "
+        "change was left by this operation\n"
     )
     assert _transactions(tmp_path)[0]["transaction"] == transaction
 
@@ -4426,7 +4987,7 @@ def test_current_recovery_uncertainty_stops_before_an_independent_wal(
         f"unconfirmed: [Errno 5] injected persistence failure: '{artifact}'"
     )
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert result.stderr == (
         f"ERROR: .validated-memory/transactions/{transaction_id}.json: journal: "
         f"recovery of {recovery_path} left its {phase} effect visible or "
@@ -4533,7 +5094,7 @@ def test_restore_recovery_requires_exact_target_and_pair_before_cleanup(
             process.wait()
 
     assert process.returncode == 1, (stdout, stderr)
-    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert "exact restored target and coherent history pair" in stderr
     assert primary_path.exists()
     assert secondary_path.read_bytes() == secondary_before
@@ -4588,7 +5149,7 @@ def test_post_restore_topology_failure_is_terminal_and_retains_later_wal(
             process.wait()
 
     assert process.returncode == 1, (stdout, stderr)
-    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert "Traceback" not in stderr
     assert "exact restored target and coherent history pair" in stderr
     assert primary_path.exists()
@@ -4711,11 +5272,14 @@ def test_two_artifacts_holding_different_adoption_ids_are_refused(
 
     assert result.returncode == 1, result.stdout
     assert "Traceback" not in result.stderr, result.stderr
-    assert "adoption" in result.stderr, result.stderr
-    assert foreign in result.stderr, result.stderr
-    assert mine in result.stderr, result.stderr
-    assert "restore" in result.stderr, result.stderr
-    assert "adopt afresh" in result.stderr, result.stderr
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
+    assert result.stderr == (
+        "ERROR: journal histories: journal: history topology has an unresolved "
+        "topology condition. No automatic reconciliation is available. Preserve "
+        "both histories; restore an accepted exact state from a trusted source "
+        "if possible, then rerun journal --check. No target or permanent-history "
+        "change was left by this operation\n"
+    )
 
 
 @pytest.mark.parametrize("durability", ("repo", "local"))
@@ -4747,9 +5311,14 @@ def test_a_later_record_with_another_adoption_id_gates_init(
 
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert "Traceback" not in result.stderr, result.stderr
-    assert "one project has one adoption id" in result.stderr, result.stderr
-    assert mine in result.stderr, result.stderr
-    assert foreign in result.stderr, result.stderr
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
+    assert result.stderr == (
+        "ERROR: journal histories: journal: history topology has an unresolved "
+        "topology condition. No automatic reconciliation is available. Preserve "
+        "both histories; restore an accepted exact state from a trusted source "
+        "if possible, then rerun journal --check. No target or permanent-history "
+        "change was left by this operation\n"
+    )
     assert repository.read_bytes() == repository_before
     assert local.read_bytes() == local_before
 
@@ -7427,13 +7996,9 @@ def test_repair_confirms_with_only_frozen_unrelated_gate_remaining(
     assert result.stdout == (
         "journal: repaired .validated-memory/local.jsonl for transaction "
         f"{transaction.stem}\n"
-        "journal: repair confirmed, 2 gate(s) remain\n"
+        "journal: repair confirmed, 1 gate(s) remain\n"
     )
     assert result.stderr == (
-        "ERROR: repo: journal: transaction unrelated-gate has an unresolved "
-        "topology condition. "
-        "Address this condition, then run journal --check; do not repeat the "
-        "confirmed repair.\n"
         "ERROR: knowledge-extension.md: journal: unfinished transaction from "
         "run unrelated-run: the path is applied. Address this condition, then "
         "run journal --check; do not repeat the confirmed repair.\n"
@@ -8149,8 +8714,14 @@ def test_symlink_staging_collision_preserves_foreign_entry(
     before = (sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode), sentinel.is_symlink())
     monkeypatch.setenv("VALIDATED_MEMORY_SYMLINK_TEMP_NAME", sentinel.name)
     result = run_cli("init", "--harness-memory", str(harness), cwd=tmp_path)
-    assert result.returncode == 0
-    assert "could not be linked" in result.stderr
+    assert result.returncode == 1
+    assert result.stdout.endswith("init: 5 item(s) confirmed, 1 gate(s)\n")
+    assert result.stderr == (
+        f"ERROR: {harness}: journal: {harness} could not be written: "
+        f"[Errno 17] File exists: '{(tmp_path / 'memory').resolve()}' -> "
+        f"'{sentinel}'. Nothing has been published.\n"
+    )
+    assert not harness.exists() and not harness.is_symlink()
     assert (sentinel.read_bytes(), stat.S_IMODE(sentinel.stat().st_mode), sentinel.is_symlink()) == before
 
 
@@ -9559,18 +10130,13 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
     executor_tree = ast.parse(
         (journal_root / "executor.py").read_text(encoding="utf-8")
     )
-    executor_functions = {
-        node.name: node
-        for node in executor_tree.body
-        if isinstance(node, ast.FunctionDef)
-    }
     protocol_functions = {
         node.name: node
         for node in protocol_tree.body
         if isinstance(node, ast.FunctionDef)
     }
     for function in (
-        executor_functions["adopting_session"],
+        protocol_functions["adopting_run"],
         protocol_functions["resolve_one"],
     ):
         lock = next(
@@ -9580,11 +10146,8 @@ def test_paired_history_acquisition_has_one_private_owner_and_separate_schemas()
             and any("Lock(" in ast.unparse(item.context_expr) for item in node.items)
         )
         assert ast.unparse(lock.body[0].value) == "ensure_history_compatibility()"
-    assert not any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "ensure_history_compatibility"
-        for node in ast.walk(executor_functions["repair_transaction"])
+    assert "adopting_session" not in (journal_root / "executor.py").read_text(
+        encoding="utf-8"
     )
 
 
@@ -10867,6 +11430,50 @@ def test_protocol_vocabulary_is_private_and_command_has_one_inspection_seam():
     assert offenders == []
 
 
+def test_c1f_protocol_is_the_only_production_policy_caller():
+    """Pin acquisition, topology, history publication and cleanup ownership."""
+    root = REPO_ROOT / "validated_memory" / "journal"
+    owned_calls = {
+        "acquire_history_pair",
+        "confirm_histories",
+        "inspect_topology",
+        "append",
+        "mark_history_append",
+        "reconfirm_append",
+        "reconfirm_opening",
+        "publish_opening",
+        "remove_transaction_file",
+    }
+    offenders = []
+    for path in root.glob("*.py"):
+        if path.name in {"protocol.py", "records.py", "transactions.py"}:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        offenders.extend(
+            f"{path.name}:{node.lineno}:{node.func.id}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in owned_calls
+        )
+    assert offenders == []
+    executor = (root / "executor.py").read_text(encoding="utf-8")
+    assert "adopting_session" not in executor
+    for obsolete_import in (
+        "rendezvous_at",
+        "journal_path",
+        "PUBLISHED",
+        "Resolution",
+        "has_transaction",
+        "no_such_transaction",
+        "read_transaction",
+    ):
+        assert obsolete_import not in executor
+    protocol = (root / "protocol.py").read_text(encoding="utf-8")
+    for operation in ("Adopt", "Observe", "Mutate", "RecoverAll", "ResolveOne"):
+        assert f"type(operation) is {operation}" in protocol
+
+
 def test_repair_policy_has_one_protocol_owner():
     """Pin RepairOne policy in protocol and leave executor as an adapter."""
     journal = REPO_ROOT / "validated_memory" / "journal"
@@ -10878,8 +11485,7 @@ def test_repair_policy_has_one_protocol_owner():
         for node in executor_tree.body
         if isinstance(node, ast.FunctionDef)
     }
-    repair = functions["repair_transaction"]
-    assert ast.unparse(repair.body[-1].value).startswith("_protocol_repair_one(")
+    assert "repair_transaction" not in functions
     for obsolete in (
         "_repair_refusal",
         "_expected_history_pair",
@@ -10887,15 +11493,8 @@ def test_repair_policy_has_one_protocol_owner():
         "_cleanup_temporary_claim",
     ):
         assert obsolete not in functions
-    for policy_call in (
-        "read_transaction(",
-        "open_transactions(",
-        "validate_snapshot(",
-        "current_state(",
-        "remove_transaction_file(",
-    ):
-        assert policy_call not in ast.unparse(repair)
     assert "def repair_one(" in protocol
+    assert "def repair_transaction(" in protocol
 
 
 def _protocol_projection_adapter(tmp_path):
@@ -11290,7 +11889,7 @@ def test_uncertain_claim_requires_identical_wal_reestablishment_before_history(
     result = run_cli("init", cwd=adopter)
 
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert result.stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert "retained evidence could not be durably and coherently confirmed" in result.stderr
     assert history.read_bytes() == history_before
     assert transaction.read_bytes() == wal_before
@@ -11335,7 +11934,7 @@ def test_claim_reestablishment_rejects_substituted_invalid_wal_without_traceback
             process.wait()
 
     assert process.returncode == 1, (stdout, stderr)
-    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert "Traceback" not in stderr
     assert "retained evidence could not be durably and coherently confirmed" in stderr
     assert transaction.read_bytes() == replacement
@@ -11378,7 +11977,7 @@ def test_recovery_retains_wal_when_appended_history_identity_changes(
             process.wait()
 
     assert process.returncode == 1, (stdout, stderr)
-    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert "exact frozen coherent successor" in stderr
     assert transaction.exists()
     assert history.read_bytes() == appended
@@ -11542,7 +12141,7 @@ def test_post_append_topology_failure_is_terminal_and_retains_later_wal(
             process.wait()
 
     assert process.returncode == 1, (stdout, stderr)
-    assert stdout == "init: 0 created, 0 kept, 1 error(s), 0 warning(s)\n"
+    assert stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert "Traceback" not in stderr
     assert "exact frozen coherent successor" in stderr
     assert transaction.exists()
@@ -11977,8 +12576,66 @@ def test_claimed_history_unreadable_target_preserves_exact_public_result(
     assert _final_tree_snapshot(adopter) == before
 
 
-def test_topology_shadow_fails_open_for_ordinary_exceptions(run_cli, tmp_path):
-    """Prove a topology implementation error cannot alter released reporting.
+def _raising_topology_mutant(tmp_path, name, message):
+    """Copy the package and make its topology inspector fail read-only."""
+    mutant = tmp_path / name
+    shutil.copytree(REPO_ROOT / "validated_memory", mutant / "validated_memory")
+    topology = mutant / "validated_memory" / "journal" / "topology.py"
+    source = topology.read_text(encoding="utf-8")
+    function = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "inspect"
+    )
+    lines = source.splitlines(keepends=True)
+    lines.insert(function.body[0].lineno - 1, f"    raise RuntimeError({message!r})\n")
+    topology.write_text("".join(lines), encoding="utf-8")
+    return mutant
+
+
+@pytest.mark.parametrize("shape", ("fresh", "opening"))
+def test_topology_inspector_failure_precedes_identity_transition(
+    run_cli, tmp_path, shape
+):
+    """Unavailable inspection creates no opening and reconfirms no old one."""
+    source = tmp_path / "source"
+    source.mkdir()
+    assert run_cli("init", cwd=source).returncode == 0
+    adopter = tmp_path / shape
+    adopter.mkdir()
+    if shape == "opening":
+        opening = _records(source / "journal.jsonl")[0]
+        (adopter / "journal.jsonl").write_bytes(_jsonl(opening))
+    before = _final_tree_snapshot(adopter)
+    mutant = _raising_topology_mutant(
+        tmp_path, f"raising-{shape}", "distinctive adoption shadow failure"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        cwd=adopter,
+        env={**os.environ, "PYTHONPATH": str(mutant)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert (result.returncode, result.stdout, result.stderr) == (
+        1,
+        "init: 0 item(s) confirmed, 1 gate(s)\n",
+        "ERROR: journal histories: journal: damaged history topology: topology "
+        "inspection is unavailable: RuntimeError: distinctive adoption shadow "
+        "failure. Preserve both histories and restore the exact affected "
+        "artifact from a trusted source; rerun journal --check. No target or "
+        "permanent-history change was left by this operation\n",
+    )
+    assert _final_tree_snapshot(adopter) == before
+    if shape == "fresh":
+        assert not (adopter / "journal.jsonl").exists()
+
+
+def test_topology_inspection_failure_is_authoritative_only_for_checked_reporting(run_cli, tmp_path):
+    """Unchecked reporting stays available while checked reporting gates.
 
     A copied-package mutant raises at the production call and is compared with
     an ordinary subprocess.  This proves fail-open rendering, not recovery.
@@ -11986,31 +12643,23 @@ def test_topology_shadow_fails_open_for_ordinary_exceptions(run_cli, tmp_path):
     adopter = tmp_path / "adopter"
     adopter.mkdir()
     assert run_cli("init", cwd=adopter).returncode == 0
-    mutant = tmp_path / "raising-shadow"
-    shutil.copytree(REPO_ROOT / "validated_memory", mutant / "validated_memory")
-    topology = mutant / "validated_memory" / "journal" / "topology.py"
-    source = topology.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    function = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "inspect"
+    mutant = _raising_topology_mutant(
+        tmp_path, "raising-shadow", "distinctive shadow failure"
     )
-    lines = source.splitlines(keepends=True)
-    lines.insert(function.body[0].lineno - 1, '    raise RuntimeError("distinctive shadow failure")\n')
-    topology.write_text("".join(lines), encoding="utf-8")
     before = _final_tree_snapshot(adopter)
 
-    for arguments in ((), ("--check",)):
-        control = run_cli("journal", *arguments, cwd=adopter)
-        raised = _run_mutant_journal(mutant, adopter, *arguments)
-        assert (raised.returncode, raised.stdout, raised.stderr) == (
-            control.returncode,
-            control.stdout,
-            control.stderr,
-        )
-        assert "distinctive shadow failure" not in raised.stderr
-        assert _final_tree_snapshot(adopter) == before
+    control = run_cli("journal", cwd=adopter)
+    raised = _run_mutant_journal(mutant, adopter)
+    assert (raised.returncode, raised.stdout, raised.stderr) == (
+        control.returncode,
+        control.stdout,
+        control.stderr,
+    )
+    checked = _run_mutant_journal(mutant, adopter, "--check")
+    assert checked.returncode == 1
+    assert "topology inspection is unavailable" in checked.stderr
+    assert "distinctive shadow failure" in checked.stderr
+    assert _final_tree_snapshot(adopter) == before
 
     protocol_tree = ast.parse(
         (REPO_ROOT / "validated_memory" / "journal" / "protocol.py").read_text(
@@ -12051,21 +12700,9 @@ def test_topology_inspector_exception_fails_closed_before_recovery_effect(
     adopter = tmp_path / "adopter"
     adopter.mkdir()
     transaction = _diverged(adopter, kill_after=None)
-    mutant = tmp_path / "raising-recovery-shadow"
-    shutil.copytree(REPO_ROOT / "validated_memory", mutant / "validated_memory")
-    topology = mutant / "validated_memory" / "journal" / "topology.py"
-    source = topology.read_text(encoding="utf-8")
-    function = next(
-        node
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.FunctionDef) and node.name == "inspect"
+    mutant = _raising_topology_mutant(
+        tmp_path, "raising-recovery-shadow", "distinctive recovery shadow failure"
     )
-    lines = source.splitlines(keepends=True)
-    lines.insert(
-        function.body[0].lineno - 1,
-        '    raise RuntimeError("distinctive recovery shadow failure")\n',
-    )
-    topology.write_text("".join(lines), encoding="utf-8")
     transaction_path = (
         adopter / ".validated-memory" / "transactions" / f"{transaction}.json"
     )
@@ -12083,7 +12720,7 @@ def test_topology_inspector_exception_fails_closed_before_recovery_effect(
 
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert "distinctive recovery shadow failure" in result.stderr
-    assert f"transaction {transaction}" in result.stderr
+    assert "topology inspection is unavailable" in result.stderr
     assert "visible or may be visible" not in result.stderr
     assert transaction_path.read_bytes() == wal_before
     assert (adopter / ".gitignore").read_bytes() == target_before
@@ -12184,7 +12821,7 @@ def test_mismatched_claimless_gap_never_becomes_a_provision(
 def test_unprovided_gate_is_per_item_and_cleanup_order_independent(
     run_cli, tmp_path, cleanup_at
 ):
-    """A refused append neither terminalizes nor lends authority to cleanup."""
+    """A permanent-history gate stops even unrelated cleanup in either order."""
     transaction, prepared, history = _claimless_prepared_provision(tmp_path)
     records = _records(history)
     records[-1] = {**prepared, "purpose": "mismatched-purpose"}
@@ -12206,7 +12843,7 @@ def test_unprovided_gate_is_per_item_and_cleanup_order_independent(
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert "visible or may be visible" not in result.stderr
     assert transaction.read_bytes() == wal_before
-    assert not cleanup_path.exists()
+    assert cleanup_path.exists()
     assert not any(
         record.get("transaction") == transaction.stem
         and record["stage"] == "committed"
@@ -12233,7 +12870,7 @@ def test_topology_shadow_observes_fresh_and_idempotent_adoption_without_authorit
         "init: created memory/MEMORY.md\n"
         "init: created validated-memory.md\n"
         "init: created knowledge-extension.md\n"
-        "init: 5 created, 0 kept, 0 error(s), 0 warning(s)\n"
+        ""
     )
     assert first.stderr == ""
     after = _run_topology(adapter, adopter)
@@ -12250,7 +12887,7 @@ def test_topology_shadow_observes_fresh_and_idempotent_adoption_without_authorit
         "init: kept memory/MEMORY.md\n"
         "init: kept validated-memory.md\n"
         "init: kept knowledge-extension.md\n"
-        "init: 0 created, 5 kept, 0 error(s), 0 warning(s)\n"
+        ""
     )
     assert second.stderr == ""
     assert _final_tree_snapshot(adopter) == stable_tree
@@ -12278,7 +12915,7 @@ def test_topology_shadow_observes_refused_adoption_without_claiming_the_decision
         "init: kept memory\n"
         "init: kept memory/MEMORY.md\n"
         "init: kept knowledge-extension.md\n"
-        "init: 0 created, 4 kept, 1 error(s), 0 warning(s)\n"
+        "init: 4 item(s) confirmed, 1 gate(s)\n"
     )
     assert result.stderr == (
         "ERROR: validated-memory.md: create: file could not be created: "
@@ -12308,7 +12945,7 @@ def test_topology_shadow_observes_successful_and_refused_recovery(
         "init: created memory/MEMORY.md\n"
         "init: created validated-memory.md\n"
         "init: created knowledge-extension.md\n"
-        "init: 5 created, 0 kept, 0 error(s), 0 warning(s)\n"
+        ""
     )
     assert result.stderr == ""
     assert not _transactions(recovered)
@@ -12330,22 +12967,116 @@ def test_topology_shadow_observes_successful_and_refused_recovery(
     before_bytes = {path: path.read_bytes() for path in watched if path.exists()}
     result = run_cli("init", cwd=refused)
     assert result.returncode == 1, (result.stdout, result.stderr)
-    assert result.stdout == "init: 0 created, 0 kept, 2 error(s), 0 warning(s)\n"
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert result.stderr == (
         f"ERROR: .gitignore: journal: transaction {transaction} published "
         ".gitignore, but .gitignore is a file now and not what was published; "
         "nothing here can say whether that is wanted -- run 'validated-memory "
         f"journal --resolve {transaction}' with one of --accept, --restore or "
         "--abandon\n"
-        "ERROR: .gitignore: ignore-rule: the vault's ignore entry "
-        "(/.validated-memory/) could not be written: .gitignore has an "
-        f"unresolved transaction {transaction} that recovery could neither "
-        "complete nor discard; nothing may write to it until it is closed -- "
-        f"run 'validated-memory journal --resolve {transaction}' with one of "
-        "--accept, --restore or --abandon. Nothing has been written.\n"
     )
     assert {path: path.read_bytes() for path in watched if path.exists()} == before_bytes
     assert _run_topology(adapter, refused) == before_projection
+
+
+@pytest.mark.parametrize("established", (False, True))
+def test_gitignore_wal_gate_allows_independent_scaffold_items(
+    run_cli, tmp_path, established
+):
+    """One WAL-1 path gate yields one finding and five independent items."""
+    adopter = tmp_path / ("established" if established else "fresh")
+    adopter.mkdir()
+    if established:
+        assert run_cli("init", cwd=adopter).returncode == 0
+    (adopter / ".gitignore").write_text("build/\n", encoding="utf-8")
+    killed = subprocess.run(
+        [sys.executable, "-P", "-m", "validated_memory", "init"],
+        cwd=adopter,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(REPO_ROOT),
+            "VALIDATED_MEMORY_FAULT": "after-published",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert killed.returncode == 70, (killed.stdout, killed.stderr)
+    (adopter / ".gitignore").write_text(
+        "/.validated-memory/\nforeign/\n", encoding="utf-8"
+    )
+    transaction = _transactions(adopter)[0]["transaction"]
+    transaction_path = (
+        adopter / ".validated-memory" / "transactions" / f"{transaction}.json"
+    )
+    wal_before = transaction_path.read_bytes()
+    ignore_before = (adopter / ".gitignore").read_bytes()
+
+    result = run_cli("init", cwd=adopter)
+
+    verb = "kept" if established else "created"
+    assert (result.returncode, result.stdout, result.stderr) == (
+        1,
+        "".join(
+            f"init: {verb} {path}\n"
+            for path in (
+                "knowledge",
+                "memory",
+                "memory/MEMORY.md",
+                "validated-memory.md",
+                "knowledge-extension.md",
+            )
+        ) + "init: 5 item(s) confirmed, 1 gate(s)\n",
+        f"ERROR: .gitignore: journal: transaction {transaction} published "
+        ".gitignore, but .gitignore is a file now and not what was published; "
+        "nothing here can say whether that is wanted -- run 'validated-memory "
+        f"journal --resolve {transaction}' with one of --accept, --restore or "
+        "--abandon\n",
+    )
+    assert transaction_path.read_bytes() == wal_before
+    assert (adopter / ".gitignore").read_bytes() == ignore_before
+    for path in (
+        "knowledge",
+        "memory",
+        "memory/MEMORY.md",
+        "validated-memory.md",
+        "knowledge-extension.md",
+    ):
+        assert (adopter / path).exists()
+
+
+def test_confirmed_recovery_precedes_one_unrelated_surviving_gate(
+    run_cli, tmp_path
+):
+    """Confirmed work prints first; one damaged WAL remains one condition."""
+    transaction = _diverged(tmp_path, kill_after=None)
+    damaged = (
+        tmp_path / ".validated-memory" / "transactions" / "ffffffffffffffff.json"
+    )
+    damaged.write_bytes(b"not json\n")
+    damaged_before = damaged.read_bytes()
+
+    result = run_cli("init", cwd=tmp_path)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stdout == (
+        f"init: recovered .gitignore from transaction {transaction}\n"
+        "init: created knowledge\n"
+        "init: created memory\n"
+        "init: created memory/MEMORY.md\n"
+        "init: created validated-memory.md\n"
+        "init: created knowledge-extension.md\n"
+        "init: 6 item(s) confirmed, 1 gate(s)\n"
+    )
+    assert result.stderr == (
+        "ERROR: .validated-memory/transactions/ffffffffffffffff.json: journal: "
+        "damaged transaction ffffffffffffffff: not valid JSON: Expecting value; "
+        "its artifact is left for inspection\n"
+    )
+    assert not (
+        tmp_path / ".validated-memory" / "transactions" / f"{transaction}.json"
+    ).exists()
+    assert damaged.read_bytes() == damaged_before
 
 
 @pytest.mark.parametrize("resolution", ["accept", "abandon", "restore"])
@@ -12627,7 +13358,7 @@ def test_history_rendezvous_has_one_reader_and_bounded_call_sites():
     calls = []
     for relative in (
         "validated_memory/journal/records.py",
-        "validated_memory/journal/executor.py",
+        "validated_memory/journal/protocol.py",
     ):
         tree = ast.parse(sources[relative])
         calls.extend(
@@ -12641,7 +13372,7 @@ def test_history_rendezvous_has_one_reader_and_bounded_call_sites():
         (relative, ast.literal_eval(call.args[0]), ast.unparse(call.args[1]))
         for relative, call in calls
     }
-    assert observed == {
+    assert {
         (
             "validated_memory/journal/records.py",
             "after-first-history-read",
@@ -12663,11 +13394,12 @@ def test_history_rendezvous_has_one_reader_and_bounded_call_sites():
             "1",
         ),
         (
-            "validated_memory/journal/executor.py",
+            "validated_memory/journal/protocol.py",
             "before-identity-transition",
             "1",
         ),
-    }
+    } <= observed
+    assert all(relative.endswith(("records.py", "protocol.py")) for relative, _, _ in observed)
 
 
 def test_cross_history_reuse_precedes_same_artifact_multiplicity(

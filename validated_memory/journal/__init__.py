@@ -40,7 +40,10 @@ from the ones before it:
 - `lock` -- the per-adopter exclusive lock, and where it lives.
 - `transactions` -- the local write-ahead log: its four stages, its reader,
   and the classification a recovery acts on.
-- `executor` -- adopting runs, targeted resolution and shared mechanics.
+- `executor` -- target, WAL and record-construction mechanics selected by the
+  protocol; it owns no history or topology policy.
+- `protocol` -- the sole workflow-policy owner for adoption, inspection,
+  recovery, resolution and repair.
 - `reconcile` -- the two histories read against each other and the tree.
 - `command` -- the `journal` subcommand.
 
@@ -49,7 +52,7 @@ This file is the facade, and it is deliberately narrow: exactly the names
 somebody wants it. Everything else -- the raw line-writer, the atomic
 install, the record builder, the bootstrap, the transaction file's own
 stages -- is the journal's own, and a caller that reaches one is
-reimplementing the protocol the adopting session exists to own. A module of this
+reimplementing the workflow the protocol module exists to own. A module of this
 package is not a door either: it is imported whole, and reached by
 attribute. The one non-session write is `repair_harness_link`: a high-level
 fail-open operation used only when the journal cannot serve the startup hook.
@@ -57,7 +60,7 @@ It exposes neither persistence primitives nor their exception types and turns
 post-visibility uncertainty into a gating `JournalError`.
 """
 
-from .executor import repair_harness_link, resolve_transaction
+from .executor import repair_harness_link
 from .operations import (
     OUTCOME_APPLIED,
     OUTCOME_NOOP,
@@ -77,7 +80,7 @@ from .records import (
     digest,
 )
 from .transactions import RECOVERED, RESOLUTIONS
-from .protocol import adopting_run
+from .protocol import adopting_run, resolve_transaction
 from .command import run
 
 __all__ = [

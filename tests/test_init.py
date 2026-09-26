@@ -1000,7 +1000,11 @@ def test_outside_project_memory_is_refused_before_every_harness_action(
         results.append((result.stdout, result.stderr))
 
         assert result.returncode == 1, (result.stdout, result.stderr)
-        assert result.stderr.splitlines().count(expected_error) == 1
+        if gate == "corrupt-journal":
+            assert expected_error not in result.stderr
+            assert result.stderr.count("not valid JSON") == 1
+        else:
+            assert result.stderr.splitlines().count(expected_error) == 1
         assert str(outside.resolve()) not in result.stderr
         assert "Traceback" not in result.stderr
         assert "created symlink" not in result.stdout
@@ -1097,7 +1101,7 @@ def test_looping_project_memory_is_diagnosed_before_harness_parent_creation(
 @pytest.mark.parametrize(
     "project_memory", ("missing", "broken", "loop", "non-directory")
 )
-def test_unusable_project_memory_keeps_the_existing_no_action_warning(
+def test_corrupt_journal_stops_before_unusable_project_memory_check(
     adopter_dir, run_cli, project_memory
 ):
     assert run_cli("init", cwd=adopter_dir).returncode == 0
@@ -1124,7 +1128,12 @@ def test_unusable_project_memory_keeps_the_existing_no_action_warning(
     )
 
     assert result.returncode == 1
-    assert "no 'memory/' to link to" in result.stderr
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
+    assert result.stderr == (
+        "ERROR: journal.jsonl:14: journal: line is not valid JSON: Expecting "
+        "property name enclosed in double quotes. No target or permanent-history "
+        "change was left by this operation\n"
+    )
     assert PROJECT_MEMORY_OUTSIDE_ERROR not in result.stderr
     assert "Traceback" not in result.stderr
     assert not harness.parent.exists()
@@ -1363,18 +1372,10 @@ def test_a_recorded_symlink_carries_no_mode(
         assert "mode" not in entry, entry
 
 
-def test_a_corrupt_journal_still_restores_the_harness_symlink(
+def test_a_corrupt_journal_stops_before_the_harness_symlink(
     adopter_dir, tmp_path, run_cli
 ):
-    """A journal failure must never cost the user their memory symlink.
-
-    `journal.jsonl` is always versioned and append-only, so two branches
-    that both ran `init` conflict in it on every merge, and a botched
-    resolution leaves exactly this file. The corrupt journal still gates
-    (ADR 0008: required history that cannot be read is exit 1), but the
-    harness half of `init` is what the `SessionStart` hook exists for and it
-    runs regardless -- with the loss of its own record reported, not hidden.
-    """
+    """Damaged retained history grants no unrecorded harness authority."""
     harness_memory = _external_harness_path(adopter_dir)
     assert (
         run_cli(
@@ -1393,10 +1394,10 @@ def test_a_corrupt_journal_still_restores_the_harness_symlink(
     )
 
     assert result.returncode == 1, result.stdout
-    assert "not valid JSON" in result.stderr, result.stderr
-    assert harness_memory.is_symlink(), "the symlink was not restored"
-    assert harness_memory.resolve() == (adopter_dir / "memory").resolve()
-    assert "could not be recorded" in result.stderr, result.stderr
+    assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
+    assert result.stderr.count("not valid JSON") == 1
+    assert not harness_memory.exists() and not harness_memory.is_symlink()
+    assert "could not be recorded" not in result.stderr
 
 
 @pytest.mark.parametrize("gate", ("corrupt-journal", "unignored-vault"))
@@ -1442,11 +1443,19 @@ def test_a_whole_run_gate_still_restores_external_harness_symlinks(
     assert first.returncode == 1
     assert gate_reason in first.stderr
     assert "Traceback" not in first.stderr
-    assert harness_memory.is_symlink()
-    assert harness_memory.resolve() == (adopter_dir / "memory").resolve()
-    assert os.readlink(harness_memory) == str(
-        (adopter_dir / "memory").resolve()
-    )
+    if gate == "corrupt-journal":
+        if link_state == "missing":
+            assert not harness_memory.exists() and not harness_memory.is_symlink()
+        elif link_state == "correct":
+            assert harness_memory.resolve() == (adopter_dir / "memory").resolve()
+        else:
+            assert harness_memory.resolve() == stale.resolve()
+    else:
+        assert harness_memory.is_symlink()
+        assert harness_memory.resolve() == (adopter_dir / "memory").resolve()
+        assert os.readlink(harness_memory) == str(
+            (adopter_dir / "memory").resolve()
+        )
     assert _tree_snapshot(adopter_dir) == adopter_before
     assert (
         local_history.read_bytes() if local_history.exists() else None
@@ -1456,7 +1465,10 @@ def test_a_whole_run_gate_still_restores_external_harness_symlinks(
         "correct": "kept symlink",
         "stale": "re-pointed symlink",
     }[link_state]
-    assert verb in first.stdout
+    if gate == "corrupt-journal":
+        assert verb not in first.stdout
+    else:
+        assert verb in first.stdout
     assert "adopted" not in first.stdout
     assert "parked" not in first.stdout
 
@@ -1465,10 +1477,13 @@ def test_a_whole_run_gate_still_restores_external_harness_symlinks(
     )
     assert second.returncode == 1
     assert gate_reason in second.stderr
-    assert "kept symlink" in second.stdout
-    assert os.readlink(harness_memory) == str(
-        (adopter_dir / "memory").resolve()
-    )
+    if gate == "corrupt-journal":
+        assert "kept symlink" not in second.stdout
+    else:
+        assert "kept symlink" in second.stdout
+        assert os.readlink(harness_memory) == str(
+            (adopter_dir / "memory").resolve()
+        )
     assert _tree_snapshot(adopter_dir) == adopter_before
     assert (
         local_history.read_bytes() if local_history.exists() else None
@@ -1593,9 +1608,13 @@ def test_init_view_summary_reports_the_warning_it_printed(
 
     assert result.returncode == 0
     assert "WARNING" in result.stderr
-    match = re.search(r"(\d+) warning\(s\)", result.stdout)
-    assert match, result.stdout
-    assert int(match.group(1)) >= 1
+    assert result.stdout == (
+        "init: kept knowledge\n"
+        "init: kept memory\n"
+        "init: kept memory/MEMORY.md\n"
+        "init: kept validated-memory.md\n"
+        "init: kept knowledge-extension.md\n"
+    )
     stderr_lines = [line for line in result.stderr.splitlines() if line]
     assert len(stderr_lines) == len(set(stderr_lines)), result.stderr
 

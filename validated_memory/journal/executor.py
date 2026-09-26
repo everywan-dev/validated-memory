@@ -1,14 +1,13 @@
-"""The executor: adopting sessions, targeted resolution and shared mechanics.
+"""Mechanical target, WAL and record construction for journal workflows.
 
-The adopting session is the whole of
-docs/design/2026-09-01-the-journal-core.md §4's execution protocol -- the
-lock, path authorisation, the expected-state check, the preimage, the
-transaction file, the publication and its durability barriers, the mode,
-and both history records.
+The protocol module owns workflow policy and supplies the history callbacks.
+This module implements the deep mechanical seam: path authorisation, the
+expected-state check, the preimage, the transaction file, publication and its
+durability barriers, mode capture, and construction of both history records.
 
 It is one class because the three ways a mutation is closed share the
 protocol's later steps, not because they share all of them. Recovery
-rebuilds the same record pair through `_record`, under the same lock and
+rebuilds the same record pair through `build_record`, under the same lock and
 by the same rule about a symlink's mode; resolution does that and also
 puts bytes back through the same `_park_preimage`, `_publish` and
 `_unpublish`. Neither authorises a path, checks an expected state or opens
@@ -18,7 +17,6 @@ a transaction file: those belong to execution alone.
 import os
 import secrets
 import stat
-from contextlib import contextmanager
 from dataclasses import dataclass, replace as _replace
 from pathlib import Path
 
@@ -36,7 +34,7 @@ from .durable import (
     republish_directory,
     republish_file,
 )
-from .fault import fault_at, rendezvous_at, sleep_at
+from .fault import fault_at, sleep_at
 from .lock import Lock
 from .operations import (
     OUTCOME_APPLIED,
@@ -69,56 +67,29 @@ from .records import (
     VAULT_DIRNAME,
     JournalError,
     is_inside_path,
-    append,
     artifact_name,
     digest,
     encode_records,
     history_snapshot,
-    journal_path,
-    new_id,
-    read,
     record,
-    ensure_history_compatibility,
 )
 from .transactions import (
     CLEANUP_UNCONFIRMED,
     HISTORY_CLAIM_UNCONFIRMED,
     HISTORY_UNCONFIRMED,
-    PUBLISHED,
     TARGET_UNCONFIRMED,
-    Resolution,
     abort_transaction,
-    has_transaction,
     mark_published,
-    mark_history_append,
     mark_temporary_claim,
     mark_unconfirmed,
-    no_such_transaction,
     open_transaction,
     open_transactions,
-    historyless_transactions_message,
-    read_transaction,
     resolution_advice,
-    remove_transaction_file,
     transaction_artifact,
 )
 
 
 PREIMAGE_DIRNAME = "preimages"
-_protocol_resolve_one = None
-_protocol_repair_one = None
-
-
-def bind_resolution(callback):
-    """Install the protocol-owned selected-resolution transition."""
-    global _protocol_resolve_one
-    _protocol_resolve_one = callback
-
-
-def bind_repair(callback):
-    """Install the protocol-owned proof-bound repair transition."""
-    global _protocol_repair_one
-    _protocol_repair_one = callback
 
 
 def _exact_append_claim(durability, prefix, records):
@@ -224,9 +195,8 @@ class Run:
     `journal --check` reconciles, because a history written before this
     protocol can hold one, but nothing here writes another.
 
-    `adopting_session` owns construction and holds `Lock` around both history
-    reads, the injected identity transition and this session's complete caller
-    scope. Every
+    The protocol-owned adoption workflow constructs this mechanics object and
+    holds `Lock` across the complete caller scope. Every
     public method below also takes the lock itself: what serialises a write
     is the lock the write itself holds, not one a caller might happen to be
     inside.
@@ -237,16 +207,25 @@ class Run:
         root,
         run,
         adoption,
+        *,
+        append_history,
+        claim_history,
+        cleanup_transaction,
         append_failure=None,
         recover_all=None,
+        confirm_effect=None,
     ):
         self.root = Path(root)
         self.run = run
         self.adoption = adoption
         self._append_failure = append_failure
         self._recover_all = recover_all
+        self._confirm_effect = confirm_effect
+        self._append_history = append_history
+        self._claim_history = claim_history
+        self._cleanup_transaction = cleanup_transaction
 
-    def _survey(self, records, local):
+    def survey(self, records, local):
         """Take stock of what the histories and the open transactions say.
 
         Sets two things, and is called again by `recover` once it has
@@ -317,7 +296,12 @@ class Run:
                 self._seen.add((durability, path))
                 self._open_paths.setdefault((durability, path), item["id"])
 
-    def _record(self, op, purpose, path, durability, stage, run=None, **extra):
+    def path_is_gated(self, path, durability=REPO):
+        """Whether one normalized path is bound to a retained WAL-1 gate."""
+        location = Path(path).as_posix() if durability == REPO else os.fspath(path)
+        return (durability, location) in self._open_paths
+
+    def build_record(self, op, purpose, path, durability, stage, run=None, **extra):
         """Build one record. The caller has already asked `authorise`.
 
         `run` is this invocation's unless the caller names another, which
@@ -327,7 +311,7 @@ class Run:
 
         Every public method calls `authorise` itself, once, before it parks
         a preimage, writes bytes or appends anything -- never here, because
-        `_record` builds BOTH halves of a mutation. `execute` appends the
+        `build_record` builds BOTH halves of a mutation. `execute` appends the
         two together, after publication, so a second call here would refuse
         a mutation that has already happened -- which leaves published bytes
         with no record at all, exactly the state reconciliation exists to
@@ -385,10 +369,15 @@ class Run:
         with Lock(self.root):
             location = authorise(self.root, path, durability)
             if (durability, location) in self._seen:
-                return
-            append(
+                return Outcome(
+                    OUTCOME_NOOP,
+                    OBSERVE,
+                    location,
+                    durability,
+                )
+            self._append_history(
                 [
-                    self._record(
+                    self.build_record(
                         OBSERVE,
                         "init",
                         location,
@@ -397,10 +386,17 @@ class Run:
                         note=note,
                     )
                 ],
-                self.root,
                 durability,
             )
+            if self._confirm_effect is not None:
+                self._confirm_effect(None, location)
             self._seen.add((durability, location))
+            return Outcome(
+                OUTCOME_APPLIED,
+                OBSERVE,
+                location,
+                durability,
+            )
 
     def _park_preimage(self, path):
         """Copy the current bytes of `path` into the vault; return the reference.
@@ -843,7 +839,7 @@ class Run:
                 fields["prior_bytes"] = prior_bytes
         try:
             history_records = [
-                self._record(
+                self.build_record(
                     intention.op,
                     intention.purpose,
                     location,
@@ -859,7 +855,7 @@ class Run:
                 prefix,
                 history_records,
             )
-            mark_history_append(self.root, transaction, claim)
+            self._claim_history(transaction, claim)
         except (OSError, VisibilityUnconfirmed) as error:
             raise self._uncertainty(
                 transaction,
@@ -868,7 +864,7 @@ class Run:
                 f"durably recorded, so no history bytes were appended: {error}",
             ) from error
         try:
-            append(history_records, self.root, intention.durability)
+            self._append_history(history_records, intention.durability)
         except (OSError, VisibilityUnconfirmed) as error:
             if self._append_failure is None:
                 raise
@@ -887,6 +883,16 @@ class Run:
                 artifact=retained.artifact,
                 complete=True,
             ) from error
+        if self._confirm_effect is not None:
+            try:
+                self._confirm_effect(transaction, location)
+            except (JournalError, OSError) as error:
+                raise self._uncertainty(
+                    transaction,
+                    HISTORY_UNCONFIRMED,
+                    f"the exact history effect for {location} is visible, but "
+                    f"its coherent semantic successor is unconfirmed: {error}",
+                ) from error
         fault_at("after-history")
 
         try:
@@ -904,7 +910,7 @@ class Run:
                 f"fact could not be confirmed: {error}",
             ) from error
         try:
-            remove_transaction_file(self.root, transaction)
+            self._cleanup_transaction(transaction)
         except VisibilityUnconfirmed as error:
             raise self._uncertainty(
                 transaction,
@@ -991,7 +997,7 @@ class Run:
                 f"{transaction} remains for recovery.",
             )
         try:
-            remove_transaction_file(self.root, transaction)
+            self._cleanup_transaction(transaction)
         except VisibilityUnconfirmed as error:
             return self._refused(
                 intention,
@@ -1125,10 +1131,10 @@ class Run:
         if self._recover_all is None:
             raise RuntimeError("recovery callback is unavailable")
         results, repository, local = self._recover_all(self)
-        self._survey(list(repository), list(local))
+        self.survey(list(repository), list(local))
         return results
 
-    def _republish_target(self, facts):
+    def republish_target(self, facts):
         """Establish and confirm a fresh namespace operation for the postimage."""
         target = self.root / facts["path"]
         kind = facts["postimage"]["kind"]
@@ -1158,7 +1164,7 @@ class Run:
                 transaction_artifact(facts["id"]),
             )
 
-    def _republish_restore(self, facts):
+    def republish_restore(self, facts):
         """Confirm a fresh namespace operation for an operator's restore."""
         target = self.root / facts["path"]
         kind = facts["preimage"]["kind"]
@@ -1187,7 +1193,7 @@ class Run:
                 transaction_artifact(facts["id"]),
             )
 
-    def _restore_effect(
+    def restore_effect(
         self, location, present, intention, replacing_mode=None, data=None
     ):
         """Publish one already-authorized restore and retain displaced bytes."""
@@ -1248,67 +1254,3 @@ def repair_harness_link(path, target, anchor=Path()):
         )
         error.visibility_unconfirmed = True
         raise error from cause
-
-
-@contextmanager
-def adopting_session(
-    identity_transition,
-    append_failure,
-    recover_all,
-    root=Path(),
-):
-    """Yield one adopting session while holding its run-wide lock.
-
-    Identity creation is part of this operation: the histories are read and
-    the repository journal is bootstrapped under the same lock, before the
-    caller can perform either journalled work or the unjournalled harness
-    take-over. Session operations retain their own locks underneath it.
-    """
-    root = Path(root)
-    with Lock(root):
-        ensure_history_compatibility()
-        run = new_id()
-        records = read(root, REPO)
-        local = read(root, LOCAL)
-        transactions = open_transactions(root)
-        if not records and not local and transactions:
-            raise JournalError(
-                None,
-                historyless_transactions_message(transactions),
-                f"{VAULT_DIRNAME}/transactions",
-            )
-        rendezvous_at("before-identity-transition", 1)
-        result = identity_transition(root, run, records, local)
-        if isinstance(result, IdentityConfirmed):
-            confirmed = result
-        elif isinstance(result, IdentityRefused):
-            raise JournalError(None, result.message, result.artifact)
-        elif isinstance(result, IdentityRetained):
-            raise JournalError(None, result.message, result.artifact)
-        else:
-            raise TypeError(
-                "identity transition returned an unknown closed result"
-            )
-        session = Run(
-            root,
-            run,
-            confirmed.adoption,
-            append_failure,
-            recover_all,
-        )
-        session._survey(confirmed.repository, confirmed.local)
-        yield session
-
-
-def resolve_transaction(root, transaction_id, resolution):
-    """Compatibility facade for protocol-owned selected resolution."""
-    if _protocol_resolve_one is None:
-        raise RuntimeError("resolution callback is unavailable")
-    return _protocol_resolve_one(root, transaction_id, resolution)
-
-
-def repair_transaction(root, transaction_id):
-    """Compatibility facade for protocol-owned proof-bound repair."""
-    if _protocol_repair_one is None:
-        raise RuntimeError("repair callback is unavailable")
-    return _protocol_repair_one(root, transaction_id)

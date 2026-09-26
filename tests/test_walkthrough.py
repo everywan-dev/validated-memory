@@ -56,12 +56,15 @@ def test_the_documented_walkthrough_reproduces_end_to_end(
     # --- 1. init: adopt the layout ------------------------------------------
     init_result = run_cli("init", cwd=adopter_dir)
     assert init_result.returncode == 0, init_result.stderr
-    assert "init: 5 created, 0 kept, 0 error(s), 0 warning(s)" in init_result.stdout
-    # The one ignore entry `init` writes itself, reported on its own line:
-    # it is not an item of the layout, so it is not one of the five.
-    assert (
-        "init: ignored /.validated-memory/ in .gitignore" in init_result.stdout
-    ), init_result.stdout
+    assert init_result.stdout == (
+        "init: ignored /.validated-memory/ in .gitignore\n"
+        "init: created knowledge\n"
+        "init: created memory\n"
+        "init: created memory/MEMORY.md\n"
+        "init: created validated-memory.md\n"
+        "init: created knowledge-extension.md\n"
+    )
+    assert init_result.stderr == ""
     # `init` already registers the bundled `git_ref` probe: no extra
     # configuration step is needed before the unit below can be probed.
     config = (adopter_dir / "validated-memory.md").read_text(encoding="utf-8")

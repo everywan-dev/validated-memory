@@ -14,6 +14,7 @@ import secrets
 import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
 from .. import __version__
@@ -110,6 +111,13 @@ OPTIONAL_FIELD_TYPES = {
 }
 
 
+class HistoryErrorKind(Enum):
+    """Whether history bytes are unavailable or available but invalid."""
+
+    UNAVAILABLE = "unavailable"
+    DAMAGED = "damaged"
+
+
 class JournalError(Exception):
     """Raised when a journal cannot be read as records.
 
@@ -122,11 +130,19 @@ class JournalError(Exception):
     raiser did not say, and the caller falls back to the repository journal.
     """
 
-    def __init__(self, lineno, message, artifact=None):
+    def __init__(
+        self,
+        lineno,
+        message,
+        artifact=None,
+        *,
+        history_kind=HistoryErrorKind.DAMAGED,
+    ):
         super().__init__(message)
         self.lineno = lineno
         self.message = message
         self.artifact = artifact
+        self.history_kind = history_kind
 
 
 _Generation = tuple[int, int, int, int, int, int]
@@ -612,6 +628,84 @@ def _descriptor_stat(descriptor):
     return os.fstat(descriptor)
 
 
+def _open_failure_kind(path):
+    """Classify only stable visible evidence after canonical open failed."""
+    try:
+        before = os.lstat(path)
+    except OSError:
+        return HistoryErrorKind.DAMAGED
+    before_identity = (before.st_dev, before.st_ino, stat.S_IFMT(before.st_mode))
+    if stat.S_ISREG(before.st_mode):
+        try:
+            after = os.lstat(path)
+        except OSError:
+            return HistoryErrorKind.DAMAGED
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            stat.S_IFMT(after.st_mode),
+        )
+        if before_identity != after_identity:
+            return HistoryErrorKind.DAMAGED
+        return HistoryErrorKind.UNAVAILABLE
+    if not stat.S_ISLNK(before.st_mode):
+        return HistoryErrorKind.DAMAGED
+
+    # The failed open followed the link, so the link's own type says nothing
+    # about whether readable history could exist there.  A stable regular
+    # target is unavailable; a stable directory/device/pipe target is damaged
+    # history.  A dangling, looping or inaccessible target retains the narrow
+    # unavailable policy because no contrary target type can be observed.
+    try:
+        first_target = os.stat(path)
+    except OSError as first_error:
+        try:
+            os.stat(path)
+        except OSError as second_error:
+            try:
+                after = os.lstat(path)
+            except OSError:
+                return HistoryErrorKind.DAMAGED
+            after_identity = (
+                after.st_dev,
+                after.st_ino,
+                stat.S_IFMT(after.st_mode),
+            )
+            if (
+                before_identity == after_identity
+                and _same_error(first_error, second_error)
+            ):
+                return HistoryErrorKind.UNAVAILABLE
+        return HistoryErrorKind.DAMAGED
+    try:
+        second_target = os.stat(path)
+    except OSError:
+        return HistoryErrorKind.DAMAGED
+    try:
+        after = os.lstat(path)
+    except OSError:
+        return HistoryErrorKind.DAMAGED
+    after_identity = (after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode))
+    target_identity = (
+        first_target.st_dev,
+        first_target.st_ino,
+        stat.S_IFMT(first_target.st_mode),
+    )
+    second_target_identity = (
+        second_target.st_dev,
+        second_target.st_ino,
+        stat.S_IFMT(second_target.st_mode),
+    )
+    if (
+        before_identity != after_identity
+        or target_identity != second_target_identity
+    ):
+        return HistoryErrorKind.DAMAGED
+    if stat.S_ISREG(first_target.st_mode):
+        return HistoryErrorKind.UNAVAILABLE
+    return HistoryErrorKind.DAMAGED
+
+
 def _open_history(root, durability):
     path = journal_path(root, durability)
     opened = _OpenedHistory(durability, path)
@@ -627,6 +721,7 @@ def _open_history(root, durability):
             None,
             f"journal could not be read: {error}",
             artifact_name(durability),
+            history_kind=_open_failure_kind(path),
         )
         opened.failure_stage = "open"
         opened.failure_error = error
@@ -646,6 +741,7 @@ def _open_history(root, durability):
             None,
             f"journal could not be read: {error}",
             artifact_name(durability),
+            history_kind=HistoryErrorKind.UNAVAILABLE,
         )
         opened.failure_stage = "initial-fstat"
         opened.failure_error = error
@@ -693,6 +789,7 @@ def _read_descriptor(opened):
             None,
             f"journal could not be read: {error}",
             artifact_name(opened.durability),
+            history_kind=HistoryErrorKind.UNAVAILABLE,
         )
 
 

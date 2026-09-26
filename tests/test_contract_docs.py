@@ -213,6 +213,30 @@ def test_proof_bound_repair_successor_is_documented():
     )
 
 
+def test_c1f_fail_open_boundary_and_protocol_ownership_are_documented():
+    """Both references keep the two exceptions narrow and name policy owner."""
+    cli = (REPO_ROOT / "docs" / "reference" / "cli.md").read_text(
+        encoding="utf-8"
+    )
+    journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(
+        encoding="utf-8"
+    )
+    for text in (cli, journal):
+        prose = " ".join(text.split())
+        assert "genuinely unavailable" in prose and "journal" in prose
+        assert "vault's ignore entry" in prose
+        assert "damaged" in prose
+        assert "uncertainty after a current effect" in prose
+    assert "unavailable or corrupt journal" not in cli
+    assert "journal cannot be written at all, or refuses" not in cli
+
+    facade = (
+        REPO_ROOT / "validated_memory" / "journal" / "__init__.py"
+    ).read_text(encoding="utf-8")
+    assert "the sole workflow-policy owner" in facade
+    assert "it owns no history or topology policy" in facade
+
+
 def test_journal_introduction_links_every_section():
     """The reader-journey navigation reaches every current H2 section."""
     journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(

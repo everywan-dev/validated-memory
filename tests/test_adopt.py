@@ -597,7 +597,16 @@ def test_a_whole_run_gate_never_absorbs_or_parks_native_harness_memory(
 
         assert result.returncode == 1
         assert gate_reason in result.stderr
-        assert warning in result.stderr.splitlines()
+        if gate == "corrupt-journal":
+            assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
+            assert result.stderr == (
+                "ERROR: journal.jsonl:14: journal: line is not valid JSON: "
+                "Expecting property name enclosed in double quotes. No target "
+                "or permanent-history change was left by this operation\n"
+            )
+            assert warning not in result.stderr
+        else:
+            assert warning in result.stderr.splitlines()
         assert "Traceback" not in result.stderr
         assert "symlink" not in result.stdout
         assert _tree_snapshot(adopter_dir) == before_adopter

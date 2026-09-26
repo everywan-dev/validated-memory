@@ -34,18 +34,21 @@ from .executor import (
     IdentityRefused,
     IdentityRetained,
     Run,
-    adopting_session,
-    bind_repair,
-    bind_resolution,
 )
 from .fault import rendezvous_at
 from .lock import Lock
-from .operations import link_to, replace_file
+from .operations import (
+    OUTCOME_APPLIED,
+    OUTCOME_NOOP,
+    link_to,
+    replace_file,
+)
 from .paths import ABSENT, DIRECTORY, FILE, SYMLINK, current_state, describe, satisfies
 from .reconcile import reconcile
 from .records import (
     COMMITTED,
     HISTORY_WRITE_SCHEMA,
+    HistoryErrorKind,
     JOURNAL_FILENAME,
     LOCAL,
     OBSERVE,
@@ -111,8 +114,10 @@ from .transactions import (
     UnsupportedWal,
     UnreadableTargetWal,
     classify_evidence,
+    claimed_temporary_residue,
     cleanup_private_duplicates,
     has_transaction,
+    mark_history_append,
     mark_published,
     mark_unconfirmed,
     no_such_transaction,
@@ -260,51 +265,63 @@ class _FrozenRepairTemporary:
 class Completed:
     inspection: WorkflowInspection
     repair: RepairPresentation | None = None
+    value: Any = None
 
 
 @dataclass(frozen=True)
 class Noop:
     inspection: WorkflowInspection
+    repair: RepairPresentation | None = None
+    value: Any = None
 
 
 @dataclass(frozen=True)
 class Reported:
     inspection: WorkflowInspection
+    repair: RepairPresentation | None = None
+    value: Any = None
 
 
 @dataclass(frozen=True)
 class Warning:
     inspection: WorkflowInspection
+    repair: RepairPresentation | None = None
+    value: Any = None
 
 
 @dataclass(frozen=True)
 class ConfirmedWithGates:
     inspection: WorkflowInspection
     repair: RepairPresentation | None = None
+    value: Any = None
 
 
 @dataclass(frozen=True)
 class Refused:
     inspection: WorkflowInspection
     repair: RepairPresentation | None = None
+    value: Any = None
 
 
 @dataclass(frozen=True)
 class Retained:
     inspection: WorkflowInspection
     repair: RepairPresentation | None = None
+    value: Any = None
 
 
 @dataclass(frozen=True)
 class Unsupported:
     inspection: WorkflowInspection
     repair: RepairPresentation | None = None
+    value: Any = None
 
 
 @dataclass(frozen=True)
 class Damaged:
     inspection: WorkflowInspection
     repair: RepairPresentation | None = None
+    value: Any = None
 
 
 Result = (
@@ -714,7 +731,7 @@ def _reconstructed_records(session, evidence, stages, *, published=None):
         if evidence.prior_bytes is not None:
             fields["prior_bytes"] = evidence.prior_bytes
     return tuple(
-        session._record(
+        session.build_record(
             intention["op"],
             intention["purpose"],
             evidence.path,
@@ -1164,7 +1181,7 @@ def _recover_item(session, snapshot, observation):
         before_pair = snapshot.pair
         before_conditions = _history_conditions(snapshot)
         try:
-            session._republish_target(facts)
+            session.republish_target(facts)
         except (OSError, VisibilityUnconfirmed, JournalError) as error:
             _retain_recovery(session.root, evidence, TARGET_UNCONFIRMED, error)
         rendezvous_at("after-selected-target-recovery", 1)
@@ -1233,7 +1250,7 @@ def _recover_item(session, snapshot, observation):
         before_pair = snapshot.pair
         before_conditions = _history_conditions(snapshot)
         try:
-            session._republish_restore(facts)
+            session.republish_restore(facts)
         except (OSError, VisibilityUnconfirmed, JournalError) as error:
             _retain_recovery(session.root, evidence, RESTORE_UNCONFIRMED, error)
         rendezvous_at("after-selected-restore-recovery", 1)
@@ -1530,7 +1547,7 @@ def _restore_selected(session, snapshot, evidence, disposition):
             "restored."
         )
     try:
-        kept = session._restore_effect(
+        kept = session.restore_effect(
             location, facts["actual"], intention, mode, data
         )
     except VisibilityUnconfirmed as error:
@@ -1697,7 +1714,20 @@ def resolve_one(root, transaction_id, disposition):
                 f"({evidence.problem_reason}); restore read access and rerun "
                 "journal --check. Nothing has been changed.",
             )
-        session = Run(root, new_id(), adoption)
+        session = Run(
+            root,
+            new_id(),
+            adoption,
+            append_history=lambda records, durability: append(
+                records, root, durability
+            ),
+            claim_history=lambda transaction, claim: mark_history_append(
+                root, transaction, claim
+            ),
+            cleanup_transaction=lambda transaction: remove_transaction_file(
+                root, transaction
+            ),
+        )
         if (
             isinstance(evidence, HistoryClaimWal)
             and evidence.claim == "valid"
@@ -1749,7 +1779,7 @@ def resolve_one(root, transaction_id, disposition):
             if disposition == ACCEPT
             else f"abandoned: transaction {transaction_id}, path left as found"
         )
-        observation_record = session._record(
+        observation_record = session.build_record(
             OBSERVE,
             facts["intention"]["purpose"],
             evidence.path,
@@ -1804,9 +1834,6 @@ def resolve_one(root, transaction_id, disposition):
             evidence.path,
             gates=_resolution_gates(final, transaction_id),
         )
-
-
-bind_resolution(resolve_one)
 
 
 def _repair_expected_records(item, transaction):
@@ -2493,9 +2520,6 @@ def repair_one(root, transaction):
         return Completed(final, presentation)
 
 
-bind_repair(repair_one)
-
-
 def _identity_transition(root, run, _stale_repository, _stale_local):
     """Own the C1b identity decision and return one closed executor result."""
     root = Path(root)
@@ -2560,12 +2584,17 @@ def _identity_transition(root, run, _stale_repository, _stale_local):
         return _refused(
             "journal bootstrap requires no-replace publication, which is "
             "unavailable on this filesystem. Nothing has been published at "
-            "the canonical name"
+            "the canonical name. Use a supported local filesystem or platform, "
+            "then rerun init"
         )
     except FileExistsError:
         return _refused(
             "another artifact reached the canonical name before bootstrap; "
-            "it was preserved and not replaced"
+            "it was preserved and not replaced. Preserve it. If it may be a "
+            "valid established opening, rerun init so the classifier decides. "
+            "Otherwise restore the correct exact canonical artifact from a "
+            "trusted source under operator control, then rerun journal --check "
+            "and init. The plugin does not remove or rename it"
         )
     except BootstrapPreparationFailed as error:
         return _refused(
@@ -2607,23 +2636,233 @@ def _identity_transition(root, run, _stale_repository, _stale_local):
 
 @contextmanager
 def adopting_run(root=Path()):
-    """Preserve the opaque facade while protocol transitions are injected."""
-    with adopting_session(
-        _identity_transition,
-        _append_failure,
-        _recover_all,
-        root,
-    ) as session:
-        yield session
+    """Yield one protocol-owned adopting session under the run-wide lock."""
+    root = Path(root)
+    # An inspector implementation failure is knowable without materializing
+    # mutation infrastructure. Refuse it read-only first so a virgin tree or
+    # a lone established opening retains its exact names and bytes. Every
+    # workflow that can proceed reacquires the authoritative snapshot under
+    # the run-wide lock below.
+    preliminary = _workflow_snapshot(root)
+    if isinstance(preliminary.topology, TopologyUnavailable):
+        _raise_adoption_gate(preliminary)
+    with Lock(root):
+        ensure_history_compatibility()
+        run = new_id()
+        before = _workflow_snapshot(root)
+        _raise_adoption_gate(before)
+        transactions = open_transactions(root)
+        if not before.compatibility.records and transactions:
+            from .transactions import historyless_transactions_message
+            error = JournalError(
+                None,
+                historyless_transactions_message(transactions),
+                f"{VAULT_DIRNAME}/transactions",
+            )
+            error.stops_adoption = True
+            raise error
+        records = before.compatibility.repository
+        local = before.compatibility.local
+        rendezvous_at("before-identity-transition", 1)
+        result = _identity_transition(root, run, records, local)
+        if isinstance(result, IdentityRefused):
+            error = JournalError(None, result.message, result.artifact)
+            error.stops_adoption = True
+            raise error
+        if isinstance(result, IdentityRetained):
+            error = JournalError(None, result.message, result.artifact)
+            error.stops_adoption = True
+            raise error
+        if not isinstance(result, IdentityConfirmed):
+            raise TypeError("identity transition returned an unknown closed result")
+        mechanics = Run(
+            root,
+            run,
+            result.adoption,
+            append_history=lambda records, durability: append(
+                records, root, durability
+            ),
+            claim_history=lambda transaction, claim: mark_history_append(
+                root, transaction, claim
+            ),
+            cleanup_transaction=lambda transaction: remove_transaction_file(
+                root, transaction
+            ),
+            append_failure=_append_failure,
+            recover_all=_recover_all,
+            confirm_effect=lambda transaction, location: _confirm_current_effect(
+                root, transaction, location
+            ),
+        )
+        mechanics.survey(result.repository, result.local)
+        snapshot = _workflow_snapshot(root)
+        _raise_adoption_gate(snapshot)
+        workflow = _HistoryWorkflow(root, mechanics)
+        adopted = workflow.perform(Adopt(None))
+        yield _ProtocolAdoptionSession(workflow, adopted.value)
+
+
+class _ProtocolAdoptionSession:
+    """Compatibility-shaped presenter for protocol-dispatched operations."""
+
+    def __init__(self, workflow, mechanics):
+        self._workflow = workflow
+        self._mechanics = mechanics
+
+    @property
+    def root(self):
+        return self._mechanics.root
+
+    def observe(self, path, note, durability=REPO):
+        try:
+            result = self._workflow.perform(Observe((path, note, durability)))
+        except (JournalError, OSError) as error:
+            error.stops_adoption = True
+            raise
+        if isinstance(result, Refused) and isinstance(result.value, str):
+            error = JournalError(None, result.value, artifact_name(durability))
+            error.stops_adoption = True
+            raise error
+        return result.value
+
+    def execute(self, intention):
+        try:
+            result = self._workflow.perform(Mutate(intention))
+        except (JournalError, OSError) as error:
+            error.stops_adoption = True
+            raise
+        if isinstance(result, Refused) and isinstance(result.value, str):
+            error = JournalError(
+                None, result.value, artifact_name(intention.durability)
+            )
+            error.stops_adoption = True
+            raise error
+        return result.value
+
+    def recover(self):
+        try:
+            return self._workflow.perform(RecoverAll())
+        except (JournalError, OSError) as error:
+            error.stops_adoption = True
+            raise
+
+    def path_is_gated(self, path, durability=REPO):
+        return self._mechanics.path_is_gated(path, durability)
+
+
+def _raise_adoption_gate(snapshot):
+    """Refuse before an adopting effect when authoritative history gates."""
+    gate = _mutation_gate(snapshot)
+    if gate is None:
+        return
+    condition = next(
+        (
+            item for item in snapshot.conditions
+            if item.identity.startswith("history.")
+            and not any(
+                _is_exact_provision(item, provision)
+                for provision in _valid_provisions(snapshot)
+            )
+        ),
+        None,
+    )
+    artifact = condition.subject if condition is not None else JOURNAL_FILENAME
+    message = condition.public_message if condition is not None else gate
+    error = JournalError(
+        None,
+        f"{message}. No target or permanent-history change was left by this operation",
+        artifact,
+    )
+    if condition is None or condition.identity != "history.unreadable":
+        error.stops_adoption = True
+    raise error
+
+
+def _confirm_current_effect(root, transaction, location):
+    """Fail closed while the current WAL still retains exact retry evidence."""
+    snapshot = _workflow_snapshot(root)
+    reason = _mutation_gate(snapshot)
+    if reason is None:
+        return
+    error = JournalError(
+        None,
+        f"{reason}; coherent successor confirmation for {location} failed",
+        JOURNAL_FILENAME,
+    )
+    error.visibility_unconfirmed = True
+    raise error
 
 
 class _HistoryWorkflow:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, session=None):
         self._root = root
+        self._session = session
 
     def perform(self, operation: Operation) -> Result:
         if type(operation) is Inspect:
             return self._inspect(operation.checked)
+        if type(operation) is Adopt:
+            if self._session is None:
+                raise RuntimeError("Adopt requires the protocol-owned adopting scope")
+            observed = self._inspect(True)
+            result_type = ConfirmedWithGates if observed.inspection.conditions else Completed
+            return result_type(observed.inspection, value=self._session)
+        if type(operation) is Observe:
+            if self._session is None:
+                raise RuntimeError("Observe requires the protocol-owned adopting scope")
+            before = self._inspect(True).inspection
+            gate = _mutation_gate(before)
+            if gate is not None:
+                return Refused(before, value=gate)
+            path, note, durability = operation.observation
+            outcome = self._session.observe(path, note, durability)
+            after = self._inspect(True).inspection
+            result_type = Noop if outcome.status == OUTCOME_NOOP else (
+                ConfirmedWithGates if after.conditions else Completed
+            )
+            return result_type(after, value=outcome)
+        if type(operation) is Mutate:
+            if self._session is None:
+                raise RuntimeError("Mutate requires the protocol-owned adopting scope")
+            before = self._inspect(True).inspection
+            gate = _mutation_gate(before)
+            if gate is not None:
+                return Refused(before, value=gate)
+            outcome = self._session.execute(operation.intention)
+            after = self._inspect(True).inspection
+            if outcome.status == OUTCOME_APPLIED:
+                result_type = ConfirmedWithGates if after.conditions else Completed
+            elif outcome.status == OUTCOME_NOOP:
+                result_type = Noop
+            else:
+                result_type = Refused
+            return result_type(after, value=outcome)
+        if type(operation) is RecoverAll:
+            if self._session is None:
+                raise RuntimeError("RecoverAll requires the protocol-owned adopting scope")
+            recoveries, repository, local = _recover_all(self._session)
+            self._session.survey(list(repository), list(local))
+            after = self._inspect(True).inspection
+            effects = any(item.action == RECOVERED for item in recoveries)
+            gates = any(item.problem is not None for item in recoveries)
+            result_type = (
+                ConfirmedWithGates if effects and gates
+                else Completed if effects
+                else Refused if gates
+                else Noop
+            )
+            return result_type(after, value=tuple(recoveries))
+        if type(operation) is ResolveOne:
+            resolution = resolve_one(
+                self._root, operation.transaction, operation.disposition
+            )
+            after = self._inspect(True).inspection
+            result_type = (
+                Refused if resolution.message is not None
+                else ConfirmedWithGates if resolution.gates
+                else Completed
+            )
+            return result_type(after, value=resolution)
         if type(operation) is RepairOne:
             return repair_one(self._root, operation.transaction)
         raise NotImplementedError(
@@ -2749,26 +2988,31 @@ class _HistoryWorkflow:
             )
             return _history_error_result(state, error)
 
-        conditions = tuple(
-            sorted(
-                (
-                    *_topology_conditions(topology),
-                    *_legacy_conditions(unfinished, disagreements, anomalies),
-                    *(_wal_condition(item) for item in observations),
-                    *(
-                        ProtocolCondition(
-                            (4, location, message),
-                            "wal.damaged",
-                            location,
-                            (),
-                            message,
-                            message,
-                        )
-                        for location, message in residue
-                    ),
-                )
+        legacy = _legacy_conditions(unfinished, disagreements, anomalies)
+        topology_conditions = tuple(
+            condition
+            for condition in _topology_conditions(topology)
+            if not any(
+                set(condition.pairing).intersection(item.pairing)
+                for item in legacy
             )
         )
+        conditions = tuple(sorted((
+            *topology_conditions,
+            *legacy,
+            *(_wal_condition(item) for item in observations),
+            *(
+                ProtocolCondition(
+                    (4, location, message),
+                    "wal.damaged",
+                    location,
+                    (),
+                    message,
+                    message,
+                )
+                for location, message in residue
+            ),
+        )))
         state = WorkflowInspection(
             acquired,
             compatibility,
@@ -2799,6 +3043,20 @@ def history_workflow(root=Path()):
     yield _HistoryWorkflow(Path(root))
 
 
+def resolve_transaction(root, transaction_id, disposition):
+    """Compatibility facade that submits one protocol-owned resolution."""
+    with history_workflow(root) as history:
+        return history.perform(
+            ResolveOne(transaction_id, disposition)
+        ).value
+
+
+def repair_transaction(root, transaction_id):
+    """Compatibility facade that submits one protocol-owned repair."""
+    with history_workflow(root) as history:
+        return history.perform(RepairOne(transaction_id))
+
+
 def _parse_preceding(failure: RawHistoryFailure):
     parsed = []
     for durability, raw in zip((REPO, LOCAL), failure.preceding):
@@ -2825,7 +3083,12 @@ def _observe_wal(root, pair, histories, adoption, *, include_stored_claim=False)
         )
         for item in raw_wal
     )
-    return observations, tuple(retained_residue(root))
+    claimed = tuple(
+        residue
+        for item in raw_wal
+        for residue in claimed_temporary_residue(root, item)
+    )
+    return observations, tuple((*claimed, *retained_residue(root)))
 
 
 def _freeze_value(value):
@@ -2844,13 +3107,19 @@ def _freeze_mapping(value):
 
 def _history_error_condition(error: JournalError) -> ProtocolCondition:
     message = error.message
-    identity = "history.unreadable" if error.lineno is None else "history.malformed"
+    identity = (
+        "history.unreadable"
+        if error.history_kind is HistoryErrorKind.UNAVAILABLE
+        else "history.malformed"
+    )
     if "newer than this plugin" in message:
         identity = "history.unsupported"
+    artifact = error.artifact or "journal.jsonl"
+    subject = artifact if error.lineno is None else f"{artifact}:{error.lineno}"
     return ProtocolCondition(
         (0, identity, error.artifact or "", error.lineno or 0, message),
         identity,
-        error.artifact or "journal.jsonl",
+        subject,
         (),
         message,
         message,
@@ -2860,13 +3129,26 @@ def _history_error_condition(error: JournalError) -> ProtocolCondition:
 def _history_error_result(state: WorkflowInspection, error: JournalError) -> Result:
     if "newer than this plugin" in error.message:
         return Unsupported(state)
-    if error.lineno is not None:
+    if error.history_kind is HistoryErrorKind.DAMAGED:
         return Damaged(state)
     return Refused(state)
 
 
 def _topology_conditions(topology):
-    if isinstance(topology, TopologyUnavailable) or topology is None:
+    if isinstance(topology, TopologyUnavailable):
+        return (
+            ProtocolCondition(
+                (1, "history.topology_damage", topology.reason),
+                "history.topology_damage",
+                "journal histories",
+                (),
+                topology.reason,
+                "damaged history topology: topology inspection is unavailable: "
+                f"{topology.reason}. Preserve both histories and restore the exact "
+                "affected artifact from a trusted source; rerun journal --check",
+            ),
+        )
+    if topology is None:
         return ()
     damaged = topology.snapshot is None
     identity = "history.topology_damage" if damaged else "history.topology_gate"
@@ -2892,7 +3174,17 @@ def _topology_conditions(topology):
                 )
             ),
             condition.code,
-            _topology_condition_message(condition),
+            (
+                "damaged history topology: "
+                f"{_topology_condition_message(condition)}. Preserve both histories "
+                "and restore the exact affected artifact from a trusted source; "
+                "rerun journal --check"
+                if damaged
+                else f"{_topology_condition_message(condition)}. No automatic "
+                "reconciliation is available. Preserve both histories; restore an "
+                "accepted exact state from a trusted source if possible, then rerun "
+                "journal --check"
+            ),
         )
         for condition in topology.conditions
         if condition.level == "error"
@@ -2952,12 +3244,18 @@ def _legacy_conditions(unfinished, disagreements, anomalies):
             )
         )
     for message, entry in anomalies:
+        words = message.split()
+        pairing = (
+            (f"transaction:{words[1]}",)
+            if len(words) > 1 and words[0] == "transaction"
+            else ()
+        )
         conditions.append(
             ProtocolCondition(
                 (2, entry["path"], message),
                 "history.topology_gate",
                 entry["path"],
-                (),
+                pairing,
                 message,
                 message,
             )

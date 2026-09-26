@@ -180,7 +180,11 @@ not an empty successful condition set.
 
 A transaction recovery cannot account for is an ERROR that gates that one
 path -- nothing may write over it until `journal --resolve` closes it -- and
-the rest of the run proceeds.
+the rest of the run proceeds. Confirmed item lines are printed before gates.
+When any gate remains, the final stdout line is exactly `init: N item(s)
+confirmed, M gate(s)`; a clean or warning-only run has no aggregate summary.
+A confirmed `created`, `kept` or `re-pointed` harness-symlink line counts as
+one item in that summary, including a confirmed fail-open link restoration.
 
 The first repository history uses no-replace publication, and is published
 only after its complete opening bytes and mode have been flushed under an
@@ -311,13 +315,17 @@ record pair in `.validated-memory/local.jsonl`, carrying the transaction
 that published it and the previous target as its note (`no previous link`
 when there was none), and no mode -- a symlink has none worth recording. It
 is the one mutation the journal does not have the last word on: when the
-journal cannot be written at all, or refuses, the link is restored anyway
-and a WARNING carries the reason and the previous target, because giving a
-session its memory back is the `SessionStart` hook's only job.
+journal is genuinely unavailable before any adopting effect, the link is
+restored anyway and a WARNING carries the reason and the previous target,
+because giving a session its memory back is the `SessionStart` hook's only
+job. A readable journal's semantic, identity, topology, bootstrap, unsupported
+or damaged refusal grants no such authority, nor does uncertainty after a
+current effect.
 
-That fail-open restoration after either whole-run gate -- an unavailable or
-corrupt journal, or a vault whose ignore entry could not be established --
-first requires the same eligible in-adopter project-memory target. It never
+That fail-open restoration after either accepted whole-run gate -- a genuinely
+unavailable journal before any adopting effect, or a vault whose ignore entry
+could not be established -- first requires the same eligible in-adopter
+project-memory target. It never
 absorbs or parks a real directory at PATH. Only a missing path or an existing
 symlink can be restored after the gate. A real directory is left byte-for-byte
 in place with the warning that absorbing it would move the adopter's data;
@@ -1044,10 +1052,13 @@ journal: 1 record(s)
 journal: 1 unresolved transaction(s)
 ```
 
-**`--check`** additionally reconciles the two journals and classifies every
-unresolved transaction in the write-ahead log
+**`--check`** additionally renders the protocol's authoritative deterministic
+condition set: coherent-pair and topology conditions, permanent-history
+reconciliation, every unresolved transaction in the write-ahead log
 (`.validated-memory/transactions/`). It reports, it never repairs, and every
-finding is an ERROR:
+finding is an ERROR. On a quiescent tree, `init` consumes those same condition
+identities: permanent-history and topology conditions stop the whole adopting
+workflow, while a pre-existing WAL-1 gate remains local to its bound path:
 
 ```
 ERROR: .gitignore: journal: open transaction 56eeba099c335aaa (published) on .gitignore: diverged

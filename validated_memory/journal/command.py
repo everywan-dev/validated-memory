@@ -7,17 +7,17 @@ argument parser reaches.
 from pathlib import Path
 
 from ..findings import ERROR, EXIT_ERROR, EXIT_OK, Finding
-from .executor import resolve_transaction
 from .protocol import (
     Completed,
     ConfirmedWithGates,
     Incompatible,
     Inspect,
     RepairOne,
+    ResolveOne,
     history_workflow,
 )
 from .records import JOURNAL_FILENAME, JournalError
-from .transactions import claimed_temporary_residue, historyless_transactions_message
+from .transactions import historyless_transactions_message
 
 
 def run(check, resolve, resolution, repair, stdout, stderr):
@@ -61,12 +61,7 @@ def run(check, resolve, resolution, repair, stdout, stderr):
         print(Finding(ERROR, location, "journal", error.message).render(), file=stderr)
         print(f"journal: {len(records)} record(s), 1 error(s)", file=stdout)
         return EXIT_ERROR
-    unfinished = inspection.unfinished
-    disagreements = inspection.disagreements
-    anomalies = inspection.anomalies
     transactions = [observation.raw for observation in inspection.wal]
-    classifications = [observation.evidence for observation in inspection.wal]
-    residue = inspection.residue
 
     if not check:
         print(f"journal: {len(records)} record(s)", file=stdout)
@@ -93,41 +88,10 @@ def run(check, resolve, resolution, repair, stdout, stderr):
         )
         return EXIT_ERROR
 
-    for entry, state in unfinished:
-        condition = _checked_condition(
-            inspection, (2, entry["path"], entry["run"], state)
-        )
-        _print_checked_condition(condition, stderr)
-    for transaction, field, entry in disagreements:
-        condition = _checked_condition(
-            inspection, (2, entry["path"], transaction, field)
-        )
-        _print_checked_condition(condition, stderr)
-    for message, entry in anomalies:
-        condition = _checked_condition(
-            inspection, (2, entry["path"], message)
-        )
-        _print_checked_condition(condition, stderr)
-    claimed_residue_count = 0
-    for item, evidence in zip(transactions, classifications):
-        # Classified by the one function recovery itself acts on, so what
-        # `--check` promises and what the next run does cannot drift apart.
-        condition = next(
-            condition
-            for condition in inspection.conditions
-            if condition.order[:2] == (3, evidence.transaction)
-        )
-        _print_checked_condition(condition, stderr)
-        for residue_location, residue_message in claimed_temporary_residue(root, item):
-            print(Finding(ERROR, residue_location, "journal", residue_message).render(), file=stderr)
-            claimed_residue_count += 1
-    for location, message in residue:
-        condition = _checked_condition(inspection, (4, location, message))
+    for condition in inspection.conditions:
         _print_checked_condition(condition, stderr)
 
-    total_errors = (
-        len(unfinished) + len(disagreements) + len(anomalies) + len(transactions) + len(residue) + claimed_residue_count
-    )
+    total_errors = len(inspection.conditions)
     print(
         f"journal: {len(records)} record(s), {total_errors} error(s)",
         file=stdout,
@@ -175,11 +139,6 @@ def _run_repair(root, transaction_id, stdout, stderr):
     return EXIT_OK
 
 
-def _checked_condition(inspection, order):
-    """Return the canonical checked condition at one established order key."""
-    return next(condition for condition in inspection.conditions if condition.order == order)
-
-
 def _print_checked_condition(condition, stderr, suffix=""):
     """Render one condition identically for check and confirmed repair."""
     separator = "" if not suffix or condition.public_message.endswith((".", "!", "?")) else "."
@@ -211,7 +170,9 @@ def _run_resolve(root, transaction_id, resolution, stdout, stderr):
     should show which one.
     """
     try:
-        outcome = resolve_transaction(root, transaction_id, resolution)
+        with history_workflow(root) as history:
+            result = history.perform(ResolveOne(transaction_id, resolution))
+        outcome = result.value
     except JournalError as error:
         where = error.artifact or JOURNAL_FILENAME
         location = where if error.lineno is None else f"{where}:{error.lineno}"
