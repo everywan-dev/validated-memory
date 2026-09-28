@@ -1,7 +1,8 @@
 # Recall implementation specification
 
 Architect freeze: 2026-09-09. This specification resolves P0 of the
-[implementation plan](../2026-09-09-memory-reuse.md). The user authorized plan
+implementation plan (`docs/plans/2026-09-09-memory-reuse.md`, retired from
+the tree; last version at `c0d9e7b`). The user authorized plan
 execution. Existing storage schemas, indexes, verdict meaning and exit codes
 remain unchanged. Interface described here is the implementation target.
 

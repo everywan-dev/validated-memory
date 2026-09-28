@@ -12,5 +12,5 @@ We accept lower availability in imperfect corpora over silently presenting
 partial evidence as a complete search. Excerpts are discovery aids requiring
 source inspection; automatic probes, semantic services and mandatory action
 gates are outside this increment. See the
-[specification](../plans/memory-reuse/specification.md) for acquisition limits
+[specification](../design/2026-09-09-memory-reuse-specification.md) for acquisition limits
 and the distinction between complete input coverage and bounded output.

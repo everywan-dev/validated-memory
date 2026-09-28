@@ -13,7 +13,7 @@ remains available for an explicit lookup request or a project that has opted
 into prompt discovery or consultation-first work. Prompt discovery is a
 separate bounded candidate lookup, not evidence that the broader procedure
 improves a task. No measured time or context savings are
-claimed; see [the usefulness report](../../docs/plans/memory-reuse/usefulness-report.md).
+claimed; see [the usefulness report](../../evaluations/memory-usefulness/usefulness-report.md).
 
 This skill answers "has this project already looked at this?" from `memory/`
 and `knowledge/` before you invest in an investigation, a design or a

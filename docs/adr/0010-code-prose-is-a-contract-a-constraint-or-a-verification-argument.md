@@ -20,7 +20,8 @@ Legibility is a secondary gain. Volume is a thermometer, not the target.
 
 Volume is how it became visible, and the figures are worth stating exactly,
 because the first version of this ADR stated them wrongly. Measured at
-`b80325e` by [`measure.py`](../plans/reviews/measure.py) over
+`b80325e` by `docs/plans/reviews/measure.py` (retired from the tree; last version at
+`ee4be28`) over
 `git ls-tree`: all versioned Python is **36.9 %** prose (65 files); the
 runtime package alone is **49.0 %**; all tests are 29.1 %; the population the
 codebase review measures — the runtime plus the two largest test files — is

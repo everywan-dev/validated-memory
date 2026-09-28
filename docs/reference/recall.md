@@ -15,7 +15,7 @@ Recall is discovery, not validation: a match tells you a record exists and
 roughly why it matched, never that its claim still applies. Read the
 original file before relying on anything it returns. See [ADR
 0016](../adr/0016-retrieval-is-discovery-not-validation.md) for why, and the
-[implementation specification](../plans/memory-reuse/specification.md) for
+[implementation specification](../design/2026-09-09-memory-reuse-specification.md) for
 the exact rules this page summarizes for a user; this page is meant to stand
 on its own.
 
