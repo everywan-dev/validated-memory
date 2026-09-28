@@ -14,3 +14,8 @@ dev = ["pytest"]
 # The plugin ships skills/ and hooks/ as top-level data directories; only
 # validated_memory/ (and its subpackages) is the installable Python package.
 include = ["validated_memory*"]
+
+[tool.pytest.ini_options]
+# Collection is limited to the suite roots, so working directories elsewhere
+# in a clone never enter `python -m pytest`.
+testpaths = ["tests", "evaluations"]

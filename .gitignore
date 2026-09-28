@@ -13,6 +13,7 @@ build/
 /knowledge-extension.md
 /knowledge-index.md
 /verdicts.jsonl
+/journal.jsonl
 /knowledge.html
 /memory.html
 
@@ -27,3 +28,9 @@ build/
 /sessions/
 /.superpowers/
 /tests/test_codex_agents.py
+
+# The validated-memory vault: preimages, and the records of mutations whose
+# path leaves the repository. Always local to this clone (ADR 0008), which is
+# why `init` writes this entry itself rather than the adoption questionnaire
+# asking for it.
+/.validated-memory/
