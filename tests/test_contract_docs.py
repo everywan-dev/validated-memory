@@ -285,7 +285,7 @@ def test_documentation_hub_links_every_reference_page_and_published_adr():
         )
 
 
-def test_release_status_names_2_4_capabilities_without_exposing_private_work():
+def test_release_status_names_the_release_without_exposing_private_work():
     status = (REPO_ROOT / "docs" / "release-status.md").read_text(
         encoding="utf-8"
     )
@@ -295,7 +295,7 @@ def test_release_status_names_2_4_capabilities_without_exposing_private_work():
         encoding="utf-8"
     ))["project"]
     assert f"**{project['version']}**" in published
-    assert "c398e77" in published
+    assert f"tree/v{project['version']})" in published
     assert "resume-use" in published
     assert "show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID --material" in published
     assert "issue, design document or architecture decision" in future

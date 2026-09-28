@@ -2,14 +2,20 @@
 
 ## Published release
 
-The current published release is **2.4.0**, tagged at commit
-[`c398e77`](https://github.com/everywan-dev/validated-memory/tree/v2.4.0).
-The [GitHub release page](https://github.com/everywan-dev/validated-memory/releases/tag/v2.4.0)
+The current published release is **2.5.0**, tagged
+[`v2.5.0`](https://github.com/everywan-dev/validated-memory/tree/v2.5.0).
+The [GitHub release page](https://github.com/everywan-dev/validated-memory/releases/tag/v2.5.0)
 is the distribution record. The plugin uses the version declared in its
 manifest, so a commit on the default branch does not by itself update an
 installed plugin; see [updating](installing.md#updating).
 
-The 2.4.0 CLI includes exact-scope task resumption through `resume-use` and
+2.5.0 hardens `init` and its journal: crash-safe creation of the first
+history, recovery of interrupted transactions, explicit repair of a torn
+history append, and refusal of a harness path inside the adopter or a
+project-memory target outside it. It also bounds `probe` command output. The
+journal format stays at schema 1; see the [journal reference](reference/journal.md).
+
+Since 2.4.0 the CLI includes exact-scope task resumption through `resume-use` and
 selected historical transfer material through
 `show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID --material`. These build on
 the checked consultation, incorporation and portable-transfer capabilities
