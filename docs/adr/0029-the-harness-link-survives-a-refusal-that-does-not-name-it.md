@@ -18,8 +18,8 @@ transaction on the harness path owns that path's preimage, and relinking over it
 destroys what recovery needs. Damaged history cannot prove that no such
 transaction exists, so it cannot be treated as unavailable history.
 
-The unavailable path still has the first defect: it relinks without reading the
-vault's transactions. It also treats a lock held by another run as unavailability,
+The unavailable path and the unignored-vault path still have the first defect:
+both relink without reading the vault's transactions. It also treats a lock held by another run as unavailability,
 and that run may be writing a transaction for the harness path at that moment.
 The check and the relink also run after the run-wide lock is released, so a
 transaction can appear between them.
@@ -37,6 +37,9 @@ The harness path is made absolute before anything is compared. A recorded path
 is equivalent to it when both name the same directory entry: the parent
 directories resolve to the same directory and the final names are equal. The
 final component is never followed, because the link itself is what may be stale.
+Final names are compared without regard to case, and two existing entries that
+are the same file are equivalent whatever their names: equivalence only ever
+withholds more.
 
 **A readable refusal** allows the repair only when all of the following hold,
 read under the lock:
@@ -46,7 +49,8 @@ read under the lock:
 - every outstanding `history.*` condition is `history.topology_gate`;
 - no condition names a path equivalent to the harness path as its subject or in
   its pairing;
-- every file in the vault's transaction and preimage directories is a canonical
+- every entry in the vault's transaction and preimage directories is a regular
+  file (a symlink or any other node is never opened and withholds), is a canonical
   transaction artifact that parses, and no transaction names a path equivalent to
   the harness path.
 
@@ -62,8 +66,16 @@ declared exception and not a proof:
   restores the link once the lock is free;
 - when the lock can be taken and the vault read, the vault conditions above
   apply;
-- when the lock or the vault cannot be read at all, the repair runs as §4 always
+- when the lock cannot be taken for any other reason, the vault is still read,
+  without the lock, and the same vault conditions apply;
+- only when the vault itself cannot be read does the repair run as §4 always
   allowed, unguarded, with its WARNING.
+
+A failure that carries no marker of the protocol is treated as an unreadable
+journal, so it reaches the repair only through these vault conditions.
+
+**An unignored vault** gates the run without any journal refusal. Its repair goes
+through the same guard, with the vault conditions of an unreadable journal.
 
 In every case the repair never absorbs or parks a real directory, the project
 target is validated exactly as on a healthy run, and the run's exit code does not
@@ -100,6 +112,9 @@ This ADR supersedes only these parts of earlier decisions:
   run is an `init`, or by the next session otherwise.
 - A clone without the vault sees in `status` only conditions of the repository
   history.
+- The lock serialises validated-memory processes only. A process outside the
+  plugin that replaces the harness path between the check and the relink is not
+  guarded against; the relink never replaces a directory.
 
 ## Rejected alternatives
 
