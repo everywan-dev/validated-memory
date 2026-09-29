@@ -34,6 +34,7 @@ and consequences.
 - [Visible filesystem effects are not confirmed durability](0026-visible-filesystem-effects-are-not-confirmed-durability.md)
 - [Repair requires one explicit proof-carrying transaction](0027-repair-requires-one-explicit-proof-carrying-transaction.md)
 - [Bootstrap is no-replace and history reconfirmation is descriptor-bound](0028-bootstrap-is-no-replace-and-history-reconfirmation-is-descriptor-bound.md)
+- [The harness link survives a refusal that does not name it](0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md)
 
 ## Views and releases
 
