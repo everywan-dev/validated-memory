@@ -29,15 +29,20 @@ resolves outside the adopter is ineligible: exposing it would make external
 bytes this project's harness memory. The former is a WARNING and the latter an
 ERROR, but both are decided before any harness-path action.
 
-A journal that cannot be read or written does gate -- a required record that
-is missing or corrupt is exit 1 (ADR 0008), never a silent continuation --
-but it does not take an eligible symlink with it: the harness half runs outside
-the journalled part of the run, and the record it could not write is reported
-as a WARNING naming what was lost. So `init` can exit 1 while the link is back,
+A journal that refuses the run does gate -- a required record that is missing
+or corrupt is exit 1 (ADR 0008), never a silent continuation -- but it does not
+always take an eligible symlink with it: the harness half runs outside the
+journalled part of the run, and the record it could not write is reported as a
+WARNING naming what was lost. So `init` can exit 1 while the link is back,
 which is why the `SessionStart` hook reports success whatever the exit code
-(`hooks/restore-memory-symlink.sh`). This fail-open path restores only missing
-or existing symlinks. A real harness directory is never absorbed or parked
-after the journal gate, because that moves data rather than restoring a link.
+(`hooks/restore-memory-symlink.sh`). Whether the link is restored is decided by
+`journal.guarded_harness_repair` (ADR 0029), never here: a topology refusal
+before any adopting effect, or a journal that cannot be read, restores it when
+the vault and the history show that no transaction or condition can own the
+harness path; any other refusal withholds it, and the WARNING says why. This
+fail-open path restores only missing or existing symlinks. A real harness
+directory is never absorbed or parked after the journal gate, because that
+moves data rather than restoring a link.
 
 `init` also puts the vault's line in the repository's ignore file, first
 and before anything else it does. What that line is, which shapes of ignore
@@ -95,6 +100,7 @@ BROKEN_SYMLINK = (
 # Why a mutation went unrecorded, as `_record_symlink` says it. The link is
 # restored on both, because the failure is the record's and not the link's.
 UNRECORDED_JOURNAL = "the journal is unavailable"
+UNRECORDED_REFUSAL = "the journal refused this run"
 UNRECORDED_VAULT = (
     "the vault is not ignored, and this record can only live there"
 )
@@ -113,6 +119,16 @@ PROJECT_MEMORY_OUTSIDE = (
 UNABSORBED = (
     "already exists and is not a symlink; absorbing it moves the adopter's "
     "own data, which a run that gated may not do, so it was left untouched"
+)
+# A refusal that no repair was attempted for cannot be shown unrelated to the
+# link, and nothing about it may be assumed.
+UNATTEMPTED_REPAIR = (
+    "the journal refused this run in a way that cannot show that it is "
+    "unrelated to the link"
+)
+UNCONFIRMED_EFFECT = (
+    "an effect of this run is visible or may be visible, and its durability "
+    "is unconfirmed"
 )
 
 MEMORY_INDEX = """\
@@ -201,11 +217,16 @@ def run(harness_memory, view, stdout, stderr, app=False):
     gate -- see `_ensure_views`.
 
     A journal failure is the one ERROR that is not about a single item, and
-    required history that cannot be read is exit 1 (ADR 0008). Only genuine
-    journal unavailability before any adopting effect retains the narrow
-    fail-open harness repair. A readable semantic, identity, topology,
-    bootstrap, unsupported or damaged refusal, and uncertainty after a current
-    effect, stop the run without it. A real harness directory is never a
+    required history that cannot be read is exit 1 (ADR 0008). The exit code
+    is the same whether or not the harness link is restored afterwards.
+    `journal.harness_repair_regime` classifies the failure and
+    `journal.guarded_harness_repair` decides (ADR 0029): only a refusal that
+    preceded every adopting effect, a journal that cannot be read, or a lock
+    that another process holds reach it, and the last is always withheld. Any
+    other refusal -- identity, bootstrap, uncertainty after an effect -- is
+    withheld without calling it. A withheld link is a WARNING naming the
+    harness path and the reason, except when the harness step itself raised:
+    its ERROR already names the path. A real harness directory is never a
     symlink restoration and remains untouched after either outcome.
 
     The vault's ignore entry is the other ERROR that is not about a single
@@ -218,12 +239,13 @@ def run(harness_memory, view, stdout, stderr, app=False):
 
     What that ordering guarantees, stated exactly: no `local` transaction
     file and no preimage is written while the vault is unignored. A `local`
-    path is absolute by construction (ADR 0008), which is what a commit
-    must never carry, and the run's only `local` intention -- the harness
-    symlink's -- is dropped when this gate fires. The entry's OWN
-    transaction is written before it, and may be: it names `.gitignore`,
-    relative, with two digests and no bytes, which is what the lock file
-    beside it already is. Recovery runs before the gate too, for the
+    path is absolute (ADR 0008), which is what a commit must never carry:
+    `run` makes `--harness-memory` absolute without resolving it before
+    anything reads it, whatever spelling was typed. The run's only `local`
+    intention -- the harness symlink's -- is dropped when this gate fires.
+    The entry's OWN transaction is written before it, and may be: it names
+    `.gitignore`, relative, with two digests and no bytes, which is what the
+    lock file beside it already is. Recovery runs before the gate too, for the
     opposite reason: it only completes or closes what an earlier run began,
     and unlinks the files that said so, so it takes things off the disk
     rather than putting new ones there.
@@ -232,6 +254,9 @@ def run(harness_memory, view, stdout, stderr, app=False):
     confirmed = 0
     unignored = False
     adoption_stopped = False
+    if harness_memory is not None:
+        # Not resolved: the final component is the link, which may be stale.
+        harness_memory = os.path.abspath(harness_memory)
 
     # Everything that journals -- the scaffold and the harness symlink --
     # runs in one adopting scope: `init` is deliberately re-runnable at
@@ -239,6 +264,11 @@ def run(harness_memory, view, stdout, stderr, app=False):
     # harness take-over in `_sync_symlink`, which moves an adopter's
     # directory and is not journalled at all.
     journal_failure = None
+    # What ended the journalled part of the run, for the harness fallback
+    # below, and whether that was the harness step itself, whose ERROR names
+    # the harness path.
+    refusal = None
+    harness_step_failed = False
     try:
         with journal.adopting_run() as session:
             # Before anything this run intends: recovery only completes or
@@ -299,17 +329,20 @@ def run(harness_memory, view, stdout, stderr, app=False):
     except _HarnessSyncFailure as failure:
         findings.extend(failure.findings)
         error = failure.error
+        harness_step_failed = True
         adoption_stopped = getattr(error, "stops_adoption", False)
         if not getattr(error, "already_reported", False):
             journal_failure = Finding(
                 ERROR, _journal_artifact(error), "journal", error.message
             )
     except journal.JournalError as error:
+        refusal = error
         adoption_stopped = getattr(error, "stops_adoption", False)
         journal_failure = Finding(
             ERROR, _journal_artifact(error), "journal", error.message
         )
     except OSError as error:
+        refusal = error
         # The lock and the journal's own opening record both need to create
         # `.validated-memory/` and `journal.jsonl` before any scaffold item
         # is attempted; an adopter root that cannot be written to at all
@@ -337,28 +370,49 @@ def run(harness_memory, view, stdout, stderr, app=False):
         confirmed += view_created + view_kept
         findings.extend(view_findings)
 
-    # Only the accepted fail-open boundaries reach this unrecorded path: a
-    # genuinely unavailable journal before an adopting effect, and an
-    # unignored vault. `_sync_symlink` independently validates the project
-    # target and never absorbs a real directory here. Semantic and post-effect
-    # failures set `adoption_stopped` and categorically suppress this fallback.
-    if (
-        harness_memory is not None
-        and not adoption_stopped
-        and (journal_failure is not None or unignored)
-    ):
-        link_findings, link_confirmed = _sync_symlink(
-            harness_memory,
-            stdout,
-            None,
-            # The take-over moves the adopter's own data, so it belongs
-            # to the run that gated, not to the promise that survives
-            # it: a real directory at the harness path is left alone.
-            absorb=False,
-            unrecorded=UNRECORDED_VAULT if unignored else UNRECORDED_JOURNAL,
-        )
-        findings.extend(link_findings)
-        confirmed += link_confirmed
+    # The harness link outlives a run that gated, without its record, when the
+    # journal's own protocol allows it (ADR 0029). An unignored vault keeps its
+    # own rule: the link is restored, and no history is read to decide it.
+    # `_sync_symlink` independently validates the project target and never
+    # absorbs a real directory here.
+    if harness_memory is not None:
+        if unignored and not adoption_stopped:
+            link_findings, link_confirmed = _sync_symlink(
+                harness_memory,
+                stdout,
+                None,
+                # The take-over moves the adopter's own data, so it belongs
+                # to the run that gated, not to the promise that survives
+                # it: a real directory at the harness path is left alone.
+                absorb=False,
+                unrecorded=UNRECORDED_VAULT,
+            )
+            findings.extend(link_findings)
+            confirmed += link_confirmed
+        elif journal_failure is not None and not harness_step_failed:
+            regime = journal.harness_repair_regime(refusal)
+            if regime is None:
+                reason = (
+                    UNCONFIRMED_EFFECT
+                    if getattr(refusal, "visibility_unconfirmed", False)
+                    else UNATTEMPTED_REPAIR
+                )
+                findings.append(_withheld_link(harness_memory, reason))
+            else:
+                link_findings, link_confirmed = _sync_symlink(
+                    harness_memory,
+                    stdout,
+                    None,
+                    absorb=False,
+                    unrecorded=(
+                        UNRECORDED_REFUSAL
+                        if regime == journal.PRE_EFFECT_GATE
+                        else UNRECORDED_JOURNAL
+                    ),
+                    regime=regime,
+                )
+                findings.extend(link_findings)
+                confirmed += link_confirmed
 
     errors = [finding for finding in findings if finding.severity == ERROR]
     for finding in findings:
@@ -679,7 +733,12 @@ def _observe(session, location, note):
 
 
 def _sync_symlink(
-    raw_path, stdout, session, absorb=True, unrecorded=UNRECORDED_JOURNAL
+    raw_path,
+    stdout,
+    session,
+    absorb=True,
+    unrecorded=UNRECORDED_JOURNAL,
+    regime=None,
 ):
     """Make `raw_path` a symlink to this project's `memory/`, without deleting data.
 
@@ -707,9 +766,9 @@ def _sync_symlink(
     executor's distinct post-visibility durability uncertainty remains an
     ERROR: the link may already be visible and a clean retry cannot be claimed.
 
-    `raw_path` is outside the repository root, so its record can only ever
-    live in the vault (`durability=journal.LOCAL`) -- a repository record
-    may never carry an absolute path (ADR 0008,
+    `raw_path` is absolute and outside the repository root, so its record can
+    only ever live in the vault (`durability=journal.LOCAL`) -- a repository
+    record may never carry an absolute path (ADR 0008,
     docs/design/2026-08-30-the-journal-coverage-and-reversal-design.md
     §7). The previous target is read before the link is touched: once it
     is re-pointed, its former target is gone, which is the preimage
@@ -718,10 +777,17 @@ def _sync_symlink(
     `session` is None when nothing may be written to the journal -- it
     failed earlier in the run, or the vault holding this record is not
     ignored -- and `unrecorded` says which. The link is restored anyway,
-    that being the promise a startup hook rests on, and `_record_symlink`
-    turns the missing record into a WARNING that names the previous target,
-    so the one fact the mutation destroys is at least on stderr rather than
-    nowhere.
+    that being the promise a startup hook rests on, and the missing record
+    becomes a WARNING that names the previous target, so the one fact the
+    mutation destroys is at least on stderr rather than nowhere.
+
+    `regime` is set only for a run the journal refused, and hands the
+    decision to `journal.guarded_harness_repair` (ADR 0029): `relink` is
+    then called by it, under the run-wide lock, or not at all, and a
+    withheld link is a WARNING with the reason and a count of zero. A link
+    that already resolves to the target is left alone and unreported in that
+    case: there is nothing to restore, so there is nothing to guard, and a
+    WARNING that the link was not restored would be false.
     """
     path = Path(raw_path)
     location = path.as_posix()
@@ -779,6 +845,8 @@ def _sync_symlink(
 
     try:
         if was_symlink and path.resolve() == target:
+            if regime is not None:
+                return [], 0
             relink()
             print(f"init: kept symlink {location}", file=stdout)
             return [], 1
@@ -793,11 +861,19 @@ def _sync_symlink(
             take_over_effect = take_over.effect
             if not take_over.freed:
                 return findings, 0
-        findings.extend(
-            _record_symlink(
-                session, path, previous, target, relink, unrecorded
+        if regime is None:
+            findings.extend(
+                _record_symlink(
+                    session, path, previous, target, relink, unrecorded
+                )
             )
-        )
+        else:
+            outcome, reason = journal.guarded_harness_repair(
+                Path(), path, regime, relink
+            )
+            if outcome == journal.REPAIR_WITHHELD:
+                return [_withheld_link(location, reason)], 0
+            findings.append(_unrecorded_warning(location, previous, unrecorded))
         verb = "re-pointed" if was_symlink else "created"
         print(f"init: {verb} symlink {location} -> {target}", file=stdout)
         return findings, 1
@@ -872,6 +948,28 @@ def _previous_target(previous):
     return f"previous target: {previous}" if previous else "no previous link"
 
 
+def _unrecorded_warning(location, previous, unrecorded):
+    """The WARNING for a link restored without its record."""
+    return Finding(
+        WARNING,
+        location,
+        "journal",
+        f"the symlink could not be recorded: {unrecorded} "
+        f"({_previous_target(previous)}); restoring it anyway",
+    )
+
+
+def _withheld_link(location, reason):
+    """The WARNING for a link left as it was, with the rule that left it."""
+    return Finding(
+        WARNING,
+        Path(location).as_posix(),
+        "symlink",
+        f"the harness link was not restored: {reason}; it is restored by "
+        "the first run the journal allows",
+    )
+
+
 def _record_symlink(session, path, previous, target, relink, unrecorded):
     """Publish through a live session, or use the bounded fail-open repair.
 
@@ -885,7 +983,11 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
     "record nothing this time"
     is a general bypass wearing a flag. So the record goes through
     `execute` whenever the journal is healthy, and only the repair
-    survives when it is not.
+    survives when it is not. A run the journal refused does not come
+    here: `_sync_symlink` gives it to `journal.guarded_harness_repair`
+    (ADR 0029), which narrows §4 and takes the lock. Only an unignored
+    vault, which no history read decides, reaches the unrecorded repair
+    below.
 
     There are three outcomes:
 
@@ -895,10 +997,9 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
     - `refused` from a live session is a gate. In particular, an unresolved
       transaction on this exact path retains authority over its preimage;
       neither the link nor the WAL is changed and no unrecorded repair runs.
-    - `session is None` -- nothing may be written to the journal at all
-      (it failed earlier in the run, or the vault holding this record is
-      not ignored, and `unrecorded` says which). The same WARNING, with
-      that reason in place of a message, and the same repair.
+    - `session is None` -- the vault holding this record is not ignored,
+      so nothing may be written to it (`unrecorded` says so). The same
+      WARNING, with that reason in place of a message, and the same repair.
 
     The previous target is what the WARNING carries, because it is what the
     mutation destroys: the `link` op's inverse is "restore the previous
@@ -961,15 +1062,7 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
             raise stopped
 
     relink()
-    return [
-        Finding(
-            WARNING,
-            location,
-            "journal",
-            f"the symlink could not be recorded: {unrecorded} ({note}); "
-            "restoring it anyway",
-        )
-    ]
+    return [_unrecorded_warning(location, previous, unrecorded)]
 
 
 def _ensure_views(stdout, app=False):

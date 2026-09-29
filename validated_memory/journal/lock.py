@@ -213,7 +213,7 @@ class Lock:
                 if self._break_if_unowned():
                     continue
                 if time.monotonic() >= deadline:
-                    raise JournalError(
+                    busy = JournalError(
                         None,
                         f"another validated-memory process holds "
                         f"{self.path.as_posix()}; retry when it finishes, "
@@ -221,6 +221,10 @@ class Lock:
                         f"delete {self.path.as_posix()}",
                         self.artifact,
                     )
+                    # A live holder, which is not an unavailable journal:
+                    # `harness_repair_regime` reads this marker.
+                    busy.lock_busy = True
+                    raise busy
                 time.sleep(0.05)
 
     def __exit__(self, exc_type, exc, traceback):

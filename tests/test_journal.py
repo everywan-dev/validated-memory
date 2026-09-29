@@ -272,12 +272,14 @@ def _inside_journal(relative):
 EXECUTOR_EXCEPTIONS = {
     ("init.py", "relink"): (
         "the fail-open harness link repair: the contract requires the link "
-        "back when the journal cannot be read or written at all, which is "
-        "the SessionStart hook's only job, and an executor that requires a "
-        "working journal cannot serve it "
-        "(docs/design/2026-09-01-the-journal-core.md §4). This closure is "
-        "the whole of it -- `_sync_symlink`, which builds it, mutates "
-        "nothing itself and so is not listed"
+        "back when the journal cannot serve the SessionStart hook, whose "
+        "only job it is, and an executor that requires a working journal "
+        "cannot serve it (docs/design/2026-09-01-the-journal-core.md §4). "
+        "After a journal refusal `journal.guarded_harness_repair` calls it "
+        "under the run-wide lock or not at all (ADR 0029); an unignored "
+        "vault calls it directly. This closure is the whole of it -- "
+        "`_sync_symlink`, which builds it, mutates nothing itself and so "
+        "is not listed"
     ),
     ("adopt.py", "take_over"): (
         "the harness absorption: it recognises a tree, copies "
@@ -342,19 +344,27 @@ PERMITTED_JOURNAL_EXPORTS = (
     "JOURNAL_FILENAME",
     "JournalError",
     "LOCAL",
+    "LOCK_BUSY",
     "OUTCOME_APPLIED",
     "OUTCOME_NOOP",
     "OUTCOME_REFUSED",
+    "PRE_EFFECT_GATE",
     "RECOVERED",
+    "REPAIR_RELINKED",
+    "REPAIR_RELINKED_UNGUARDED",
+    "REPAIR_WITHHELD",
     "REPO",
     "RESOLUTIONS",
     "SYMLINK",
+    "UNAVAILABLE",
     "VAULT_DIRNAME",
     "adopting_run",
     "append_to_file",
     "create_directory",
     "create_file",
     "digest",
+    "guarded_harness_repair",
+    "harness_repair_regime",
     "link_to",
     "repair_harness_link",
     "resolve_transaction",
@@ -695,7 +705,10 @@ def test_a_path_the_journal_already_knows_is_never_observed_as_pre_existing(
     """Removing the committed half leaves an open mutation, not an observation.
 
     The next init must not claim the directory predated adoption; --check
-    must still report its applied, unfinished mutation."""
+    must still report its applied, unfinished mutation. The unfinished
+    transaction is on `knowledge`, not on the harness path, so the refusal
+    still restores the harness link (ADR 0029) and says it was not recorded;
+    the rest of the tree, journal and vault included, is byte-identical."""
     assert run_cli("init", cwd=tmp_path).returncode == 0
     journal = tmp_path / "journal.jsonl"
     kept = [
@@ -730,14 +743,19 @@ def test_a_path_the_journal_already_knows_is_never_observed_as_pre_existing(
     gated = run_cli(
         "init", "--harness-memory", str(harness), cwd=tmp_path
     )
+    target = (tmp_path / "memory").resolve()
     assert (gated.returncode, gated.stdout, gated.stderr) == (
         1,
-        "init: 0 item(s) confirmed, 1 gate(s)\n",
+        f"init: re-pointed symlink {harness} -> {target}\n"
+        "init: 1 item(s) confirmed, 1 gate(s)\n",
         checked_error
-        + ". No target or permanent-history change was left by this operation\n",
+        + ". No target or permanent-history change was left by this operation\n"
+        + f"WARNING: {harness}: journal: the symlink could not be recorded: "
+        f"the journal refused this run (previous target: {previous_target}); "
+        "restoring it anyway\n",
     )
     assert _final_tree_snapshot(tmp_path) == before
-    assert os.readlink(harness) == previous_target
+    assert harness.resolve() == target
 
     records = _records(journal)
     assert not [
@@ -2142,6 +2160,8 @@ def test_bootstrap_competitor_wins_without_replacement(run_cli, tmp_path, monkey
 
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
+    # An identity refusal is not a readable-history gate, so the link is
+    # withheld and the run says so (ADR 0029).
     assert result.stderr == (
         "ERROR: journal.jsonl: journal: another artifact reached the "
         "canonical name before bootstrap; it was preserved and not replaced. "
@@ -2149,6 +2169,10 @@ def test_bootstrap_competitor_wins_without_replacement(run_cli, tmp_path, monkey
         "the classifier decides. Otherwise restore the correct exact canonical "
         "artifact from a trusted source under operator control, then rerun "
         "journal --check and init. The plugin does not remove or rename it\n"
+        f"WARNING: {harness}: symlink: the harness link was not restored: the "
+        "journal refused this run in a way that cannot show that it is "
+        "unrelated to the link; it is restored by the first run the journal "
+        "allows\n"
     )
     assert (tmp_path / "journal.jsonl").read_bytes() == b"competitor\n"
     assert not (tmp_path / "knowledge").exists()
@@ -4474,7 +4498,10 @@ def test_exact_harness_wal_gate_precedes_directory_takeover(
 def test_non_line_numbered_history_damage_never_grants_harness_repair(
     run_cli, tmp_path, damage
 ):
-    """Available invalid bytes are damaged history, not unavailability."""
+    """Available invalid bytes are damaged history, not unavailability.
+
+    The link stays where it was and the run says so with one WARNING: damaged
+    history cannot prove that no transaction names the harness path."""
     harness = _external_harness_path(tmp_path, "memory")
     assert (
         run_cli("init", "--harness-memory", str(harness), cwd=tmp_path).returncode
@@ -4501,7 +4528,8 @@ def test_non_line_numbered_history_damage_never_grants_harness_repair(
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert result.stderr.count("ERROR:") == 1
-    assert "WARNING:" not in result.stderr
+    assert result.stderr.count("WARNING:") == 1
+    assert "the harness link was not restored" in result.stderr
     assert "No target or permanent-history change was left" in result.stderr
     assert "created symlink" not in result.stdout
     assert "re-pointed symlink" not in result.stdout
@@ -4647,7 +4675,8 @@ def test_permission_denied_open_uses_visible_history_node_kind(
     assert result.stderr.count("ERROR:") == 1
     if node_kind in ("directory", "symlink-directory"):
         assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
-        assert "WARNING:" not in result.stderr
+        assert result.stderr.count("WARNING:") == 1
+        assert "the harness link was not restored" in result.stderr
         assert _final_tree_snapshot(harness.parent) == before_harness
         if node_kind == "directory":
             assert history.is_dir() and not history.is_symlink()
@@ -4716,7 +4745,8 @@ def test_permission_denied_symlink_target_race_fails_closed(run_cli, tmp_path):
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert result.stderr.count("ERROR:") == 1
-    assert "WARNING:" not in result.stderr
+    assert result.stderr.count("WARNING:") == 1
+    assert "the harness link was not restored" in result.stderr
     assert "simulated history access denial" in result.stderr
     assert _final_tree_snapshot(harness.parent) == harness_before
     assert history.is_symlink() and os.readlink(history) == race_target.name

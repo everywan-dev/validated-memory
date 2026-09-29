@@ -57,7 +57,10 @@ package is not a door either: it is imported whole, and reached by
 attribute. The one non-session write is `repair_harness_link`: a high-level
 fail-open operation used only when the journal cannot serve the startup hook.
 It exposes neither persistence primitives nor their exception types and turns
-post-visibility uncertainty into a gating `JournalError`.
+post-visibility uncertainty into a gating `JournalError`. A run the journal
+refused restores the link through `guarded_harness_repair`, which takes the
+run-wide lock, decides, and calls the caller's relink inside it (ADR 0029);
+`harness_repair_regime` names the regime of the failure it is given.
 """
 
 from .executor import repair_harness_link
@@ -80,7 +83,18 @@ from .records import (
     digest,
 )
 from .transactions import RECOVERED, RESOLUTIONS
-from .protocol import adopting_run, resolve_transaction
+from .protocol import (
+    LOCK_BUSY,
+    PRE_EFFECT_GATE,
+    REPAIR_RELINKED,
+    REPAIR_RELINKED_UNGUARDED,
+    REPAIR_WITHHELD,
+    UNAVAILABLE,
+    adopting_run,
+    guarded_harness_repair,
+    harness_repair_regime,
+    resolve_transaction,
+)
 from .command import run
 
 __all__ = [
@@ -89,19 +103,27 @@ __all__ = [
     "JOURNAL_FILENAME",
     "JournalError",
     "LOCAL",
+    "LOCK_BUSY",
     "OUTCOME_APPLIED",
     "OUTCOME_NOOP",
     "OUTCOME_REFUSED",
+    "PRE_EFFECT_GATE",
     "RECOVERED",
+    "REPAIR_RELINKED",
+    "REPAIR_RELINKED_UNGUARDED",
+    "REPAIR_WITHHELD",
     "REPO",
     "RESOLUTIONS",
     "SYMLINK",
+    "UNAVAILABLE",
     "VAULT_DIRNAME",
     "adopting_run",
     "append_to_file",
     "create_directory",
     "create_file",
     "digest",
+    "guarded_harness_repair",
+    "harness_repair_regime",
     "link_to",
     "repair_harness_link",
     "resolve_transaction",

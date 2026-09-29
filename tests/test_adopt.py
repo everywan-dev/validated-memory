@@ -603,8 +603,9 @@ def test_a_whole_run_gate_never_absorbs_or_parks_native_harness_memory(
                 "ERROR: journal.jsonl:14: journal: line is not valid JSON: "
                 "Expecting property name enclosed in double quotes. No target "
                 "or permanent-history change was left by this operation\n"
+                + warning
+                + "\n"
             )
-            assert warning not in result.stderr
         else:
             assert warning in result.stderr.splitlines()
         assert "Traceback" not in result.stderr

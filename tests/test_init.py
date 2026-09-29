@@ -1000,11 +1000,12 @@ def test_outside_project_memory_is_refused_before_every_harness_action(
         results.append((result.stdout, result.stderr))
 
         assert result.returncode == 1, (result.stdout, result.stderr)
+        # A journal refusal reaches the harness step, which validates the
+        # project target as on a healthy run (ADR 0029), so the target's ERROR
+        # is reported under every gate and the refused history adds its own.
+        assert result.stderr.splitlines().count(expected_error) == 1
         if gate == "corrupt-journal":
-            assert expected_error not in result.stderr
             assert result.stderr.count("not valid JSON") == 1
-        else:
-            assert result.stderr.splitlines().count(expected_error) == 1
         assert str(outside.resolve()) not in result.stderr
         assert "Traceback" not in result.stderr
         assert "created symlink" not in result.stdout
@@ -1101,9 +1102,15 @@ def test_looping_project_memory_is_diagnosed_before_harness_parent_creation(
 @pytest.mark.parametrize(
     "project_memory", ("missing", "broken", "loop", "non-directory")
 )
-def test_corrupt_journal_stops_before_unusable_project_memory_check(
+def test_corrupt_journal_with_unusable_project_memory_leaves_the_harness_alone(
     adopter_dir, run_cli, project_memory
 ):
+    """The harness step validates the target first, and the path stays absent.
+
+    Pins that a refused history with no project memory to link to creates
+    nothing: the harness parent is not made, the adopter tree is untouched,
+    and the only extra line is the no-project-memory WARNING that any run
+    would give, not a withheld-link one."""
     assert run_cli("init", cwd=adopter_dir).returncode == 0
     memory = adopter_dir / "memory"
     (memory / "MEMORY.md").unlink()
@@ -1129,11 +1136,16 @@ def test_corrupt_journal_stops_before_unusable_project_memory_check(
 
     assert result.returncode == 1
     assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
-    assert result.stderr == (
+    assert result.stderr.splitlines()[0] == (
         "ERROR: journal.jsonl:14: journal: line is not valid JSON: Expecting "
         "property name enclosed in double quotes. No target or permanent-history "
-        "change was left by this operation\n"
+        "change was left by this operation"
     )
+    assert len(result.stderr.splitlines()) == 2, result.stderr
+    assert result.stderr.splitlines()[1].startswith(
+        f"WARNING: {harness}: symlink: this project has no 'memory/' to link to"
+    )
+    assert "harness link was not restored" not in result.stderr
     assert PROJECT_MEMORY_OUTSIDE_ERROR not in result.stderr
     assert "Traceback" not in result.stderr
     assert not harness.parent.exists()
@@ -1467,6 +1479,10 @@ def test_a_whole_run_gate_still_restores_external_harness_symlinks(
     }[link_state]
     if gate == "corrupt-journal":
         assert verb not in first.stdout
+        # A withheld link is said, and a link that needs nothing is not
+        # reported as withheld.
+        withheld = "the harness link was not restored" in first.stderr
+        assert withheld == (link_state != "correct"), first.stderr
     else:
         assert verb in first.stdout
     assert "adopted" not in first.stdout

@@ -25,6 +25,7 @@ from .durable import (
     remove_name,
 )
 from .executor import (
+    PREIMAGE_DIRNAME,
     AppendReconfirmationNotApplicable,
     AppendReconfirmationRefused,
     AppendReconfirmationRetained,
@@ -100,6 +101,7 @@ from .transactions import (
     RESTORE,
     RESTORE_UNCONFIRMED,
     TARGET_UNCONFIRMED,
+    TRANSACTIONS_DIRNAME,
     VERDICT_CLEANUP_UNCONFIRMED,
     VERDICT_COMPLETE,
     VERDICT_DISCARD,
@@ -628,13 +630,15 @@ def _is_exact_provision(condition, evidence):
     return False
 
 
-def _mutation_gate(snapshot):
-    """Name a global history gate not discharged by its exact WAL provision."""
-    unusable = _unusable_snapshot(snapshot)
-    if unusable is not None:
-        return unusable
+def _outstanding_history_conditions(snapshot):
+    """The `history.*` conditions no exact WAL provision discharges.
+
+    The one definition of what stops an adopting run: `_mutation_gate` refuses
+    on it, and the guarded harness repair reads the same set, so it cannot
+    call a history clear that the gate refuses.
+    """
     provisions = _valid_provisions(snapshot)
-    outstanding = tuple(
+    return tuple(
         condition
         for condition in snapshot.conditions
         if condition.identity.startswith("history.")
@@ -642,6 +646,14 @@ def _mutation_gate(snapshot):
             _is_exact_provision(condition, evidence) for evidence in provisions
         )
     )
+
+
+def _mutation_gate(snapshot):
+    """Name a global history gate not discharged by its exact WAL provision."""
+    unusable = _unusable_snapshot(snapshot)
+    if unusable is not None:
+        return unusable
+    outstanding = _outstanding_history_conditions(snapshot)
     if outstanding:
         condition = outstanding[0]
         return f"{condition.subject} has unresolved history condition {condition.detail}"
@@ -2645,12 +2657,12 @@ def adopting_run(root=Path()):
     # the run-wide lock below.
     preliminary = _workflow_snapshot(root)
     if isinstance(preliminary.topology, TopologyUnavailable):
-        _raise_adoption_gate(preliminary)
+        _raise_adoption_gate(preliminary, before_effect=True)
     with Lock(root):
         ensure_history_compatibility()
         run = new_id()
         before = _workflow_snapshot(root)
-        _raise_adoption_gate(before)
+        _raise_adoption_gate(before, before_effect=True)
         transactions = open_transactions(root)
         if not before.compatibility.records and transactions:
             from .transactions import historyless_transactions_message
@@ -2750,22 +2762,19 @@ class _ProtocolAdoptionSession:
         return self._mechanics.path_is_gated(path, durability)
 
 
-def _raise_adoption_gate(snapshot):
-    """Refuse before an adopting effect when authoritative history gates."""
+def _raise_adoption_gate(snapshot, *, before_effect=False):
+    """Refuse when authoritative history gates.
+
+    `before_effect` says that no adopting effect of this run precedes the
+    gate. It is what lets `harness_repair_regime` name the refusal a
+    `pre_effect_gate`; a refusal that does not say so is never one, because
+    the run may already have changed the project.
+    """
     gate = _mutation_gate(snapshot)
     if gate is None:
         return
-    condition = next(
-        (
-            item for item in snapshot.conditions
-            if item.identity.startswith("history.")
-            and not any(
-                _is_exact_provision(item, provision)
-                for provision in _valid_provisions(snapshot)
-            )
-        ),
-        None,
-    )
+    outstanding = _outstanding_history_conditions(snapshot)
+    condition = outstanding[0] if outstanding else None
     artifact = condition.subject if condition is not None else JOURNAL_FILENAME
     message = condition.public_message if condition is not None else gate
     error = JournalError(
@@ -2775,6 +2784,7 @@ def _raise_adoption_gate(snapshot):
     )
     if condition is None or condition.identity != "history.unreadable":
         error.stops_adoption = True
+        error.pre_effect_gate = before_effect
     raise error
 
 
@@ -3055,6 +3065,190 @@ def repair_transaction(root, transaction_id):
     """Compatibility facade that submits one protocol-owned repair."""
     with history_workflow(root) as history:
         return history.perform(RepairOne(transaction_id))
+
+
+# The three ways a refused run can reach `guarded_harness_repair`, and what
+# it answers. `harness_repair_regime` maps a failure to a regime.
+PRE_EFFECT_GATE = "pre_effect_gate"
+LOCK_BUSY = "lock_busy"
+UNAVAILABLE = "unavailable"
+REPAIR_RELINKED = "relinked"
+REPAIR_RELINKED_UNGUARDED = "relinked_unguarded"
+REPAIR_WITHHELD = "withheld"
+_LOCK_BUSY_REASON = (
+    "another validated-memory process holds the run-wide lock and may be "
+    "recording a change to the harness link"
+)
+
+
+def harness_repair_regime(failure):
+    """The regime a failed run may repair the harness link under, or None.
+
+    `failure` is the exception that ended the journalled part of the run.
+    None means no repair may be attempted: the failure may follow an
+    adopting effect of the run, or leaves an effect unconfirmed.
+
+    A failure that carries none of the markers read here is taken for an
+    unavailable journal, so every new refusal must set `stops_adoption`, or
+    the harness link is restored over it.
+    """
+    if getattr(failure, "visibility_unconfirmed", False):
+        return None
+    if getattr(failure, "lock_busy", False):
+        return LOCK_BUSY
+    if getattr(failure, "pre_effect_gate", False):
+        return PRE_EFFECT_GATE
+    if getattr(failure, "stops_adoption", False):
+        return None
+    return UNAVAILABLE
+
+
+def guarded_harness_repair(root, harness_path, regime, relink):
+    """Relink the harness path under the run-wide lock, or withhold and say why.
+
+    Returns `(outcome, reason)`. `reason` is None unless the outcome is
+    `REPAIR_WITHHELD`, and then it names the rule that fired.
+
+    `relink` is a zero-argument callable that publishes the link atomically.
+    It is called at most once, and only while the lock is held, so no
+    transaction can appear between the decision and the link. Whatever it
+    raises reaches the caller unchanged. `harness_path` is the path `relink`
+    publishes, not necessarily absolute.
+
+    `regime` is what the caller knows of the refusal:
+
+    - `LOCK_BUSY`: withheld at once, without waiting for the lock again. The
+      holder may be recording a change to the harness path.
+    - `PRE_EFFECT_GATE`: the history was readable and refused before any
+      adopting effect. The link is restored only if the vault holds no
+      residue and no transaction that is unreadable or names the harness
+      path, the history snapshot is usable, every outstanding `history.*`
+      condition is `history.topology_gate`, and no condition names the harness
+      path as its subject or in its pairing.
+    - `UNAVAILABLE`: the history could not be read. The vault rules above
+      apply. When the lock cannot be taken or the vault cannot be listed the
+      link is restored unguarded (`REPAIR_RELINKED_UNGUARDED`): that is the
+      exception of docs/design/2026-09-01-the-journal-core.md §4, which
+      promises the link when the journal cannot be read at all, and it is an
+      availability promise, not a proof.
+
+    A `PRE_EFFECT_GATE` refusal has no such exception: when the lock or the
+    vault cannot be read the rules cannot be shown to hold, and the repair is
+    withheld. That withholding is unpinned: it needs the vault to fail
+    between the gate and the repair, which no fixture produces. A regime
+    that is none of these is a caller error.
+
+    Every path is compared as a directory entry (`_same_entry`), never as
+    text. The check, the relink and the release of the lock are one critical
+    section; the caller must not run the check separately.
+    """
+    if regime == LOCK_BUSY:
+        return REPAIR_WITHHELD, _LOCK_BUSY_REASON
+    if regime not in (PRE_EFFECT_GATE, UNAVAILABLE):
+        raise ValueError(f"unknown harness repair regime: {regime!r}")
+    root = Path(root)
+    lock = Lock(root)
+    try:
+        lock.__enter__()
+    except JournalError as error:
+        if getattr(error, "lock_busy", False):
+            return REPAIR_WITHHELD, _LOCK_BUSY_REASON
+        return _unreadable_repair(regime, relink, error.message)
+    except OSError as error:
+        return _unreadable_repair(regime, relink, str(error))
+    try:
+        try:
+            reason = _harness_repair_obstacle(root, harness_path, regime)
+        except (OSError, JournalError) as error:
+            message = error.message if isinstance(error, JournalError) else str(error)
+            return _unreadable_repair(regime, relink, message)
+        if reason is not None:
+            return REPAIR_WITHHELD, reason
+        relink()
+        return REPAIR_RELINKED, None
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def _unreadable_repair(regime, relink, why):
+    """Answer for a lock or vault that cannot be read; `relink` may run unlocked."""
+    if regime == UNAVAILABLE:
+        relink()
+        return REPAIR_RELINKED_UNGUARDED, None
+    return REPAIR_WITHHELD, f"the lock or the vault could not be read: {why}"
+
+
+def _harness_repair_obstacle(root, harness_path, regime):
+    """The reason the link must not be restored, or None; the lock is held.
+
+    Raises `OSError` or `JournalError` when the vault cannot be read at all.
+    `retained_residue` reports a directory it cannot list as residue, so the
+    two vault directories are listed here first: an unreadable one is the
+    unreadable-vault case, not an obstruction.
+    """
+    same = _same_entry(root, harness_path)
+    for name in (TRANSACTIONS_DIRNAME, PREIMAGE_DIRNAME):
+        try:
+            os.listdir(root / VAULT_DIRNAME / name)
+        except FileNotFoundError:
+            pass
+    residue = retained_residue(root)
+    if residue:
+        location, why = residue[0]
+        return f"{location} is retained in the vault: {why}"
+    for entry in open_transactions(root):
+        transaction = entry["id"]
+        if "damaged" in entry:
+            return f"transaction {transaction} cannot be read: {entry['damaged']}"
+        intention = entry.get("intention")
+        path = intention.get("path") if isinstance(intention, Mapping) else None
+        if not isinstance(path, str) or not path:
+            return f"transaction {transaction} names no path"
+        if same(path):
+            return f"transaction {transaction} names the harness path"
+    if regime != PRE_EFFECT_GATE:
+        return None
+    snapshot = _workflow_snapshot(root)
+    for condition in _outstanding_history_conditions(snapshot):
+        # Unpinned: every history condition other than a topology gate comes
+        # with an incompatible or damaged snapshot, which the rule below
+        # withholds as well, so no fixture reaches this one alone.
+        if condition.identity != "history.topology_gate":
+            return (
+                f"{condition.identity} is outstanding on {condition.subject}"
+            )
+    unusable = _unusable_snapshot(snapshot)
+    if unusable is not None:
+        return f"the history snapshot cannot be used: {unusable}"
+    for condition in snapshot.conditions:
+        if any(same(name) for name in (condition.subject, *condition.pairing)):
+            return f"{condition.identity} names the harness path"
+    return None
+
+
+def _same_entry(root, harness_path):
+    """A predicate: does a recorded path name the same directory entry?
+
+    The harness path is made absolute against `root` without resolving its
+    final component, because the link itself is what may be stale. A
+    recorded path is taken relative to `root` when it is relative. Two paths
+    name one entry when the real paths of their parents and their final
+    names are equal. A string that is not a path -- `transaction:<id>`,
+    `adoption:<id>` -- is joined the same way, so it equals the harness path
+    only if that path is literally `<root>/<string>`.
+    """
+    base = os.path.abspath(root)
+
+    def key(path):
+        absolute = os.path.abspath(os.path.join(base, os.fspath(path)))
+        return os.path.realpath(os.path.dirname(absolute)), os.path.basename(absolute)
+
+    wanted = key(harness_path)
+
+    def same(recorded):
+        return isinstance(recorded, str) and bool(recorded) and key(recorded) == wanted
+
+    return same
 
 
 def _parse_preceding(failure: RawHistoryFailure):

@@ -18,6 +18,7 @@ non-zero, and no case may delete data. That is the whole point of a
 `SessionStart` hook -- it must never be able to break a session.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -97,7 +98,11 @@ def test_hook_creates_the_symlink_for_an_adopter_project(tmp_path):
 
 
 def test_hook_does_not_repair_over_a_corrupt_journal(tmp_path):
-    """The shell hook stays fail-open, but damaged history grants no repair."""
+    """The shell hook stays fail-open, but damaged history grants no repair.
+
+    Damaged history cannot show that no transaction names the harness path,
+    so the link is withheld, and the session is told instead of losing its
+    memory silently: the WARNING is the second line of the hook's stderr."""
     project_dir = tmp_path / "project"
     memory_dir = _write_adopter_project(project_dir)
     config_dir = tmp_path / "config"
@@ -119,14 +124,67 @@ def test_hook_does_not_repair_over_a_corrupt_journal(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
-    assert result.stderr == (
+    error, warning = result.stderr.splitlines()
+    assert error == (
         "ERROR: journal.jsonl:11: journal: line is not valid JSON: "
         "Expecting property name enclosed in double quotes. No target or "
-        "permanent-history change was left by this operation\n"
+        "permanent-history change was left by this operation"
     )
+    assert warning.startswith(
+        f"WARNING: {harness_memory}: symlink: the harness link was not "
+        "restored: history.malformed is outstanding on journal.jsonl:11; "
+    ), warning
+    assert warning.endswith("it is restored by the first run the journal allows")
     assert not harness_memory.exists() and not harness_memory.is_symlink()
     assert journal.read_bytes() == journal_before
     assert memory_dir.is_dir()
+
+
+def test_hook_restores_the_link_under_a_topology_refusal(tmp_path):
+    """A refusal that names no harness path does not cost the session its memory.
+
+    The history gains a second adoption lineage, which `init` refuses before
+    any adopting effect (ADR 0029). The hook still exits 0, and the link the
+    first session created and something removed is back."""
+    project_dir = tmp_path / "project"
+    memory_dir = _write_adopter_project(project_dir)
+    config_dir = tmp_path / "config"
+    environment = {
+        "HOME": str(tmp_path / "home"),
+        "CLAUDE_CONFIG_DIR": str(config_dir),
+        "CLAUDE_PROJECT_DIR": str(project_dir),
+    }
+    assert _run_hook(environment).returncode == 0
+    harness_memory = config_dir / "projects" / _slug(project_dir) / "memory"
+    assert harness_memory.resolve() == memory_dir.resolve()
+    harness_memory.unlink()
+    journal = project_dir / "journal.jsonl"
+    second_lineage = {
+        "schema": 1,
+        "at": "2026-01-01T00:00:00Z",
+        "version": "2.4.0",
+        "adoption": "B",
+        "run": "run",
+        "durability": "repo",
+        "op": "observe",
+        "purpose": "fixture",
+        "path": "memory",
+        "stage": "committed",
+    }
+    journal.write_bytes(
+        journal.read_bytes()
+        + (json.dumps(second_lineage, sort_keys=True) + "\n").encode("utf-8")
+    )
+    journal_before = journal.read_bytes()
+
+    result = _run_hook(environment)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert "unresolved topology condition" in result.stderr
+    assert harness_memory.is_symlink()
+    assert harness_memory.resolve() == memory_dir.resolve()
+    assert journal.read_bytes() == journal_before
 
 
 # --- non-adopter project: a clean no-op ---------------------------------------
