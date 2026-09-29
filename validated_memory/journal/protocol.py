@@ -3212,24 +3212,15 @@ def _harness_repair_obstacle(root, harness_path, regime):
 
     Raises `OSError` or `JournalError` when the vault cannot be read at all.
     `retained_residue` reports a directory it cannot list as residue, so the
-    two vault directories are listed here first: an unreadable one is the
-    unreadable-vault case, not an obstruction. The listing is by entry type,
-    without following links, and it comes before anything is opened: a symlink
-    or any other node that is not a regular file is retained residue, and
-    opening one can block on a pipe or read a file outside the vault.
+    two vault directories are listed first, by `_vault_node_that_is_not_a_file`:
+    an unreadable one is the unreadable-vault case, not an obstruction, and a
+    node that is not a regular file is retained residue, found before anything
+    is opened.
     """
     same = _same_entry(root, harness_path)
-    for name in (TRANSACTIONS_DIRNAME, PREIMAGE_DIRNAME):
-        try:
-            with os.scandir(root / VAULT_DIRNAME / name) as entries:
-                for entry in entries:
-                    if not entry.is_file(follow_symlinks=False):
-                        return (
-                            f"the vault holds {VAULT_DIRNAME}/{name}/{entry.name}, "
-                            "which is not a regular file"
-                        )
-        except FileNotFoundError:
-            pass
+    node = _vault_node_that_is_not_a_file(root)
+    if node is not None:
+        return f"the vault holds {node}, which is not a regular file"
     residue = retained_residue(root)
     if residue:
         location, why = residue[0]
@@ -3255,6 +3246,26 @@ def _harness_repair_obstacle(root, harness_path, regime):
     for condition in snapshot.conditions:
         if any(same(name) for name in (condition.subject, *condition.pairing)):
             return _CONDITION_ON_LINK_REASON
+    return None
+
+
+def _vault_node_that_is_not_a_file(root):
+    """The first entry of the vault's transaction or preimage directory that is
+    not a regular file, as `<vault>/<directory>/<name>`, or None.
+
+    Entries are classified by type without following links and nothing is
+    opened, because opening a symlink can block on a pipe or read a file
+    outside the vault. A directory that does not exist has no such entry;
+    `OSError` reaches the caller for one that cannot be listed.
+    """
+    for name in (TRANSACTIONS_DIRNAME, PREIMAGE_DIRNAME):
+        try:
+            with os.scandir(root / VAULT_DIRNAME / name) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False):
+                        return f"{VAULT_DIRNAME}/{name}/{entry.name}"
+        except FileNotFoundError:
+            pass
     return None
 
 
@@ -3316,10 +3327,18 @@ def history_condition_count(root=Path()):
     Read-only: it acquires no lock and creates no file, and it needs no
     vault. It reads the snapshot the adoption gate reads. A history that
     cannot be read as records counts as one, the single error `journal
-    --check` reports for it. `OSError` reaches the caller when the
-    inspection cannot be made.
+    --check` reports for it. Nothing is read from the vault while one of its
+    transaction or preimage entries is not a regular file, because opening a
+    symlink can block on a pipe: `JournalError` reaches the caller then, and
+    `OSError` when the inspection cannot be made.
     """
-    snapshot = _workflow_snapshot(Path(root))
+    root = Path(root)
+    node = _vault_node_that_is_not_a_file(root)
+    if node is not None:
+        raise JournalError(
+            None, f"{node} is not a regular file; nothing in the vault was read", node
+        )
+    snapshot = _workflow_snapshot(root)
     if isinstance(snapshot.compatibility, Incompatible):
         return 1
     return len(_outstanding_history_conditions(snapshot))

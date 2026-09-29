@@ -16,6 +16,8 @@ import json
 import os
 import shutil
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1454,3 +1456,54 @@ def test_status_says_when_the_journal_cannot_be_inspected(adopter_dir, run_cli):
     assert result.stderr.splitlines()[-1] == (
         "WARNING: journal.jsonl: journal: unreadable; run journal --check"
     )
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo"), reason="this platform has no named pipes"
+)
+@pytest.mark.parametrize("where", ("transactions", "preimages"))
+def test_status_does_not_open_a_vault_entry_that_is_not_a_regular_file(
+    adopter_dir, where
+):
+    """A symlink in the vault is reported as an unreadable journal, never opened.
+
+    `x.json` points at a named pipe, which blocks whoever opens it for
+    reading, and `status` is what the session-start hook runs under a timeout.
+    The vault's two directories are classified by entry type, without following
+    links, before the inspection reads anything; the whole run is bounded so
+    that a hang is a failure. The tree is byte-identical afterwards. What this
+    does not show is how `init` treats the same vault, which is not decided
+    here."""
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    command = [sys.executable, "-P", "-m", "validated_memory"]
+    assert subprocess.run(
+        [*command, "init"], cwd=adopter_dir, env=env, capture_output=True
+    ).returncode == 0
+    directory = adopter_dir / ".validated-memory" / where
+    directory.mkdir(exist_ok=True)
+    pipe = adopter_dir.parent / f"{adopter_dir.name}-pipe"
+    os.mkfifo(pipe)
+    (directory / ("x.json" if where == "transactions" else "a" * 64)).symlink_to(pipe)
+    before = _final_tree_snapshot(adopter_dir)
+
+    try:
+        result = subprocess.run(
+            [*command, "status", "--skip-index"],
+            cwd=adopter_dir,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("status opened the vault entry and hung")
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert _journal_lines(result) == [
+        "status: journal: unreadable; run journal --check"
+    ]
+    assert result.stderr.splitlines()[-1] == (
+        "WARNING: journal.jsonl: journal: unreadable; run journal --check"
+    )
+    assert _final_tree_snapshot(adopter_dir) == before

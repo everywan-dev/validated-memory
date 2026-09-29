@@ -1031,7 +1031,10 @@ status: journal: 1 history condition(s) stop init; run journal --check
 ```
 
 An inspection that cannot be made reads `status: journal: unreadable; run
-journal --check`. A history with no conditions, or no journal at all, adds
+journal --check`, and so does a vault whose transaction or preimage directory
+holds an entry that is not a regular file: entries are classified without
+following links, and nothing in the vault is opened, because opening a symlink
+can block on a pipe. A history with no conditions, or no journal at all, adds
 nothing. The inspection creates no file and needs no vault, so a clone
 without `.validated-memory/` sees only the conditions of the repository
 history. The exit code does not change: this is a WARNING, never a gate

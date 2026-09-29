@@ -236,6 +236,9 @@ GUARDED_REPAIR_SENTENCES = {
         "withholds it.",
         "A link that already resolves to `memory/` needs nothing and gets no "
         "WARNING, whichever refusal ended the run.",
+        "and so does a vault whose transaction or preimage directory holds an "
+        "entry that is not a regular file: entries are classified without "
+        "following links, and nothing in the vault is opened",
     ),
     "journal.md": (
         "nothing is collapsed lexically",
