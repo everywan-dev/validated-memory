@@ -634,8 +634,8 @@ def _outstanding_history_conditions(snapshot):
     """The `history.*` conditions no exact WAL provision discharges.
 
     The one definition of what stops an adopting run: `_mutation_gate` refuses
-    on it, and the guarded harness repair reads the same set, so it cannot
-    call a history clear that the gate refuses.
+    on it, and the guarded harness repair and `history_condition_count` read
+    the same set, so neither can call a history clear that the gate refuses.
     """
     provisions = _valid_provisions(snapshot)
     return tuple(
@@ -3249,6 +3249,25 @@ def _same_entry(root, harness_path):
         return isinstance(recorded, str) and bool(recorded) and key(recorded) == wanted
 
     return same
+
+
+def history_condition_count(root=Path()):
+    """How many outstanding `history.*` conditions stop an adopting run.
+
+    Read-only: it acquires no lock and creates no file, and it needs no
+    vault. It reads the snapshot the adoption gate reads. A history that
+    cannot be read as records counts as one, the single error `journal
+    --check` reports for it; an unusable snapshot with no condition to show
+    for it counts as one, because the run is refused all the same. `OSError`
+    reaches the caller when the inspection cannot be made.
+    """
+    snapshot = _workflow_snapshot(Path(root))
+    if isinstance(snapshot.compatibility, Incompatible):
+        return 1
+    count = len(_outstanding_history_conditions(snapshot))
+    if count == 0 and _unusable_snapshot(snapshot) is not None:
+        return 1
+    return count
 
 
 def _parse_preceding(failure: RawHistoryFailure):

@@ -9,12 +9,17 @@ out to those subcommands: `validate.collect_and_validate` runs once, its
 `documents` feed both the index check and the freshness/age sections, and
 `verdicts.read` reads the log once for both the verdict view and
 `recorded_at`. `status` never runs `probe`.
+
+It also reports, read-only, the history conditions that would stop `init`
+(ADR 0029). That report is a WARNING and never changes the exit code, so the
+gate stays what ADR 0002 says it is.
 """
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import derive as derive_module
+from . import journal
 from . import lint as lint_module
 from . import validate
 from . import verdicts as verdicts_module
@@ -84,6 +89,8 @@ def run(skip_index, fail_on, max_verdict_age, fail_on_aged, as_of, stdout, stder
             summaries,
         )
 
+    _report_journal(findings, summaries)
+
     for finding in findings:
         print(finding.render(), file=stderr)
     for line in summaries:
@@ -96,6 +103,27 @@ def run(skip_index, fail_on, max_verdict_age, fail_on_aged, as_of, stdout, stder
         file=stdout,
     )
     return EXIT_ERROR if error_count else EXIT_OK
+
+
+def _report_journal(findings, summaries):
+    """Append the journal line and WARNING when history stops `init`.
+
+    Nothing is appended for a history with no conditions or no journal, and
+    nothing is ever an ERROR: `status` gates only what `validate`, `lint` and
+    `derive --check` gate. The inspection is `journal.history_condition_count`,
+    which writes nothing, so this cannot change the tree `status` reports on.
+    An inspection that cannot be made is reported as unreadable.
+    """
+    try:
+        count = journal.history_condition_count()
+    except (OSError, journal.JournalError):
+        message = "unreadable; run journal --check"
+    else:
+        if not count:
+            return
+        message = f"{count} history condition(s) stop init; run journal --check"
+    findings.append(Finding(WARNING, journal.JOURNAL_FILENAME, "journal", message))
+    summaries.append(f"status: journal: {message}")
 
 
 def _check_derived_state(

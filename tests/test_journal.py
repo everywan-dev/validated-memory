@@ -365,6 +365,7 @@ PERMITTED_JOURNAL_EXPORTS = (
     "digest",
     "guarded_harness_repair",
     "harness_repair_regime",
+    "history_condition_count",
     "link_to",
     "repair_harness_link",
     "resolve_transaction",

@@ -14,6 +14,7 @@ test_derive.py does.
 
 import json
 import os
+import shutil
 import stat
 from pathlib import Path
 
@@ -1259,3 +1260,197 @@ def test_status_help_exits_clean(adopter_dir, run_cli):
 
     assert result.returncode == 0
     assert "usage" in result.stdout.lower()
+
+
+# --- the journal: what the next `init` would refuse (ADR 0029) -----------------
+
+JOURNAL_LINE = (
+    "status: journal: {count} history condition(s) stop init; run journal --check"
+)
+JOURNAL_WARNING = (
+    "WARNING: journal.jsonl: journal: {count} history condition(s) stop init; "
+    "run journal --check"
+)
+
+
+def _append_second_lineage(path, durability="repo"):
+    """Append a record of a second adoption lineage: a history topology gate."""
+    record = {
+        "schema": 1,
+        "at": "2026-01-01T00:00:00Z",
+        "version": "2.4.0",
+        "adoption": "B",
+        "run": "run",
+        "durability": durability,
+        "op": "observe",
+        "purpose": "fixture",
+        "path": "memory" if durability == "repo" else "/outside",
+        "stage": "committed",
+    }
+    path.write_bytes(
+        path.read_bytes() + (json.dumps(record, sort_keys=True) + "\n").encode()
+    )
+
+
+def _journal_lines(result):
+    return [line for line in result.stdout.splitlines() if "status: journal" in line]
+
+
+def _warnings_overall(result):
+    """The warning count of the overall line, whatever else the fixture warns of."""
+    overall = result.stdout.splitlines()[-1]
+    assert overall.startswith("status: 0 error(s), "), overall
+    return int(overall.split(", ")[1].split(" ")[0])
+
+
+def test_status_reports_a_history_the_next_init_would_refuse(adopter_dir, run_cli):
+    """A topology gate is one summary line just before `overall`, and a WARNING.
+
+    The exit code is the one `validate`, `lint` and `derive --check` alone
+    decide (ADR 0002): a refused journal does not gate `status`."""
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    baseline = run_cli("status", "--skip-index", cwd=adopter_dir)
+    _append_second_lineage(adopter_dir / "journal.jsonl")
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    lines = result.stdout.splitlines()
+    assert lines[-2] == JOURNAL_LINE.format(count=1), lines
+    assert _warnings_overall(result) == _warnings_overall(baseline) + 1, lines
+    assert result.stderr.splitlines()[-1] == JOURNAL_WARNING.format(count=1)
+    assert result.stderr.splitlines()[:-1] == baseline.stderr.splitlines()
+    checked = run_cli("journal", "--check", cwd=adopter_dir)
+    assert checked.stdout.endswith("1 error(s)\n"), checked.stdout
+
+
+def test_status_reports_a_damaged_history_the_same_way(adopter_dir, run_cli):
+    """Damaged history is refused by `init` too, so it is counted, not skipped."""
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    journal = adopter_dir / "journal.jsonl"
+    journal.write_bytes(journal.read_bytes() + b"{not json\n")
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert _journal_lines(result) == [JOURNAL_LINE.format(count=1)]
+    assert result.stderr.splitlines()[-1] == JOURNAL_WARNING.format(count=1)
+
+
+def test_status_says_nothing_about_a_journal_init_would_accept(adopter_dir, run_cli):
+    """A clean history adds neither a summary line nor a finding."""
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "journal" not in result.stdout
+    assert "journal" not in result.stderr
+
+
+def test_status_says_nothing_when_there_is_no_journal(adopter_dir, run_cli):
+    """No journal is not a condition, and looking for one creates nothing."""
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    (adopter_dir / "journal.jsonl").unlink()
+    shutil.rmtree(adopter_dir / ".validated-memory")
+    before = _final_tree_snapshot(adopter_dir)
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "journal" not in result.stdout
+    assert "journal" not in result.stderr
+    assert _final_tree_snapshot(adopter_dir) == before
+
+
+def test_status_leaves_a_refused_journal_byte_identical(adopter_dir, run_cli):
+    """The inspection is read-only: no lock, no vault directory, no file."""
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    _append_second_lineage(adopter_dir / "journal.jsonl")
+    before = _final_tree_snapshot(adopter_dir)
+
+    result = run_cli("status", "--skip-index", cwd=adopter_dir)
+
+    assert _journal_lines(result) == [JOURNAL_LINE.format(count=1)]
+    assert _final_tree_snapshot(adopter_dir) == before
+
+
+def test_status_inspects_a_journal_without_creating_its_vault(
+    adopter_dir, run_cli, tmp_path_factory
+):
+    """A clone without the vault is inspected without one being made for it."""
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    _append_second_lineage(adopter_dir / "journal.jsonl")
+    clone = tmp_path_factory.mktemp("clone")
+    shutil.copytree(
+        adopter_dir,
+        clone,
+        symlinks=True,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns(".validated-memory"),
+    )
+    before = _final_tree_snapshot(clone)
+    assert not (clone / ".validated-memory").exists()
+
+    result = run_cli("status", "--skip-index", cwd=clone)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert _journal_lines(result) == [JOURNAL_LINE.format(count=1)]
+    assert not (clone / ".validated-memory").exists()
+    assert _final_tree_snapshot(clone) == before
+
+
+def test_a_clone_without_the_vault_sees_only_repository_history_conditions(
+    adopter_dir, run_cli, tmp_path_factory
+):
+    """A condition that lives in the vault is invisible where the vault is absent.
+
+    A second lineage in the vault's history gates `init` here, and the same
+    adopter cloned without `.validated-memory` has nothing to refuse."""
+    harness = adopter_dir.parent / f"{adopter_dir.name}-harness" / "memory"
+    assert run_cli(
+        "init", "--harness-memory", str(harness), cwd=adopter_dir
+    ).returncode == 0
+    _append_second_lineage(
+        adopter_dir / ".validated-memory" / "local.jsonl", durability="local"
+    )
+    clone = tmp_path_factory.mktemp("clone")
+    shutil.copytree(
+        adopter_dir,
+        clone,
+        symlinks=True,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns(".validated-memory"),
+    )
+
+    here = run_cli("status", "--skip-index", cwd=adopter_dir)
+    there = run_cli("status", "--skip-index", cwd=clone)
+
+    assert _journal_lines(here) == [JOURNAL_LINE.format(count=1)], here.stdout
+    assert there.returncode == 0, (there.stdout, there.stderr)
+    assert _journal_lines(there) == []
+    assert "journal" not in there.stderr
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="an unreadable directory is only unreadable to a non-root user",
+)
+def test_status_says_when_the_journal_cannot_be_inspected(adopter_dir, run_cli):
+    """An inspection that fails is reported as unreadable, and is not a gate."""
+    assert run_cli("init", cwd=adopter_dir).returncode == 0
+    transactions = adopter_dir / ".validated-memory" / "transactions"
+    transactions.mkdir(exist_ok=True)
+    transactions.chmod(0)
+    try:
+        result = run_cli("status", "--skip-index", cwd=adopter_dir)
+    finally:
+        transactions.chmod(0o700)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert _journal_lines(result) == [
+        "status: journal: unreadable; run journal --check"
+    ]
+    assert result.stderr.splitlines()[-1] == (
+        "WARNING: journal.jsonl: journal: unreadable; run journal --check"
+    )

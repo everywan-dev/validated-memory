@@ -61,6 +61,8 @@ post-visibility uncertainty into a gating `JournalError`. A run the journal
 refused restores the link through `guarded_harness_repair`, which takes the
 run-wide lock, decides, and calls the caller's relink inside it (ADR 0029);
 `harness_repair_regime` names the regime of the failure it is given.
+`history_condition_count` is the read-only count of the history conditions that
+stop an adopting run.
 """
 
 from .executor import repair_harness_link
@@ -93,6 +95,7 @@ from .protocol import (
     adopting_run,
     guarded_harness_repair,
     harness_repair_regime,
+    history_condition_count,
     resolve_transaction,
 )
 from .command import run
@@ -124,6 +127,7 @@ __all__ = [
     "digest",
     "guarded_harness_repair",
     "harness_repair_regime",
+    "history_condition_count",
     "link_to",
     "repair_harness_link",
     "resolve_transaction",
