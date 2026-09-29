@@ -376,10 +376,11 @@ def run(harness_memory, view, stdout, stderr, app=False):
         findings.extend(view_findings)
 
     # The harness link outlives a run that gated, without its record, when the
-    # journal's own protocol allows it (ADR 0029). An unignored vault keeps its
-    # own rule: the link is restored, and no history is read to decide it.
-    # `_sync_symlink` independently validates the project target and never
-    # absorbs a real directory here.
+    # journal's own protocol allows it (ADR 0029). An unignored vault gates the
+    # run without a journal refusal: its repair reads the vault the way an
+    # unreadable journal's does, and no history. `_sync_symlink`
+    # independently validates the project target and never absorbs a real
+    # directory here.
     if harness_memory is not None:
         if unignored and not adoption_stopped:
             link_findings, link_confirmed = _sync_symlink(
@@ -391,6 +392,7 @@ def run(harness_memory, view, stdout, stderr, app=False):
                 # it: a real directory at the harness path is left alone.
                 absorb=False,
                 unrecorded=UNRECORDED_VAULT,
+                regime=journal.UNAVAILABLE,
             )
             findings.extend(link_findings)
             confirmed += link_confirmed
@@ -787,13 +789,14 @@ def _sync_symlink(
     becomes a WARNING that names the previous target, so the one fact the
     mutation destroys is at least on stderr rather than nowhere.
 
-    `regime` is set only for a run the journal refused, and hands the
-    decision to `journal.guarded_harness_repair` (ADR 0029): it calls
-    `relink`, or does not, and a withheld link is a WARNING with the reason
-    and a count of zero. A link that already resolves to the target is left
-    alone and unreported in that case: there is nothing to restore, so there
-    is nothing to guard, and a WARNING that the link was not restored would
-    be false.
+    `regime` is set for a run the journal refused, and for one that gated on
+    an unignored vault, and hands the decision to
+    `journal.guarded_harness_repair` (ADR 0029): it calls `relink`, or does
+    not, and a withheld link is a WARNING with the reason and a count of
+    zero. A link that already resolves to the target is left alone: there is
+    nothing to restore, so there is nothing to guard, and a WARNING that the
+    link was not restored would be false. A refused run says nothing of it,
+    and a run that gated on the vault reports it `kept`.
     """
     path = Path(raw_path)
     location = path.as_posix()
@@ -851,9 +854,10 @@ def _sync_symlink(
 
     try:
         if was_symlink and path.resolve() == target:
-            if regime is not None:
+            if regime is None:
+                relink()
+            elif unrecorded != UNRECORDED_VAULT:
                 return [], 0
-            relink()
             print(f"init: kept symlink {location}", file=stdout)
             return [], 1
         # A real path that is not a symlink: `adopt` decides whether it holds
@@ -868,11 +872,7 @@ def _sync_symlink(
             if not take_over.freed:
                 return findings, 0
         if regime is None:
-            findings.extend(
-                _record_symlink(
-                    session, path, previous, target, relink, unrecorded
-                )
-            )
+            findings.extend(_record_symlink(session, path, previous, target))
         else:
             outcome, reason = journal.guarded_harness_repair(
                 Path(), path, regime, relink
@@ -993,8 +993,8 @@ def _link_is_current(raw_path):
         return False
 
 
-def _record_symlink(session, path, previous, target, relink, unrecorded):
-    """Publish through a live session, or use the bounded fail-open repair.
+def _record_symlink(session, path, previous, target):
+    """Publish the link through the live session, recording it.
 
     The link is the one mutation `init` performs that the executor may not
     have the last word on.
@@ -1006,25 +1006,21 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
     "record nothing this time"
     is a general bypass wearing a flag. So the record goes through
     `execute` whenever the journal is healthy, and only the repair
-    survives when it is not. A run the journal refused does not come
-    here: `_sync_symlink` gives it to `journal.guarded_harness_repair`
-    (ADR 0029), which narrows §4 and takes the lock. Only an unignored
-    vault, which no history read decides, reaches the unrecorded repair
-    below.
+    survives when it is not. A run the journal refused, or one that gated on
+    an unignored vault, never comes here: `_sync_symlink` gives it to
+    `journal.guarded_harness_repair` (ADR 0029), which narrows §4 and reads
+    the vault under the lock.
 
-    There are three outcomes:
+    There are two outcomes:
 
     - `applied` -- the executor published the symlink itself, atomically,
       and both records are in the vault under one transaction. Nothing is
       reported: the caller prints the line.
-    - `refused` from a live session is a gate. In particular, an unresolved
-      transaction on this exact path retains authority over its preimage;
-      neither the link nor the WAL is changed and no unrecorded repair runs.
-    - `session is None` -- the vault holding this record is not ignored,
-      so nothing may be written to it (`unrecorded` says so). The same
-      WARNING, with that reason in place of a message, and the same repair.
+    - `refused` is a gate. In particular, an unresolved transaction on this
+      exact path retains authority over its preimage; neither the link nor
+      the WAL is changed and no unrecorded repair runs.
 
-    The previous target is what the WARNING carries, because it is what the
+    The previous target is what the record carries, because it is what the
     mutation destroys: the `link` op's inverse is "restore the previous
     target", and once the link is re-pointed that fact exists nowhere else.
     The expected state carries it too, so a link something else re-pointed
@@ -1032,60 +1028,48 @@ def _record_symlink(session, path, previous, target, relink, unrecorded):
     a target it never had.
 
     There is no window in which the path has no link: the executor renames
-    a temporary over it, `relink` does the same, and nothing here unlinks
-    anything.
+    a temporary over it, and nothing here unlinks anything.
     """
     location = path.as_posix()
     note = _previous_target(previous)
-    if session is not None:
-        expected = (
-            {"kind": journal.SYMLINK, "target": previous}
-            if previous is not None
-            else {"kind": journal.ABSENT}
+    expected = (
+        {"kind": journal.SYMLINK, "target": previous}
+        if previous is not None
+        else {"kind": journal.ABSENT}
+    )
+    try:
+        outcome = session.execute(
+            journal.link_to(
+                purpose="init",
+                path=location,
+                durability=journal.LOCAL,
+                expected=expected,
+                target=str(target),
+                note=note,
+            )
         )
-        try:
-            outcome = session.execute(
-                journal.link_to(
-                    purpose="init",
-                    path=location,
-                    durability=journal.LOCAL,
-                    expected=expected,
-                    target=str(target),
-                    note=note,
-                )
-            )
-        except (OSError, journal.JournalError) as error:
-            if isinstance(error, journal.JournalError):
-                error.stops_adoption = True
-                raise
-            stopped = journal.JournalError(
-                None,
-                f"the harness link record was refused before publication: {error}",
-                location,
-            )
-            stopped.stops_adoption = True
-            raise stopped from error
-        else:
-            # `noop` cannot be reached from here -- the caller returns
-            # early when the link already resolves to `target`, and a link
-            # whose own text is `target` resolves to it -- but it means the
-            # link is already what this intention would make it, so there
-            # is nothing to repair and nothing to report either.
-            if outcome.status in (journal.OUTCOME_APPLIED, journal.OUTCOME_NOOP):
-                return []
-            stopped = journal.JournalError(
-                None,
-                outcome.message,
-                location,
-            )
-            stopped.stops_adoption = True
-            stopped.already_reported = session.path_is_gated(
-                location, journal.LOCAL
-            )
-            raise stopped
-
-    relink()
-    return [_unrecorded_warning(location, previous, unrecorded)]
+    except (OSError, journal.JournalError) as error:
+        if isinstance(error, journal.JournalError):
+            error.stops_adoption = True
+            raise
+        stopped = journal.JournalError(
+            None,
+            f"the harness link record was refused before publication: {error}",
+            location,
+        )
+        stopped.stops_adoption = True
+        raise stopped from error
+    # `noop` cannot be reached from here -- the caller returns early when the
+    # link already resolves to `target`, and a link whose own text is
+    # `target` resolves to it -- but it means the link is already what this
+    # intention would make it, so there is nothing to repair and nothing to
+    # report either.
+    if outcome.status in (journal.OUTCOME_APPLIED, journal.OUTCOME_NOOP):
+        return []
+    stopped = journal.JournalError(None, outcome.message, location)
+    stopped.stops_adoption = True
+    stopped.already_reported = session.path_is_gated(location, journal.LOCAL)
+    raise stopped
 
 
 def _ensure_views(stdout, app=False):

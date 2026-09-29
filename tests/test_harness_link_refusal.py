@@ -803,6 +803,214 @@ def test_a_vault_that_cannot_be_listed_restores_the_link_unguarded(tmp_path):
     assert "the journal is unavailable" in _warnings(result)[0]
 
 
+def _root_cannot_be_locked_out():
+    return os.name != "posix" or (hasattr(os, "geteuid") and os.geteuid() == 0)
+
+
+def test_an_unignored_vault_withholds_the_link_over_a_retained_transaction(tmp_path):
+    """The vault gate reads the vault too: a WAL on the harness path owns it.
+
+    Recovery leaves the transaction retained because the link no longer
+    matches what it published, and `.gitignore` is a symlink `init` will not
+    write through, so the run gates on the vault without any journal refusal.
+    Relinking would destroy the preimage recovery needs, exactly as it would
+    after a refusal, so the link stays and the WARNING says why."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    transaction = _retain_wal_on(adopter, harness)
+    _point_at_stale(harness, "diverged")
+    ignore = adopter / ".gitignore"
+    ignore.unlink()
+    (adopter / "unignored-target").write_bytes(b"adopter-owned ignore bytes\n")
+    ignore.symlink_to("unignored-target")
+    link_before = _link_target(harness)
+
+    result = _cli(adopter, "init", "--harness-memory", str(harness))
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "vault's ignore entry" in result.stderr
+    assert _link_target(harness) == link_before
+    warnings = _warnings(result)
+    assert any(
+        f"transaction {transaction} names the harness path" in line
+        and "the harness link was not restored" in line
+        for line in warnings
+    ), result.stderr
+    assert "re-pointed symlink" not in result.stdout
+
+
+@pytest.mark.skipif(
+    _root_cannot_be_locked_out(),
+    reason="a read-only directory only stops a non-root user",
+)
+def test_a_lock_that_cannot_be_taken_still_reads_the_vault(tmp_path):
+    """Being unable to lock is no licence to skip the vault.
+
+    `.validated-memory` is read-only, so neither the run nor the repair can
+    create the lock, and the journal cannot be opened. The vault can still be
+    listed and read, and a transaction on the harness path in it withholds the
+    link, as it would with the lock held."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    transaction = _retain_wal_on(adopter, harness)
+    _point_at_stale(harness, "diverged")
+    link_before = _link_target(harness)
+    vault = adopter / ".validated-memory"
+    lock = vault / "lock"
+    if lock.exists():
+        lock.unlink()
+    vault.chmod(0o500)
+    try:
+        result = _cli(adopter, "init", "--harness-memory", str(harness))
+    finally:
+        vault.chmod(0o700)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "journal could not be opened" in result.stderr
+    assert _link_target(harness) == link_before
+    assert len(_warnings(result)) == 1, result.stderr
+    assert f"transaction {transaction} names the harness path" in _warnings(result)[0]
+
+
+@pytest.mark.skipif(
+    _root_cannot_be_locked_out(),
+    reason="a read-only directory only stops a non-root user",
+)
+def test_a_lock_that_cannot_be_taken_over_a_clean_vault_restores_the_link(tmp_path):
+    """Control for the test above: nothing in the vault, so §4's promise stands.
+
+    The vault was read without the lock and holds nothing that names the
+    harness path, so the link is restored, and the WARNING is the
+    unavailable-journal one."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    vault = adopter / ".validated-memory"
+    vault.chmod(0o500)
+    try:
+        result = _cli(adopter, "init", "--harness-memory", str(harness))
+    finally:
+        vault.chmod(0o700)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert harness.resolve() == (adopter / "memory").resolve()
+    assert len(_warnings(result)) == 1, result.stderr
+    assert "the journal is unavailable" in _warnings(result)[0]
+
+
+@pytest.mark.skipif(
+    _root_cannot_be_locked_out(),
+    reason="a read-only directory only stops a non-root user",
+)
+def test_a_lock_that_cannot_be_taken_after_a_readable_refusal_withholds_the_link(
+    tmp_path,
+):
+    """A readable refusal has no exception for the lock either.
+
+    The run is stopped between the gate and the repair while the vault turns
+    read-only, so the lock cannot be created. The vault could still be read,
+    but the history rules need the lock, and the link is withheld."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    _add_second_lineage(adopter)
+    link_before = _link_target(harness)
+    vault = adopter / ".validated-memory"
+    process, ready, proceed = _rendezvous_run(
+        adopter, harness, "before-harness-repair-lock"
+    )
+    vault.chmod(0o500)
+    try:
+        stdout, stderr = _release(process, ready, proceed)
+    finally:
+        vault.chmod(0o700)
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert _link_target(harness) == link_before
+    warnings = [line for line in stderr.splitlines() if line.startswith("WARNING:")]
+    assert len(warnings) == 1, stderr
+    assert "the lock or the vault could not be read" in warnings[0]
+
+
+def test_a_final_name_that_differs_only_in_case_is_the_same_entry(tmp_path):
+    """A filesystem that folds case names `Memory` and `memory` one entry.
+
+    The transaction was recorded for `Memory` and stopped before publishing,
+    so neither name exists and no file identity ties them; only the final
+    names compared without regard to case do. On a filesystem that keeps case
+    the comparison withholds more than it needs to, which is the direction
+    it may err in."""
+    adopter = tmp_path / "adopter"
+    adopter.mkdir()
+    assert _cli(adopter, "init").returncode == 0
+    directory = tmp_path / "harness"
+    directory.mkdir()
+    transaction = _retain_wal_on(
+        adopter, directory / "Memory", fault="after-transaction"
+    )
+    _add_second_lineage(adopter)
+    before = _snapshot(adopter)
+
+    result = _cli(adopter, "init", "--harness-memory", str(directory / "memory"))
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert not os.path.lexists(directory / "memory")
+    assert not os.path.lexists(directory / "Memory")
+    assert len(_warnings(result)) == 1, result.stderr
+    assert f"transaction {transaction} names the harness path" in _warnings(result)[0]
+    assert _snapshot(adopter) == before
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo"), reason="this platform has no named pipes"
+)
+@pytest.mark.parametrize("target", ("pipe", "regular-file"))
+@pytest.mark.parametrize("where", ("transactions", "preimages"))
+def test_a_vault_entry_that_is_not_a_regular_file_withholds_and_is_never_opened(
+    tmp_path, where, target
+):
+    """A symlink in the vault is not a transaction, and opening it can hang.
+
+    The entry points at a named pipe, which blocks whoever opens it for
+    reading, or at a file outside the vault, which would be read as if the
+    vault held it. The repair lists the vault by entry type, without
+    following links, and withholds before opening anything, so the run ends,
+    with the link as it was. The journal is unreadable here so that the run's
+    own snapshot does not read the vault first: it would open the symlink
+    itself, which is outside what the repair decides."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    _break_journal_with_a_loop(adopter)
+    directory = adopter / ".validated-memory" / where
+    directory.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    if target == "pipe":
+        os.mkfifo(outside)
+    else:
+        outside.write_bytes(b"{}")
+    name = "x.json" if where == "transactions" else "a" * 64
+    (directory / name).symlink_to(outside)
+    link_before = _link_target(harness)
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-P", "-m", "validated_memory", "init",
+             "--harness-memory", str(harness)],
+            cwd=adopter,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("the run opened the pipe and hung")
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert _link_target(harness) == link_before
+    assert len(_warnings(result)) == 1, result.stderr
+    assert f"{where}/{name}" in _warnings(result)[0]
+    assert "not a regular file" in _warnings(result)[0]
+
+
 def test_a_vault_that_cannot_be_read_after_a_readable_refusal_withholds_the_link(
     tmp_path,
 ):

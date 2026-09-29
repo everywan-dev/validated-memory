@@ -3069,12 +3069,11 @@ def repair_transaction(root, transaction_id):
 
 # The regimes `harness_repair_regime` names and the outcomes
 # `guarded_harness_repair` returns. The facade exports only what `init` reads:
-# `PRE_EFFECT_GATE` and `REPAIR_WITHHELD`.
+# `PRE_EFFECT_GATE`, `UNAVAILABLE` and `REPAIR_WITHHELD`.
 PRE_EFFECT_GATE = "pre_effect_gate"
 LOCK_BUSY = "lock_busy"
 UNAVAILABLE = "unavailable"
 REPAIR_RELINKED = "relinked"
-REPAIR_RELINKED_UNGUARDED = "relinked_unguarded"
 REPAIR_WITHHELD = "withheld"
 
 # What a withheld repair says, in words a reader of the WARNING can act on:
@@ -3102,8 +3101,10 @@ def harness_repair_regime(failure):
     adopting effect of the run, or leaves an effect unconfirmed.
 
     A failure that carries none of the markers read here is taken for an
-    unavailable journal, so every new refusal must set `stops_adoption`, or
-    the harness link is restored over it.
+    unreadable journal, which reaches the repair only through the vault
+    conditions of `guarded_harness_repair`. A new refusal must still set
+    `stops_adoption`: without it the repair is allowed whenever the vault
+    holds nothing on the harness path, and the history is not read at all.
     """
     if getattr(failure, "visibility_unconfirmed", False):
         return None
@@ -3119,16 +3120,19 @@ def harness_repair_regime(failure):
 def guarded_harness_repair(root, harness_path, regime, relink):
     """Relink the harness path under the run-wide lock, or withhold and say why.
 
-    Returns `(outcome, reason)`. `reason` is None unless the outcome is
-    `REPAIR_WITHHELD`, and then it is a plain sentence naming what stopped
-    the repair.
+    Returns `(outcome, reason)`, the outcome being `REPAIR_RELINKED` or
+    `REPAIR_WITHHELD`. `reason` is None unless the repair was withheld, and
+    then it is a plain sentence naming what stopped it.
 
     `relink` is a zero-argument callable that publishes the link atomically.
-    It is called at most once. It is called with the lock held, in the same
-    block that checks the vault and the history, so no transaction can appear
-    between the decision and the link; the one call without the lock is the
-    unguarded one below. Whatever `relink` raises reaches the caller
-    unchanged. `harness_path` is the path `relink` publishes.
+    It is called at most once. With the lock held it is called in the same
+    block that checks the vault and the history, so no transaction of this
+    plugin can appear between the decision and the link. It is called
+    without the lock only when the lock cannot be taken, and without the
+    vault check only when the vault cannot be read. Whatever `relink` raises
+    reaches the caller unchanged. `harness_path` is the path `relink` publishes. A process
+    outside the plugin that replaces the harness path between the check and
+    the relink is not guarded against.
 
     `regime` is what the caller knows of the refusal:
 
@@ -3136,19 +3140,22 @@ def guarded_harness_repair(root, harness_path, regime, relink):
       holder may be recording a change to the harness path.
     - `PRE_EFFECT_GATE`: the history was readable and refused before any
       adopting effect. The link is restored only if the vault holds no
-      residue and no transaction that is unreadable, names no path or names
+      residue, every entry of its transaction and preimage directories is a
+      regular file, and no transaction is unreadable, names no path or names
       the harness path; every outstanding `history.*` condition is
       `history.topology_gate`; the history snapshot is usable; and no
       condition names the harness path as its subject or in its pairing.
       When the lock or the vault cannot be read those rules cannot be shown
       to hold, and the repair is withheld.
-    - `UNAVAILABLE`: the history could not be read, so only the vault rules
-      of `PRE_EFFECT_GATE` apply. When the lock cannot be taken, or the vault
-      cannot be listed, the link is restored unguarded
-      (`REPAIR_RELINKED_UNGUARDED`), without the lock in the first case: that
-      is the exception of docs/design/2026-09-01-the-journal-core.md §4,
-      which promises the link when the journal cannot be read at all, and it
-      is an availability promise, not a proof.
+    - `UNAVAILABLE`: the history could not be read, or the run gated on an
+      unignored vault, so only the vault rules of `PRE_EFFECT_GATE` apply.
+      When the lock cannot be taken for a reason other than another process
+      holding it, the vault is still read, without the lock, and the same
+      rules apply. When the vault cannot be listed the link is restored
+      unguarded: that is the exception of
+      docs/design/2026-09-01-the-journal-core.md §4, which promises the link
+      when the journal cannot be read at all, and it is an availability
+      promise, not a proof.
 
     A regime that is none of these is a caller error. A lock another process
     takes between the refusal and this call is waited for once, up to the
@@ -3161,14 +3168,18 @@ def guarded_harness_repair(root, harness_path, regime, relink):
     root = Path(root)
     lock = Lock(root)
     rendezvous_at("before-harness-repair-lock", 1)
+    held = False
     try:
         lock.__enter__()
+        held = True
     except JournalError as error:
         if getattr(error, "lock_busy", False):
             return REPAIR_WITHHELD, _LOCK_BUSY_REASON
-        return _unreadable_repair(regime, relink, error.message)
+        not_held = error.message
     except OSError as error:
-        return _unreadable_repair(regime, relink, str(error))
+        not_held = str(error)
+    if not held and regime == PRE_EFFECT_GATE:
+        return _unreadable_repair(regime, relink, not_held)
     try:
         try:
             reason = _harness_repair_obstacle(root, harness_path, regime)
@@ -3180,18 +3191,19 @@ def guarded_harness_repair(root, harness_path, regime, relink):
         relink()
         return REPAIR_RELINKED, None
     finally:
-        lock.__exit__(None, None, None)
+        if held:
+            lock.__exit__(None, None, None)
 
 
 def _unreadable_repair(regime, relink, why):
-    """Answer for a lock or a vault that cannot be read.
+    """Answer for a lock or a vault that cannot be read at all.
 
-    `relink` runs for `UNAVAILABLE` only, with the lock held when the vault
-    was the failure and without it when the lock was.
+    `relink` runs for `UNAVAILABLE` only, unchecked; the lock is held when
+    the vault was the failure and not when the lock was.
     """
     if regime == UNAVAILABLE:
         relink()
-        return REPAIR_RELINKED_UNGUARDED, None
+        return REPAIR_RELINKED, None
     return REPAIR_WITHHELD, f"the lock or the vault could not be read: {why}"
 
 
@@ -3201,12 +3213,21 @@ def _harness_repair_obstacle(root, harness_path, regime):
     Raises `OSError` or `JournalError` when the vault cannot be read at all.
     `retained_residue` reports a directory it cannot list as residue, so the
     two vault directories are listed here first: an unreadable one is the
-    unreadable-vault case, not an obstruction.
+    unreadable-vault case, not an obstruction. The listing is by entry type,
+    without following links, and it comes before anything is opened: a symlink
+    or any other node that is not a regular file is retained residue, and
+    opening one can block on a pipe or read a file outside the vault.
     """
     same = _same_entry(root, harness_path)
     for name in (TRANSACTIONS_DIRNAME, PREIMAGE_DIRNAME):
         try:
-            os.listdir(root / VAULT_DIRNAME / name)
+            with os.scandir(root / VAULT_DIRNAME / name) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False):
+                        return (
+                            f"the vault holds {VAULT_DIRNAME}/{name}/{entry.name}, "
+                            "which is not a regular file"
+                        )
         except FileNotFoundError:
             pass
     residue = retained_residue(root)
@@ -3244,12 +3265,15 @@ def _same_entry(root, harness_path):
     the symlink's target, and only the operating system knows which that is.
     Both paths are joined to the current directory when relative, a trailing
     `/` is dropped, and the parent is split from the final name. The final
-    name is compared as written, because the link itself is what may be
-    stale. Two paths name one entry when the real paths of their parents and
-    their final names are equal, or when both entries exist and are the same
-    file (`os.path.samestat` on `lstat`), which is how a filesystem that folds
-    case names one entry twice. Equivalence only ever widens, which withholds
-    more. A string that is not a path -- `transaction:<id>`, `adoption:<id>`
+    name is never followed, because the link itself is what may be stale.
+    Two paths name one entry when the real paths of their parents are equal
+    and their final names are equal under `str.casefold`, or when both
+    entries exist and are the same file (`os.path.samestat` on `lstat`). The
+    case folding serves a filesystem that folds case, where `Memory` and
+    `memory` are one entry that may not exist yet, and withholds more than
+    needed on one that keeps case; the file identity serves an entry that
+    exists under another name, as it does on that filesystem and through a
+    hard link. Equivalence only ever widens, which withholds more. A string that is not a path -- `transaction:<id>`, `adoption:<id>`
     -- is joined the same way, so it equals the harness path only if that
     path is literally `<root>/<string>`.
     """
@@ -3260,7 +3284,7 @@ def _same_entry(root, harness_path):
 
     def key(path):
         parent, name = os.path.split(absolute(path))
-        return os.path.realpath(parent), name
+        return os.path.realpath(parent), name.casefold()
 
     def entry(path):
         try:

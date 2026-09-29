@@ -88,6 +88,7 @@ from .transactions import RECOVERED, RESOLUTIONS
 from .protocol import (
     PRE_EFFECT_GATE,
     REPAIR_WITHHELD,
+    UNAVAILABLE,
     adopting_run,
     guarded_harness_repair,
     harness_repair_regime,
@@ -111,6 +112,7 @@ __all__ = [
     "REPO",
     "RESOLUTIONS",
     "SYMLINK",
+    "UNAVAILABLE",
     "VAULT_DIRNAME",
     "adopting_run",
     "append_to_file",

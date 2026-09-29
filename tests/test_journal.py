@@ -275,9 +275,10 @@ EXECUTOR_EXCEPTIONS = {
         "back when the journal cannot serve the SessionStart hook, whose "
         "only job it is, and an executor that requires a working journal "
         "cannot serve it (docs/design/2026-09-01-the-journal-core.md §4). "
-        "After a journal refusal `journal.guarded_harness_repair` calls it "
-        "under the run-wide lock or not at all (ADR 0029); an unignored "
-        "vault calls it directly. This closure is the whole of it -- "
+        "After a journal refusal, or a gate on an unignored vault, "
+        "`journal.guarded_harness_repair` calls it or does not (ADR 0029); "
+        "a healthy run calls it to republish a link that is already right. "
+        "This closure is the whole of it -- "
         "`_sync_symlink`, which builds it, mutates nothing itself and so "
         "is not listed"
     ),
@@ -353,6 +354,7 @@ PERMITTED_JOURNAL_EXPORTS = (
     "REPO",
     "RESOLUTIONS",
     "SYMLINK",
+    "UNAVAILABLE",
     "VAULT_DIRNAME",
     "adopting_run",
     "append_to_file",
