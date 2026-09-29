@@ -2,12 +2,21 @@
 
 ## Published release
 
-The current published release is **2.5.0**, tagged
-[`v2.5.0`](https://github.com/everywan-dev/validated-memory/tree/v2.5.0).
-The [GitHub release page](https://github.com/everywan-dev/validated-memory/releases/tag/v2.5.0)
+The current published release is **2.5.1**, tagged
+[`v2.5.1`](https://github.com/everywan-dev/validated-memory/tree/v2.5.1).
+The [GitHub release page](https://github.com/everywan-dev/validated-memory/releases/tag/v2.5.1)
 is the distribution record. The plugin uses the version declared in its
 manifest, so a commit on the default branch does not by itself update an
 installed plugin; see [updating](installing.md#updating).
+
+2.5.1 keeps the harness-memory link through a journal refusal that does not
+concern it. A readable history that `init` refuses with a topology gate no longer
+leaves the session without project memory when neither the history nor the vault
+names the link; the repair runs under the journal lock and is withheld, with a
+WARNING, whenever a transaction or an unclassified vault entry could own the
+link. The same check now guards the repair when the journal cannot be read and
+when the vault is not ignored, and `status` reports the history conditions that
+stop `init`. See [ADR 0029](adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md).
 
 2.5.0 hardens `init` and its journal: crash-safe creation of the first
 history, recovery of interrupted transactions, explicit repair of a torn
