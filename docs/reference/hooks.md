@@ -38,10 +38,18 @@ Because it runs unattended, it is also where [Absorbing an existing harness
 memory directory](cli.md#absorbing-an-existing-harness-memory-directory)
 normally happens on a healthy `init` run: the first session after a project
 adopts the plugin merges the harness's pre-existing memory into the project and
-parks the original as a `.bak`. An unavailable or corrupt journal, or a vault
-whose ignore entry could not be established, gates that take-over; fail-open
-handling may restore a missing or stale symlink, but leaves a real directory
-unabsorbed and unparked. The healthy merge is deliberately part of `init`
+parks the original as a `.bak`. A journal that refuses the run, or a vault whose
+ignore entry could not be established, gates that take-over; fail-open handling
+may restore a missing or stale symlink, but leaves a real directory unabsorbed
+and unparked. Whether the link is restored after a journal refusal is decided
+by the guarded repair of
+[ADR 0029](../adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md):
+a topology refusal that names no harness path, or a journal that cannot be
+read, restores it when the vault and the history show that no transaction or
+condition can own the path; a damaged, unsupported, identity or bootstrap
+refusal, uncertainty after an effect, or a lock held by another process
+withholds it, and `init` says so in a WARNING. A corrupt journal therefore
+never allows the repair. The healthy merge is deliberately part of `init`
 rather than a flag the hook passes, so it happens once, by itself, on the
 deployment path -- gated by the recognition rule, which is what keeps it from
 touching anything that is not agent memory. See [the adoption
@@ -61,10 +69,11 @@ parked backup.
 
 On a healthy `init` run, what the hook created, what it found already there and
 the symlink it wrote or re-pointed are recorded the same way as any other
-`init` run: see [Journal](journal.md). After either whole-run gate, a symlink
-restored by fail-open handling cannot be recorded; `init` emits the documented
-stderr warning naming why. The hook suppresses only `init`'s stdout, so that
-warning remains visible. The hook itself never calls `journal`; it only makes
+`init` run: see [Journal](journal.md). After a journal refusal or an unignored
+vault, a symlink restored by fail-open handling cannot be recorded, and a link
+withheld is not restored; `init` emits the documented stderr warning naming
+why. The hook suppresses only `init`'s stdout, so that warning remains
+visible. The hook itself never calls `journal`; it only makes
 the `init` calls that fill it when recording is available.
 
 **Activating and refreshing the HTML views.** Activation of `knowledge.html`,

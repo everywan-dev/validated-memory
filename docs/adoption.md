@@ -439,7 +439,12 @@ across renames, re-clones, and fresh sessions, without any manual step:
   and re-runs `init --harness-memory` against it, silencing its stdout.
   Idempotent and fail-open: any problem it hits (missing tools, a path it
   cannot touch, ...) is reported to stderr and the hook still exits clean,
-  so it can never break session startup.
+  so it can never break session startup. When the journal refuses the run --
+  two adoption lineages in the history, for instance -- the link is still
+  restored if the refusal cannot concern it, and left as it was, with a
+  WARNING that says why, if it might. `status` reports such a refusal in a
+  `status: journal:` line and `journal --check` names it; neither changes
+  what `status` gates.
 
 This is also where a pre-existing harness memory directory gets absorbed, on
 the first session after adoption, without anyone running anything by hand.

@@ -288,7 +288,7 @@ resolves outside the adopter and that the harness path was left untouched; it
 does not disclose the resolved host path. No harness parent or leaf is created
 or changed, no native harness directory is absorbed or parked, and no local
 link intention or record is formed. This check applies equally during healthy
-initialization and after either whole-run gate. If the earlier PATH preflight
+initialization and after a journal refusal or an unignored vault. If the earlier PATH preflight
 cannot resolve the supplied parent, that invalid invocation remains the B1
 usage error (exit 2) and no project-memory diagnostic is produced. Missing,
 broken, looping and non-directory project-memory nodes retain the existing
@@ -314,22 +314,45 @@ The link is journalled like any other mutation, in the vault: a `link`
 record pair in `.validated-memory/local.jsonl`, carrying the transaction
 that published it and the previous target as its note (`no previous link`
 when there was none), and no mode -- a symlink has none worth recording. It
-is the one mutation the journal does not have the last word on: when the
-journal is genuinely unavailable before any adopting effect, the link is
-restored anyway and a WARNING carries the reason and the previous target,
-because giving a session its memory back is the `SessionStart` hook's only
-job. A readable journal's semantic, identity, topology, bootstrap, unsupported
-or damaged refusal grants no such authority, nor does uncertainty after a
-current effect.
+is the one mutation the journal does not have the last word on. When the
+journal refuses the run, the link is restored anyway, unrecorded, if and
+only if the guarded repair of
+[ADR 0029](../adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md)
+allows it, and a WARNING carries the reason and the previous target, because
+giving a session its memory back is the `SessionStart` hook's only job. The
+repair takes the run-wide lock, reads the history and the vault, and relinks
+in the same critical section:
 
-That fail-open restoration after either accepted whole-run gate -- a genuinely
-unavailable journal before any adopting effect, or a vault whose ignore entry
-could not be established -- first requires the same eligible in-adopter
-project-memory target. It never
-absorbs or parks a real directory at PATH. Only a missing path or an existing
-symlink can be restored after the gate. A real directory is left byte-for-byte
-in place with the warning that absorbing it would move the adopter's data;
-healthy initialization can recognize and absorb it on a later run.
+- A **topology refusal before any adopting effect** (two adoption lineages in
+  one legacy history, a fork of the frontier) allows it when the history
+  snapshot is usable, every outstanding history condition is a topology gate,
+  no condition names PATH, and the vault holds no residue and no transaction
+  that is unreadable or names PATH. The WARNING says the journal refused this
+  run.
+- A **journal that cannot be read** allows it under the same vault rules. When
+  the lock cannot be taken or the vault cannot be listed at all, it is
+  restored without those checks, with the same WARNING.
+- **Every other refusal** -- damaged, unsupported, identity or bootstrap
+  history, uncertainty after a current effect -- and a **lock held by another
+  process** withhold it. `init` leaves PATH exactly as it was and adds a
+  WARNING naming PATH and the reason (`the harness link was not restored:
+  ...`); the first run the journal allows restores it.
+
+Recorded paths are compared with PATH as directory entries, not as text: PATH
+is made absolute first (a relative `--harness-memory` is taken against the
+adopter, without resolving its final component), and two paths name the same
+entry when their parent directories resolve to the same directory and their
+final names are equal. The exit code is 1 in every case, because the refusal
+is still an ERROR. A link that already resolves to `memory/` needs nothing and
+gets no WARNING.
+
+The unrecorded restoration after such a refusal, or when the vault's ignore
+entry could not be established, first requires the same eligible in-adopter
+project-memory target. It never absorbs or parks a real directory at PATH.
+Only a missing path or an existing symlink can be restored. A real directory
+is left byte-for-byte in place with the warning that absorbing it would move
+the adopter's data; healthy initialization can recognize and absorb it on a
+later run.
 
 Computing PATH from the harness's own layout and calling `init
 --harness-memory PATH` automatically on every session start is the plugin's
@@ -947,7 +970,8 @@ command that mutates the thing it reports on is not a status command.
 It computes one internal pass over the curated layer, the agent-memory
 layer, the derived index and the verdict log -- the same rules `validate`,
 `lint` and `derive --check` already enforce, reused rather than re-run, and
-the log read once -- and reports five sections:
+the log read once -- and reports five sections, then one conditional line
+about the journal:
 
 - **`validate:`** the curated layer against the base contract plus the
   adopter's declared extension, exactly like `validate`.
@@ -978,6 +1002,23 @@ the log read once -- and reports five sections:
   matching the new key. Counts only, never gated, no flag changes them. Omitted
   entirely when source validation reports an error or the verdict log cannot
   be read; a missing log is an empty one.
+
+When the read-only inspection that `journal --check` performs finds history
+conditions -- the ones that stop `init`, such as a topology gate or damaged
+history -- `status` adds one line just before the overall line, and a WARNING
+against `journal.jsonl` that says the same:
+
+```
+status: journal: 1 history condition(s) stop init; run journal --check
+```
+
+An inspection that cannot be made reads `status: journal: unreadable; run
+journal --check`. A history with no conditions, or no journal at all, adds
+nothing. The inspection creates no file and needs no vault, so a clone
+without `.validated-memory/` sees only the conditions of the repository
+history. The exit code does not change: this is a WARNING, never a gate
+([ADR 0029](../adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md),
+[ADR 0002](../adr/0002-status-gates-consistency-and-only-reports-freshness.md)).
 
 **Verdict age** (see
 [ADR 0004](../adr/0004-verdict-age-belongs-to-status-never-to-the-derived-index.md)):
@@ -1011,9 +1052,12 @@ status: coverage: recorded means a matching verdict exists, not that it is curre
 status: 0 error(s), 0 warning(s) overall
 ```
 
+A history condition adds its `status: journal:` line immediately before the
+overall line, and the overall line counts its WARNING.
+
 Exit codes: `0` clean, or WARNING-only findings (including a reported but
-not gated `drifted`/`unknown`/aged verdict); `1` an ERROR from any gate that
-ran (validation, lint, index, or an opted-in freshness/age upgrade); `2` a
+not gated `drifted`/`unknown`/aged verdict, and a journal history condition);
+`1` an ERROR from any gate that ran (validation, lint, index, or an opted-in freshness/age upgrade); `2` a
 usage error.
 
 ### `journal`

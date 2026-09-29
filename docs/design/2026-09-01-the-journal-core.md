@@ -159,7 +159,11 @@ accepts `unrecorded=True` exposes the very policy it was meant to hide; an
 executor that silently proceeds unrecorded on any journal failure is a
 general bypass. So link repair is its own narrow module: it can publish that
 one symlink atomically and nothing else, it records through the executor when
-the journal is healthy, and it warns and proceeds when it is not.
+the journal is healthy, and it warns and proceeds when it is not. After a
+refusal, [ADR 0029](../adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md)
+narrows "cannot be read or written at all": the repair takes the run-wide lock,
+a lock held by another run no longer counts as an unreadable journal, and a
+readable vault is checked first.
 
 **The harness absorption.** `adopt.take_over` recognises a tree, copies
 conditionally, reconciles an index and renames the source, and its published

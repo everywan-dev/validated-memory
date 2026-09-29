@@ -223,10 +223,18 @@ def test_c1f_fail_open_boundary_and_protocol_ownership_are_documented():
     )
     for text in (cli, journal):
         prose = " ".join(text.split())
-        assert "genuinely unavailable" in prose and "journal" in prose
+        assert "cannot be read" in prose and "journal" in prose
         assert "vault's ignore entry" in prose
         assert "damaged" in prose
         assert "uncertainty after a current effect" in prose
+        # ADR 0029: the repair is guarded and can be withheld, and the docs
+        # say who decides it and what a caller sees when it is.
+        assert "adr/0029-the-harness-link-survives-a-refusal" in prose
+        assert "withhold" in prose
+        assert "run-wide lock" in prose
+        assert "the harness link was not restored" in prose or (
+            "names the harness path and the reason" in prose
+        )
     assert "unavailable or corrupt journal" not in cli
     assert "journal cannot be written at all, or refuses" not in cli
 
