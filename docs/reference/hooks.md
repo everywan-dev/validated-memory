@@ -44,12 +44,12 @@ may restore a missing or stale symlink, but leaves a real directory unabsorbed
 and unparked. Whether the link is restored after a journal refusal is decided
 by the guarded repair of
 [ADR 0029](../adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md):
-a topology refusal that names no harness path, or a journal that cannot be
-read, restores it when the vault and the history show that no transaction or
-condition can own the path; a damaged, unsupported, identity or bootstrap
-refusal, uncertainty after an effect, or a lock held by another process
-withholds it, and `init` says so in a WARNING. A corrupt journal therefore
-never allows the repair. The healthy merge is deliberately part of `init`
+a topology refusal that names no harness path restores it when the vault and the
+history show that no transaction or condition can own the path; a journal that
+cannot be read restores it when the vault alone shows that no transaction can;
+a damaged, unsupported, identity or bootstrap refusal, uncertainty after an
+effect, or a lock held by another process withholds it, and `init` says so in a
+WARNING. A corrupt journal therefore never allows the repair. The healthy merge is deliberately part of `init`
 rather than a flag the hook passes, so it happens once, by itself, on the
 deployment path -- gated by the recognition rule, which is what keeps it from
 touching anything that is not agent memory. See [the adoption

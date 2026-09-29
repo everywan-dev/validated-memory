@@ -803,25 +803,32 @@ transaction cannot appear between the decision and the link.
   snapshot is usable, every outstanding `history.*` condition is
   `history.topology_gate`, no condition names the harness path as its subject
   or in its pairing, the vault's transaction and preimage directories hold only
-  canonical artifacts, and every transaction file parses and does not name the
-  harness path.
-- **A journal that cannot be read** allows it under the vault rules above. When
-  the lock or the vault cannot be read at all, it runs unguarded, which is the
-  declared exception of the journal core.
+  canonical artifacts, and every transaction file parses, names a path, and does
+  not name the harness path. When the lock or the vault cannot be read the link
+  is withheld.
+- **A journal that cannot be read** allows it under the vault rules alone,
+  because the history cannot be read. When the lock cannot be taken or the
+  vault cannot be listed at all, it runs unguarded, which is the declared
+  exception of the journal core.
 - **Every other refusal** withholds it: damaged, unsupported, identity and
   bootstrap refusals cannot prove the absence of authority over the harness
   path, and neither can uncertainty after a current effect. A lock held by
-  another process withholds it too, without waiting for the lock a second time.
+  another process withholds it too, without waiting for the lock a second time
+  when it was already held on the first attempt; a lock another process takes
+  between the refusal and the repair is waited for once more, up to the lock's
+  own deadline, and then withholds it.
 
-Recorded paths are compared with the harness path as directory entries: the
-harness path is made absolute first, and two paths name the same entry when
-their parent directories resolve to the same directory and their final names
-are equal. The final component is never followed.
+Recorded paths are compared with the harness path as directory entries, and
+nothing is collapsed lexically, because `..` after a symlink names the parent
+of the symlink's target: two paths name the same entry when the real paths of
+their parent directories and their final names are equal, or when both entries
+exist and are the same file. The final component is never followed.
 
 A restored link is not recorded, and a WARNING says so and names the previous
-target. A withheld link is a WARNING that names the harness path and the reason,
-and the first run the journal allows restores it. The refusal is still an ERROR
-and exits 1 in every case. `status` reports the history conditions that cause a
+target. A withheld link is a WARNING that names the harness path and the reason
+and ends in `run journal --check`, and the first run the journal allows
+restores it. A link that already resolves to `memory/` is not reported. The
+refusal is still an ERROR and exits 1 in every case. `status` reports the history conditions that cause a
 refusal without gating on them (see [`status`](cli.md#status)).
 
 ## Resolving a transaction

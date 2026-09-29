@@ -213,36 +213,69 @@ def test_proof_bound_repair_successor_is_documented():
     )
 
 
+ADR_0029 = "adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md"
+
+# What each reference says of ADR 0029's guarded repair, word for word: a
+# sentence that changes is a contract that changed, and this is where it is
+# noticed. The whitespace of each document is normalised before the search.
+GUARDED_REPAIR_SENTENCES = {
+    "cli.md": (
+        "`init` neither collapses `..` nor resolves a symlink",
+        "nothing is collapsed lexically",
+        "When the vault cannot be read the link is withheld.",
+        "(`the harness link was not restored: ...; run journal --check`)",
+        "A lock another process takes between the refusal and the repair is "
+        "waited for once more, up to the lock's own deadline, and then "
+        "withholds it.",
+        "A link that already resolves to `memory/` needs nothing and gets no "
+        "WARNING, whichever refusal ended the run.",
+    ),
+    "journal.md": (
+        "nothing is collapsed lexically",
+        "When the lock or the vault cannot be read the link is withheld.",
+        "ends in `run journal --check`",
+        "a lock another process takes between the refusal and the repair is "
+        "waited for once more, up to the lock's own deadline, and then "
+        "withholds it.",
+        "A link that already resolves to `memory/` is not reported.",
+    ),
+    "hooks.md": (
+        "a journal that cannot be read restores it when the vault alone shows "
+        "that no transaction can",
+        "A corrupt journal therefore never allows the repair.",
+    ),
+}
+
+
 def test_c1f_fail_open_boundary_and_protocol_ownership_are_documented():
     """Both references keep the two exceptions narrow and name policy owner."""
-    cli = (REPO_ROOT / "docs" / "reference" / "cli.md").read_text(
-        encoding="utf-8"
-    )
-    journal = (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(
-        encoding="utf-8"
-    )
+    docs = REPO_ROOT / "docs" / "reference"
+    cli = (docs / "cli.md").read_text(encoding="utf-8")
+    journal = (docs / "journal.md").read_text(encoding="utf-8")
     for text in (cli, journal):
         prose = " ".join(text.split())
         assert "cannot be read" in prose and "journal" in prose
         assert "vault's ignore entry" in prose
         assert "damaged" in prose
         assert "uncertainty after a current effect" in prose
-        # ADR 0029: the repair is guarded and can be withheld, and the docs
-        # say who decides it and what a caller sees when it is.
-        assert "adr/0029-the-harness-link-survives-a-refusal" in prose
-        assert "withhold" in prose
-        assert "run-wide lock" in prose
-        assert "the harness link was not restored" in prose or (
-            "names the harness path and the reason" in prose
-        )
+        assert ADR_0029 in prose
+        assert "takes the run-wide lock" in prose
     assert "unavailable or corrupt journal" not in cli
     assert "journal cannot be written at all, or refuses" not in cli
+
+    for name, sentences in GUARDED_REPAIR_SENTENCES.items():
+        prose = " ".join((docs / name).read_text(encoding="utf-8").split())
+        for sentence in sentences:
+            assert sentence in prose, f"{name} no longer says: {sentence!r}"
+    hooks = " ".join((docs / "hooks.md").read_text(encoding="utf-8").split())
+    assert ADR_0029 in hooks
 
     facade = (
         REPO_ROOT / "validated_memory" / "journal" / "__init__.py"
     ).read_text(encoding="utf-8")
     assert "the sole workflow-policy owner" in facade
     assert "it owns no history or topology policy" in facade
+    assert "`init.py`, `cli.py` and `status.py` reach" in " ".join(facade.split())
 
 
 def test_journal_introduction_links_every_section():

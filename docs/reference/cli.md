@@ -294,6 +294,12 @@ usage error (exit 2) and no project-memory diagnostic is produced. Missing,
 broken, looping and non-directory project-memory nodes retain the existing
 "no `memory/` to link to" no-action warning.
 
+A relative PATH is joined to the current directory, which is the adopter root,
+and nothing more is done to it: `init` neither collapses `..` nor resolves a
+symlink, so the link is created where the operating system resolves the
+spelling as typed. With `alias` a symlink to `/x/deep`, `alias/../harness/memory`
+names `/x/harness/memory`, not the directory beside `alias`.
+
 - PATH missing: `init` creates the symlink (making parent directories as
   needed).
 - PATH already a symlink -- pointing at this project, elsewhere, or broken:
@@ -327,24 +333,28 @@ in the same critical section:
   one legacy history, a fork of the frontier) allows it when the history
   snapshot is usable, every outstanding history condition is a topology gate,
   no condition names PATH, and the vault holds no residue and no transaction
-  that is unreadable or names PATH. The WARNING says the journal refused this
-  run.
-- A **journal that cannot be read** allows it under the same vault rules. When
-  the lock cannot be taken or the vault cannot be listed at all, it is
-  restored without those checks, with the same WARNING.
+  that is unreadable, names no path or names PATH. When the vault cannot be
+  read the link is withheld. The WARNING says the journal refused this run.
+- A **journal that cannot be read** allows it under the vault rules alone: the
+  history cannot be read, so only the vault is. When the lock cannot be taken
+  or the vault cannot be listed at all, it is restored without those checks,
+  with the same WARNING.
 - **Every other refusal** -- damaged, unsupported, identity or bootstrap
   history, uncertainty after a current effect -- and a **lock held by another
   process** withhold it. `init` leaves PATH exactly as it was and adds a
-  WARNING naming PATH and the reason (`the harness link was not restored:
-  ...`); the first run the journal allows restores it.
+  WARNING naming PATH and the reason, ending in `run journal --check`
+  (`the harness link was not restored: ...; run journal --check`); the first
+  run the journal allows restores it. A lock another process takes between
+  the refusal and the repair is waited for once more, up to the lock's own
+  deadline, and then withholds it.
 
-Recorded paths are compared with PATH as directory entries, not as text: PATH
-is made absolute first (a relative `--harness-memory` is taken against the
-adopter, without resolving its final component), and two paths name the same
-entry when their parent directories resolve to the same directory and their
-final names are equal. The exit code is 1 in every case, because the refusal
-is still an ERROR. A link that already resolves to `memory/` needs nothing and
-gets no WARNING.
+Recorded paths are compared with PATH as directory entries, not as text, and
+nothing is collapsed lexically: two paths name the same entry when the real
+paths of their parent directories and their final names are equal, or when both
+entries exist and are the same file, which is how a filesystem that folds case
+names one entry twice. The exit code is 1 in every case, because the refusal is
+still an ERROR. A link that already resolves to `memory/` needs nothing and
+gets no WARNING, whichever refusal ended the run.
 
 The unrecorded restoration after such a refusal, or when the vault's ignore
 entry could not be established, first requires the same eligible in-adopter
