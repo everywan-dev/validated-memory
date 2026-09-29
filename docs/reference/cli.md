@@ -252,9 +252,11 @@ memory is absorbed or parked. An unignored vault is the one thing the entry
 exists to prevent, so nothing may write into it -- the vault is left
 byte-for-byte as it was. The harness symlink is the exception, because
 restoring it moves no data: it is restored without its record, with the
-WARNING saying why, so a renamed project still finds its memory. Nothing is
-linked when this project has no `memory/` of its own, there being nothing
-to point at.
+WARNING saying why, so a renamed project still finds its memory, unless the
+vault holds a transaction that names the harness path or anything else the
+repair cannot account for, which withholds it as it does after a journal
+refusal. Nothing is linked when this project has no `memory/` of its own,
+there being nothing to point at.
 
 `validated-memory.md` declares the full adopter surface `extension.py`
 validates: the declared extension (`schema`, `version`), the `id_prefix`,
@@ -332,13 +334,16 @@ in the same critical section:
 - A **topology refusal before any adopting effect** (two adoption lineages in
   one legacy history, a fork of the frontier) allows it when the history
   snapshot is usable, every outstanding history condition is a topology gate,
-  no condition names PATH, and the vault holds no residue and no transaction
-  that is unreadable, names no path or names PATH. When the vault cannot be
-  read the link is withheld. The WARNING says the journal refused this run.
+  no condition names PATH, and the vault holds no residue, every entry of its
+  transaction and preimage directories is a regular file (a symlink or any
+  other node is never opened and withholds), and no transaction is unreadable,
+  names no path or names PATH. When the vault cannot be read the link is
+  withheld. The WARNING says the journal refused this run.
 - A **journal that cannot be read** allows it under the vault rules alone: the
   history cannot be read, so only the vault is. When the lock cannot be taken
-  or the vault cannot be listed at all, it is restored without those checks,
-  with the same WARNING.
+  for a reason other than another process holding it, the vault is still read,
+  without the lock, and the same rules apply. Only when the vault itself cannot
+  be listed is the link restored without them, with the same WARNING.
 - **Every other refusal** -- damaged, unsupported, identity or bootstrap
   history, uncertainty after a current effect -- and a **lock held by another
   process** withhold it. `init` leaves PATH exactly as it was and adds a
@@ -350,11 +355,14 @@ in the same critical section:
 
 Recorded paths are compared with PATH as directory entries, not as text, and
 nothing is collapsed lexically: two paths name the same entry when the real
-paths of their parent directories and their final names are equal, or when both
-entries exist and are the same file, which is how a filesystem that folds case
-names one entry twice. The exit code is 1 in every case, because the refusal is
+paths of their parent directories are equal and their final names are equal
+without regard to case, or when both entries exist and are the same file,
+which is how a filesystem that folds case names one entry twice. The exit code is 1 in every case, because the refusal is
 still an ERROR. A link that already resolves to `memory/` needs nothing and
 gets no WARNING, whichever refusal ended the run.
+
+An unignored vault goes through the same repair, with the vault rules of an
+unreadable journal.
 
 The unrecorded restoration after such a refusal, or when the vault's ignore
 entry could not be established, first requires the same eligible in-adopter

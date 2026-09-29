@@ -223,6 +223,13 @@ GUARDED_REPAIR_SENTENCES = {
         "`init` neither collapses `..` nor resolves a symlink",
         "nothing is collapsed lexically",
         "When the vault cannot be read the link is withheld.",
+        "(a symlink or any other node is never opened and withholds)",
+        "When the lock cannot be taken for a reason other than another "
+        "process holding it, the vault is still read, without the lock, and "
+        "the same rules apply.",
+        "final names are equal without regard to case",
+        "An unignored vault goes through the same repair, with the vault "
+        "rules of an unreadable journal.",
         "(`the harness link was not restored: ...; run journal --check`)",
         "A lock another process takes between the refusal and the repair is "
         "waited for once more, up to the lock's own deadline, and then "
@@ -233,6 +240,18 @@ GUARDED_REPAIR_SENTENCES = {
     "journal.md": (
         "nothing is collapsed lexically",
         "When the lock or the vault cannot be read the link is withheld.",
+        "(a symlink or any other node is never opened and withholds)",
+        "When the lock cannot be taken for a reason other than another "
+        "process holding it, the vault is still read, without the lock, and "
+        "the same rules apply.",
+        "final names are equal without regard to case",
+        "**An unignored vault** gates the run without a journal refusal; its "
+        "repair goes through the same guard with the vault rules of an "
+        "unreadable journal.",
+        "The lock serialises validated-memory processes only. A process "
+        "outside the plugin that replaces the harness path between the check "
+        "and the relink is not guarded against; the relink never replaces a "
+        "directory.",
         "ends in `run journal --check`",
         "a lock another process takes between the refusal and the repair is "
         "waited for once more, up to the lock's own deadline, and then "
@@ -240,8 +259,8 @@ GUARDED_REPAIR_SENTENCES = {
         "A link that already resolves to `memory/` is not reported.",
     ),
     "hooks.md": (
-        "a journal that cannot be read restores it when the vault alone shows "
-        "that no transaction can",
+        "a journal that cannot be read, or an unignored vault, restores it "
+        "when the vault alone shows that no transaction can",
         "A corrupt journal therefore never allows the repair.",
     ),
 }

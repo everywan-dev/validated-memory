@@ -452,7 +452,7 @@ two. Both are declared in the design and pinned by name in
 
 | Write | By | Why it is an exception |
 |---|---|---|
-| the fail-open repair of the harness symlink | `init.relink` | After the CLI usage preflight accepts PATH, an eligible in-adopter project-memory target is required before every sync action. The contract requires the link back when the journal cannot serve the `SessionStart` hook, whose only job it is. After a refusal, `journal.guarded_harness_repair` takes the run-wide lock, reads the history and the vault, and calls the repair inside the same critical section, or withholds it and says why ([ADR 0029](../adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md)); when the vault's ignore entry cannot be established the repair runs without that read. An outside-root project target reaches no repair. The repair creates only the supplied parent chain, republishes the link atomically and requests the same durability barriers. A pre-visibility failure remains a WARNING naming the previous target; a visible effect whose barrier fails is an ERROR and cannot become a clean retry. |
+| the fail-open repair of the harness symlink | `init.relink` | After the CLI usage preflight accepts PATH, an eligible in-adopter project-memory target is required before every sync action. The contract requires the link back when the journal cannot serve the `SessionStart` hook, whose only job it is. After a refusal, `journal.guarded_harness_repair` takes the run-wide lock, reads the history and the vault, and calls the repair inside the same critical section, or withholds it and says why ([ADR 0029](../adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md)); when the vault's ignore entry cannot be established the repair reads only the vault, with the rules of an unreadable journal. An outside-root project target reaches no repair. The repair creates only the supplied parent chain, republishes the link atomically and requests the same durability barriers. A pre-visibility failure remains a WARNING naming the previous target; a visible effect whose barrier fails is an ERROR and cannot become a clean retry. |
 | the harness take-over | `adopt.take_over`, and its `_absorb`, `_reconcile_index` and `_park` | It recognises a tree, copies conditionally, reconciles an index and renames the source, and its published contract tolerates a per-file conflict and continues. That needs its own planner before the executor can apply it. |
 
 **Not recorded at all**, because what is written is not adopter data: a
@@ -802,14 +802,17 @@ transaction cannot appear between the decision and the link.
 - **A topology refusal before any adopting effect** allows it only if the
   snapshot is usable, every outstanding `history.*` condition is
   `history.topology_gate`, no condition names the harness path as its subject
-  or in its pairing, the vault's transaction and preimage directories hold only
-  canonical artifacts, and every transaction file parses, names a path, and does
-  not name the harness path. When the lock or the vault cannot be read the link
-  is withheld.
+  or in its pairing, every entry of the vault's transaction and preimage
+  directories is a regular file (a symlink or any other node is never opened
+  and withholds), those directories hold only canonical artifacts, and every
+  transaction file parses, names a path, and does not name the harness path.
+  When the lock or the vault cannot be read the link is withheld.
 - **A journal that cannot be read** allows it under the vault rules alone,
-  because the history cannot be read. When the lock cannot be taken or the
-  vault cannot be listed at all, it runs unguarded, which is the declared
-  exception of the journal core.
+  because the history cannot be read. When the lock cannot be taken for a
+  reason other than another process holding it, the vault is still read,
+  without the lock, and the same rules apply. Only when the vault cannot be
+  listed at all does it run unguarded, which is the declared exception of the
+  journal core.
 - **Every other refusal** withholds it: damaged, unsupported, identity and
   bootstrap refusals cannot prove the absence of authority over the harness
   path, and neither can uncertainty after a current effect. A lock held by
@@ -821,8 +824,16 @@ transaction cannot appear between the decision and the link.
 Recorded paths are compared with the harness path as directory entries, and
 nothing is collapsed lexically, because `..` after a symlink names the parent
 of the symlink's target: two paths name the same entry when the real paths of
-their parent directories and their final names are equal, or when both entries
-exist and are the same file. The final component is never followed.
+their parent directories are equal and their final names are equal without
+regard to case, or when both entries exist and are the same file. The final
+component is never followed.
+
+**An unignored vault** gates the run without a journal refusal; its repair goes
+through the same guard with the vault rules of an unreadable journal.
+
+The lock serialises validated-memory processes only. A process outside the
+plugin that replaces the harness path between the check and the relink is not
+guarded against; the relink never replaces a directory.
 
 A restored link is not recorded, and a WARNING says so and names the previous
 target. A withheld link is a WARNING that names the harness path and the reason
