@@ -130,11 +130,11 @@ def test_hook_does_not_repair_over_a_corrupt_journal(tmp_path):
         "Expecting property name enclosed in double quotes. No target or "
         "permanent-history change was left by this operation"
     )
-    assert warning.startswith(
+    assert warning == (
         f"WARNING: {harness_memory}: symlink: the harness link was not "
-        "restored: history.malformed is outstanding on journal.jsonl:11; "
-    ), warning
-    assert warning.endswith("it is restored by the first run the journal allows")
+        "restored: the history is damaged, unsupported or changing, so it "
+        "cannot be shown to leave the link alone; run journal --check"
+    )
     assert not harness_memory.exists() and not harness_memory.is_symlink()
     assert journal.read_bytes() == journal_before
     assert memory_dir.is_dir()

@@ -344,19 +344,15 @@ PERMITTED_JOURNAL_EXPORTS = (
     "JOURNAL_FILENAME",
     "JournalError",
     "LOCAL",
-    "LOCK_BUSY",
     "OUTCOME_APPLIED",
     "OUTCOME_NOOP",
     "OUTCOME_REFUSED",
     "PRE_EFFECT_GATE",
     "RECOVERED",
-    "REPAIR_RELINKED",
-    "REPAIR_RELINKED_UNGUARDED",
     "REPAIR_WITHHELD",
     "REPO",
     "RESOLUTIONS",
     "SYMLINK",
-    "UNAVAILABLE",
     "VAULT_DIRNAME",
     "adopting_run",
     "append_to_file",
@@ -2171,9 +2167,8 @@ def test_bootstrap_competitor_wins_without_replacement(run_cli, tmp_path, monkey
         "artifact from a trusted source under operator control, then rerun "
         "journal --check and init. The plugin does not remove or rename it\n"
         f"WARNING: {harness}: symlink: the harness link was not restored: the "
-        "journal refused this run in a way that cannot show that it is "
-        "unrelated to the link; it is restored by the first run the journal "
-        "allows\n"
+        "journal refused this run and the refusal cannot be shown to leave "
+        "the link alone; run journal --check\n"
     )
     assert (tmp_path / "journal.jsonl").read_bytes() == b"competitor\n"
     assert not (tmp_path / "knowledge").exists()
@@ -4530,7 +4525,11 @@ def test_non_line_numbered_history_damage_never_grants_harness_repair(
     assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert result.stderr.count("ERROR:") == 1
     assert result.stderr.count("WARNING:") == 1
-    assert "the harness link was not restored" in result.stderr
+    assert (
+        "the harness link was not restored: the history is damaged, "
+        "unsupported or changing, so it cannot be shown to leave the link "
+        "alone; run journal --check\n"
+    ) in result.stderr
     assert "No target or permanent-history change was left" in result.stderr
     assert "created symlink" not in result.stdout
     assert "re-pointed symlink" not in result.stdout
@@ -4677,7 +4676,7 @@ def test_permission_denied_open_uses_visible_history_node_kind(
     if node_kind in ("directory", "symlink-directory"):
         assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
         assert result.stderr.count("WARNING:") == 1
-        assert "the harness link was not restored" in result.stderr
+        assert "the history is damaged, unsupported or changing" in result.stderr
         assert _final_tree_snapshot(harness.parent) == before_harness
         if node_kind == "directory":
             assert history.is_dir() and not history.is_symlink()
@@ -4747,7 +4746,7 @@ def test_permission_denied_symlink_target_race_fails_closed(run_cli, tmp_path):
     assert result.stdout == "init: 0 item(s) confirmed, 1 gate(s)\n"
     assert result.stderr.count("ERROR:") == 1
     assert result.stderr.count("WARNING:") == 1
-    assert "the harness link was not restored" in result.stderr
+    assert "the history is damaged, unsupported or changing" in result.stderr
     assert "simulated history access denial" in result.stderr
     assert _final_tree_snapshot(harness.parent) == harness_before
     assert history.is_symlink() and os.readlink(history) == race_target.name

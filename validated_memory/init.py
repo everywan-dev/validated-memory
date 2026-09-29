@@ -97,8 +97,9 @@ BROKEN_SYMLINK = (
     "already there, so it is left untouched"
 )
 
-# Why a mutation went unrecorded, as `_record_symlink` says it. The link is
-# restored on both, because the failure is the record's and not the link's.
+# Why a mutation went unrecorded, as `_unrecorded_warning` says it. The link is
+# restored in every case, because the failure is the record's and not the
+# link's.
 UNRECORDED_JOURNAL = "the journal is unavailable"
 UNRECORDED_REFUSAL = "the journal refused this run"
 UNRECORDED_VAULT = (
@@ -120,11 +121,11 @@ UNABSORBED = (
     "already exists and is not a symlink; absorbing it moves the adopter's "
     "own data, which a run that gated may not do, so it was left untouched"
 )
-# A refusal that no repair was attempted for cannot be shown unrelated to the
-# link, and nothing about it may be assumed.
+# What a withheld link says when `journal.harness_repair_regime` allowed no
+# repair at all: a refusal it cannot place before every adopting effect.
 UNATTEMPTED_REPAIR = (
-    "the journal refused this run in a way that cannot show that it is "
-    "unrelated to the link"
+    "the journal refused this run and the refusal cannot be shown to leave "
+    "the link alone"
 )
 UNCONFIRMED_EFFECT = (
     "an effect of this run is visible or may be visible, and its durability "
@@ -225,8 +226,9 @@ def run(harness_memory, view, stdout, stderr, app=False):
     that another process holds reach it, and the last is always withheld. Any
     other refusal -- identity, bootstrap, uncertainty after an effect -- is
     withheld without calling it. A withheld link is a WARNING naming the
-    harness path and the reason, except when the harness step itself raised:
-    its ERROR already names the path. A real harness directory is never a
+    harness path and the reason, except when the harness step itself raised
+    (its ERROR already names the path) or when the link already resolves to
+    `memory/` (nothing is left to restore). A real harness directory is never a
     symlink restoration and remains untouched after either outcome.
 
     The vault's ignore entry is the other ERROR that is not about a single
@@ -240,9 +242,11 @@ def run(harness_memory, view, stdout, stderr, app=False):
     What that ordering guarantees, stated exactly: no `local` transaction
     file and no preimage is written while the vault is unignored. A `local`
     path is absolute (ADR 0008), which is what a commit must never carry:
-    `run` makes `--harness-memory` absolute without resolving it before
-    anything reads it, whatever spelling was typed. The run's only `local`
-    intention -- the harness symlink's -- is dropped when this gate fires.
+    `run` joins a relative `--harness-memory` to the current directory before
+    anything reads it, and neither collapses `..` nor resolves a symlink,
+    because the operating system alone knows what `..` after a symlink
+    names. The run's only `local` intention -- the harness symlink's -- is
+    dropped when this gate fires.
     The entry's OWN transaction is written before it, and may be: it names
     `.gitignore`, relative, with two digests and no bytes, which is what the
     lock file beside it already is. Recovery runs before the gate too, for the
@@ -255,8 +259,9 @@ def run(harness_memory, view, stdout, stderr, app=False):
     unignored = False
     adoption_stopped = False
     if harness_memory is not None:
-        # Not resolved: the final component is the link, which may be stale.
-        harness_memory = os.path.abspath(harness_memory)
+        # Joined, never normalised: `os.path.abspath` would collapse `..` after
+        # a symlink to a path the link is not created at.
+        harness_memory = os.path.join(os.getcwd(), harness_memory)
 
     # Everything that journals -- the scaffold and the harness symlink --
     # runs in one adopting scope: `init` is deliberately re-runnable at
@@ -397,7 +402,8 @@ def run(harness_memory, view, stdout, stderr, app=False):
                     if getattr(refusal, "visibility_unconfirmed", False)
                     else UNATTEMPTED_REPAIR
                 )
-                findings.append(_withheld_link(harness_memory, reason))
+                if not _link_is_current(harness_memory):
+                    findings.append(_withheld_link(harness_memory, reason))
             else:
                 link_findings, link_confirmed = _sync_symlink(
                     harness_memory,
@@ -782,12 +788,12 @@ def _sync_symlink(
     mutation destroys is at least on stderr rather than nowhere.
 
     `regime` is set only for a run the journal refused, and hands the
-    decision to `journal.guarded_harness_repair` (ADR 0029): `relink` is
-    then called by it, under the run-wide lock, or not at all, and a
-    withheld link is a WARNING with the reason and a count of zero. A link
-    that already resolves to the target is left alone and unreported in that
-    case: there is nothing to restore, so there is nothing to guard, and a
-    WARNING that the link was not restored would be false.
+    decision to `journal.guarded_harness_repair` (ADR 0029): it calls
+    `relink`, or does not, and a withheld link is a WARNING with the reason
+    and a count of zero. A link that already resolves to the target is left
+    alone and unreported in that case: there is nothing to restore, so there
+    is nothing to guard, and a WARNING that the link was not restored would
+    be false.
     """
     path = Path(raw_path)
     location = path.as_posix()
@@ -960,14 +966,31 @@ def _unrecorded_warning(location, previous, unrecorded):
 
 
 def _withheld_link(location, reason):
-    """The WARNING for a link left as it was, with the rule that left it."""
+    """The WARNING for a link left as it was, with what left it."""
     return Finding(
         WARNING,
         Path(location).as_posix(),
         "symlink",
-        f"the harness link was not restored: {reason}; it is restored by "
-        "the first run the journal allows",
+        f"the harness link was not restored: {reason}; run journal --check",
     )
+
+
+def _link_is_current(raw_path):
+    """Whether `raw_path` is a symlink that already resolves to `memory/`.
+
+    A link that is current has nothing to restore, so a refused run says
+    nothing about it.
+    """
+    path = Path(raw_path)
+    project_memory = Path("memory")
+    try:
+        return (
+            project_memory.is_dir()
+            and path.is_symlink()
+            and path.resolve() == project_memory.resolve()
+        )
+    except (OSError, RuntimeError):
+        return False
 
 
 def _record_symlink(session, path, previous, target, relink, unrecorded):

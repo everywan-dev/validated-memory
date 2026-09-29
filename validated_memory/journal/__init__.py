@@ -48,8 +48,8 @@ from the ones before it:
 - `command` -- the `journal` subcommand.
 
 This file is the facade, and it is deliberately narrow: exactly the names
-`init.py` and `cli.py` reach through `journal.`, and nothing kept in case
-somebody wants it. Everything else -- the raw line-writer, the atomic
+`init.py`, `cli.py` and `status.py` reach through `journal.`, and nothing kept
+in case somebody wants it. Everything else -- the raw line-writer, the atomic
 install, the record builder, the bootstrap, the transaction file's own
 stages -- is the journal's own, and a caller that reaches one is
 reimplementing the workflow the protocol module exists to own. A module of this
@@ -86,12 +86,8 @@ from .records import (
 )
 from .transactions import RECOVERED, RESOLUTIONS
 from .protocol import (
-    LOCK_BUSY,
     PRE_EFFECT_GATE,
-    REPAIR_RELINKED,
-    REPAIR_RELINKED_UNGUARDED,
     REPAIR_WITHHELD,
-    UNAVAILABLE,
     adopting_run,
     guarded_harness_repair,
     harness_repair_regime,
@@ -106,19 +102,15 @@ __all__ = [
     "JOURNAL_FILENAME",
     "JournalError",
     "LOCAL",
-    "LOCK_BUSY",
     "OUTCOME_APPLIED",
     "OUTCOME_NOOP",
     "OUTCOME_REFUSED",
     "PRE_EFFECT_GATE",
     "RECOVERED",
-    "REPAIR_RELINKED",
-    "REPAIR_RELINKED_UNGUARDED",
     "REPAIR_WITHHELD",
     "REPO",
     "RESOLUTIONS",
     "SYMLINK",
-    "UNAVAILABLE",
     "VAULT_DIRNAME",
     "adopting_run",
     "append_to_file",
