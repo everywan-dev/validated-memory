@@ -9,6 +9,7 @@ A test here proves that a run returns and what it says; it does not prove that
 nothing opened the node. Nothing imports the package.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -255,3 +256,84 @@ def test_the_session_start_hook_returns_over_a_transaction_entry_that_is_a_pipe_
     assert link.is_symlink(), second.stderr
     assert link.resolve() == (project / "memory").resolve()
     assert "not a regular file" in second.stderr, second.stderr
+
+
+# --- preimage slots -----------------------------------------------------------
+
+SLOT_KINDS = (
+    pytest.param("symlink-to-fifo", marks=needs_fifo),
+    pytest.param("fifo", marks=needs_fifo),
+    "dangling-symlink",
+    "directory",
+)
+
+
+@pytest.mark.parametrize("kind", SLOT_KINDS)
+def test_a_preimage_slot_that_is_not_a_regular_file_refuses_the_mutation(
+    tmp_path, kind
+):
+    """`init` refuses before any effect and names the slot and the remedy.
+
+    `.gitignore` needs an update, so the run parks its bytes under their
+    digest, and that name is taken by a node that is not a regular file. The
+    run returns, exits 1 and says to remove the slot by hand; the slot is kept,
+    `.gitignore` is unchanged and no lock is left behind."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    original = b"build/\n"
+    (tree / ".gitignore").write_bytes(original)
+    slot = tree / VAULT / "preimages" / hashlib.sha256(original).hexdigest()
+    slot.parent.mkdir(parents=True)
+    _make_node(tmp_path, slot, kind)
+    before = _node_state(slot)
+
+    result = _cli(tree, "init")
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert f"{VAULT}/preimages/{slot.name}" in result.stderr, result.stderr
+    assert "is not a regular file" in result.stderr, result.stderr
+    assert "remove it by hand" in result.stderr, result.stderr
+    assert (tree / ".gitignore").read_bytes() == original
+    assert _node_state(slot) == before
+    assert not os.path.lexists(tree / VAULT / "lock")
+
+
+def _diverged_with_preimage(tree):
+    """Leave a published `.gitignore` transaction, diverged; return its ID.
+
+    The preimage of `build/\\n` is parked in the vault under its digest."""
+    (tree / ".gitignore").write_text("build/\n", encoding="utf-8")
+    killed = _cli(tree, "init", env={"VALIDATED_MEMORY_FAULT": "after-published"})
+    assert killed.returncode == 70, (killed.stdout, killed.stderr)
+    (tree / ".gitignore").write_text("an adopter wrote this\n", encoding="utf-8")
+    (path,) = (tree / VAULT / "transactions").glob("*.json")
+    return path.stem
+
+
+@pytest.mark.parametrize(
+    "kind", (pytest.param("symlink-to-fifo", marks=needs_fifo), "directory")
+)
+def test_restore_treats_a_preimage_that_is_not_a_regular_file_as_unavailable(
+    tmp_path, kind
+):
+    """`--restore` refuses, says the preimage is unavailable, and restores nothing."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    transaction = _diverged_with_preimage(tree)
+    (blob,) = (tree / VAULT / "preimages").iterdir()
+    blob.unlink()
+    _make_node(tmp_path, blob, kind)
+    before = _node_state(blob)
+
+    result = _cli(tree, "journal", "--resolve", transaction, "--restore")
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "is unavailable: it is not a regular file" in result.stderr, result.stderr
+    assert "Nothing has been restored." in result.stderr, result.stderr
+    assert (tree / ".gitignore").read_text(encoding="utf-8") == (
+        "an adopter wrote this\n"
+    )
+    assert _node_state(blob) == before
+    assert (tree / VAULT / "transactions" / f"{transaction}.json").exists()

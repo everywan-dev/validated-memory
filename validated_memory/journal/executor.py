@@ -28,6 +28,7 @@ from .durable import (
     ensure_owned_directory,
     install_bytes,
     read_file_snapshot,
+    read_regular_file,
     repair_symlink,
     remove_name,
     replace_symlink,
@@ -118,10 +119,11 @@ def _blob_matches(path, reference):
     question that can be asked of it. Bytes that cannot be read at all
     answer it the same way bytes that disagree do: this blob is not the
     preimage it claims to be, and the caller replaces it rather than
-    trusting it.
+    trusting it. A node that is not a regular file is not opened, and
+    answers the same way.
     """
     try:
-        return digest(path.read_bytes()) == reference
+        return digest(read_regular_file(path)) == reference
     except OSError:
         return False
 
@@ -425,6 +427,12 @@ class Run:
         with are in hand right now. Refusing instead would wedge the
         adoption on a file nothing else will ever repair.
 
+        A slot that is not a regular file is not a blob and is neither
+        opened nor removed: it is `lstat`ed, so a dangling symlink is not
+        "absent", and it raises `OSError` naming the slot, before anything
+        is written. Whose it is cannot be proven, and opening a pipe blocks
+        the run, so only the operator removes it.
+
         The check is read-back, not a proof about the platter: a filesystem
         that lies about what it stored will lie to this read too. What it
         does catch is the reachable half -- a short or torn write, and a
@@ -436,9 +444,20 @@ class Run:
         data = target.read_bytes()
         reference = digest(data)
         blob = _preimages_dir(self.root) / reference.replace("sha256:", "")
-        if blob.exists() and not _blob_matches(blob, reference):
+        try:
+            slot = os.lstat(blob)
+        except FileNotFoundError:
+            slot = None
+        if slot is not None and not stat.S_ISREG(slot.st_mode):
+            raise OSError(
+                f"{VAULT_DIRNAME}/{PREIMAGE_DIRNAME}/{blob.name} is not a "
+                "regular file, so it was neither opened nor removed; remove "
+                "it by hand and run again"
+            )
+        if slot is not None and not _blob_matches(blob, reference):
             remove_name(blob)
-        if not blob.exists():
+            slot = None
+        if slot is None:
             ensure_owned_directory(blob.parent, self.root)
             def verify(temporary):
                 if not _blob_matches(temporary, reference):

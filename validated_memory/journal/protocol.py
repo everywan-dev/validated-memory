@@ -22,6 +22,7 @@ from .durable import (
     StagingCleanupUnconfirmed,
     VisibilityUnconfirmed,
     read_file_snapshot,
+    read_regular_file,
     remove_name,
 )
 from .executor import (
@@ -1507,7 +1508,7 @@ def _restore_selected(session, snapshot, evidence, disposition):
             / reference.removeprefix("sha256:")
         )
         try:
-            data = blob.read_bytes()
+            data = read_regular_file(blob)
         except FileNotFoundError:
             return refuse(
                 f"the preimage of {location}, {reference}, is not in "
