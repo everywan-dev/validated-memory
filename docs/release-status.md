@@ -2,9 +2,9 @@
 
 ## Published release
 
-The current published release is **2.5.1**, tagged
-[`v2.5.1`](https://github.com/everywan-dev/validated-memory/tree/v2.5.1).
-The [GitHub release page](https://github.com/everywan-dev/validated-memory/releases/tag/v2.5.1)
+The current published release is **2.5.2**, tagged
+[`v2.5.2`](https://github.com/everywan-dev/validated-memory/tree/v2.5.2).
+The [GitHub release page](https://github.com/everywan-dev/validated-memory/releases/tag/v2.5.2)
 is the distribution record. The plugin uses the version declared in its
 manifest, so a commit on the default branch does not by itself update an
 installed plugin; see [updating](installing.md#updating).
@@ -18,7 +18,10 @@ transaction entry, a preimage slot or a lock path that is a symlink, a named
 pipe or a directory is no longer opened: the entry is a damaged transaction, the
 slot refuses the mutation and the lock path is refused, and each ERROR names the
 node, where 2.5.1 could hang. A symlink to a valid transaction file, which 2.5.1
-read, is now a damaged transaction. The harness path is read again immediately
+read, is now a damaged transaction; a preimage slot that is a dangling symlink,
+which 2.5.1 replaced, now refuses the mutation; and a lock path that is a symlink
+to a lock file of a dead process, which 2.5.1 broke, is now refused. Each stays
+until it is removed by hand. The harness path is read again immediately
 before the link is replaced, and a path that changed while the repair waited is
 left alone with a WARNING; a path that cannot be looked at is a WARNING and no
 longer an uncaught error. See
