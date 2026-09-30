@@ -337,3 +337,41 @@ def test_restore_treats_a_preimage_that_is_not_a_regular_file_as_unavailable(
     )
     assert _node_state(blob) == before
     assert (tree / VAULT / "transactions" / f"{transaction}.json").exists()
+
+
+# --- the lock -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (pytest.param("fifo", marks=needs_fifo), "dangling-symlink"),
+)
+def test_a_lock_that_is_not_a_regular_file_is_refused_by_name_within_the_deadline(
+    tmp_path, kind
+):
+    """`init` gives up at the lock's deadline, names the lock and leaves it.
+
+    A lock that is not a regular file is never opened and never broken: it is
+    in the way, so the run waits its deadline and refuses, saying to remove it
+    by hand. Following the dangling link would create its target, and it does
+    not."""
+    tree = tmp_path / "tree"
+    (tree / VAULT).mkdir(parents=True)
+    lock = tree / VAULT / "lock"
+    _make_node(tmp_path, lock, kind)
+    before = _node_state(lock)
+
+    started = time.monotonic()
+    result = _cli(
+        tree, "init", timeout=LOCK_DEADLINE_SECONDS + 10
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert elapsed >= LOCK_DEADLINE_SECONDS - 1, elapsed
+    assert f"{VAULT}/lock" in result.stderr, result.stderr
+    assert "is not a regular file" in result.stderr, result.stderr
+    assert "remove it by hand" in result.stderr, result.stderr
+    assert _node_state(lock) == before
+    assert not os.path.lexists(tmp_path / "does-not-exist")

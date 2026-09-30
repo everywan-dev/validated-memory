@@ -145,6 +145,11 @@ class Lock:
     age horizon. `STALE_LOCK_SECONDS` covers only what is left: a pid that
     cannot be read.
 
+    A lock path that is not a regular file is never opened and never
+    broken, and it is waited for like a live holder: the run refuses at its
+    deadline with a message that names the path and says to remove it by
+    hand.
+
     Never breaking a live pid has a price, and the contention message pays
     it: if the operating system has handed that pid to an unrelated process
     since the run died, nothing here can tell, so the lock is honoured
@@ -210,22 +215,48 @@ class Lock:
                 self._entries += 1
                 return self
             except FileExistsError:
-                if self._break_if_unowned():
-                    continue
+                broke = self._break_if_unowned()
+                # Checked on every iteration, before the retry a break
+                # earns: whatever `_break_if_unowned` answers, this loop
+                # ends at the deadline.
                 if time.monotonic() >= deadline:
-                    busy = JournalError(
-                        None,
-                        f"another validated-memory process holds "
-                        f"{self.path.as_posix()}; retry when it finishes, "
-                        f"or if no validated-memory process is running, "
-                        f"delete {self.path.as_posix()}",
-                        self.artifact,
-                    )
-                    # A live holder, which is not an unavailable journal:
-                    # `harness_repair_regime` reads this marker.
-                    busy.lock_busy = True
-                    raise busy
-                time.sleep(0.05)
+                    raise self._busy()
+                if not broke:
+                    time.sleep(0.05)
+
+    def _busy(self):
+        """The refusal of a run whose deadline passed with the lock in the way.
+
+        A live holder and a lock path that is not a regular file both get it,
+        with different advice: only the first can be waited for. Both carry
+        `lock_busy`, which is not an unavailable journal, and
+        `harness_repair_regime` reads it.
+        """
+        path = self.path.as_posix()
+        if self._is_not_a_regular_file():
+            message = (
+                f"{path} is not a regular file, so it was neither opened nor "
+                f"broken; remove it by hand and run again"
+            )
+        else:
+            message = (
+                f"another validated-memory process holds {path}; retry when "
+                f"it finishes, or if no validated-memory process is running, "
+                f"delete {path}"
+            )
+        busy = JournalError(None, message, self.artifact)
+        busy.lock_busy = True
+        return busy
+
+    def _is_not_a_regular_file(self):
+        """Whether a name stands at the lock path that is not a regular file.
+
+        Asked of the name, without following it: a dangling symlink is one.
+        """
+        try:
+            return not stat.S_ISREG(os.lstat(self.path).st_mode)
+        except OSError:
+            return False
 
     def __exit__(self, exc_type, exc, traceback):
         if not self._entries:
@@ -267,6 +298,13 @@ class Lock:
 
         Returns whether it broke one, so the caller can retry at once.
 
+        A name that is not a regular file -- a symlink, a named pipe, a
+        directory -- is never opened and never broken, and answers False: no
+        run made it, its owner cannot be asked, and opening a pipe waits for
+        a writer that never comes. The caller waits out its deadline and
+        refuses. A link is not followed even when it is dangling, which is
+        what would otherwise answer "gone" for ever.
+
         The file is opened ONCE and every question is asked of that
         descriptor -- the pid it holds, its age, and which file it is --
         because a lock file can be replaced between two calls that name it,
@@ -288,8 +326,19 @@ class Lock:
         whole group, so a pid that is not positive is never asked about.
         """
         try:
+            named = os.lstat(self.path)
+        except FileNotFoundError:
+            return True  # It went away on its own; try again immediately.
+        except OSError:
+            return False  # Cannot even be looked at: wait it out.
+        if not stat.S_ISREG(named.st_mode):
+            return False
+        try:
             descriptor = os.open(
-                self.path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+                self.path,
+                os.O_RDONLY
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
             )
         except FileNotFoundError:
             return True  # It went away on its own; try again immediately.
@@ -299,6 +348,8 @@ class Lock:
             return self._break_if_old()
         try:
             status = os.fstat(descriptor)
+            if not stat.S_ISREG(status.st_mode):
+                return False  # Swapped since the `lstat`: not ours to read.
             raw = os.read(descriptor, 64)
         except OSError:
             return self._break_if_old()
@@ -325,16 +376,19 @@ class Lock:
 
         `status` and `identity` come from the descriptor the caller already
         had, so the age and the file are the same file; without them the
-        name is stat'ed here, which is the only way in when the file could
-        not be opened at all.
+        name is `lstat`ed here, which is the only way in when the file could
+        not be opened at all. A name that is not a regular file is not
+        broken.
         """
         if status is None:
             try:
-                status = os.stat(self.path)
+                status = os.lstat(self.path)
             except FileNotFoundError:
                 return True  # Gone on its own; try again immediately.
             except OSError:
                 return False  # Cannot even be looked at: wait it out.
+            if not stat.S_ISREG(status.st_mode):
+                return False
             identity = (status.st_dev, status.st_ino)
         if time.time() - status.st_mtime < STALE_LOCK_SECONDS:
             return False
@@ -349,11 +403,12 @@ class Lock:
         re-check the breaker would delete the newcomer's live lock and then
         create its own, and two processes would hold the lock at once. The
         re-check does not close that hole -- the file can still be replaced
-        between this `stat` and the `unlink` below -- it narrows it to those
-        two calls.
+        between this `lstat` and the `unlink` below -- it narrows it to those
+        two calls. The name is not followed, so a link put in the lock's place
+        is another file and is left alone.
         """
         try:
-            here = os.stat(self.path)
+            here = os.lstat(self.path)
         except OSError:
             return
         if (here.st_dev, here.st_ino) == identity:
