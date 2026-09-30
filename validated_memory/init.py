@@ -81,6 +81,7 @@ simply creates nothing this run.
 
 import os
 import tempfile
+import time
 from pathlib import Path
 
 from . import adopt, ignore, journal, render
@@ -205,7 +206,14 @@ overwrites a file that already exists.
 """
 
 
-def run(harness_memory, view, stdout, stderr, app=False):
+def run(
+    harness_memory,
+    view,
+    stdout,
+    stderr,
+    app=False,
+    lock_wait=journal.LOCK_WAIT_SECONDS,
+):
     """Scaffold the adopter layout under the working directory.
 
     Returns an exit code: 0 unless an item could not be created, or the
@@ -253,7 +261,14 @@ def run(harness_memory, view, stdout, stderr, app=False):
     opposite reason: it only completes or closes what an earlier run began,
     and unlinks the files that said so, so it takes things off the disk
     rather than putting new ones there.
+
+    `lock_wait` is the number of seconds the whole run may spend waiting for
+    the run-wide lock. The deadline it fixes is computed here, once, and the
+    adopting scope and the harness repair after a refusal are both given that
+    same instant, so a run that takes the lock twice does not wait twice. It
+    bounds the wait for the lock, not the work done once the lock is held.
     """
+    lock_deadline = time.monotonic() + lock_wait
     findings = []
     confirmed = 0
     unignored = False
@@ -275,7 +290,7 @@ def run(harness_memory, view, stdout, stderr, app=False):
     refusal = None
     harness_step_failed = False
     try:
-        with journal.adopting_run() as session:
+        with journal.adopting_run(deadline=lock_deadline) as session:
             # Before anything this run intends: recovery only completes or
             # closes what an EARLIER run began, and unlinks the files that
             # said so, so it reduces what is on disk rather than adding to
@@ -393,6 +408,7 @@ def run(harness_memory, view, stdout, stderr, app=False):
                 absorb=False,
                 unrecorded=UNRECORDED_VAULT,
                 regime=journal.UNAVAILABLE,
+                lock_deadline=lock_deadline,
             )
             findings.extend(link_findings)
             confirmed += link_confirmed
@@ -418,6 +434,7 @@ def run(harness_memory, view, stdout, stderr, app=False):
                         else UNRECORDED_JOURNAL
                     ),
                     regime=regime,
+                    lock_deadline=lock_deadline,
                 )
                 findings.extend(link_findings)
                 confirmed += link_confirmed
@@ -747,6 +764,7 @@ def _sync_symlink(
     absorb=True,
     unrecorded=UNRECORDED_JOURNAL,
     regime=None,
+    lock_deadline=None,
 ):
     """Make `raw_path` a symlink to this project's `memory/`, without deleting data.
 
@@ -796,7 +814,9 @@ def _sync_symlink(
     zero. A link that already resolves to the target is left alone: there is
     nothing to restore, so there is nothing to guard, and a WARNING that the
     link was not restored would be false. A refused run says nothing of it,
-    and a run that gated on the vault reports it `kept`.
+    and a run that gated on the vault reports it `kept`. `lock_deadline` is
+    the run's shared lock deadline (`run`), which the guarded repair waits
+    for the lock until; it is not read when `regime` is None.
     """
     path = Path(raw_path)
     location = path.as_posix()
@@ -875,7 +895,7 @@ def _sync_symlink(
             findings.extend(_record_symlink(session, path, previous, target))
         else:
             outcome, reason = journal.guarded_harness_repair(
-                Path(), path, regime, relink
+                Path(), path, regime, relink, lock_deadline
             )
             if outcome == journal.REPAIR_WITHHELD:
                 return [_withheld_link(location, reason)], 0

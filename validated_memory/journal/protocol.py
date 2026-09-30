@@ -2648,8 +2648,13 @@ def _identity_transition(root, run, _stale_repository, _stale_local):
 
 
 @contextmanager
-def adopting_run(root=Path()):
-    """Yield one protocol-owned adopting session under the run-wide lock."""
+def adopting_run(root=Path(), deadline=None):
+    """Yield one protocol-owned adopting session under the run-wide lock.
+
+    `deadline` is the `time.monotonic()` instant at which waiting for the lock
+    ends; without one the wait is `LOCK_WAIT_SECONDS` from the call. A run
+    that also calls `guarded_harness_repair` passes both the same instant.
+    """
     root = Path(root)
     # An inspector implementation failure is knowable without materializing
     # mutation infrastructure. Refuse it read-only first so a virgin tree or
@@ -2659,7 +2664,7 @@ def adopting_run(root=Path()):
     preliminary = _workflow_snapshot(root)
     if isinstance(preliminary.topology, TopologyUnavailable):
         _raise_adoption_gate(preliminary, before_effect=True)
-    with Lock(root):
+    with Lock(root, deadline):
         ensure_history_compatibility()
         run = new_id()
         before = _workflow_snapshot(root)
@@ -3118,7 +3123,7 @@ def harness_repair_regime(failure):
     return UNAVAILABLE
 
 
-def guarded_harness_repair(root, harness_path, regime, relink):
+def guarded_harness_repair(root, harness_path, regime, relink, deadline=None):
     """Relink the harness path under the run-wide lock, or withhold and say why.
 
     Returns `(outcome, reason)`, the outcome being `REPAIR_RELINKED` or
@@ -3158,16 +3163,19 @@ def guarded_harness_repair(root, harness_path, regime, relink):
       when the journal cannot be read at all, and it is an availability
       promise, not a proof.
 
-    A regime that is none of these is a caller error. A lock another process
-    takes between the refusal and this call is waited for once, up to the
-    lock's own deadline, and then withholds the repair.
+    A regime that is none of these is a caller error. `deadline` is the
+    `time.monotonic()` instant at which waiting for the lock ends, the one
+    `adopting_run` was given when the same run took the lock before; without
+    one the wait is `LOCK_WAIT_SECONDS` from the call. A lock another process
+    takes between the refusal and this call is waited for until that instant,
+    and then withholds the repair.
     """
     if regime == LOCK_BUSY:
         return REPAIR_WITHHELD, _LOCK_BUSY_REASON
     if regime not in (PRE_EFFECT_GATE, UNAVAILABLE):
         raise ValueError(f"unknown harness repair regime: {regime!r}")
     root = Path(root)
-    lock = Lock(root)
+    lock = Lock(root, deadline)
     rendezvous_at("before-harness-repair-lock", 1)
     held = False
     try:

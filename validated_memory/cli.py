@@ -16,6 +16,7 @@ if __name__ == "__main__":
     raise SystemExit(2)
 
 import argparse
+import math
 import os
 from pathlib import Path
 
@@ -73,6 +74,19 @@ def _timeout_seconds(value):
         raise argparse.ArgumentTypeError(
             "--timeout must be a number of seconds above 0 and at most "
             f"{probe.MAX_TIMEOUT_SECONDS:g}"
+        )
+    return parsed
+
+
+def _lock_wait_seconds(value):
+    try:
+        parsed = float(value)
+    except ValueError:
+        parsed = float("nan")
+    # NaN fails every comparison, and infinity is a wait with no end.
+    if not (math.isfinite(parsed) and parsed >= 0):
+        raise argparse.ArgumentTypeError(
+            "--lock-wait must be a finite number of seconds, zero or more"
         )
     return parsed
 
@@ -196,6 +210,19 @@ def build_parser():
                     "make PATH outside the adopter project a move-proof "
                     "symlink to this project's "
                     f"{lint.DEFAULT_MEMORY_DIR}/ directory"
+                ),
+            )
+            subparser.add_argument(
+                "--lock-wait",
+                type=_lock_wait_seconds,
+                default=journal.LOCK_WAIT_SECONDS,
+                metavar="SECONDS",
+                help=(
+                    "how long the whole run waits for another "
+                    "validated-memory process to release its lock, zero or "
+                    "more; every lock the run takes shares this one wait, "
+                    "and 0 does not wait "
+                    f"(default: {journal.LOCK_WAIT_SECONDS:g})"
                 ),
             )
             subparser.add_argument(
@@ -457,5 +484,5 @@ def main(argv=None):
         )
     return init.run(
         args.harness_memory, args.view, stdout=sys.stdout, stderr=sys.stderr,
-        app=args.app,
+        app=args.app, lock_wait=args.lock_wait,
     )

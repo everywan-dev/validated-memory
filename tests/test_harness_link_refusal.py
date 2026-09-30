@@ -47,9 +47,31 @@ print(os.getpid(), flush=True)
 time.sleep(600)
 """
 
+# Takes the lock exactly as `Lock` does, then releases it after the number of
+# seconds in its second argument: a concurrent run that finishes.
+HOLD_THEN_RELEASE = """
+import os
+import sys
+import time
+
+path = sys.argv[1]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+os.write(descriptor, ("%d\\n" % os.getpid()).encode("ascii"))
+os.close(descriptor)
+print(os.getpid(), flush=True)
+time.sleep(float(sys.argv[2]))
+os.unlink(path)
+"""
+
 # `LOCK_WAIT_SECONDS` as an outside observer sees it: the time a run that finds
 # the lock held waits before it refuses.
 LOCK_DEADLINE_SECONDS = 10
+
+# What the hook passes as `--lock-wait`, and the slack a wall-clock bound on a
+# whole run allows for interpreter start-up and a loaded machine.
+HOOK_LOCK_WAIT_SECONDS = 3
+RUN_SLACK_SECONDS = 2
 
 
 def _cli(cwd, *args, env=None):
@@ -166,13 +188,13 @@ def _link_target(harness):
     return os.readlink(harness)
 
 
-def _rendezvous_run(adopter, harness, point):
+def _rendezvous_run(adopter, harness, point, *arguments):
     """Start `init` so that it stops at `point` until the test lets it go."""
     ready_read, ready_write = os.pipe()
     continue_read, continue_write = os.pipe()
     process = subprocess.Popen(
         [sys.executable, "-P", "-m", "validated_memory", "init",
-         "--harness-memory", str(harness)],
+         "--harness-memory", str(harness), *arguments],
         cwd=adopter,
         env={
             **os.environ,
@@ -213,6 +235,23 @@ def _warnings(result):
 
 def _errors(result):
     return [line for line in result.stderr.splitlines() if line.startswith("ERROR:")]
+
+
+def _start_holder(lock, script=HOLD_THE_LOCK, *arguments):
+    """Start a process that holds `lock`, and return it once it does."""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", script, str(lock), *map(str, arguments)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert holder.stdout.readline().strip(), "the holder died before locking"
+    return holder
+
+
+def _stop_holder(holder):
+    holder.terminate()
+    holder.wait(timeout=30)
+    holder.stdout.close()
 
 
 # --- a refusal that does not name the harness path: the link is restored ------
@@ -1206,7 +1245,240 @@ def test_a_lock_held_by_another_live_process_withholds_the_link_without_waiting_
     assert len(_warnings(result)) == 1, result.stderr
     assert "the harness link was not restored" in _warnings(result)[0]
     assert "run-wide lock" in _warnings(result)[0]
+    # Without `--lock-wait` the run still waits the lock's own deadline once.
+    assert elapsed >= LOCK_DEADLINE_SECONDS - 1, elapsed
     assert elapsed < 2 * LOCK_DEADLINE_SECONDS, elapsed
+
+
+# --- the lock wait a run is given ----------------------------------------------
+
+
+def _write_the_lock_of_a_dead_process(lock):
+    """Write into `lock` a pid that names no running process."""
+    child = subprocess.Popen([sys.executable, "-c", ""])
+    child.wait(timeout=30)
+    for candidate in range(child.pid, child.pid + 10000):
+        try:
+            os.kill(candidate, 0)
+        except ProcessLookupError:
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text(f"{candidate}\n", encoding="ascii")
+            return candidate
+        except OSError:
+            continue
+    raise AssertionError("every probed pid was in use")
+
+
+def test_lock_wait_bounds_the_wait_for_a_live_holder(tmp_path):
+    """`--lock-wait 1` gives up after about a second, and says what it says today.
+
+    Same outcome kind as the default wait, only sooner: the busy ERROR, exit 1,
+    the link left as it was, and the one WARNING that names the run-wide lock."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    link_before = _link_target(harness)
+    lock = adopter / ".validated-memory" / "lock"
+    holder = _start_holder(lock)
+    try:
+        started = time.monotonic()
+        result = _cli(
+            adopter, "init", "--harness-memory", str(harness), "--lock-wait", "1"
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        _stop_holder(holder)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "another validated-memory process holds" in result.stderr
+    assert _link_target(harness) == link_before
+    assert len(_warnings(result)) == 1, result.stderr
+    assert "run-wide lock" in _warnings(result)[0]
+    assert 0.9 <= elapsed < 3, elapsed
+
+
+def test_lock_wait_zero_does_not_wait_for_a_live_holder(tmp_path):
+    """A zero budget refuses on the first attempt: no waiting at all."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    link_before = _link_target(harness)
+    lock = adopter / ".validated-memory" / "lock"
+    holder = _start_holder(lock)
+    try:
+        started = time.monotonic()
+        result = _cli(
+            adopter, "init", "--harness-memory", str(harness), "--lock-wait", "0"
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        _stop_holder(holder)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "another validated-memory process holds" in result.stderr
+    assert _link_target(harness) == link_before
+    assert len(_warnings(result)) == 1, result.stderr
+    assert elapsed < RUN_SLACK_SECONDS, elapsed
+
+
+def test_a_holder_that_finishes_inside_the_wait_does_not_withhold_the_link(tmp_path):
+    """A brief collision between two starting sessions still relinks.
+
+    The holder lets go after a second, well inside the hook's budget: the run
+    takes the lock, restores the link and exits 0."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    lock = adopter / ".validated-memory" / "lock"
+    holder = _start_holder(lock, HOLD_THEN_RELEASE, 1)
+    try:
+        result = _cli(
+            adopter,
+            "init",
+            "--harness-memory",
+            str(harness),
+            "--lock-wait",
+            str(HOOK_LOCK_WAIT_SECONDS),
+        )
+    finally:
+        _stop_holder(holder)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert harness.resolve() == (adopter / "memory").resolve()
+    assert _warnings(result) == [], result.stderr
+
+
+def test_the_two_lock_acquisitions_of_one_run_share_one_wait(tmp_path):
+    """The repair after a refusal spends what the run has left, not a new wait.
+
+    The first holder keeps the lock for 2.5 s of a 4 s budget, so the run's
+    own acquisition succeeds late. The run is then refused before any
+    effect, and at the rendezvous a second holder takes the lock the run just
+    released. A repair that started its own wait would take another 4 s and
+    end after about 6.5 s; one that shares the deadline ends at about 4 s."""
+    budget = 4
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    _add_second_lineage(adopter)
+    link_before = _link_target(harness)
+    lock = adopter / ".validated-memory" / "lock"
+    holders = []
+    process = None
+    try:
+        holders.append(_start_holder(lock, HOLD_THEN_RELEASE, 2.5))
+        started = time.monotonic()
+        process, ready, proceed = _rendezvous_run(
+            adopter,
+            harness,
+            "before-harness-repair-lock",
+            "--lock-wait",
+            str(budget),
+        )
+        reached = time.monotonic() - started
+        holders.append(_start_holder(lock))
+        stdout, stderr = _release(process, ready, proceed)
+        elapsed = time.monotonic() - started
+    finally:
+        for holder in holders:
+            _stop_holder(holder)
+
+    assert reached >= 2, f"the first acquisition did not wait: {reached}"
+    assert process.returncode == 1, (stdout, stderr)
+    assert "unresolved topology condition" in stderr
+    assert _link_target(harness) == link_before
+    warnings = [line for line in stderr.splitlines() if line.startswith("WARNING:")]
+    assert len(warnings) == 1, stderr
+    assert "run-wide lock" in warnings[0]
+    assert elapsed < budget + 1.5, elapsed
+
+
+@pytest.mark.parametrize("wait", ("0", str(HOOK_LOCK_WAIT_SECONDS)))
+def test_a_spent_or_short_budget_still_breaks_a_lock_whose_owner_is_gone(
+    tmp_path, wait
+):
+    """A lock left by a process that exited is broken on the first attempt.
+
+    Under the hook's budget the run then takes the lock and relinks. With a
+    zero budget the run may still be refused, but the dead lock is gone
+    afterwards, so the next run takes it."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    lock = adopter / ".validated-memory" / "lock"
+    _write_the_lock_of_a_dead_process(lock)
+
+    started = time.monotonic()
+    result = _cli(
+        adopter, "init", "--harness-memory", str(harness), "--lock-wait", wait
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < RUN_SLACK_SECONDS + 1, elapsed
+    assert not lock.exists()
+    if wait != "0":
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert harness.resolve() == (adopter / "memory").resolve()
+    else:
+        again = _cli(
+            adopter, "init", "--harness-memory", str(harness), "--lock-wait", wait
+        )
+        assert again.returncode == 0, (again.stdout, again.stderr)
+        assert harness.resolve() == (adopter / "memory").resolve()
+
+
+def test_an_empty_lock_older_than_the_horizon_is_broken_under_the_hooks_wait(
+    tmp_path,
+):
+    """A lock with no pid in it is broken on age alone, whatever the budget."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    lock = adopter / ".validated-memory" / "lock"
+    lock.write_bytes(b"")
+    ancient = time.time() - 3600
+    os.utime(lock, (ancient, ancient))
+
+    started = time.monotonic()
+    result = _cli(
+        adopter,
+        "init",
+        "--harness-memory",
+        str(harness),
+        "--lock-wait",
+        str(HOOK_LOCK_WAIT_SECONDS),
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert harness.resolve() == (adopter / "memory").resolve()
+    assert not lock.exists()
+    assert elapsed < RUN_SLACK_SECONDS + 1, elapsed
+
+
+def test_a_young_empty_lock_is_refused_within_the_hooks_wait(tmp_path):
+    """A lock with no pid that is not old enough is not broken.
+
+    Nothing says who holds it, so the run waits its budget and withholds the
+    link: the same outcome kind as for a live holder."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    link_before = _link_target(harness)
+    lock = adopter / ".validated-memory" / "lock"
+    lock.write_bytes(b"")
+
+    started = time.monotonic()
+    result = _cli(
+        adopter,
+        "init",
+        "--harness-memory",
+        str(harness),
+        "--lock-wait",
+        str(HOOK_LOCK_WAIT_SECONDS),
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "another validated-memory process holds" in result.stderr
+    assert _link_target(harness) == link_before
+    assert len(_warnings(result)) == 1, result.stderr
+    assert "run-wide lock" in _warnings(result)[0]
+    assert lock.exists()
+    assert HOOK_LOCK_WAIT_SECONDS - 0.1 <= elapsed < HOOK_LOCK_WAIT_SECONDS + RUN_SLACK_SECONDS, elapsed
 
 
 # --- what no subprocess can see -------------------------------------------------

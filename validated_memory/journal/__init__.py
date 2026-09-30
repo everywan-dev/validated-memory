@@ -62,7 +62,10 @@ refused restores the link through `guarded_harness_repair`, which takes the
 run-wide lock, decides, and calls the caller's relink inside it (ADR 0029);
 `harness_repair_regime` names the regime of the failure it is given.
 `history_condition_count` is the read-only count of the history conditions that
-stop an adopting run.
+stop an adopting run. A run that takes the lock more than once gives
+`adopting_run` and `guarded_harness_repair` one `deadline`, an instant of
+`time.monotonic()`, so that it waits for the lock no longer than that instant
+in all; `LOCK_WAIT_SECONDS` is the wait of a caller that names none.
 """
 
 from .executor import repair_harness_link
@@ -75,6 +78,7 @@ from .operations import (
     create_file,
     link_to,
 )
+from .lock import LOCK_WAIT_SECONDS
 from .paths import ABSENT, FILE, SYMLINK
 from .records import (
     JOURNAL_FILENAME,
@@ -103,6 +107,7 @@ __all__ = [
     "JOURNAL_FILENAME",
     "JournalError",
     "LOCAL",
+    "LOCK_WAIT_SECONDS",
     "OUTCOME_APPLIED",
     "OUTCOME_NOOP",
     "OUTCOME_REFUSED",

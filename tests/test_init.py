@@ -79,6 +79,43 @@ def test_app_requires_view_before_any_write(adopter_dir, run_cli):
     assert sorted(adopter_dir.rglob("*")) == before
 
 
+@pytest.mark.parametrize("value", ["-1", "-0.5", "abc", "", "nan", "inf", "-inf"])
+def test_lock_wait_must_be_a_finite_number_of_seconds_of_zero_or_more(
+    adopter_dir, run_cli, value
+):
+    before = _tree_snapshot(adopter_dir)
+
+    result = run_cli("init", f"--lock-wait={value}", cwd=adopter_dir)
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert (
+        "--lock-wait must be a finite number of seconds, zero or more"
+        in result.stderr.splitlines()[-1]
+    )
+    assert "Traceback" not in result.stderr
+    assert _tree_snapshot(adopter_dir) == before
+
+
+@pytest.mark.parametrize("value", ["0", "2.5", "1e1"])
+def test_lock_wait_accepts_a_number_of_seconds_of_zero_or_more(
+    adopter_dir, run_cli, value
+):
+    result = run_cli("init", "--lock-wait", value, cwd=adopter_dir)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert (adopter_dir / "journal.jsonl").is_file()
+
+
+def test_init_help_documents_the_lock_wait(adopter_dir, run_cli):
+    result = run_cli("init", "--help", cwd=adopter_dir)
+
+    assert result.returncode == 0, result.stderr
+    text = " ".join(result.stdout.split())
+    assert "--lock-wait SECONDS" in text
+    assert "(default: 10)" in text
+
+
 def test_init_help_requires_an_external_harness_memory_path(
     adopter_dir, run_cli
 ):

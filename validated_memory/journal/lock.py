@@ -27,12 +27,14 @@ LOCK_FILENAME = "lock"
 STALE_LOCK_SECONDS = 300
 
 # How long a run waits for a lock somebody else legitimately holds before it
-# refuses. Bounded because the caller is a session hook: a command that
-# blocks for as long as the holder wants is a session that never starts.
-# Ten seconds is not a promise that no holder is slower -- `init` holds this
-# lock across `adopt.take_over`, which copies as many files as the harness
-# memory has -- it is the point at which waiting stops being useful and the
-# message below, which says what to do, is better than a hang.
+# refuses, when its caller names no deadline of its own: every command but
+# `init` gets this, and `init` gets it unless `--lock-wait` says otherwise.
+# Bounded because the caller is a session hook: a command that blocks for as
+# long as the holder wants is a session that never starts. Ten seconds is not
+# a promise that no holder is slower -- `init` holds this lock across
+# `adopt.take_over`, which copies as many files as the harness memory has --
+# it is the point at which waiting stops being useful and the message below,
+# which says what to do, is better than a hang.
 LOCK_WAIT_SECONDS = 10
 
 
@@ -145,6 +147,15 @@ class Lock:
     age horizon. `STALE_LOCK_SECONDS` covers only what is left: a pid that
     cannot be read.
 
+    The wait ends at a deadline, an instant of `time.monotonic()`. A caller
+    that takes the lock more than once in a run passes the same instant to
+    every `Lock` it makes, so the run waits no longer than that instant in
+    all; without one the deadline is `LOCK_WAIT_SECONDS` after entry. `Lock`
+    never moves a deadline it was given. Each attempt takes the lock or, when
+    it exists, breaks it if its owner is gone, and only then compares the
+    clock with the deadline: an acquisition that starts after the deadline
+    makes one attempt and refuses.
+
     A lock path that is not a regular file is never opened and never
     broken, and it is waited for like a live holder: the run refuses at its
     deadline with a message that names the path and says to remove it by
@@ -168,8 +179,9 @@ class Lock:
     this process did not create.
     """
 
-    def __init__(self, root=Path()):
+    def __init__(self, root=Path(), deadline=None):
         self.path = lock_path(root)
+        self._deadline = deadline
         # What a Finding should call this lock. Naming the vault of the tree
         # the command ran in would send a reader to a directory that holds
         # no lock whenever the journal is a symlink into a store, so the
@@ -194,7 +206,9 @@ class Lock:
             self._entries += 1
             return self
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        deadline = self._deadline
+        if deadline is None:
+            deadline = time.monotonic() + LOCK_WAIT_SECONDS
         while True:
             try:
                 descriptor = os.open(

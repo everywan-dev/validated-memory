@@ -22,10 +22,28 @@ import json
 import os
 import re
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "hooks" / "restore-memory-symlink.sh"
+
+# Holds the run-wide lock exactly as `Lock` takes it, and stays alive until
+# killed. Standard library only: the holder is part of the outside.
+HOLD_THE_LOCK = """
+import os
+import sys
+import time
+
+path = sys.argv[1]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+os.write(descriptor, ("%d\\n" % os.getpid()).encode("ascii"))
+os.close(descriptor)
+print(os.getpid(), flush=True)
+time.sleep(600)
+"""
 
 
 def _run_hook(env_overrides, cwd=None):
@@ -185,6 +203,59 @@ def test_hook_restores_the_link_under_a_topology_refusal(tmp_path):
     assert harness_memory.is_symlink()
     assert harness_memory.resolve() == memory_dir.resolve()
     assert journal.read_bytes() == journal_before
+
+
+def test_hook_is_bounded_when_another_process_holds_the_run_wide_lock(tmp_path):
+    """A busy lock costs the session about three seconds, not the hook's timeout.
+
+    The hook always exits 0, so its exit code proves nothing here: the bound
+    is the elapsed time (the lock's own deadline alone is ten seconds, past
+    what the harness allows a hook), the link stays where it was, and the
+    WARNING on stderr says the link was not restored."""
+    project_dir = tmp_path / "project"
+    memory_dir = _write_adopter_project(project_dir)
+    config_dir = tmp_path / "config"
+    environment = {
+        "HOME": str(tmp_path / "home"),
+        "CLAUDE_CONFIG_DIR": str(config_dir),
+        "CLAUDE_PROJECT_DIR": str(project_dir),
+    }
+    assert _run_hook(environment).returncode == 0
+    harness_memory = config_dir / "projects" / _slug(project_dir) / "memory"
+    assert harness_memory.resolve() == memory_dir.resolve()
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    harness_memory.unlink()
+    harness_memory.symlink_to(stale, target_is_directory=True)
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            HOLD_THE_LOCK,
+            str(project_dir / ".validated-memory" / "lock"),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip(), "the holder died before locking"
+        started = time.monotonic()
+        result = _run_hook(environment)
+        elapsed = time.monotonic() - started
+    finally:
+        holder.terminate()
+        holder.wait(timeout=30)
+        holder.stdout.close()
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < 8, elapsed
+    assert os.readlink(harness_memory) == str(stale)
+    warnings = [
+        line for line in result.stderr.splitlines() if line.startswith("WARNING:")
+    ]
+    assert len(warnings) == 1, result.stderr
+    assert "the harness link was not restored" in warnings[0]
+    assert "run-wide lock" in warnings[0]
 
 
 # --- non-adopter project: a clean no-op ---------------------------------------

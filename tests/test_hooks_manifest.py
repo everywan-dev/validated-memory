@@ -171,3 +171,21 @@ def test_every_registered_hook_command_points_at_a_file():
                 match = re.search(r"hooks/[\w.-]+", hook["command"])
                 assert match
                 assert (REPO_ROOT / match.group(0)).is_file()
+
+
+def test_the_restore_hook_bounds_its_lock_wait_to_three_seconds():
+    # The hook's own timeout is 15 s and `init` takes the run-wide lock up to
+    # twice, so the wait must be given to it: three seconds absorb a brief
+    # collision between two starting sessions and leave the rest of the
+    # budget to the work `init` does under the lock.
+    script = (REPO_ROOT / "hooks" / "restore-memory-symlink.sh").read_text(
+        encoding="utf-8"
+    )
+    joined = re.sub(r"\\\n\s*", " ", script)
+    invocations = [
+        line
+        for line in joined.splitlines()
+        if "-m validated_memory init" in line and not line.lstrip().startswith("#")
+    ]
+    assert len(invocations) == 1, invocations
+    assert re.search(r"(?:^|\s)--lock-wait 3(?:\s|$)", invocations[0]), invocations[0]

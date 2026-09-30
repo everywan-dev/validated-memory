@@ -97,10 +97,14 @@ if [ -z "$script_dir" ]; then
 fi
 plugin_root="$(dirname "$script_dir")"
 
+# `--lock-wait 3`: `init` may take the run-wide lock twice, and each wait can
+# last ten seconds, past the 15 s this hook is allowed (hooks/hooks.json).
+# The two acquisitions share the one three-second wait.
 (
   cd "$project_dir" 2>/dev/null || exit 0
   PYTHONPATH="$plugin_root${PYTHONPATH:+:$PYTHONPATH}" \
-    python3 -P -m validated_memory init --harness-memory "$harness_memory" >/dev/null
+    python3 -P -m validated_memory init --harness-memory "$harness_memory" \
+      --lock-wait 3 >/dev/null
 )
 
 # Whatever happened inside the subshell above -- created, kept, re-pointed,
