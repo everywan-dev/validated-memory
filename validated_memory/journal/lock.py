@@ -324,7 +324,9 @@ class Lock:
     def _break_if_unowned(self):
         """Remove the lock when nothing is holding it any more.
 
-        Returns whether it broke one, so the caller can retry at once.
+        Returns True when the name is gone afterwards -- removed here, or
+        already absent -- so the caller can retry at once, and False otherwise,
+        so the caller waits as it does for a live holder.
 
         A name that is not a regular file -- a symlink, a named pipe, a
         directory -- is never opened and never broken, and answers False: no
@@ -393,8 +395,7 @@ class Lock:
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
-            self._unlink_if_unchanged(identity)
-            return True
+            return self._unlink_if_unchanged(identity)
         except OSError:
             return False  # Alive, or unknowable: either way, not ours.
         return False
@@ -406,7 +407,8 @@ class Lock:
         had, so the age and the file are the same file; without them the
         name is `lstat`ed here, which is the only way in when the file could
         not be opened at all. A name that is not a regular file is not
-        broken.
+        broken. Answers as `_break_if_unowned` does: True only when the name is
+        gone afterwards.
         """
         if status is None:
             try:
@@ -420,8 +422,7 @@ class Lock:
             identity = (status.st_dev, status.st_ino)
         if time.time() - status.st_mtime < STALE_LOCK_SECONDS:
             return False
-        self._unlink_if_unchanged(identity)
-        return True
+        return self._unlink_if_unchanged(identity)
 
     def _unlink_if_unchanged(self, identity):
         """Remove the lock only while it is still the file `identity` names.
@@ -434,10 +435,17 @@ class Lock:
         between this `lstat` and the `unlink` below -- it narrows it to those
         two calls. The name is not followed, so a link put in the lock's place
         is another file and is left alone.
+
+        Returns True when the name is gone afterwards, removed here or already
+        absent, and False when it names another file or cannot be looked at.
         """
         try:
             here = os.lstat(self.path)
+        except FileNotFoundError:
+            return True
         except OSError:
-            return
-        if (here.st_dev, here.st_ino) == identity:
-            self.path.unlink(missing_ok=True)
+            return False
+        if (here.st_dev, here.st_ino) != identity:
+            return False
+        self.path.unlink(missing_ok=True)
+        return True
