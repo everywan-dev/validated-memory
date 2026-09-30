@@ -103,8 +103,11 @@ than an absent name, or a symlink that cannot be resolved because it loops, is
 reported as `the harness path could not be read`, and the repair is withheld.
 
 Both routes that relink under the guard read that identity again immediately
-before `relink`: the guarded repair after its vault check, and the route taken
-when the vault cannot be listed, which relinks without that check.
+before the rename that publishes the link: the guarded repair after its vault
+check, and the route taken when the vault cannot be listed, which relinks
+without that check. The guard hands `relink` the reading, and `relink` makes it
+once it has made the parent directory and staged the temporary link. A reading
+that stops the relink removes the staged link and publishes nothing.
 
 - A path that by then resolves to the project's `memory/` is
   `REPAIR_CURRENT`, whether or not its identity changed: nothing is reported, as
@@ -148,11 +151,12 @@ The limits that remain are declared and not closed:
 
 - **The window between the re-read and the rename.** A process outside the plugin
   that replaces the harness path after the `lstat` of the re-read and before the
-  rename in `relink` is not guarded against. The window includes the check of the
-  parent directory and the creation of the temporary link that `relink` makes
-  before it renames. The standard library has no compare-and-swap on a pathname.
-  The relink never replaces a directory. This narrows the limit of ADR 0029,
-  which spanned the lock wait and the vault read as well.
+  rename in `relink` is not guarded against. The window is from that `lstat` to
+  the rename: the parent directory is made and the temporary link staged before
+  the re-read, not inside the window. The standard library has no
+  compare-and-swap on a pathname. The relink never replaces a directory. This
+  narrows the limit of ADR 0029, which spanned the lock wait and the vault read as
+  well.
 - **The window between the second `lstat` of a preimage slot and its removal.**
   A process outside the plugin that replaces a regular slot with wrong bytes in
   that window has its file removed and the preimage parked in its place. The

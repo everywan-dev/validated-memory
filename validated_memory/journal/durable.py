@@ -41,6 +41,18 @@ class VisibilityUnconfirmed(Exception):
         )
 
 
+class ReplaceDeclined(Exception):
+    """A link replacement was stopped just before its rename; nothing was published.
+
+    `answer` is what the `before_replace` callable of `replace_symlink`
+    returned, and the caller ends its repair with it.
+    """
+
+    def __init__(self, answer):
+        self.answer = answer
+        super().__init__("the replacement was declined before its rename")
+
+
 class NoReplaceUnavailable(Exception):
     """The platform cannot publish a staged file without replacement."""
 
@@ -425,8 +437,13 @@ def ensure_external_directory(path, reference, creation_point="mkdir"):
     return ensure_owned_directory(path, anchor, creation_point)
 
 
-def repair_symlink(path, target, reference):
-    """Durably restore the fail-open harness link through this private seam."""
+def repair_symlink(path, target, reference, before_replace=None):
+    """Durably restore the fail-open harness link through this private seam.
+
+    `before_replace` is passed to `replace_symlink`. When it declines, the
+    parent chain has been made and nothing else is visible: the ancestry error
+    below is not raised, because the run has no restored link to gate.
+    """
     path = Path(path)
     ancestry_error = None
     try:
@@ -438,7 +455,7 @@ def repair_symlink(path, target, reference):
         # parent names are visible. Preserve the ancestry failure so the run
         # gates even if that restoration and its immediate barrier succeed.
         ancestry_error = error
-    outcome = replace_symlink(path, target)
+    outcome = replace_symlink(path, target, before_replace=before_replace)
     if ancestry_error is not None:
         raise ancestry_error
     return outcome
@@ -822,8 +839,17 @@ def create_directory(path):
     )
 
 
-def replace_symlink(path, target, temporary=None, crash_storage=False):
-    """Atomically publish a symlink and confirm its carrying directory."""
+def replace_symlink(
+    path, target, temporary=None, crash_storage=False, before_replace=None
+):
+    """Atomically publish a symlink and confirm its carrying directory.
+
+    The link is staged under a temporary name beside `path` and renamed over
+    it. `before_replace`, when given, is called once with the link staged and
+    immediately before the rename: None lets the rename go ahead, and anything
+    else removes the staged link, raises `ReplaceDeclined` carrying that answer
+    and publishes nothing. Nothing may run between that call and the rename.
+    """
     path = Path(path)
     forced = os.environ.get("VALIDATED_MEMORY_SYMLINK_TEMP_NAME")
     temporary = (
@@ -843,10 +869,17 @@ def replace_symlink(path, target, temporary=None, crash_storage=False):
             created = True
             if crash_storage:
                 storage_crash("staged-before-install", temporary)
+            if before_replace is not None:
+                answer = before_replace()
+                if answer is not None:
+                    raise ReplaceDeclined(answer)
             os.replace(temporary, path)
-        except OSError:
+        except (OSError, ReplaceDeclined):
             if created:
-                temporary.unlink(missing_ok=True)
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
             raise
 
     return persist(

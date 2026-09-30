@@ -254,10 +254,10 @@ GUARDED_REPAIR_SENTENCES = {
         "The lock serialises validated-memory processes only. A process "
         "outside the plugin that replaces the harness path after the `lstat` "
         "of that second reading and before the rename that publishes the link "
-        "is not guarded against: the window includes the check of the parent "
-        "directory and the temporary link the relink makes before it renames, "
-        "and the standard library has no compare-and-swap on a pathname. The "
-        "relink never replaces a directory",
+        "is not guarded against: the window is from that `lstat` to the "
+        "rename, the parent directory having been made and the temporary link "
+        "staged before it, and the standard library has no compare-and-swap "
+        "on a pathname. The relink never replaces a directory",
         "ends in `run journal --check`",
         "a lock another process takes between the refusal and the repair is "
         "waited for only for what remains of the run's `--lock-wait`, and then "
@@ -338,6 +338,10 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "A **lock path that is not a regular file** blocks the repair without "
         "a wait: no process holds it.",
         "`the harness path changed while the repair waited`",
+        "it reads that identity again once it has made the parent directory and "
+        "staged the temporary link, immediately before the rename that replaces "
+        "PATH.",
+        "the window being that `lstat` and the rename",
         "`the harness path could not be read`",
         "or a symlink that cannot be resolved because it loops, is left as it is",
         "`journal --check` answers for such an entry without opening it",
@@ -362,6 +366,8 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "holding it",
         "**The harness path is read again immediately before the relink.**",
         "or a symlink that loops, is likewise left as it is, with a WARNING",
+        "once the link is staged and immediately before the rename that "
+        "publishes it",
         "**A lock path that is not a regular file** blocks it without a wait, "
         "because no process holds it",
     ),
@@ -397,6 +403,11 @@ def test_lock_wait_and_vault_node_contracts_are_documented():
         "`LOCK_NODE`",
         "`REPAIR_BLOCKED`",
         "The window between the re-read and the rename.",
+        "The window is from that `lstat` to the rename: the parent directory is "
+        "made and the temporary link staged before the re-read, not inside the "
+        "window.",
+        "A reading that stops the relink removes the staged link and publishes "
+        "nothing.",
         "The window between the second `lstat` of a preimage slot and its "
         "removal.",
         "Two runs breaking the same dead lock.",

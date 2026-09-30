@@ -1307,16 +1307,22 @@ class Run:
         remove_name(target)
 
 
-def repair_harness_link(path, target, anchor=Path()):
+def repair_harness_link(path, target, anchor=Path(), before_replace=None):
     """Restore and confirm the harness link when no journal session can serve it.
 
     This is the fail-open integration boundary, not a journal transaction:
     callers receive ordinary pre-visibility ``OSError`` failures, while a
     visible effect with an unconfirmed barrier is tagged as a gating journal
     error so it cannot be downgraded to the historical warning-only path.
+
+    `before_replace` is called once, after the parent directory is made and the
+    link is staged and immediately before the rename that publishes it. None
+    lets the rename go ahead. Anything else stops it: the staged link is
+    removed and `ReplaceDeclined` carrying that answer is raised, which is not
+    an `OSError` and is not tagged as a journal error.
     """
     try:
-        repair_symlink(path, target, anchor)
+        repair_symlink(path, target, anchor, before_replace)
     except VisibilityUnconfirmed as cause:
         error = JournalError(
             None,

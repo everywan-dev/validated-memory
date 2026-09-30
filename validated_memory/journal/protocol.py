@@ -19,6 +19,7 @@ from typing import Any, Mapping
 from .durable import (
     BootstrapPreparationFailed,
     NoReplaceUnavailable,
+    ReplaceDeclined,
     StagingCleanupUnconfirmed,
     VisibilityUnconfirmed,
     read_file_snapshot,
@@ -3151,25 +3152,27 @@ def guarded_harness_repair(
     it: `recheck` found the harness path changed or unreadable, or the lock
     path is not a regular file.
 
-    `relink` is a zero-argument callable that publishes the link atomically.
-    It is called at most once. With the lock held it is called in the same
-    block that checks the vault and the history, so no transaction of this
-    plugin can appear between the decision and the link. It is called
-    without the lock only when the lock cannot be taken, and without the
-    vault check only when the vault cannot be read. Whatever `relink` raises
-    reaches the caller unchanged. `harness_path` is the path `relink` publishes.
+    `relink` is a callable that publishes the link atomically and takes one
+    argument, `before_replace`, which it must call once, with the parent
+    directory made and the link staged, immediately before the rename that
+    publishes it (`journal.repair_harness_link` does). It is called at most
+    once. With the lock held it is called in the same block that checks the
+    vault and the history, so no transaction of this plugin can appear
+    between the decision and the link. It is called without the lock only
+    when the lock cannot be taken, and without the vault check only when the
+    vault cannot be read. Whatever `relink` raises reaches the caller
+    unchanged. `harness_path` is the path `relink` publishes.
 
-    `recheck` is a zero-argument callable that reads the harness path again.
-    Every route that calls `relink` calls it first, immediately before, and
-    `relink` is not called unless it returns None. Anything else it returns is
-    the `(outcome, reason)` pair the repair ends with: `REPAIR_CURRENT` when
-    the path already is what `relink` would publish, `REPAIR_BLOCKED` when it
-    changed under the wait or cannot be read. A process outside the plugin
-    that replaces the harness path after the `lstat` inside `recheck` and
-    before the rename inside `relink` is not guarded against. The window
-    includes the check of the parent directory and the temporary link that
-    `relink` makes before it renames; the standard library has no
-    compare-and-swap on a pathname to close it.
+    `recheck` is a zero-argument callable that reads the harness path again,
+    and it is what `before_replace` calls. Every route that calls `relink`
+    hands it `recheck` this way. It returns None when the rename may go ahead.
+    Anything else it returns is the `(outcome, reason)` pair the repair ends
+    with, and the staged link is removed and nothing is published:
+    `REPAIR_CURRENT` when the path already is what `relink` would publish,
+    `REPAIR_BLOCKED` when it changed under the wait or cannot be read. A
+    process outside the plugin that replaces the harness path after the
+    `lstat` inside `recheck` and before the rename is not guarded against;
+    the standard library has no compare-and-swap on a pathname to close it.
 
     `regime` is what the caller knows of the refusal:
 
@@ -3235,11 +3238,7 @@ def guarded_harness_repair(
             return _unreadable_repair(regime, relink, recheck, message)
         if reason is not None:
             return REPAIR_WITHHELD, reason
-        settled = recheck()
-        if settled is not None:
-            return settled
-        relink()
-        return REPAIR_RELINKED, None
+        return _publish(relink, recheck)
     finally:
         if held:
             lock.__exit__(None, None, None)
@@ -3253,12 +3252,26 @@ def _unreadable_repair(regime, relink, recheck, why):
     lock was.
     """
     if regime == UNAVAILABLE:
-        settled = recheck()
-        if settled is not None:
-            return settled
-        relink()
-        return REPAIR_RELINKED, None
+        return _publish(relink, recheck)
     return REPAIR_WITHHELD, f"the lock or the vault could not be read: {why}"
+
+
+def _publish(relink, recheck):
+    """Call `relink` with `recheck` to be made just before its rename.
+
+    Returns `(REPAIR_RELINKED, None)` when the link was published, and the
+    answer `recheck` gave when it stopped the rename.
+    """
+
+    def before_replace():
+        rendezvous_at("after-harness-link-staged", 1)
+        return recheck()
+
+    try:
+        relink(before_replace)
+    except ReplaceDeclined as declined:
+        return declined.answer
+    return REPAIR_RELINKED, None
 
 
 def _harness_repair_obstacle(root, harness_path, regime):

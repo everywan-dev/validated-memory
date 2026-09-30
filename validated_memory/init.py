@@ -887,7 +887,7 @@ def _sync_symlink(
     def recheck():
         return _reread_harness(path, identity)
 
-    def relink():
+    def relink(before_replace=None):
         """Point `path` at `target`, whatever it is now. Never deletes data.
 
         Atomic, the way the executor publishes the same link: the new link
@@ -900,8 +900,13 @@ def _sync_symlink(
         docs/design/2026-09-01-the-journal-core.md §4 asks of the link
         module exactly this: that it can publish that one symlink
         atomically and nothing else.
+
+        `before_replace` is what the guarded repair passes so that the
+        harness path is read again once the link is staged, immediately
+        before the rename (`journal.repair_harness_link`); a run that holds
+        the lock through its own session passes none.
         """
-        journal.repair_harness_link(path, target, Path())
+        journal.repair_harness_link(path, target, Path(), before_replace)
 
     try:
         if was_symlink and resolved == target:
