@@ -1481,6 +1481,222 @@ def test_a_young_empty_lock_is_refused_within_the_hooks_wait(tmp_path):
     assert HOOK_LOCK_WAIT_SECONDS - 0.1 <= elapsed < HOOK_LOCK_WAIT_SECONDS + RUN_SLACK_SECONDS, elapsed
 
 
+# --- the harness path is read again before the relink -------------------------
+
+# The two routes that relink under the guard: the locked one, reached here by a
+# topology refusal, and the unlocked `_unreadable_repair`, reached by a journal
+# that cannot be read together with a vault that cannot be listed.
+LOCKED = "locked"
+UNLOCKED = pytest.param(
+    "unlocked",
+    marks=pytest.mark.skipif(
+        _root_cannot_be_locked_out(),
+        reason="an unlistable directory is only unlistable to a non-root user",
+    ),
+)
+CHANGED = "the harness path changed while the repair waited"
+
+
+def _run_with_a_swap(tmp_path, route, swap):
+    """Stop `init` before its repair, change the harness path, and let it go.
+
+    `swap(adopter, harness)` runs while the run waits at the rendezvous, after
+    it has inspected the harness path and before it takes any lock. Returns
+    `(adopter, harness, process, stdout, stderr)`.
+    """
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    preimages = None
+    if route == LOCKED:
+        _add_second_lineage(adopter)
+    else:
+        _break_journal_with_a_loop(adopter)
+        preimages = adopter / ".validated-memory" / "preimages"
+        preimages.mkdir(exist_ok=True)
+        preimages.chmod(0)
+    try:
+        process, ready, proceed = _rendezvous_run(
+            adopter, harness, "before-harness-repair-lock"
+        )
+        swap(adopter, harness)
+        stdout, stderr = _release(process, ready, proceed)
+    finally:
+        if preimages is not None:
+            preimages.chmod(0o700)
+    return adopter, harness, process, stdout, stderr
+
+
+def _stderr_warnings(stderr):
+    return [line for line in stderr.splitlines() if line.startswith("WARNING:")]
+
+
+def _assert_withheld_as_changed(harness, process, stdout, stderr):
+    assert process.returncode == 1, (stdout, stderr)
+    warnings = _stderr_warnings(stderr)
+    assert len(warnings) == 1, stderr
+    assert str(harness) in warnings[0]
+    assert "the harness link was not restored" in warnings[0]
+    assert CHANGED in warnings[0], warnings[0]
+    assert not warnings[0].endswith("; run journal --check"), warnings[0]
+    assert "created symlink" not in stdout
+    assert "re-pointed symlink" not in stdout
+
+
+@pytest.mark.parametrize("route", (LOCKED, UNLOCKED))
+@pytest.mark.parametrize("kind", ("file", "directory"))
+def test_a_real_node_that_appears_at_the_harness_path_is_never_replaced(
+    tmp_path, route, kind
+):
+    """The data at the path is the adopter's, and the link is not made over it.
+
+    Something else puts a real file, or a real directory holding a file, where
+    the run saw a symlink, after the run inspected the path and before it
+    relinks. The run reads the path again, sees another kind of entry, and
+    withholds: the content is intact, no link was made, and the WARNING says
+    the path changed and does not send the reader to `journal --check`."""
+
+    def swap(adopter, harness):
+        harness.unlink()
+        if kind == "file":
+            harness.write_bytes(b"the adopter's own data\n")
+        else:
+            harness.mkdir()
+            (harness / "keep.txt").write_bytes(b"the adopter's own data\n")
+
+    adopter, harness, process, stdout, stderr = _run_with_a_swap(
+        tmp_path, route, swap
+    )
+
+    _assert_withheld_as_changed(harness, process, stdout, stderr)
+    assert not harness.is_symlink()
+    if kind == "file":
+        assert harness.read_bytes() == b"the adopter's own data\n"
+    else:
+        assert (harness / "keep.txt").read_bytes() == b"the adopter's own data\n"
+
+
+@pytest.mark.parametrize("route", (LOCKED, UNLOCKED))
+def test_a_link_that_is_re_pointed_elsewhere_while_the_repair_waited_is_kept(
+    tmp_path, route
+):
+    """Another process re-pointed the link on purpose; its target stays."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    def swap(adopter, harness):
+        harness.unlink()
+        harness.symlink_to(elsewhere, target_is_directory=True)
+
+    adopter, harness, process, stdout, stderr = _run_with_a_swap(
+        tmp_path, route, swap
+    )
+
+    _assert_withheld_as_changed(harness, process, stdout, stderr)
+    assert os.readlink(harness) == str(elsewhere)
+
+
+@pytest.mark.parametrize("route", (LOCKED, UNLOCKED))
+def test_a_correct_link_published_by_someone_else_is_left_and_not_reported(
+    tmp_path, route
+):
+    """Another session already did the repair: nothing is left to restore.
+
+    The run says nothing of it, as for a link that was correct at the start:
+    the only finding is the refusal's own ERROR."""
+
+    def swap(adopter, harness):
+        harness.unlink()
+        harness.symlink_to(
+            (adopter / "memory").resolve(), target_is_directory=True
+        )
+
+    adopter, harness, process, stdout, stderr = _run_with_a_swap(
+        tmp_path, route, swap
+    )
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert harness.resolve() == (adopter / "memory").resolve()
+    assert _stderr_warnings(stderr) == [], stderr
+    assert "created symlink" not in stdout
+    assert "re-pointed symlink" not in stdout
+
+
+@pytest.mark.parametrize("route", (LOCKED, UNLOCKED))
+def test_the_same_link_published_again_is_not_a_change(tmp_path, route):
+    """Identity is the entry's type and link text, not its inode.
+
+    A session that relinks to the same target publishes a new inode. The run
+    that waited sees the entry it inspected and restores the link."""
+
+    def swap(adopter, harness):
+        target = os.readlink(harness)
+        harness.unlink()
+        harness.symlink_to(target, target_is_directory=True)
+
+    adopter, harness, process, stdout, stderr = _run_with_a_swap(
+        tmp_path, route, swap
+    )
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert harness.resolve() == (adopter / "memory").resolve()
+    warnings = _stderr_warnings(stderr)
+    assert len(warnings) == 1, stderr
+    assert "restoring it anyway" in warnings[0]
+    assert CHANGED not in stderr
+
+
+@pytest.mark.skipif(
+    _root_cannot_be_locked_out(),
+    reason="an unsearchable directory is only unsearchable to a non-root user",
+)
+def test_a_harness_path_that_cannot_be_looked_at_is_not_relinked(tmp_path):
+    """An `lstat` failure other than ENOENT withholds, at the inspection.
+
+    The harness directory cannot be searched, so nothing can say what is at the
+    path. The run reports that and leaves it: no traceback, no gate."""
+    adopter, harness = _adopted(tmp_path)
+    stale = _point_at_stale(harness)
+    harness.parent.chmod(0)
+    try:
+        result = _cli(adopter, "init", "--harness-memory", str(harness))
+    finally:
+        harness.parent.chmod(0o700)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert len(_warnings(result)) == 1, result.stderr
+    assert "the harness path could not be read" in _warnings(result)[0]
+    assert not _warnings(result)[0].endswith("; run journal --check")
+    assert os.readlink(harness) == str(stale)
+
+
+@pytest.mark.skipif(
+    _root_cannot_be_locked_out(),
+    reason="an unsearchable directory is only unsearchable to a non-root user",
+)
+def test_a_harness_path_that_cannot_be_looked_at_before_the_relink_is_not_relinked(
+    tmp_path,
+):
+    """The same failure at the second reading withholds too."""
+
+    def swap(adopter, harness):
+        harness.parent.chmod(0)
+
+    try:
+        adopter, harness, process, stdout, stderr = _run_with_a_swap(
+            tmp_path, LOCKED, swap
+        )
+    finally:
+        (tmp_path / "harness").chmod(0o700)
+
+    assert process.returncode == 1, (stdout, stderr)
+    warnings = _stderr_warnings(stderr)
+    assert len(warnings) == 1, stderr
+    assert "the harness path could not be read" in warnings[0]
+    assert not warnings[0].endswith("; run journal --check")
+    assert os.readlink(harness) == str(tmp_path / "harness" / "stale")
+
+
 # --- what no subprocess can see -------------------------------------------------
 
 
@@ -1492,8 +1708,11 @@ def test_the_decision_and_the_relink_share_one_critical_section():
     calls `relink` itself only inside the `try` whose `finally` releases the
     lock, in the same block that runs the vault and history check; its only
     other route to `relink` is `_unreadable_repair`, for a lock or a vault that
-    cannot be read. This proves the shape, not the exclusion itself: the
-    held-lock tests are what show another process is kept out."""
+    cannot be read. Both routes read the harness path again through `recheck`
+    in the statement two before `relink`, so nothing else runs between the
+    reading and the relink. This proves the shape, not the exclusion itself:
+    the held-lock tests are what show another process is kept out, and the
+    swap tests are what show the reading is acted on."""
     source = (
         REPO_ROOT / "validated_memory" / "journal" / "protocol.py"
     ).read_text(encoding="utf-8")
@@ -1522,6 +1741,39 @@ def test_the_decision_and_the_relink_share_one_critical_section():
     assert calls(releasing[0].body).count("relink") == 1
     assert calls(guarded.body).count("relink") == 1, (
         "relink is called outside the block that holds the lock"
+    )
+
+    def precedes_in_one_block(function, before, after):
+        """Whether `before()` is called by the statement two steps ahead of the
+        only statement that calls `after()`, in the same statement list: the
+        call, then the check of what it answered, then `after()`."""
+        for node in ast.walk(function):
+            for field in ("body", "orelse", "finalbody"):
+                block = getattr(node, field, None)
+                if not isinstance(block, list):
+                    continue
+                for position, statement in enumerate(block):
+                    if (
+                        isinstance(statement, ast.Expr)
+                        and isinstance(statement.value, ast.Call)
+                        and ast.unparse(statement.value.func) == after
+                    ):
+                        return position >= 2 and before in calls(
+                            [block[position - 2]]
+                        ) and isinstance(block[position - 1], ast.If)
+        return False
+
+    assert precedes_in_one_block(guarded, "recheck", "relink"), (
+        "the locked route relinks without reading the harness path again"
+    )
+    unreadable = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_unreadable_repair"
+    )
+    assert calls(unreadable.body).count("relink") == 1
+    assert precedes_in_one_block(unreadable, "recheck", "relink"), (
+        "the unlocked route relinks without reading the harness path again"
     )
 
 

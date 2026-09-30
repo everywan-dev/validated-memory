@@ -80,6 +80,7 @@ simply creates nothing this run.
 """
 
 import os
+import stat
 import tempfile
 import time
 from pathlib import Path
@@ -817,6 +818,13 @@ def _sync_symlink(
     and a run that gated on the vault reports it `kept`. `lock_deadline` is
     the run's shared lock deadline (`run`), which the guarded repair waits
     for the lock until; it is not read when `regime` is None.
+
+    What stands at the harness path is read once, by `_harness_identity`,
+    before anything is done to it, and a path that cannot be looked at is left
+    alone with a WARNING. `journal.guarded_harness_repair` has that identity
+    read again immediately before it relinks (`_Recheck`): a link that
+    resolves to `memory/` by then is left as it is and not reported, like one
+    that was correct at the start, and any other change withholds the repair.
     """
     path = Path(raw_path)
     location = path.as_posix()
@@ -853,8 +861,17 @@ def _sync_symlink(
     # ordering is the rule: an invalid project target may not create the
     # external parent, read or replace its leaf, begin take-over, or form a
     # LOCAL intention.
-    was_symlink = path.is_symlink()
-    previous = os.readlink(path) if was_symlink else None
+    try:
+        identity = _harness_identity(path)
+    except OSError as error:
+        return [
+            _withheld_link(
+                location, f"{HARNESS_UNREADABLE}: {error}", journal_hint=False
+            )
+        ], 0
+    was_symlink = identity[0] == stat.S_IFLNK
+    previous = identity[1]
+    recheck = _Recheck(path, identity)
 
     def relink():
         """Point `path` at `target`, whatever it is now. Never deletes data.
@@ -882,7 +899,7 @@ def _sync_symlink(
             return [], 1
         # A real path that is not a symlink: `adopt` decides whether it holds
         # agent memory this project can absorb, or must be left alone.
-        if not was_symlink and path.exists():
+        if identity != NOTHING_THERE and not was_symlink:
             if not absorb:
                 return [Finding(WARNING, location, "symlink", UNABSORBED)], 0
             take_over = adopt.take_over(path, target, stdout)
@@ -895,10 +912,19 @@ def _sync_symlink(
             findings.extend(_record_symlink(session, path, previous, target))
         else:
             outcome, reason = journal.guarded_harness_repair(
-                Path(), path, regime, relink, lock_deadline
+                Path(), path, regime, relink, recheck, lock_deadline
             )
+            if outcome == journal.REPAIR_CURRENT:
+                if unrecorded != UNRECORDED_VAULT:
+                    return [], 0
+                print(f"init: kept symlink {location}", file=stdout)
+                return [], 1
             if outcome == journal.REPAIR_WITHHELD:
-                return [_withheld_link(location, reason)], 0
+                return [
+                    _withheld_link(
+                        location, reason, journal_hint=reason != recheck.reason
+                    )
+                ], 0
             findings.append(_unrecorded_warning(location, previous, unrecorded))
         verb = "re-pointed" if was_symlink else "created"
         print(f"init: {verb} symlink {location} -> {target}", file=stdout)
@@ -985,14 +1011,78 @@ def _unrecorded_warning(location, previous, unrecorded):
     )
 
 
-def _withheld_link(location, reason):
-    """The WARNING for a link left as it was, with what left it."""
+def _withheld_link(location, reason, journal_hint=True):
+    """The WARNING for a link left as it was, with what left it.
+
+    A reason that comes from the journal ends by sending the reader to
+    `journal --check`. One about the harness path itself does not, because the
+    journal has nothing to say about it (`journal_hint=False`).
+    """
+    hint = "; run journal --check" if journal_hint else ""
     return Finding(
         WARNING,
         Path(location).as_posix(),
         "symlink",
-        f"the harness link was not restored: {reason}; run journal --check",
+        f"the harness link was not restored: {reason}{hint}",
     )
+
+
+# What stands at the harness path when nothing does, in `_harness_identity`'s
+# words.
+NOTHING_THERE = (None, None)
+HARNESS_UNREADABLE = "the harness path could not be read"
+HARNESS_CHANGED = "the harness path changed while the repair waited"
+
+
+def _harness_identity(path):
+    """What stands at `path`, from one `lstat`: `(file type, link target)`.
+
+    The file type is `stat.S_IFMT` of that `lstat`, and the target is the
+    link's text when the type is a symlink and None otherwise; `NOTHING_THERE`
+    is a path with no entry. No device or inode number is part of it: a
+    session that publishes the same link again creates a new inode, which is
+    no change here, and inode numbers are not stable on every filesystem.
+    Raises `OSError` when the entry cannot be looked at for a reason other
+    than being absent.
+    """
+    try:
+        kind = stat.S_IFMT(os.lstat(path).st_mode)
+        return kind, (os.readlink(path) if kind == stat.S_IFLNK else None)
+    except FileNotFoundError:
+        return NOTHING_THERE
+
+
+class _Recheck:
+    """Reads the harness path again for `journal.guarded_harness_repair`.
+
+    Called immediately before the relink, it compares what stands at `path`
+    with the `inspected` identity the run recorded before it waited for the
+    lock. `reason` is the sentence of the last withholding it answered with,
+    so the caller can tell a reason about the path from one about the journal.
+    """
+
+    def __init__(self, path, inspected):
+        self.path = path
+        self.inspected = inspected
+        self.reason = None
+
+    def __call__(self):
+        """None while the path is as inspected, else the repair's final answer.
+
+        A path that already resolves to `memory/` has nothing left to restore;
+        any other difference, and a path that cannot be looked at, withholds.
+        """
+        try:
+            now = _harness_identity(self.path)
+        except OSError as error:
+            self.reason = f"{HARNESS_UNREADABLE}: {error}"
+            return journal.REPAIR_WITHHELD, self.reason
+        if now == self.inspected:
+            return None
+        if _link_is_current(self.path):
+            return journal.REPAIR_CURRENT, None
+        self.reason = HARNESS_CHANGED
+        return journal.REPAIR_WITHHELD, self.reason
 
 
 def _link_is_current(raw_path):

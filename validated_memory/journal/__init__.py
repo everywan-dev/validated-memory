@@ -59,7 +59,8 @@ fail-open operation used only when the journal cannot serve the startup hook.
 It exposes neither persistence primitives nor their exception types and turns
 post-visibility uncertainty into a gating `JournalError`. A run the journal
 refused restores the link through `guarded_harness_repair`, which takes the
-run-wide lock, decides, and calls the caller's relink inside it (ADR 0029);
+run-wide lock, decides, has the caller read the harness path again, and calls
+the caller's relink inside the lock (ADR 0029);
 `harness_repair_regime` names the regime of the failure it is given.
 `history_condition_count` is the read-only count of the history conditions that
 stop an adopting run. A run that takes the lock more than once gives
@@ -91,6 +92,7 @@ from .records import (
 from .transactions import RECOVERED, RESOLUTIONS
 from .protocol import (
     PRE_EFFECT_GATE,
+    REPAIR_CURRENT,
     REPAIR_WITHHELD,
     UNAVAILABLE,
     adopting_run,
@@ -113,6 +115,7 @@ __all__ = [
     "OUTCOME_REFUSED",
     "PRE_EFFECT_GATE",
     "RECOVERED",
+    "REPAIR_CURRENT",
     "REPAIR_WITHHELD",
     "REPO",
     "RESOLUTIONS",
