@@ -35,6 +35,7 @@ and consequences.
 - [Repair requires one explicit proof-carrying transaction](0027-repair-requires-one-explicit-proof-carrying-transaction.md)
 - [Bootstrap is no-replace and history reconfirmation is descriptor-bound](0028-bootstrap-is-no-replace-and-history-reconfirmation-is-descriptor-bound.md)
 - [The harness link survives a refusal that does not name it](0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md)
+- [The session-start run is bounded and a vault node that is not a regular file never blocks it](0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)
 
 ## Views and releases
 

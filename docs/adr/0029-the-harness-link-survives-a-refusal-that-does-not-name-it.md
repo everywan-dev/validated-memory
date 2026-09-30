@@ -109,12 +109,16 @@ This ADR supersedes only these parts of earlier decisions:
   target, as the unavailable path already does.
 - Two sessions starting together no longer race on the link: the one that waits
   for the lock withholds, and the link is restored by the one holding it if that
-  run is an `init`, or by the next session otherwise.
+  run is an `init`, or by the next session otherwise. How long it waits is
+  bounded by [ADR 0030](0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md):
+  one deadline for the whole run, `init --lock-wait`.
 - A clone without the vault sees in `status` only conditions of the repository
   history.
 - The lock serialises validated-memory processes only. A process outside the
   plugin that replaces the harness path between the check and the relink is not
-  guarded against; the relink never replaces a directory.
+  guarded against; the relink never replaces a directory. [ADR 0030](0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)
+  reads the path again immediately before the relink and states the window that
+  remains.
 
 ## Rejected alternatives
 
