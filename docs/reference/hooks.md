@@ -26,6 +26,20 @@ against a directory the harness never reads, and the memory simply never
 shows up -- so the rule is pinned by a test rather than left to the
 substitution being "obviously" about slashes.
 
+The hook runs `init --harness-memory` with `--lock-wait 3`. The harness allows
+this hook 15 seconds, and `init` can take the run-wide lock twice, once for the
+adopting scope and once for the harness repair; with the default ten-second
+wait each acquisition could wait ten. The three seconds are one deadline for the
+whole run. They absorb a brief collision between two sessions that start
+together, and a holder that lasts longer withholds the link within three
+seconds, with the WARNING on stderr and the busy ERROR, exit 1 from `init`; the
+next session start restores it. The bound covers waiting for the lock and not
+the work `init` does once it holds it, such as absorbing a pre-existing harness
+memory directory. A node that is not a regular file in the vault -- a symlink to
+a named pipe in the place of a transaction file, for instance -- does not block
+the hook: `init` names it on stderr and, as a damaged transaction, leaves the
+link as it was ([ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)).
+
 This hook is fail-open throughout, matching `init`'s own contract. No
 `$CLAUDE_PROJECT_DIR`, a project that has not adopted validated-memory (no
 `validated-memory.md`, or no `memory/`, at its root), or no `python3` on

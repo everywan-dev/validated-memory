@@ -8,6 +8,13 @@
 # PATH`" section (under `init`) and docs/adoption.md ("The startup hook")
 # for the full contract this delegates to.
 #
+# Bounded: the harness allows this hook 15 seconds (hooks/hooks.json), so `init`
+# is called with `--lock-wait 3`. Every wait for the run-wide lock that `init`
+# makes shares those three seconds, and a lock still held after them leaves the
+# link where it was, with a WARNING on stderr; the next session start is the
+# retry. The bound covers waiting for the lock and not the work `init` does
+# once it holds it (see docs/reference/hooks.md).
+#
 # Fail-open, unconditionally: every branch below either does nothing or
 # calls `init`, which is itself idempotent and never destroys data (see
 # validated_memory/init.py). Nothing in this script ever deletes a file,
@@ -97,9 +104,8 @@ if [ -z "$script_dir" ]; then
 fi
 plugin_root="$(dirname "$script_dir")"
 
-# `--lock-wait 3`: `init` may take the run-wide lock twice, and each wait can
-# last ten seconds, past the 15 s this hook is allowed (hooks/hooks.json).
-# The two acquisitions share the one three-second wait.
+# `--lock-wait 3` keeps both acquisitions of the run-wide lock inside the one
+# three-second wait described at the top of this file.
 (
   cd "$project_dir" 2>/dev/null || exit 0
   PYTHONPATH="$plugin_root${PYTHONPATH:+:$PYTHONPATH}" \

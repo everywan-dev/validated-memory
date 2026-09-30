@@ -9,6 +9,21 @@ is the distribution record. The plugin uses the version declared in its
 manifest, so a commit on the default branch does not by itself update an
 installed plugin; see [updating](installing.md#updating).
 
+2.5.2 bounds the session-start run and stops a vault node that is not a regular
+file from blocking it. `init --lock-wait SECONDS` (default 10) sets one deadline
+for every lock a run takes, and the `SessionStart` hook passes 3, so a busy lock
+costs a session about three seconds and leaves the harness link for the next
+start; the bound covers waiting for the lock and not the work done under it. A
+transaction entry, a preimage slot or a lock path that is a symlink, a named
+pipe or a directory is no longer opened: the entry is a damaged transaction, the
+slot refuses the mutation and the lock path is refused, and each ERROR names the
+node, where 2.5.1 could hang. A symlink to a valid transaction file, which 2.5.1
+read, is now a damaged transaction. The harness path is read again immediately
+before the link is replaced, and a path that changed while the repair waited is
+left alone with a WARNING; a path that cannot be looked at is a WARNING and no
+longer an uncaught error. See
+[ADR 0030](adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md).
+
 2.5.1 keeps the harness-memory link through a journal refusal that does not
 concern it. A readable history that `init` refuses with a topology gate no longer
 leaves the session without project memory when neither the history nor the vault

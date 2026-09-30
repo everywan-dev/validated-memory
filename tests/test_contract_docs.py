@@ -232,7 +232,7 @@ GUARDED_REPAIR_SENTENCES = {
         "rules of an unreadable journal.",
         "(`the harness link was not restored: ...; run journal --check`)",
         "A lock another process takes between the refusal and the repair is "
-        "waited for once more, up to the lock's own deadline, and then "
+        "waited for only for what remains of the run's `--lock-wait`, and then "
         "withholds it.",
         "A link that already resolves to `memory/` needs nothing and gets no "
         "WARNING, whichever refusal ended the run.",
@@ -252,12 +252,15 @@ GUARDED_REPAIR_SENTENCES = {
         "repair goes through the same guard with the vault rules of an "
         "unreadable journal.",
         "The lock serialises validated-memory processes only. A process "
-        "outside the plugin that replaces the harness path between the check "
-        "and the relink is not guarded against; the relink never replaces a "
-        "directory.",
+        "outside the plugin that replaces the harness path after the `lstat` "
+        "of that second reading and before the rename that publishes the link "
+        "is not guarded against: the window includes the check of the parent "
+        "directory and the temporary link the relink makes before it renames, "
+        "and the standard library has no compare-and-swap on a pathname. The "
+        "relink never replaces a directory",
         "ends in `run journal --check`",
         "a lock another process takes between the refusal and the repair is "
-        "waited for once more, up to the lock's own deadline, and then "
+        "waited for only for what remains of the run's `--lock-wait`, and then "
         "withholds it.",
         "A link that already resolves to `memory/` is not reported.",
     ),
@@ -298,6 +301,138 @@ def test_c1f_fail_open_boundary_and_protocol_ownership_are_documented():
     assert "the sole workflow-policy owner" in facade
     assert "it owns no history or topology policy" in facade
     assert "`init.py`, `cli.py` and `status.py` reach" in " ".join(facade.split())
+
+
+ADR_0030 = (
+    "adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-"
+    "regular-file-never-blocks-it.md"
+)
+
+# What each document says of ADR 0030's bounded run and of a vault node that is
+# not a regular file, word for word, under the same whitespace normalisation.
+# The default of `--lock-wait` is not written here: `test_the_lock_wait_default_...`
+# reads it from the source, so a document and the code cannot part.
+LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
+    "cli.md": (
+        "`--lock-wait SECONDS` bounds how long the whole run waits for another "
+        "validated-memory process to release the run-wide lock.",
+        "SECONDS is a finite number of zero or more, and `0` does not wait; a "
+        "negative number, `nan`, `inf` or a value that is not a number is "
+        "usage exit 2 before any write.",
+        "every lock it takes -- the adopting scope and the guarded harness "
+        "repair below -- shares it",
+        "The bound covers waiting for the lock: the work the run does once it "
+        "holds the lock, `adopt.take_over` included, is not bounded by it.",
+        "The plugin's `SessionStart` hook passes `--lock-wait 3`",
+        "A vault node that is not a regular file never blocks a run and is "
+        "never opened.",
+        "`it is not a regular file; it was not opened`",
+        "A preimage slot that is not a regular file refuses the mutation that "
+        "needs it before any effect.",
+        "A lock path that is not a regular file is held until the run's lock "
+        "deadline, and then refused with an ERROR that names the path and "
+        "says to remove it by hand.",
+        "A **lock path that is not a regular file** blocks the repair without "
+        "a wait: no process holds it.",
+        "`the harness path changed while the repair waited`",
+        "`the harness path could not be read`",
+        "`journal --check` answers for such an entry without opening it",
+    ),
+    "journal.md": (
+        "**The wait for the lock ends at a deadline.**",
+        "`init` fixes one deadline when it starts and every lock it takes in "
+        "the run shares it, so taking the lock twice does not wait twice.",
+        "A lock that an attempt broke, or found gone, earns one immediate "
+        "retry past the deadline",
+        "**A lock path that is not a regular file is never opened and never "
+        "broken.**",
+        "and then the run refuses with an ERROR that names the path and says "
+        "to remove it by hand",
+        "**A node in those directories that is not a regular file is never "
+        "opened.**",
+        "it is neither opened nor removed, because nothing proves whose it is",
+        "it is not a regular file; it was not opened",
+        "Two runs breaking one dead lock at the same instant can both end up "
+        "holding it",
+        "**The harness path is read again immediately before the relink.**",
+        "**A lock path that is not a regular file** blocks it without a wait, "
+        "because no process holds it",
+    ),
+    "hooks.md": (
+        "The hook runs `init --harness-memory` with `--lock-wait 3`.",
+        "The bound covers waiting for the lock and not the work `init` does "
+        "once it holds it",
+        "leaves the link as it was",
+    ),
+}
+
+
+def test_lock_wait_and_vault_node_contracts_are_documented():
+    """The references state the run's lock bound and the vault-node rule."""
+    docs = REPO_ROOT / "docs" / "reference"
+    for name, sentences in LOCK_WAIT_AND_VAULT_NODE_SENTENCES.items():
+        prose = " ".join((docs / name).read_text(encoding="utf-8").split())
+        for sentence in sentences:
+            assert sentence in prose, f"{name} no longer says: {sentence!r}"
+        assert ADR_0030 in prose, f"{name} does not link ADR 0030"
+
+    decision = " ".join(
+        (REPO_ROOT / "docs" / "adr" / ADR_0030.removeprefix("adr/")).read_text(
+            encoding="utf-8"
+        ).split()
+    )
+    for sentence in (
+        "`init --lock-wait SECONDS` takes a finite number, zero or more",
+        "The hook passes `--lock-wait 3`.",
+        "`lstat` the name before any open.",
+        "`LOCK_NODE`",
+        "`REPAIR_BLOCKED`",
+        "The window between the re-read and the rename.",
+        "Two runs breaking the same dead lock.",
+    ):
+        assert sentence in decision, f"ADR 0030 no longer says: {sentence!r}"
+    amended = " ".join(
+        (REPO_ROOT / "docs" / "adr" / ADR_0029.removeprefix("adr/")).read_text(
+            encoding="utf-8"
+        ).split()
+    )
+    assert amended.count(f"]({ADR_0030.removeprefix('adr/')})") == 2
+
+
+def test_the_lock_wait_default_in_the_documents_is_the_one_in_the_source():
+    source = (REPO_ROOT / "validated_memory" / "journal" / "lock.py").read_text(
+        encoding="utf-8"
+    )
+    default = re.search(r"^LOCK_WAIT_SECONDS = (\d+)$", source, re.MULTILINE)
+    assert default, "LOCK_WAIT_SECONDS is no longer an integer literal"
+    seconds = default.group(1)
+    cli = " ".join(
+        (REPO_ROOT / "docs" / "reference" / "cli.md").read_text(
+            encoding="utf-8"
+        ).split()
+    )
+    assert f"The default is {seconds}, the wait every other locking command has." in cli
+    journal = " ".join(
+        (REPO_ROOT / "docs" / "reference" / "journal.md").read_text(
+            encoding="utf-8"
+        ).split()
+    )
+    spelled = {"10": "ten"}.get(seconds, seconds)
+    assert f"A run waits for a live holder for {spelled} seconds" in journal
+    release = (REPO_ROOT / "docs" / "release-status.md").read_text(encoding="utf-8")
+    assert f"(default {seconds})" in release
+
+
+def test_the_restore_hook_header_states_its_lock_bound():
+    script = " ".join(
+        line.removeprefix("#").strip()
+        for line in (REPO_ROOT / "hooks" / "restore-memory-symlink.sh")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.startswith("#")
+    )
+    assert "`init` is called with `--lock-wait 3`" in script
+    assert "The bound covers waiting for the lock and not the work `init` does" in script
 
 
 def test_journal_introduction_links_every_section():
@@ -360,6 +495,9 @@ def test_release_status_names_the_release_without_exposing_private_work():
     assert f"**{project['version']}**" in published
     assert f"tree/v{project['version']})" in published
     assert "resume-use" in published
+    assert published.index("2.5.2 bounds the session-start run") < published.index(
+        "2.5.1 keeps the harness-memory link"
+    )
     assert "show-transfer IMPORT --origin PROJECT_UUID:UNIT_ID --material" in published
     assert "issue, design document or architecture decision" in future
     assert "does not establish that a feature is available" in future

@@ -73,7 +73,7 @@ policy are in [Hooks](hooks.md#prompt-discovery).
 ### `init`
 
 ```
-python3 -P -m validated_memory init [--harness-memory PATH] [--view [--app]]
+python3 -P -m validated_memory init [--harness-memory PATH] [--view [--app]] [--lock-wait SECONDS]
 ```
 
 `--view` creates missing canonical knowledge.html and memory.html. Add `--app`
@@ -81,6 +81,21 @@ to select the optional knowledge-app.html too. `--app` without `--view` is usage
 exit 2 before any write. Existing selected views, including empty or hand-edited
 files, are kept; a broken view symlink is warned and left untouched. Regeneration
 belongs to `render`, not initialization.
+
+`--lock-wait SECONDS` bounds how long the whole run waits for another
+validated-memory process to release the run-wide lock. The default is 10, the
+wait every other locking command has. SECONDS is a finite number of zero or
+more, and `0` does not wait; a negative number, `nan`, `inf` or a value that is
+not a number is usage exit 2 before any write. The run fixes one deadline when
+it starts, and every lock it takes -- the adopting scope and the guarded
+harness repair below -- shares it, so a run that takes the lock twice waits no
+longer than SECONDS in all. A lock whose owner is gone, or that is past the age
+horizon, is still broken and taken once the deadline has passed. A lock that is
+still held at the deadline ends the run with the busy ERROR and exit 1. The
+bound covers waiting for the lock: the work the run does once it holds the lock,
+`adopt.take_over` included, is not bounded by it. The plugin's `SessionStart`
+hook passes `--lock-wait 3` (see [Startup hooks](hooks.md)), and
+[ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md) records why.
 
 Scaffolds a new adopter project in the working directory: `knowledge/`
 (empty), `memory/` with an empty index (`memory/MEMORY.md`), the adopter
@@ -185,6 +200,26 @@ When any gate remains, the final stdout line is exactly `init: N item(s)
 confirmed, M gate(s)`; a clean or warning-only run has no aggregate summary.
 A confirmed `created`, `kept` or `re-pointed` harness-symlink line counts as
 one item in that summary, including a confirmed fail-open link restoration.
+
+A vault node that is not a regular file never blocks a run and is never
+opened. `init` reads the vault's transaction entries, preimage slots and lock
+without following a link and without opening a pipe:
+
+- A transaction entry that is a symlink, a named pipe or a directory is a
+  damaged transaction. The ERROR names the entry and says
+  `it is not a regular file; it was not opened`, the entry is kept, and
+  `journal --resolve` and `journal --repair` refuse it. A symlink to a valid
+  transaction file is refused the same way, and its target is not parsed.
+- A preimage slot that is not a regular file refuses the mutation that needs it
+  before any effect. The ERROR names the slot and says to remove it by hand, and
+  the slot is neither opened nor removed.
+- A lock path that is not a regular file is held until the run's lock deadline,
+  and then refused with an ERROR that names the path and says to remove it by
+  hand. It is not broken, and it is not a holder: the harness repair below does
+  not wait for it again.
+
+A regular file that is not a valid transaction is reported as before. See
+[Journal](journal.md) for the entries and slots, and [ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md).
 
 The first repository history uses no-replace publication, and is published
 only after its complete opening bytes and mode have been flushed under an
@@ -350,8 +385,11 @@ in the same critical section:
   WARNING naming PATH and the reason, ending in `run journal --check`
   (`the harness link was not restored: ...; run journal --check`); the first
   run the journal allows restores it. A lock another process takes between
-  the refusal and the repair is waited for once more, up to the lock's own
-  deadline, and then withholds it.
+  the refusal and the repair is waited for only for what remains of the run's
+  `--lock-wait`, and then withholds it.
+- A **lock path that is not a regular file** blocks the repair without a wait:
+  no process holds it. The WARNING names the lock path and says to remove it by
+  hand, and it does not end in `run journal --check`.
 
 Recorded paths are compared with PATH as directory entries, not as text, and
 nothing is collapsed lexically: two paths name the same entry when the real
@@ -363,6 +401,23 @@ gets no WARNING, whichever refusal ended the run.
 
 An unignored vault goes through the same repair, with the vault rules of an
 unreadable journal.
+
+What stands at PATH is read once, with one `lstat`, before `init` acts on it:
+its file type and, for a symlink, its target. A path that cannot be looked at,
+such as one under a directory that cannot be searched, is left as it is with a
+WARNING that says `the harness path could not be read`, and the run's exit code
+does not change. Whenever the repair relinks -- after its vault check or, when
+the vault cannot be listed, without one -- it reads that identity again
+immediately before it replaces PATH. A path that by then resolves to `memory/`
+is left alone and gets no WARNING. Any other change, or a path that can no
+longer be looked at, leaves PATH as it stands with a WARNING that says
+`the harness path changed while the repair waited` or the unreadable reason; a
+WARNING about PATH itself does not end in `run journal --check`. The second
+reading is not an atomic guarantee: a process outside the plugin that replaces
+PATH after that `lstat` and before the rename, including the parent-directory
+check and the temporary link the relink makes first, is not guarded against,
+and the relink never replaces a directory. The standard library has no
+compare-and-swap on a pathname.
 
 The unrecorded restoration after such a refusal, or when the vault's ignore
 entry could not be established, first requires the same eligible in-adopter
@@ -1034,10 +1089,12 @@ An inspection that cannot be made reads `status: journal: unreadable; run
 journal --check`, and so does a vault whose transaction or preimage directory
 holds an entry that is not a regular file: entries are classified without
 following links, and nothing in the vault is opened, because opening a symlink
-can block on a pipe. A history with no conditions, or no journal at all, adds
-nothing. The inspection creates no file and needs no vault, so a clone
-without `.validated-memory/` sees only the conditions of the repository
-history. The exit code does not change: this is a WARNING, never a gate
+can block on a pipe. `journal --check` answers for such an entry without
+opening it: a transaction entry is a damaged transaction, and an entry of the
+preimage directory is retained private residue. A history with no conditions,
+or no journal at all, adds nothing. The inspection creates no file and needs no
+vault, so a clone without `.validated-memory/` sees only the conditions of the
+repository history. The exit code does not change: this is a WARNING, never a gate
 ([ADR 0029](../adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md),
 [ADR 0002](../adr/0002-status-gates-consistency-and-only-reports-freshness.md)).
 

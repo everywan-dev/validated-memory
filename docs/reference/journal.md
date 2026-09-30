@@ -164,9 +164,36 @@ reuse: if the operating system has given the dead run's pid to an unrelated
 process, the lock reads as held forever and every `init` refuses. That is
 what the message says to do -- when no validated-memory process is running,
 delete the lock file it names. Two runs breaking one dead lock at the same
-instant is a narrow race that neither the pid nor the inode check closes;
-what they do guarantee is that releasing a lock never deletes a file this
-run did not create.
+instant can both end up holding it: each checks that the lock is still the
+file it examined and then unlinks it by name, and the file can be replaced
+between the two calls. Neither the pid nor the inode check closes that race,
+which `--lock-wait` neither causes nor widens; what they do guarantee is that
+releasing a lock never deletes a file this run did not create.
+
+**The wait for the lock ends at a deadline.** A run waits for a live holder
+for ten seconds, and `init` for the `--lock-wait SECONDS` it was given (see
+[`init`](cli.md#init)). `init` fixes one deadline when it starts and every
+lock it takes in the run shares it, so taking the lock twice does not wait
+twice. Each attempt takes the lock, or breaks it when its owner is gone, before
+it compares the clock with the deadline, so a spent budget still recovers a
+breakable lock. A lock that an attempt broke, or found gone, earns one
+immediate retry past the deadline, and that retry can lose the race for the new
+file, in which case the run refuses. A break that leaves the name in place makes
+the run sleep and try again until the deadline, as it does for a live holder.
+The bound covers waiting for the lock and not the work done once it is held
+([ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)).
+
+**A lock path that is not a regular file is never opened and never broken.** A
+symlink, even a dangling one, a named pipe or a directory at
+`.validated-memory/lock` is checked with `lstat` before any open, because
+opening a pipe waits for a writer and opening a link follows it. No process
+holds it, but it is waited for like a held lock until the deadline, which is
+checked on every iteration of the wait, and then the run refuses with an ERROR
+that names the path and says to remove it by hand:
+
+```
+ERROR: .validated-memory/lock: journal: /path/to/adopter/.validated-memory/lock is not a regular file, so it was neither opened nor broken; remove it by hand and run again
+```
 
 **The owner check is a single-host promise.** The pid in the file is a fact
 about the machine and pid namespace that wrote it. A store shared over a
@@ -233,6 +260,25 @@ a run that parks or reads back a preimage rather than by every command.
 `.validated-memory/` itself is not checked: the vault's own name may be a
 link into a shared store, exactly as `journal.jsonl` may, and what this
 refuses is a name inside it that the plugin alone writes.
+
+**A node in those directories that is not a regular file is never opened.** A
+transaction or a preimage is read by one rule: `lstat` the name before any
+open and refuse what is not a regular file, so a link is not followed even when
+its target is a regular file; open with `O_NONBLOCK` and `O_NOFOLLOW` where the
+platform has them; then `fstat` the descriptor and require a regular file again.
+Opening a pipe for reading blocks until a writer appears, and the `lstat`
+describes the name only at the moment it ran. A transaction entry that is not a
+regular file is a [damaged transaction](#recovery). A preimage slot that is not
+a regular file, a dangling symlink included, refuses the mutation that needs it
+before any effect: it is neither opened nor removed, because nothing proves
+whose it is, and the ERROR names the slot and says to remove it by hand:
+
+```
+ERROR: .gitignore: ignore-rule: the vault's ignore entry (/.validated-memory/) could not be written: the preimage of .gitignore could not be parked, so the mutation was not attempted: .validated-memory/preimages/181314065df2f2fdaf920b1a8b5311daa216a2d6489a06ada5b49cc514d89417 is not a regular file, so it was neither opened nor removed; remove it by hand and run again. Nothing has been written.
+```
+
+A regular slot whose bytes do not match the digest it is filed under is still
+replaced ([ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)).
 
 Each file holds:
 
@@ -452,7 +498,7 @@ two. Both are declared in the design and pinned by name in
 
 | Write | By | Why it is an exception |
 |---|---|---|
-| the fail-open repair of the harness symlink | `init.relink` | After the CLI usage preflight accepts PATH, an eligible in-adopter project-memory target is required before every sync action. The contract requires the link back when the journal cannot serve the `SessionStart` hook, whose only job it is. After a refusal, `journal.guarded_harness_repair` takes the run-wide lock, reads the history and the vault, and calls the repair inside the same critical section, or withholds it and says why ([ADR 0029](../adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md)); when the vault's ignore entry cannot be established the repair reads only the vault, with the rules of an unreadable journal. An outside-root project target reaches no repair. The repair creates only the supplied parent chain, republishes the link atomically and requests the same durability barriers. A pre-visibility failure remains a WARNING naming the previous target; a visible effect whose barrier fails is an ERROR and cannot become a clean retry. |
+| the fail-open repair of the harness symlink | `init.relink` | After the CLI usage preflight accepts PATH, an eligible in-adopter project-memory target is required before every sync action. The contract requires the link back when the journal cannot serve the `SessionStart` hook, whose only job it is. After a refusal, `journal.guarded_harness_repair` takes the run-wide lock, reads the history and the vault, has the harness path read again, and calls the repair inside the same critical section, or withholds it and says why ([ADR 0029](../adr/0029-the-harness-link-survives-a-refusal-that-does-not-name-it.md)); when the vault's ignore entry cannot be established the repair reads only the vault, with the rules of an unreadable journal. An outside-root project target reaches no repair. The repair creates only the supplied parent chain, republishes the link atomically and requests the same durability barriers. A pre-visibility failure remains a WARNING naming the previous target; a visible effect whose barrier fails is an ERROR and cannot become a clean retry. |
 | the harness take-over | `adopt.take_over`, and its `_absorb`, `_reconcile_index` and `_park` | It recognises a tree, copies conditionally, reconciles an index and renames the source, and its published contract tolerates a per-file conflict and continues. That needs its own planner before the executor can apply it. |
 
 **Not recorded at all**, because what is written is not adopter data: a
@@ -749,7 +795,7 @@ coherent-pair read before the next transition:
 | `recoverable` -- *remove* | The file says `aborted` | Removes the file. It published nothing |
 | `diverged` | The file says `published` and the path is not in the postimage state -- something wrote it afterwards | Nothing. The file stays, and an ERROR names the path and the way out |
 | `unknown` | The file says `prepared` and the path matches neither state -- or matches both, which only a hand-written file can do; or the path's bytes cannot be read at all, whatever the stage, in which case the message names the stage the transaction reached and carries the reason instead of the state | Nothing. The file stays, and an ERROR names the path and the way out |
-| `damaged` | The file is not a well-formed transaction **of this project**: it could not be read, is not valid UTF-8, is not JSON, is not an object, names a `schema` this reader does not know, calls itself an id that is not its own file's name, is filed under another `adoption`, names an operation no intention carries (which includes `observe`, since an observation opens no transaction), or holds a preimage or postimage that is not a state | Nothing. The file stays for inspection, and the ERROR names the file rather than a path, because it names none |
+| `damaged` | The file is not a well-formed transaction **of this project**: it is not a regular file (a symlink, even to a valid transaction, a named pipe or a directory, none of which is opened), it could not be read, is not valid UTF-8, is not JSON, is not an object, names a `schema` this reader does not know, calls itself an id that is not its own file's name, is filed under another `adoption`, names an operation no intention carries (which includes `observe`, since an observation opens no transaction), or holds a preimage or postimage that is not a state | Nothing. The file stays for inspection, and the ERROR names the file rather than a path, because it names none |
 
 `journal --check` renders the authoritative deterministic condition set used by
 adoption, including coherent-pair, topology, permanent-history, WAL and retained
@@ -764,7 +810,14 @@ ERROR: .validated-memory/transactions/3333333333333333.json: journal: damaged tr
 ERROR: .validated-memory/transactions/4444444444444444.json: journal: damaged transaction 4444444444444444: its intention names no operation this plugin prepares
 ERROR: .validated-memory/transactions/5555555555555555.json: journal: damaged transaction 5555555555555555: its preimage or postimage is in no state this plugin knows
 ERROR: .validated-memory/transactions/6666666666666666.json: journal: damaged transaction 6666666666666666: it is not valid UTF-8: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+ERROR: .validated-memory/transactions/7777777777777777.json: journal: damaged transaction 7777777777777777: it is not a regular file; it was not opened
 ```
+
+The last is what a symlink, a named pipe or a directory in the place of a
+transaction file reads as. `journal --resolve` and `journal --repair` refuse it
+as they refuse any damaged transaction, and it stays where it is. A symlink
+to a valid transaction file is refused too, and its target is not parsed
+([ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)).
 
 `adoption` is compared only when the journals say what this project's id is.
 When both permanent histories are empty, any transaction artifact instead
@@ -818,8 +871,11 @@ transaction cannot appear between the decision and the link.
   path, and neither can uncertainty after a current effect. A lock held by
   another process withholds it too, without waiting for the lock a second time
   when it was already held on the first attempt; a lock another process takes
-  between the refusal and the repair is waited for once more, up to the lock's
-  own deadline, and then withholds it.
+  between the refusal and the repair is waited for only for what remains of the
+  run's `--lock-wait`, and then withholds it.
+- **A lock path that is not a regular file** blocks it without a wait, because
+  no process holds it: the WARNING names the lock path and says to remove it by
+  hand, and it does not end in `run journal --check`.
 
 Recorded paths are compared with the harness path as directory entries, and
 nothing is collapsed lexically, because `..` after a symlink names the parent
@@ -831,9 +887,28 @@ component is never followed.
 **An unignored vault** gates the run without a journal refusal; its repair goes
 through the same guard with the vault rules of an unreadable journal.
 
+**The harness path is read again immediately before the relink.** `init`
+records what stands at it with one `lstat` -- the file type and, for a symlink,
+its target, and no inode number, because a session that publishes the same link
+again creates a new inode and inode numbers are not stable on every
+filesystem -- and both routes that relink under the guard read that identity
+again first: the repair after its vault check and the one that runs when the
+vault cannot be listed. An identity that is unchanged relinks. A path that by
+then resolves to `memory/` is left alone and is not reported. Any other change,
+or a path that can no longer be looked at, withholds the repair with the reason
+`the harness path changed while the repair waited` or the unreadable one, and a
+withheld link that is about the harness path itself does not end in `run
+journal --check`, because the journal has nothing to say about it. A harness
+path that cannot be looked at when `init` first reads it is likewise left as it
+is, with a WARNING, without changing the exit code.
+
 The lock serialises validated-memory processes only. A process outside the
-plugin that replaces the harness path between the check and the relink is not
-guarded against; the relink never replaces a directory.
+plugin that replaces the harness path after the `lstat` of that second reading
+and before the rename that publishes the link is not guarded against: the
+window includes the check of the parent directory and the temporary link the
+relink makes before it renames, and the standard library has no
+compare-and-swap on a pathname. The relink never replaces a directory
+([ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)).
 
 A restored link is not recorded, and a WARNING says so and names the previous
 target. A withheld link is a WARNING that names the harness path and the reason
@@ -923,7 +998,8 @@ its states, and nothing there says the mutation ever ran.
 - It **verifies the blob**: present in the preimage store, and digesting to
   the name it is filed under. A blob that is missing here is [a damaged
   log](#the-write-ahead-log), not a clone whose vault stayed behind, and the
-  message says which.
+  message says which. A blob that is not a regular file is unavailable and is
+  not opened.
 - It **parks what it discards**. The operator has chosen to throw the
   current state away, but a regular file at the path is bytes somebody
   wrote, and no command here destroys bytes without leaving a copy: they go
