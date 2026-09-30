@@ -2712,6 +2712,9 @@ def adopting_run(root=Path(), deadline=None):
             confirm_effect=lambda transaction, location: _confirm_current_effect(
                 root, transaction, location
             ),
+            after_slot_examined=lambda: rendezvous_at(
+                "after-preimage-slot-examined", 1
+            ),
         )
         mechanics.survey(result.repository, result.local)
         snapshot = _workflow_snapshot(root)
@@ -3238,7 +3241,7 @@ def guarded_harness_repair(
             return _unreadable_repair(regime, relink, recheck, message)
         if reason is not None:
             return REPAIR_WITHHELD, reason
-        return _publish(relink, recheck)
+        return _relink_with_recheck(relink, recheck)
     finally:
         if held:
             lock.__exit__(None, None, None)
@@ -3252,11 +3255,11 @@ def _unreadable_repair(regime, relink, recheck, why):
     failure and not when the lock was.
     """
     if regime == UNAVAILABLE:
-        return _publish(relink, recheck)
+        return _relink_with_recheck(relink, recheck)
     return REPAIR_WITHHELD, f"the lock or the vault could not be read: {why}"
 
 
-def _publish(relink, recheck):
+def _relink_with_recheck(relink, recheck):
     """Call `relink` with `recheck` to be made just before its rename.
 
     Returns `(REPAIR_RELINKED, None)` when the link was published, and the

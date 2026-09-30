@@ -1812,10 +1812,10 @@ def test_the_decision_and_the_relink_share_one_critical_section():
 
     ADR 0029 rejects "check first and relink after the lock is released": a
     transaction can be opened between the two. So `guarded_harness_repair`
-    hands `relink` to `_publish` only inside the `try` whose `finally` releases
+    hands `relink` to `_relink_with_recheck` only inside the `try` whose `finally` releases
     the lock, in the same block that runs the vault and history check; its only
     other route to `relink` is `_unreadable_repair`, for a lock or a vault that
-    cannot be read. `_publish` is the one place `relink` is called, with the
+    cannot be read. `_relink_with_recheck` is the one place `relink` is called, with the
     check that reads the harness path again as its argument, and
     `replace_symlink` calls that check with the link staged and nothing
     between it and the `os.replace` that publishes it. This proves the shape,
@@ -1853,12 +1853,12 @@ def test_the_decision_and_the_relink_share_one_critical_section():
     ]
     assert len(releasing) == 1, "one try must release the lock"
     assert "_harness_repair_obstacle" in calls(releasing[0].body)
-    assert calls(releasing[0].body).count("_publish") == 1
-    assert calls(guarded.body).count("_publish") == 1, (
+    assert calls(releasing[0].body).count("_relink_with_recheck") == 1
+    assert calls(guarded.body).count("_relink_with_recheck") == 1, (
         "relink is handed over outside the block that holds the lock"
     )
     unreadable = function(protocol, "_unreadable_repair")
-    assert calls(unreadable.body).count("_publish") == 1
+    assert calls(unreadable.body).count("_relink_with_recheck") == 1
     for route in (guarded, unreadable):
         assert "relink" not in calls(route.body), (
             f"{route.name} calls relink itself"
@@ -1867,10 +1867,10 @@ def test_the_decision_and_the_relink_share_one_critical_section():
             ast.unparse(node)
             for node in ast.walk(route)
             if isinstance(node, ast.Call)
-            and ast.unparse(node.func) == "_publish"
-        ] == ["_publish(relink, recheck)"]
+            and ast.unparse(node.func) == "_relink_with_recheck"
+        ] == ["_relink_with_recheck(relink, recheck)"]
 
-    publish = function(protocol, "_publish")
+    publish = function(protocol, "_relink_with_recheck")
     assert [
         ast.unparse(node)
         for node in ast.walk(publish)

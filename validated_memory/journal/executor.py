@@ -35,7 +35,7 @@ from .durable import (
     republish_directory,
     republish_file,
 )
-from .fault import fault_at, rendezvous_at, sleep_at
+from .fault import fault_at, sleep_at
 from .lock import Lock
 from .operations import (
     OUTCOME_APPLIED,
@@ -262,6 +262,7 @@ class Run:
         append_failure=None,
         recover_all=None,
         confirm_effect=None,
+        after_slot_examined=None,
     ):
         self.root = Path(root)
         self.run = run
@@ -269,6 +270,9 @@ class Run:
         self._append_failure = append_failure
         self._recover_all = recover_all
         self._confirm_effect = confirm_effect
+        # A test seam the protocol hands in, called once a preimage slot has
+        # been examined and before it is read: the executor owns no seam.
+        self._after_slot_examined = after_slot_examined
         self._append_history = append_history
         self._claim_history = claim_history
         self._cleanup_transaction = cleanup_transaction
@@ -504,7 +508,8 @@ class Run:
                 "opened nor removed; remove it by hand and run again"
             )
         if slot is not None:
-            rendezvous_at("after-preimage-slot-examined", 1)
+            if self._after_slot_examined is not None:
+                self._after_slot_examined()
             verdict = _slot_verdict(blob, reference, slot)
             if verdict == _SLOT_REPLACE:
                 remove_name(blob)
