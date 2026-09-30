@@ -155,15 +155,18 @@ journal when it links.
 
 The limits that remain are declared and not closed:
 
-- **The window between the re-read and the rename.** A process outside the plugin
-  that replaces the harness path after the `lstat` of the re-read and before the
-  rename in `relink` is not guarded against. The window is from that `lstat` to
-  the rename, the second identification of the staged link being the last thing
-  in it: the parent directory is made and the temporary link staged before the
-  re-read, not inside the window. The standard library has no
+- **The window between the re-read and the rename.** A process outside the
+  plugin that replaces the harness path after the `lstat` of the re-read and
+  before the rename in `relink` is not guarded against, and neither is a process
+  that replaces the staged name after the last identification of the staged link
+  and before the rename or the cleanup unlink that follows it: the
+  identification does not protect the name it examined. The window runs from the
+  last identification of the staged link, and from the recheck's `lstat`, to the
+  rename or the cleanup unlink; the parent directory is made and the temporary
+  link staged before both, not inside the window. The standard library has no
   compare-and-swap on a pathname. The relink never replaces a directory. This
-  narrows the limit of ADR 0029, which spanned the lock wait and the vault read as
-  well.
+  narrows the limit of ADR 0029, which spanned the lock wait and the vault read
+  as well.
 - **The window between the second `lstat` of a preimage slot and its removal.**
   A process outside the plugin that replaces a regular slot with wrong bytes in
   that window has its file removed and the preimage parked in its place. The

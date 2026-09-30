@@ -914,10 +914,13 @@ likewise left as it is, with a WARNING, without changing the exit code.
 
 The lock serialises validated-memory processes only. A process outside the
 plugin that replaces the harness path after the `lstat` of that second reading
-and before the rename that publishes the link is not guarded against: the
-window is from that `lstat` to the rename, the parent directory having been
-made and the temporary link staged before it, and the standard library has no
-compare-and-swap on a pathname. The relink never replaces a directory
+and before the rename that publishes the link is not guarded against, nor is a
+process that replaces the staged link after its last identification and before
+the rename or the cleanup unlink that follows: the window runs from the last
+identification of the staged link, and from that `lstat`, to the rename or the
+cleanup unlink, the parent directory having been made and the temporary link
+staged before both, and the standard library has no compare-and-swap on a
+pathname. The relink never replaces a directory
 ([ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)).
 
 A restored link is not recorded, and a WARNING says so and names the previous

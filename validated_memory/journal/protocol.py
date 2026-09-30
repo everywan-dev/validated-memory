@@ -3177,8 +3177,10 @@ def guarded_harness_repair(
     `REPAIR_CURRENT` when the path already is what `relink` would publish,
     `REPAIR_BLOCKED` when it changed under the wait or cannot be read. A
     process outside the plugin that replaces the harness path after the
-    `lstat` inside `recheck` and before the rename is not guarded against;
-    the standard library has no compare-and-swap on a pathname to close it.
+    `lstat` inside `recheck` and before the rename is not guarded against, nor
+    one that replaces the staged name after its last identification and before
+    the rename or the cleanup unlink; the standard library has no
+    compare-and-swap on a pathname to close either.
 
     `regime` is what the caller knows of the refusal:
 

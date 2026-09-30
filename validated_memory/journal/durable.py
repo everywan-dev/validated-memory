@@ -908,7 +908,10 @@ def replace_symlink(
     link; that removal is best effort, and a staged link remains when the name
     cannot be examined or unlinked, as when the parent directory cannot be
     searched or written. Only the second identification and `before_replace`'s
-    answer may stand between `before_replace` and the rename.
+    answer may stand between `before_replace` and the rename. The identification
+    does not protect what follows it: the rename and the cleanup unlink act on
+    the name, and a process outside the plugin that replaces the staged name
+    after the last identification is not guarded against.
     """
     path = Path(path)
     forced = os.environ.get("VALIDATED_MEMORY_SYMLINK_TEMP_NAME")

@@ -254,10 +254,14 @@ GUARDED_REPAIR_SENTENCES = {
         "The lock serialises validated-memory processes only. A process "
         "outside the plugin that replaces the harness path after the `lstat` "
         "of that second reading and before the rename that publishes the link "
-        "is not guarded against: the window is from that `lstat` to the "
-        "rename, the parent directory having been made and the temporary link "
-        "staged before it, and the standard library has no compare-and-swap "
-        "on a pathname. The relink never replaces a directory",
+        "is not guarded against, nor is a process that replaces the staged "
+        "link after its last identification and before the rename or the "
+        "cleanup unlink that follows: the window runs from the last "
+        "identification of the staged link, and from that `lstat`, to the "
+        "rename or the cleanup unlink, the parent directory having been made "
+        "and the temporary link staged before both, and the standard library "
+        "has no compare-and-swap on a pathname. The relink never replaces a "
+        "directory",
         "ends in `run journal --check`",
         "a lock another process takes between the refusal and the repair is "
         "waited for only for what remains of the run's `--lock-wait`, and then "
@@ -338,7 +342,10 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "it reads that identity again once it has made the parent directory and "
         "staged the temporary link, immediately before the rename that replaces "
         "PATH.",
-        "the window being that `lstat` and the rename",
+        "nor one that replaces the staged link after its last identification "
+        "and before the rename or the cleanup unlink, the window running from "
+        "that identification, and from that `lstat`, to the rename or the "
+        "unlink",
         "A reading that stops the relink unlinks the staged link on a "
         "best-effort basis, and a staged link may remain if the parent cannot "
         "be written. If the staged link is replaced meanwhile, it is neither "
@@ -413,10 +420,14 @@ def test_lock_wait_and_vault_node_contracts_are_documented():
         "`LOCK_NODE`",
         "`REPAIR_BLOCKED`",
         "The window between the re-read and the rename.",
-        "The window is from that `lstat` to the rename, the second "
-        "identification of the staged link being the last thing in it: the "
-        "parent directory is made and the temporary link staged before the "
-        "re-read, not inside the window.",
+        "The window runs from the last identification of the staged link, and "
+        "from the recheck's `lstat`, to the rename or the cleanup unlink; the "
+        "parent directory is made and the temporary link staged before both, "
+        "not inside the window.",
+        "and neither is a process that replaces the staged name after the last "
+        "identification of the staged link and before the rename or the "
+        "cleanup unlink that follows it: the identification does not protect "
+        "the name it examined.",
         "A reading that stops the relink publishes nothing and unlinks the "
         "staged link on a best-effort basis: a staged link may remain if the "
         "parent cannot be written.",
