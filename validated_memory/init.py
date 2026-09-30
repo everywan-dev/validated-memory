@@ -1080,34 +1080,44 @@ def _reread_harness(path, inspected):
     (`REPAIR_CURRENT`), whether or not what stands there changed: the link text
     can be the inspected one while the directory it names now leads to
     `memory/`. Otherwise None while the identities are equal, and any other
-    difference, or a path that cannot be looked at, blocks the relink
-    (`REPAIR_BLOCKED`).
+    difference blocks the relink (`REPAIR_BLOCKED`), as does a path that cannot
+    be looked at or whose target chain cannot be resolved, a loop included:
+    that is never taken for approval.
     """
     try:
         now = _harness_identity(path)
-    except OSError as error:
+        current = _resolves_to_memory(path)
+    except (OSError, RuntimeError) as error:
         return journal.REPAIR_BLOCKED, f"{HARNESS_UNREADABLE}: {error}"
-    if _link_is_current(path):
+    if current:
         return journal.REPAIR_CURRENT, None
     if now == inspected:
         return None
     return journal.REPAIR_BLOCKED, HARNESS_CHANGED
 
 
+def _resolves_to_memory(raw_path):
+    """Whether `raw_path` is a symlink that resolves to `memory/`.
+
+    Raises what resolving raises: `OSError`, or `RuntimeError` for a loop.
+    """
+    path = Path(raw_path)
+    project_memory = Path("memory")
+    return (
+        project_memory.is_dir()
+        and path.is_symlink()
+        and path.resolve() == project_memory.resolve()
+    )
+
+
 def _link_is_current(raw_path):
     """Whether `raw_path` is a symlink that already resolves to `memory/`.
 
     A link that is current has nothing to restore, so a refused run says
-    nothing about it.
+    nothing about it. A path that cannot be resolved is not current.
     """
-    path = Path(raw_path)
-    project_memory = Path("memory")
     try:
-        return (
-            project_memory.is_dir()
-            and path.is_symlink()
-            and path.resolve() == project_memory.resolve()
-        )
+        return _resolves_to_memory(raw_path)
     except (OSError, RuntimeError):
         return False
 

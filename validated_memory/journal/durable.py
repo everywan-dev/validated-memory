@@ -53,6 +53,20 @@ class ReplaceDeclined(Exception):
         super().__init__("the replacement was declined before its rename")
 
 
+class StagedLinkChanged(Exception):
+    """The link staged for a replacement is no longer the link that was staged.
+
+    `path` is the staged name. It is left as it is: it was neither renamed over
+    the target nor unlinked.
+    """
+
+    def __init__(self, path):
+        self.path = Path(path)
+        super().__init__(
+            f"{self.path.as_posix()} is no longer the link that was staged"
+        )
+
+
 class NoReplaceUnavailable(Exception):
     """The platform cannot publish a staged file without replacement."""
 
@@ -440,9 +454,10 @@ def ensure_external_directory(path, reference, creation_point="mkdir"):
 def repair_symlink(path, target, reference, before_replace=None):
     """Durably restore the fail-open harness link through this private seam.
 
-    `before_replace` is passed to `replace_symlink`. When it declines, the
-    parent chain has been made and nothing else is visible: the ancestry error
-    below is not raised, because the run has no restored link to gate.
+    `before_replace` is passed to `replace_symlink`. When it declines, or the
+    staged link changed, the parent chain has been made and nothing else is
+    visible: the ancestry error below is not raised, because the run has no
+    restored link to gate.
     """
     path = Path(path)
     ancestry_error = None
@@ -839,6 +854,37 @@ def create_directory(path):
     )
 
 
+def _staged_identity(temporary, target):
+    """The `(device, inode)` of the link just staged at `temporary`.
+
+    Raises `StagedLinkChanged` when the name is not a symlink to `target`, and
+    `OSError` when it cannot be examined.
+    """
+    info = os.lstat(temporary)
+    if not stat.S_ISLNK(info.st_mode) or os.readlink(temporary) != os.fspath(target):
+        raise StagedLinkChanged(temporary)
+    return info.st_dev, info.st_ino
+
+
+def _examine_staged(temporary, target, identity):
+    """Whether `temporary` is still the link staged, without following it.
+
+    False when the name is absent or is anything else. Raises `OSError` when
+    the name cannot be examined at all, which says nothing about whether it
+    changed.
+    """
+    try:
+        info = os.lstat(temporary)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISLNK(info.st_mode) or (info.st_dev, info.st_ino) != identity:
+        return False
+    try:
+        return os.readlink(temporary) == os.fspath(target)
+    except FileNotFoundError:
+        return False
+
+
 def replace_symlink(
     path, target, temporary=None, crash_storage=False, before_replace=None
 ):
@@ -846,9 +892,21 @@ def replace_symlink(
 
     The link is staged under a temporary name beside `path` and renamed over
     it. `before_replace`, when given, is called once with the link staged and
-    immediately before the rename: None lets the rename go ahead, and anything
-    else removes the staged link, raises `ReplaceDeclined` carrying that answer
-    and publishes nothing. Nothing may run between that call and the rename.
+    before the rename: None lets the rename go ahead, and anything else stops
+    it, raises `ReplaceDeclined` carrying that answer and publishes nothing.
+
+    The staged link is identified when it is made (`lstat`: device, inode, a
+    symlink, the text of `target`) and identified again after `before_replace`
+    returns. If the name is no longer that link it is neither renamed nor
+    unlinked, and `StagedLinkChanged` is raised, whatever `before_replace`
+    answered. A name that cannot be examined is not that verdict: when the
+    answer stops the replacement it stands, and when it does not the `OSError`
+    is raised and nothing is renamed. Whatever else ends the replacement
+    without publishing, the staged link is unlinked when it is still that
+    link; that removal is best effort, and a staged link remains when the name
+    cannot be examined or unlinked, as when the parent directory cannot be
+    searched or written. Only the second identification and `before_replace`'s
+    answer may stand between `before_replace` and the rename.
     """
     path = Path(path)
     forced = os.environ.get("VALIDATED_MEMORY_SYMLINK_TEMP_NAME")
@@ -863,24 +921,35 @@ def replace_symlink(
     )
 
     def apply():
-        created = False
+        staged = None
+        published = False
         try:
             os.symlink(target, temporary)
-            created = True
+            staged = _staged_identity(temporary, target)
             if crash_storage:
                 storage_crash("staged-before-install", temporary)
+            answer = None
             if before_replace is not None:
                 answer = before_replace()
-                if answer is not None:
-                    raise ReplaceDeclined(answer)
+            try:
+                intact = _examine_staged(temporary, target, staged)
+            except OSError:
+                if answer is None:
+                    raise
+                intact = True
+            if not intact:
+                raise StagedLinkChanged(temporary)
+            if answer is not None:
+                raise ReplaceDeclined(answer)
             os.replace(temporary, path)
-        except (OSError, ReplaceDeclined):
-            if created:
+            published = True
+        finally:
+            if staged is not None and not published:
                 try:
-                    temporary.unlink(missing_ok=True)
+                    if _examine_staged(temporary, target, staged):
+                        temporary.unlink(missing_ok=True)
                 except OSError:
                     pass
-            raise
 
     return persist(
         _Effect(_Operation.REPLACE_SYMLINK, path, path.parent, apply)

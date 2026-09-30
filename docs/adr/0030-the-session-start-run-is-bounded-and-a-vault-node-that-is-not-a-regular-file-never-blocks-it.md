@@ -107,13 +107,19 @@ before the rename that publishes the link: the guarded repair after its vault
 check, and the route taken when the vault cannot be listed, which relinks
 without that check. The guard hands `relink` the reading, and `relink` makes it
 once it has made the parent directory and staged the temporary link. A reading
-that stops the relink removes the staged link and publishes nothing.
+that stops the relink publishes nothing and unlinks the staged link on a
+best-effort basis: a staged link may remain if the parent cannot be written.
+The staged link is identified when it is made and again after the reading. A name
+that is no longer that link is neither published nor removed, whatever the
+reading answered, and the run says so with `REPAIR_BLOCKED`, naming the staged
+path.
 
 - A path that by then resolves to the project's `memory/` is
   `REPAIR_CURRENT`, whether or not its identity changed: nothing is reported, as
   for a link that was correct at the start, and the link is not published again.
 - Otherwise an identity equal to the recorded one relinks.
-- Any other difference, or a path that cannot be looked at, is
+- Any other difference, or a path that cannot be looked at or whose target chain
+  cannot be resolved (a loop included), is
   `REPAIR_BLOCKED` with the reason `the harness path changed while the repair
   waited` or the unreadable one. `REPAIR_BLOCKED` is also the outcome for a lock
   path that is not a regular file. It names a node the journal holds no record
@@ -152,8 +158,9 @@ The limits that remain are declared and not closed:
 - **The window between the re-read and the rename.** A process outside the plugin
   that replaces the harness path after the `lstat` of the re-read and before the
   rename in `relink` is not guarded against. The window is from that `lstat` to
-  the rename: the parent directory is made and the temporary link staged before
-  the re-read, not inside the window. The standard library has no
+  the rename, the second identification of the staged link being the last thing
+  in it: the parent directory is made and the temporary link staged before the
+  re-read, not inside the window. The standard library has no
   compare-and-swap on a pathname. The relink never replaces a directory. This
   narrows the limit of ADR 0029, which spanned the lock wait and the vault read as
   well.

@@ -407,21 +407,24 @@ unreadable journal.
 
 What stands at PATH is read once, with one `lstat`, before `init` acts on it:
 its file type and, for a symlink, its target. A path that cannot be looked at,
-such as one under a directory that cannot be searched, or a symlink that cannot
-be resolved because it loops, is left as it is with a WARNING that says `the
-harness path could not be read`, and the run's exit code does not change.
+such as one under a directory that cannot be searched, or a symlink that
+cannot be resolved because it loops, is left as it is with a WARNING that says
+`the harness path could not be read`, and the run's exit code does not change.
 Whenever the repair relinks -- after its vault check or, when the vault cannot
 be listed, without one -- it reads that identity again once it has made the
 parent directory and staged the temporary link, immediately before the rename
-that replaces PATH. A path that by then resolves to `memory/` is left alone and
-gets no WARNING, whether or not what stands there changed. Any other change, or
-a path that can no longer be looked at, leaves PATH as it stands with a WARNING
-that says `the harness path changed while the repair waited` or the unreadable
-reason; a WARNING about PATH itself does not end in `run journal --check`. The
-second reading is not an atomic guarantee: a process outside the plugin that
-replaces PATH after that `lstat` and before the rename is not guarded against,
-the window being that `lstat` and the rename, and the relink never replaces a
-directory. A reading that stops the relink removes the staged link. The
+that replaces PATH. A path that by then resolves to `memory/` is left alone
+and gets no WARNING, whether or not what stands there changed. Any other
+change, or a path that can no longer be looked at or resolved, leaves PATH as
+it stands with a WARNING that says `the harness path changed while the repair
+waited` or the unreadable reason; a WARNING about PATH itself does not end in
+`run journal --check`. The second reading is not an atomic guarantee: a
+process outside the plugin that replaces PATH after that `lstat` and before
+the rename is not guarded against, the window being that `lstat` and the
+rename, and the relink never replaces a directory. A reading that stops the
+relink unlinks the staged link on a best-effort basis, and a staged link may
+remain if the parent cannot be written. If the staged link is replaced
+meanwhile, it is neither published nor removed, and a WARNING names it. The
 standard library has no compare-and-swap on a pathname.
 
 The unrecorded restoration after such a refusal, or when the vault's ignore

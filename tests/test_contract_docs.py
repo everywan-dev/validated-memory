@@ -329,9 +329,6 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "`it is not a regular file; it was not opened`",
         "A preimage slot that is not a regular file refuses the mutation that "
         "needs it before any effect.",
-        "A regular slot whose bytes differ is still replaced, only while a "
-        "second `lstat` shows it is still the file that was examined; one that "
-        "has changed kind or file in the meantime is refused the same way.",
         "A lock path that is not a regular file is held until the run's lock "
         "deadline, and then refused with an ERROR that names the path and "
         "says to remove it by hand.",
@@ -342,6 +339,13 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "staged the temporary link, immediately before the rename that replaces "
         "PATH.",
         "the window being that `lstat` and the rename",
+        "A reading that stops the relink unlinks the staged link on a "
+        "best-effort basis, and a staged link may remain if the parent cannot "
+        "be written. If the staged link is replaced meanwhile, it is neither "
+        "published nor removed, and a WARNING names it.",
+        "A regular slot whose bytes differ is still replaced, only while a "
+        "second `lstat` shows it is still the file that was examined; one that "
+        "has changed kind or file in the meantime is refused the same way.",
         "`the harness path could not be read`",
         "or a symlink that cannot be resolved because it loops, is left as it is",
         "`journal --check` answers for such an entry without opening it",
@@ -364,7 +368,12 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "it is not a regular file; it was not opened",
         "Two runs breaking one dead lock at the same instant can both end up "
         "holding it",
-        "**The harness path is read again immediately before the relink.**",
+        "**The harness path is read again once the link is staged, immediately "
+        "before the rename.**",
+        "A staged link that the reading stops is unlinked on a best-effort "
+        "basis, and one may remain if the parent cannot be written; a staged "
+        "link replaced meanwhile is neither published nor removed, and a "
+        "WARNING names it.",
         "or a symlink that loops, is likewise left as it is, with a WARNING",
         "once the link is staged and immediately before the rename that "
         "publishes it",
@@ -403,11 +412,18 @@ def test_lock_wait_and_vault_node_contracts_are_documented():
         "`LOCK_NODE`",
         "`REPAIR_BLOCKED`",
         "The window between the re-read and the rename.",
-        "The window is from that `lstat` to the rename: the parent directory is "
-        "made and the temporary link staged before the re-read, not inside the "
-        "window.",
-        "A reading that stops the relink removes the staged link and publishes "
-        "nothing.",
+        "The window is from that `lstat` to the rename, the second "
+        "identification of the staged link being the last thing in it: the "
+        "parent directory is made and the temporary link staged before the "
+        "re-read, not inside the window.",
+        "A reading that stops the relink publishes nothing and unlinks the "
+        "staged link on a best-effort basis: a staged link may remain if the "
+        "parent cannot be written.",
+        "A name that is no longer that link is neither published nor removed, "
+        "whatever the reading answered, and the run says so with "
+        "`REPAIR_BLOCKED`, naming the staged path.",
+        "or whose target chain cannot be resolved (a loop included), is "
+        "`REPAIR_BLOCKED`",
         "The window between the second `lstat` of a preimage slot and its "
         "removal.",
         "Two runs breaking the same dead lock.",

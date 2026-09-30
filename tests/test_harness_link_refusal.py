@@ -1698,6 +1698,113 @@ def test_a_link_whose_target_became_memory_while_the_repair_waited_is_not_republ
 
 @pytest.mark.parametrize("point", POINTS)
 @pytest.mark.parametrize("route", (LOCKED, UNLOCKED))
+def test_a_link_whose_target_chain_became_cyclic_while_the_repair_waited_is_blocked(
+    tmp_path, route, point
+):
+    """A target chain that cannot be resolved is never taken for approval.
+
+    The link text is the inspected one, but the directory it names was replaced
+    by a link to itself, so resolving the harness path fails. That is a harness
+    path that cannot be read: the relink is blocked, the link is left as it was,
+    and the reason is not "changed"."""
+
+    def swap(adopter, harness):
+        stale = harness.parent / "stale"
+        stale.rmdir()
+        stale.symlink_to(stale.name)
+
+    adopter, harness, process, stdout, stderr = _run_with_a_swap(
+        tmp_path, route, swap, point
+    )
+
+    assert process.returncode == 1, (stdout, stderr)
+    warnings = _stderr_warnings(stderr)
+    assert len(warnings) == 1, stderr
+    assert "the harness link was not restored" in warnings[0]
+    assert "the harness path could not be read" in warnings[0], warnings[0]
+    assert CHANGED not in warnings[0]
+    assert not warnings[0].endswith("; run journal --check"), warnings[0]
+    assert os.readlink(harness) == str(harness.parent / "stale")
+    assert "created symlink" not in stdout
+    assert "re-pointed symlink" not in stdout
+    assert _staged_links(harness) == []
+
+
+def test_a_staged_link_is_removed_when_the_second_reading_raises(tmp_path):
+    """The staged link is cleaned up whatever ends the replacement.
+
+    The run is left at the rendezvous with the link staged and is not let go,
+    so the rendezvous times out and raises inside the callback that makes the
+    second reading. The run ends in an error, and no staged link is left."""
+    adopter, harness = _adopted(tmp_path)
+    _point_at_stale(harness)
+    _add_second_lineage(adopter)
+    process, ready, proceed = _rendezvous_run(
+        adopter, harness, "after-harness-link-staged"
+    )
+    try:
+        assert len(_staged_links(harness)) == 1, "the link is not staged yet"
+        stdout, stderr = process.communicate(timeout=60)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+    assert process.returncode != 0, (stdout, stderr)
+    assert "test rendezvous at after-harness-link-staged timed out" in stderr
+    assert _staged_links(harness) == []
+    assert os.readlink(harness) == str(harness.parent / "stale")
+
+
+@pytest.mark.parametrize("route", (LOCKED, UNLOCKED))
+@pytest.mark.parametrize("recheck", ("approves", "declines"))
+def test_a_staged_link_replaced_by_a_file_is_neither_published_nor_removed(
+    tmp_path, route, recheck
+):
+    """The staged name is checked again before it is renamed or unlinked.
+
+    Something replaces the temporary link, while the run waits with it staged,
+    by a regular file with content. Whether the second reading of the harness
+    path approves the relink or declines it, the run neither renames the file
+    over the harness path nor unlinks it: the file is intact, the harness path is
+    untouched, and the WARNING names the staged path."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    staged = {}
+
+    def swap(adopter, harness):
+        (name,) = _staged_links(harness)
+        staged["path"] = harness.parent / name
+        staged["path"].unlink()
+        staged["path"].write_bytes(b"the adopter's own data\n")
+        if recheck == "declines":
+            harness.unlink()
+            harness.symlink_to(elsewhere, target_is_directory=True)
+
+    adopter, harness, process, stdout, stderr = _run_with_a_swap(
+        tmp_path, route, swap, "after-harness-link-staged"
+    )
+
+    assert process.returncode == 1, (stdout, stderr)
+    warnings = _stderr_warnings(stderr)
+    assert len(warnings) == 1, stderr
+    assert "the harness link was not restored" in warnings[0]
+    assert str(staged["path"]) in warnings[0], warnings[0]
+    assert "neither published nor removed" in warnings[0], warnings[0]
+    assert not warnings[0].endswith("; run journal --check"), warnings[0]
+    assert staged["path"].read_bytes() == b"the adopter's own data\n"
+    assert not staged["path"].is_symlink()
+    assert _staged_links(harness) == [staged["path"].name]
+    expected = elsewhere if recheck == "declines" else harness.parent / "stale"
+    assert os.readlink(harness) == str(expected)
+    assert "created symlink" not in stdout
+    assert "re-pointed symlink" not in stdout
+
+
+@pytest.mark.parametrize("point", POINTS)
+@pytest.mark.parametrize("route", (LOCKED, UNLOCKED))
 def test_the_same_link_published_again_is_not_a_change(tmp_path, route, point):
     """Identity is the entry's type and link text, not its inode.
 
@@ -1784,7 +1891,8 @@ def test_a_harness_path_that_cannot_be_looked_at_before_the_relink_is_not_relink
 
     The directory can be searched while the run stages the temporary link, and
     cannot be when the run reads the path again just before the rename. The
-    staged link cannot be removed from it either, so it is not asserted on."""
+    staged link cannot be removed from it either, so it is left behind: the
+    removal of a staged link is best effort."""
 
     def swap(adopter, harness):
         harness.parent.chmod(0)
@@ -1802,6 +1910,7 @@ def test_a_harness_path_that_cannot_be_looked_at_before_the_relink_is_not_relink
     assert "the harness path could not be read" in warnings[0]
     assert not warnings[0].endswith("; run journal --check")
     assert os.readlink(harness) == str(tmp_path / "harness" / "stale")
+    assert len(_staged_links(harness)) == 1
 
 
 # --- what no subprocess can see -------------------------------------------------
@@ -1817,8 +1926,9 @@ def test_the_decision_and_the_relink_share_one_critical_section():
     other route to `relink` is `_unreadable_repair`, for a lock or a vault that
     cannot be read. `_relink_with_recheck` is the one place `relink` is called, with the
     check that reads the harness path again as its argument, and
-    `replace_symlink` calls that check with the link staged and nothing
-    between it and the `os.replace` that publishes it. This proves the shape,
+    `replace_symlink` calls that check with the link staged, and only the second
+    identification of the staged link and the check of the answer stand between
+    it and the `os.replace` that publishes it. This proves the shape,
     not the exclusion itself: the held-lock tests are what show another
     process is kept out, and the swap tests, which stop the run before the lock
     and again after the link is staged, are what show the reading is acted
@@ -1882,7 +1992,10 @@ def test_the_decision_and_the_relink_share_one_critical_section():
     handlers = [
         node for node in ast.walk(publish) if isinstance(node, ast.ExceptHandler)
     ]
-    assert [ast.unparse(node.type) for node in handlers] == ["ReplaceDeclined"]
+    assert [ast.unparse(node.type) for node in handlers] == [
+        "ReplaceDeclined",
+        "StagedLinkChanged",
+    ]
 
     durable = ast.parse(
         (REPO_ROOT / "validated_memory" / "journal" / "durable.py").read_text(
@@ -1891,29 +2004,24 @@ def test_the_decision_and_the_relink_share_one_critical_section():
     )
     apply = function(function(durable, "replace_symlink"), "apply")
     (attempt,) = [node for node in apply.body if isinstance(node, ast.Try)]
-    rename = next(
-        position
-        for position, statement in enumerate(attempt.body)
-        if ast.unparse(statement) == "os.replace(temporary, path)"
+    assert attempt.handlers == [] and attempt.finalbody, (
+        "the staged link is cleaned up by a `finally`, whatever raises"
     )
-    staged = next(
-        position
-        for position, statement in enumerate(attempt.body)
-        if ast.unparse(statement) == "os.symlink(target, temporary)"
-    )
-    guard = attempt.body[rename - 1]
-    assert staged < rename - 1
-    assert isinstance(guard, ast.If)
-    assert ast.unparse(guard.test) == "before_replace is not None"
-    assert [ast.unparse(statement) for statement in guard.body[:1]] == [
-        "answer = before_replace()"
-    ]
-    assert len(guard.body) == 2 and ast.unparse(guard.body[1]) == (
+    steps = [ast.unparse(statement) for statement in attempt.body]
+    rename = steps.index("os.replace(temporary, path)")
+    assert steps[rename + 1] == "published = True"
+    assert steps[rename - 1] == (
         "if answer is not None:\n    raise ReplaceDeclined(answer)"
     )
-    assert [ast.unparse(node.type) for node in attempt.handlers] == [
-        "(OSError, ReplaceDeclined)"
-    ]
+    assert steps[rename - 2] == (
+        "if not intact:\n    raise StagedLinkChanged(temporary)"
+    )
+    assert steps[rename - 3].startswith("try:\n")
+    assert "_examine_staged(temporary, target, staged)" in steps[rename - 3]
+    assert steps[rename - 4] == (
+        "if before_replace is not None:\n    answer = before_replace()"
+    )
+    assert steps.index("os.symlink(target, temporary)") < rename - 4
 
 
 def test_the_condition_rule_reads_the_subject_and_the_pairing():

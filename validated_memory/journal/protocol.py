@@ -20,6 +20,7 @@ from .durable import (
     BootstrapPreparationFailed,
     NoReplaceUnavailable,
     ReplaceDeclined,
+    StagedLinkChanged,
     StagingCleanupUnconfirmed,
     VisibilityUnconfirmed,
     read_file_snapshot,
@@ -3152,13 +3153,13 @@ def guarded_harness_repair(
     naming what stopped it. `REPAIR_WITHHELD` is a decision of the journal or
     the vault, which `journal --check` can be asked about. `REPAIR_BLOCKED` is
     a node the journal holds no record of, whose reason says what to do about
-    it: `recheck` found the harness path changed or unreadable, or the lock
-    path is not a regular file.
+    it: `recheck` found the harness path changed or unreadable, the staged
+    link was replaced, or the lock path is not a regular file.
 
     `relink` is a callable that publishes the link atomically and takes one
     argument, `before_replace`, which it must call once, with the parent
-    directory made and the link staged, immediately before the rename that
-    publishes it (`journal.repair_harness_link` does). It is called at most
+    directory made and the link staged, before the rename that publishes it
+    (`journal.repair_harness_link` does). It is called at most
     once. With the lock held it is called in the same block that checks the
     vault and the history, so no transaction of this plugin can appear
     between the decision and the link. It is called without the lock only
@@ -3170,7 +3171,9 @@ def guarded_harness_repair(
     and it is what `before_replace` calls. Every route that calls `relink`
     hands it `recheck` this way. It returns None when the rename may go ahead.
     Anything else it returns is the `(outcome, reason)` pair the repair ends
-    with, and the staged link is removed and nothing is published:
+    with, and nothing is published; the staged link is unlinked on a
+    best-effort basis, and left where it is, with `REPAIR_BLOCKED` naming it,
+    when the staged name is no longer the link that was staged:
     `REPAIR_CURRENT` when the path already is what `relink` would publish,
     `REPAIR_BLOCKED` when it changed under the wait or cannot be read. A
     process outside the plugin that replaces the harness path after the
@@ -3262,8 +3265,9 @@ def _unreadable_repair(regime, relink, recheck, why):
 def _relink_with_recheck(relink, recheck):
     """Call `relink` with `recheck` to be made just before its rename.
 
-    Returns `(REPAIR_RELINKED, None)` when the link was published, and the
-    answer `recheck` gave when it stopped the rename.
+    Returns `(REPAIR_RELINKED, None)` when the link was published, the answer
+    `recheck` gave when it stopped the rename, and `REPAIR_BLOCKED` naming the
+    staged link when that name stopped being the link that was staged.
     """
 
     def before_replace():
@@ -3274,6 +3278,12 @@ def _relink_with_recheck(relink, recheck):
         relink(before_replace)
     except ReplaceDeclined as declined:
         return declined.answer
+    except StagedLinkChanged as changed:
+        return REPAIR_BLOCKED, (
+            f"the staged link {changed.path.as_posix()} is no longer the link "
+            "that was staged, so it was neither published nor removed; remove "
+            "it by hand"
+        )
     return REPAIR_RELINKED, None
 
 

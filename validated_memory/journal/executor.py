@@ -1321,10 +1321,12 @@ def repair_harness_link(path, target, anchor=Path(), before_replace=None):
     error so it cannot be downgraded to the historical warning-only path.
 
     `before_replace` is called once, after the parent directory is made and the
-    link is staged and immediately before the rename that publishes it. None
-    lets the rename go ahead. Anything else stops it: the staged link is
-    removed and `ReplaceDeclined` carrying that answer is raised, which is not
-    an `OSError` and is not tagged as a journal error.
+    link is staged and before the rename that publishes it. None lets the
+    rename go ahead. Anything else stops it: `ReplaceDeclined` carrying that
+    answer is raised, and the staged link is unlinked on a best-effort basis.
+    `StagedLinkChanged` is raised, and nothing is renamed or unlinked, when the
+    staged name is no longer the link that was staged. Neither is an `OSError`
+    and neither is tagged as a journal error.
     """
     try:
         repair_symlink(path, target, anchor, before_replace)
