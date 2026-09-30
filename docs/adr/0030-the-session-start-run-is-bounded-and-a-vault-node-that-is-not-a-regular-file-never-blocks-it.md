@@ -135,6 +135,11 @@ journal when it links.
   read, is now a damaged transaction and is not parsed. The entry stays for
   inspection and gates `init` until the operator replaces it with a regular file
   or removes it.
+- A preimage slot that is a dangling symlink, which 2.5.1 replaced without a
+  word, now refuses the mutation that needs it until the operator removes it.
+- A lock path that is a symlink to a regular file holding a dead process id,
+  which 2.5.1 broke, is now refused like any lock path that is not a regular
+  file.
 - A harness path that cannot be looked at is a WARNING and does not change the
   exit code. In 2.5.1 the run raised an uncaught error and exited 1.
 - With a spent budget, a concurrent start withholds the link until the next
