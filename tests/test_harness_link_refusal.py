@@ -1348,12 +1348,12 @@ def test_a_holder_that_finishes_inside_the_wait_does_not_withhold_the_link(tmp_p
 def test_the_two_lock_acquisitions_of_one_run_share_one_wait(tmp_path):
     """The repair after a refusal spends what the run has left, not a new wait.
 
-    The first holder keeps the lock for 2.5 s of a 4 s budget, so the run's
+    The first holder keeps the lock for 2.5 s of a 6 s budget, so the run's
     own acquisition succeeds late. The run is then refused before any
     effect, and at the rendezvous a second holder takes the lock the run just
-    released. A repair that started its own wait would take another 4 s and
-    end after about 6.5 s; one that shares the deadline ends at about 4 s."""
-    budget = 4
+    released. A repair that started its own 6 s wait would end after about
+    8.5 s; one that shares the deadline ends at about 6 s."""
+    budget = 6
     adopter, harness = _adopted(tmp_path)
     _point_at_stale(harness)
     _add_second_lineage(adopter)
@@ -1479,6 +1479,7 @@ UNLOCKED = pytest.param(
         reason="an unlistable directory is only unlistable to a non-root user",
     ),
 )
+UNIGNORED = "unignored"
 CHANGED = "the harness path changed while the repair waited"
 
 
@@ -1494,6 +1495,11 @@ def _run_with_a_swap(tmp_path, route, swap):
     preimages = None
     if route == LOCKED:
         _add_second_lineage(adopter)
+    elif route == UNIGNORED:
+        ignore = adopter / ".gitignore"
+        ignore.unlink()
+        (adopter / "unignored-target").write_bytes(b"adopter-owned ignore bytes\n")
+        ignore.symlink_to("unignored-target")
     else:
         _break_journal_with_a_loop(adopter)
         preimages = adopter / ".validated-memory" / "preimages"
@@ -1604,6 +1610,34 @@ def test_a_correct_link_published_by_someone_else_is_left_and_not_reported(
     assert _stderr_warnings(stderr) == [], stderr
     assert "created symlink" not in stdout
     assert "re-pointed symlink" not in stdout
+
+
+def test_a_correct_link_published_by_someone_else_is_kept_when_the_vault_gated(
+    tmp_path,
+):
+    """A run that gated on the vault reports a link that is already correct.
+
+    `.gitignore` is a symlink `init` will not write through, so the run gates
+    on the vault without a journal refusal, and the repair runs unrecorded. As
+    for a link that was correct at the start, the run says it kept the link
+    and counts it, and raises no WARNING."""
+
+    def swap(adopter, harness):
+        harness.unlink()
+        harness.symlink_to(
+            (adopter / "memory").resolve(), target_is_directory=True
+        )
+
+    adopter, harness, process, stdout, stderr = _run_with_a_swap(
+        tmp_path, UNIGNORED, swap
+    )
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert "vault's ignore entry" in stderr, stderr
+    assert harness.resolve() == (adopter / "memory").resolve()
+    assert f"init: kept symlink {harness}\n" in stdout, stdout
+    assert stdout.endswith("init: 1 item(s) confirmed, 1 gate(s)\n"), stdout
+    assert _stderr_warnings(stderr) == [], stderr
 
 
 @pytest.mark.parametrize("route", (LOCKED, UNLOCKED))

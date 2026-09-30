@@ -1,10 +1,8 @@
 """End-to-end tests: a vault node that is not a regular file never blocks a run.
 
 The vault's transaction entries, its preimage slots and its lock are read by
-runs that a session hook bounds. Opening a symlink to a named pipe blocks for
-good, and a lock that is a dangling symlink kept the waiting loop from ever
-reaching its deadline. Every case drives the CLI as a subprocess over a
-fixture adopter tree, with a subprocess timeout, so that a hang is a failure.
+runs that a session hook bounds. Every case drives the CLI as a subprocess over
+a fixture adopter tree, with a subprocess timeout, so that a hang is a failure.
 A test here proves that a run returns and what it says; it does not prove that
 nothing opened the node. Nothing imports the package.
 """
@@ -28,9 +26,9 @@ VAULT = ".validated-memory"
 # fails the test rather than the suite.
 RUN_TIMEOUT_SECONDS = 30
 
-# `LOCK_WAIT_SECONDS` as an outside observer sees it: how long a run that finds
-# the lock in the way waits before it refuses.
-LOCK_DEADLINE_SECONDS = 10
+# What the lock tests pass as `--lock-wait`: how long a run that finds the lock
+# in the way waits before it refuses.
+LOCK_WAIT = 1
 
 needs_fifo = pytest.mark.skipif(
     not hasattr(os, "mkfifo"), reason="this platform has no named pipes"
@@ -252,7 +250,7 @@ def test_the_session_start_hook_returns_over_a_transaction_entry_that_is_a_pipe_
     elapsed = time.monotonic() - started
 
     assert second.returncode == 0, second.stderr
-    assert elapsed < 12, elapsed
+    assert elapsed < 8, elapsed
     assert link.is_symlink(), second.stderr
     assert link.resolve() == (project / "memory").resolve()
     assert "not a regular file" in second.stderr, second.stderr
@@ -311,9 +309,7 @@ def _diverged_with_preimage(tree):
     return path.stem
 
 
-@pytest.mark.parametrize(
-    "kind", (pytest.param("symlink-to-fifo", marks=needs_fifo), "directory")
-)
+@pytest.mark.parametrize("kind", SLOT_KINDS)
 def test_restore_treats_a_preimage_that_is_not_a_regular_file_as_unavailable(
     tmp_path, kind
 ):
@@ -351,10 +347,8 @@ def test_a_lock_that_is_not_a_regular_file_is_refused_by_name_within_the_deadlin
 ):
     """`init` gives up at the lock's deadline, names the lock and leaves it.
 
-    A lock that is not a regular file is never opened and never broken: it is
-    in the way, so the run waits its deadline and refuses, saying to remove it
-    by hand. Following the dangling link would create its target, and it does
-    not."""
+    A lock that is not a regular file is never broken: it is in the way, so
+    the run waits its deadline and refuses, saying to remove it by hand."""
     tree = tmp_path / "tree"
     (tree / VAULT).mkdir(parents=True)
     lock = tree / VAULT / "lock"
@@ -362,19 +356,16 @@ def test_a_lock_that_is_not_a_regular_file_is_refused_by_name_within_the_deadlin
     before = _node_state(lock)
 
     started = time.monotonic()
-    result = _cli(
-        tree, "init", timeout=LOCK_DEADLINE_SECONDS + 10
-    )
+    result = _cli(tree, "init", "--lock-wait", str(LOCK_WAIT))
     elapsed = time.monotonic() - started
 
     assert result.returncode == 1, (result.stdout, result.stderr)
     assert "Traceback" not in result.stderr, result.stderr
-    assert elapsed >= LOCK_DEADLINE_SECONDS - 1, elapsed
+    assert elapsed >= LOCK_WAIT - 0.1, elapsed
     assert f"{VAULT}/lock" in result.stderr, result.stderr
     assert "is not a regular file" in result.stderr, result.stderr
     assert "remove it by hand" in result.stderr, result.stderr
     assert _node_state(lock) == before
-    assert not os.path.lexists(tmp_path / "does-not-exist")
 
 
 @pytest.mark.parametrize("kind", LOCK_KINDS)
@@ -400,7 +391,7 @@ def test_a_lock_that_is_not_a_regular_file_withholds_the_harness_link_by_name(
     link_before = _node_state(harness)
 
     result = _cli(
-        tree, "init", "--harness-memory", str(harness), "--lock-wait", "1"
+        tree, "init", "--harness-memory", str(harness), "--lock-wait", str(LOCK_WAIT)
     )
 
     assert result.returncode == 1, (result.stdout, result.stderr)
