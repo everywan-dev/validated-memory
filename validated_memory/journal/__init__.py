@@ -92,6 +92,7 @@ from .records import (
 from .transactions import RECOVERED, RESOLUTIONS
 from .protocol import (
     PRE_EFFECT_GATE,
+    REPAIR_BLOCKED,
     REPAIR_CURRENT,
     REPAIR_WITHHELD,
     UNAVAILABLE,
@@ -115,6 +116,7 @@ __all__ = [
     "OUTCOME_REFUSED",
     "PRE_EFFECT_GATE",
     "RECOVERED",
+    "REPAIR_BLOCKED",
     "REPAIR_CURRENT",
     "REPAIR_WITHHELD",
     "REPO",

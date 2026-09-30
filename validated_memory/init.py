@@ -822,7 +822,7 @@ def _sync_symlink(
     What stands at the harness path is read once, by `_harness_identity`,
     before anything is done to it, and a path that cannot be looked at is left
     alone with a WARNING. `journal.guarded_harness_repair` has that identity
-    read again immediately before it relinks (`_Recheck`): a link that
+    read again immediately before it relinks (`_reread_harness`): a link that
     resolves to `memory/` by then is left as it is and not reported, like one
     that was correct at the start, and any other change withholds the repair.
     """
@@ -871,7 +871,9 @@ def _sync_symlink(
         ], 0
     was_symlink = identity[0] == stat.S_IFLNK
     previous = identity[1]
-    recheck = _Recheck(path, identity)
+
+    def recheck():
+        return _reread_harness(path, identity)
 
     def relink():
         """Point `path` at `target`, whatever it is now. Never deletes data.
@@ -920,11 +922,9 @@ def _sync_symlink(
                 print(f"init: kept symlink {location}", file=stdout)
                 return [], 1
             if outcome == journal.REPAIR_WITHHELD:
-                return [
-                    _withheld_link(
-                        location, reason, journal_hint=reason != recheck.reason
-                    )
-                ], 0
+                return [_withheld_link(location, reason)], 0
+            if outcome == journal.REPAIR_BLOCKED:
+                return [_withheld_link(location, reason, journal_hint=False)], 0
             findings.append(_unrecorded_warning(location, previous, unrecorded))
         verb = "re-pointed" if was_symlink else "created"
         print(f"init: {verb} symlink {location} -> {target}", file=stdout)
@@ -1052,37 +1052,25 @@ def _harness_identity(path):
         return NOTHING_THERE
 
 
-class _Recheck:
-    """Reads the harness path again for `journal.guarded_harness_repair`.
+def _reread_harness(path, inspected):
+    """Read the harness path again for `journal.guarded_harness_repair`.
 
     Called immediately before the relink, it compares what stands at `path`
     with the `inspected` identity the run recorded before it waited for the
-    lock. `reason` is the sentence of the last withholding it answered with,
-    so the caller can tell a reason about the path from one about the journal.
+    lock. None while they are equal. Otherwise the repair's final answer: a
+    path that already resolves to `memory/` has nothing left to restore
+    (`REPAIR_CURRENT`), and any other difference, or a path that cannot be
+    looked at, blocks the relink (`REPAIR_BLOCKED`).
     """
-
-    def __init__(self, path, inspected):
-        self.path = path
-        self.inspected = inspected
-        self.reason = None
-
-    def __call__(self):
-        """None while the path is as inspected, else the repair's final answer.
-
-        A path that already resolves to `memory/` has nothing left to restore;
-        any other difference, and a path that cannot be looked at, withholds.
-        """
-        try:
-            now = _harness_identity(self.path)
-        except OSError as error:
-            self.reason = f"{HARNESS_UNREADABLE}: {error}"
-            return journal.REPAIR_WITHHELD, self.reason
-        if now == self.inspected:
-            return None
-        if _link_is_current(self.path):
-            return journal.REPAIR_CURRENT, None
-        self.reason = HARNESS_CHANGED
-        return journal.REPAIR_WITHHELD, self.reason
+    try:
+        now = _harness_identity(path)
+    except OSError as error:
+        return journal.REPAIR_BLOCKED, f"{HARNESS_UNREADABLE}: {error}"
+    if now == inspected:
+        return None
+    if _link_is_current(path):
+        return journal.REPAIR_CURRENT, None
+    return journal.REPAIR_BLOCKED, HARNESS_CHANGED
 
 
 def _link_is_current(raw_path):

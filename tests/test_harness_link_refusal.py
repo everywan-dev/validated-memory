@@ -1693,8 +1693,9 @@ def test_the_decision_and_the_relink_share_one_critical_section():
     calls `relink` itself only inside the `try` whose `finally` releases the
     lock, in the same block that runs the vault and history check; its only
     other route to `relink` is `_unreadable_repair`, for a lock or a vault that
-    cannot be read. Both routes read the harness path again through `recheck`
-    in the statement two before `relink`, so nothing else runs between the
+    cannot be read. Both routes read the harness path again with
+    `settled = recheck()` and `if settled is not None: return settled`, the two
+    statements immediately before `relink()`, so nothing else runs between the
     reading and the relink. This proves the shape, not the exclusion itself:
     the held-lock tests are what show another process is kept out, and the
     swap tests are what show the reading is acted on."""
@@ -1728,27 +1729,44 @@ def test_the_decision_and_the_relink_share_one_critical_section():
         "relink is called outside the block that holds the lock"
     )
 
-    def precedes_in_one_block(function, before, after):
-        """Whether `before()` is called by the statement two steps ahead of the
-        only statement that calls `after()`, in the same statement list: the
-        call, then the check of what it answered, then `after()`."""
+    def reads_again_before(function, before, after):
+        """Whether the only statement calling `after()` is preceded, in its own
+        statement list, by `name = before()` and then by
+        `if name is not None: return name`, and by nothing else."""
         for node in ast.walk(function):
             for field in ("body", "orelse", "finalbody"):
                 block = getattr(node, field, None)
                 if not isinstance(block, list):
                     continue
                 for position, statement in enumerate(block):
-                    if (
+                    if not (
                         isinstance(statement, ast.Expr)
                         and isinstance(statement.value, ast.Call)
                         and ast.unparse(statement.value.func) == after
                     ):
-                        return position >= 2 and before in calls(
-                            [block[position - 2]]
-                        ) and isinstance(block[position - 1], ast.If)
+                        continue
+                    if position < 2:
+                        return False
+                    call, guard = block[position - 2], block[position - 1]
+                    if not (
+                        isinstance(call, ast.Assign)
+                        and len(call.targets) == 1
+                        and isinstance(call.targets[0], ast.Name)
+                        and ast.unparse(call.value) == f"{before}()"
+                    ):
+                        return False
+                    answer = call.targets[0].id
+                    return (
+                        isinstance(guard, ast.If)
+                        and ast.unparse(guard.test) == f"{answer} is not None"
+                        and len(guard.body) == 1
+                        and isinstance(guard.body[0], ast.Return)
+                        and ast.unparse(guard.body[0].value) == answer
+                        and not guard.orelse
+                    )
         return False
 
-    assert precedes_in_one_block(guarded, "recheck", "relink"), (
+    assert reads_again_before(guarded, "recheck", "relink"), (
         "the locked route relinks without reading the harness path again"
     )
     unreadable = next(
@@ -1757,7 +1775,7 @@ def test_the_decision_and_the_relink_share_one_critical_section():
         if isinstance(node, ast.FunctionDef) and node.name == "_unreadable_repair"
     )
     assert calls(unreadable.body).count("relink") == 1
-    assert precedes_in_one_block(unreadable, "recheck", "relink"), (
+    assert reads_again_before(unreadable, "recheck", "relink"), (
         "the unlocked route relinks without reading the harness path again"
     )
 

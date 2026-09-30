@@ -3075,12 +3075,14 @@ def repair_transaction(root, transaction_id):
 
 # The regimes `harness_repair_regime` names and the outcomes
 # `guarded_harness_repair` returns. The facade exports only what `init` reads:
-# `PRE_EFFECT_GATE`, `UNAVAILABLE`, `REPAIR_WITHHELD` and `REPAIR_CURRENT`.
+# `PRE_EFFECT_GATE`, `UNAVAILABLE`, `REPAIR_WITHHELD`, `REPAIR_BLOCKED` and
+# `REPAIR_CURRENT`.
 PRE_EFFECT_GATE = "pre_effect_gate"
 LOCK_BUSY = "lock_busy"
 UNAVAILABLE = "unavailable"
 REPAIR_RELINKED = "relinked"
 REPAIR_WITHHELD = "withheld"
+REPAIR_BLOCKED = "blocked"
 REPAIR_CURRENT = "current"
 
 # What a withheld repair says, in words a reader of the WARNING can act on:
@@ -3130,8 +3132,12 @@ def guarded_harness_repair(
     """Relink the harness path under the run-wide lock, or withhold and say why.
 
     Returns `(outcome, reason)`, the outcome being `REPAIR_RELINKED`,
-    `REPAIR_WITHHELD` or `REPAIR_CURRENT`. `reason` is None unless the repair
-    was withheld, and then it is a plain sentence naming what stopped it.
+    `REPAIR_WITHHELD`, `REPAIR_BLOCKED` or `REPAIR_CURRENT`. `reason` is None
+    unless the repair was withheld or blocked, and then it is a plain sentence
+    naming what stopped it. `REPAIR_WITHHELD` is a decision of the journal or
+    the vault, which `journal --check` can be asked about. `REPAIR_BLOCKED` is
+    a node the journal holds no record of, whose reason says what to do about
+    it: `recheck` found the harness path changed or unreadable.
 
     `relink` is a zero-argument callable that publishes the link atomically.
     It is called at most once. With the lock held it is called in the same
@@ -3145,8 +3151,8 @@ def guarded_harness_repair(
     Every route that calls `relink` calls it first, immediately before, and
     `relink` is not called unless it returns None. Anything else it returns is
     the `(outcome, reason)` pair the repair ends with: `REPAIR_CURRENT` when
-    the path already is what `relink` would publish, `REPAIR_WITHHELD` when it
-    changed under the wait. A process outside the plugin that replaces the
+    the path already is what `relink` would publish, `REPAIR_BLOCKED` when it
+    changed under the wait or cannot be read. A process outside the plugin that replaces the
     harness path between that reading and the rename inside `relink` is not
     guarded against: the window is one `lstat` and one `rename`, and the
     standard library has no compare-and-swap on a pathname to close it.
