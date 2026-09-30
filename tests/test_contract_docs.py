@@ -392,7 +392,7 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "The hook runs `init --harness-memory` with `--lock-wait 3`.",
         "The bound covers waiting for the lock and not the work `init` does "
         "once it holds it",
-        "leaves the link as it was",
+        "the link is still restored as on any other start",
     ),
 }
 

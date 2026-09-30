@@ -203,13 +203,15 @@ def test_a_regular_transaction_file_that_is_not_json_reports_as_it_always_did(
 
 
 @needs_fifo
+@pytest.mark.parametrize("link_state", ("current", "stale", "absent"))
 def test_the_session_start_hook_returns_over_a_transaction_entry_that_is_a_pipe_link(
-    tmp_path,
+    tmp_path, link_state
 ):
-    """The hook finishes well under its 15 s timeout and the link stays.
+    """The hook finishes well under its 15 s timeout and the link is restored.
 
-    The harness link exists before the entry is planted; what the run shows is
-    that reading the vault did not block and that the entry was named."""
+    A link that is current, stale or absent when the entry is planted ends as
+    the link to the project's memory: the damaged entry is named on stderr and
+    does not withhold the link on the healthy path."""
     project = tmp_path / "project"
     (project / "memory").mkdir(parents=True)
     (project / "validated-memory.md").write_text(
@@ -240,6 +242,11 @@ def test_the_session_start_hook_returns_over_a_transaction_entry_that_is_a_pipe_
     slug = "".join(c if c.isalnum() else "-" for c in str(project))
     link = config / "projects" / slug / "memory"
     assert link.is_symlink(), first.stderr
+    if link_state != "current":
+        link.unlink()
+    if link_state == "stale":
+        (tmp_path / "stale").mkdir()
+        link.symlink_to(tmp_path / "stale")
     (project / VAULT / "transactions").mkdir(parents=True, exist_ok=True)
     _make_node(tmp_path, project / VAULT / "transactions" / "x.json", "symlink-to-fifo")
 

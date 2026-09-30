@@ -37,8 +37,8 @@ next session start restores it. The bound covers waiting for the lock and not
 the work `init` does once it holds it, such as absorbing a pre-existing harness
 memory directory. A node that is not a regular file in the vault -- a symlink to
 a named pipe in the place of a transaction file, for instance -- does not block
-the hook: `init` names it on stderr and, as a damaged transaction, leaves the
-link as it was ([ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)).
+the hook: `init` names it on stderr as a damaged transaction and exits 1, and
+the link is still restored as on any other start ([ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)).
 
 This hook is fail-open throughout, matching `init`'s own contract. No
 `$CLAUDE_PROJECT_DIR`, a project that has not adopted validated-memory (no
