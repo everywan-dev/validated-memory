@@ -212,10 +212,10 @@ without following a link and without opening a pipe:
   transaction file is refused the same way, and its target is not parsed.
 - A preimage slot that is not a regular file refuses the mutation that needs it
   before any effect. The ERROR names the slot and says to remove it by hand, and
-  the slot is neither opened nor removed. A regular slot whose bytes differ is
-  still replaced, only while a second `lstat` shows it is still the file that
-  was examined; one that has changed kind or file in the meantime is refused the
-  same way.
+  the slot is neither opened nor removed. A regular slot whose bytes differ, or
+  which cannot be read, is still replaced, only while a second `lstat` shows it
+  is still the file that was examined; one that has changed kind or file in the
+  meantime is refused the same way.
 - A lock path that is not a regular file is held until the run's lock deadline,
   and then refused with an ERROR that names the path and says to remove it by
   hand. It is not broken, and it is not a holder: the harness repair below does

@@ -343,9 +343,10 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "best-effort basis, and a staged link may remain if the parent cannot "
         "be written. If the staged link is replaced meanwhile, it is neither "
         "published nor removed, and a WARNING names it.",
-        "A regular slot whose bytes differ is still replaced, only while a "
-        "second `lstat` shows it is still the file that was examined; one that "
-        "has changed kind or file in the meantime is refused the same way.",
+        "A regular slot whose bytes differ, or which cannot be read, is still "
+        "replaced, only while a second `lstat` shows it is still the file that "
+        "was examined; one that has changed kind or file in the meantime is "
+        "refused the same way.",
         "`the harness path could not be read`",
         "or a symlink that cannot be resolved because it loops, is left as it is",
         "`journal --check` answers for such an entry without opening it",
