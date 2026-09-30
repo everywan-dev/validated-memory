@@ -342,10 +342,10 @@ def test_restore_treats_a_preimage_that_is_not_a_regular_file_as_unavailable(
 # --- the lock -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "kind",
-    (pytest.param("fifo", marks=needs_fifo), "dangling-symlink"),
-)
+LOCK_KINDS = (pytest.param("fifo", marks=needs_fifo), "dangling-symlink")
+
+
+@pytest.mark.parametrize("kind", LOCK_KINDS)
 def test_a_lock_that_is_not_a_regular_file_is_refused_by_name_within_the_deadline(
     tmp_path, kind
 ):
@@ -375,3 +375,47 @@ def test_a_lock_that_is_not_a_regular_file_is_refused_by_name_within_the_deadlin
     assert "remove it by hand" in result.stderr, result.stderr
     assert _node_state(lock) == before
     assert not os.path.lexists(tmp_path / "does-not-exist")
+
+
+@pytest.mark.parametrize("kind", LOCK_KINDS)
+def test_a_lock_that_is_not_a_regular_file_withholds_the_harness_link_by_name(
+    tmp_path, kind
+):
+    """The withheld link says the lock path is in the way, and what to do.
+
+    No process holds the lock, so the WARNING must not say one does, and the
+    journal has nothing to say about a node at the lock path, so it must not
+    send the reader to `journal --check`. It names the path and says to remove
+    it by hand; the link stays where it was."""
+    tree = _initialised_tree(tmp_path)
+    harness = tmp_path / "harness" / "memory"
+    assert _cli(tree, "init", "--harness-memory", str(harness)).returncode == 0
+    stale = tmp_path / "harness" / "stale"
+    stale.mkdir()
+    harness.unlink()
+    harness.symlink_to(stale, target_is_directory=True)
+    lock = tree / VAULT / "lock"
+    _make_node(tmp_path, lock, kind)
+    lock_before = _node_state(lock)
+    link_before = _node_state(harness)
+
+    result = _cli(
+        tree, "init", "--harness-memory", str(harness), "--lock-wait", "1"
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    warnings = [
+        line for line in result.stderr.splitlines() if line.startswith("WARNING:")
+    ]
+    assert len(warnings) == 1, result.stderr
+    assert str(harness) in warnings[0]
+    assert (
+        f"the harness link was not restored: the lock path "
+        f"{lock.parent.resolve() / lock.name} is not a regular file; remove "
+        "it by hand"
+    ) in warnings[0], warnings[0]
+    assert "run journal --check" not in warnings[0], warnings[0]
+    assert "another validated-memory process" not in warnings[0], warnings[0]
+    assert _node_state(harness) == link_before
+    assert _node_state(lock) == lock_before

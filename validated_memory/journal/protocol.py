@@ -3079,6 +3079,7 @@ def repair_transaction(root, transaction_id):
 # `REPAIR_CURRENT`.
 PRE_EFFECT_GATE = "pre_effect_gate"
 LOCK_BUSY = "lock_busy"
+LOCK_NODE = "lock_node"
 UNAVAILABLE = "unavailable"
 REPAIR_RELINKED = "relinked"
 REPAIR_WITHHELD = "withheld"
@@ -3102,6 +3103,14 @@ _DAMAGED_TOPOLOGY_REASON = (
 _CONDITION_ON_LINK_REASON = "a history condition names the harness path"
 
 
+def _lock_node_reason(lock_path):
+    """The reason for a lock path that is not a regular file, with its remedy."""
+    return (
+        f"the lock path {lock_path.as_posix()} is not a regular file; "
+        "remove it by hand"
+    )
+
+
 def harness_repair_regime(failure):
     """The regime a failed run may repair the harness link under, or None.
 
@@ -3117,6 +3126,8 @@ def harness_repair_regime(failure):
     """
     if getattr(failure, "visibility_unconfirmed", False):
         return None
+    if getattr(failure, "lock_node", False):
+        return LOCK_NODE
     if getattr(failure, "lock_busy", False):
         return LOCK_BUSY
     if getattr(failure, "pre_effect_gate", False):
@@ -3137,7 +3148,8 @@ def guarded_harness_repair(
     naming what stopped it. `REPAIR_WITHHELD` is a decision of the journal or
     the vault, which `journal --check` can be asked about. `REPAIR_BLOCKED` is
     a node the journal holds no record of, whose reason says what to do about
-    it: `recheck` found the harness path changed or unreadable.
+    it: `recheck` found the harness path changed or unreadable, or the lock
+    path is not a regular file.
 
     `relink` is a zero-argument callable that publishes the link atomically.
     It is called at most once. With the lock held it is called in the same
@@ -3161,6 +3173,8 @@ def guarded_harness_repair(
 
     - `LOCK_BUSY`: withheld at once, without waiting for the lock again. The
       holder may be recording a change to the harness path.
+    - `LOCK_NODE`: the lock path is not a regular file, so no process holds
+      it. Blocked at once, with the path and the remedy as the reason.
     - `PRE_EFFECT_GATE`: the history was readable and refused before any
       adopting effect. The link is restored only if the vault holds no
       residue, every entry of its transaction and preimage directories is a
@@ -3189,6 +3203,8 @@ def guarded_harness_repair(
     """
     if regime == LOCK_BUSY:
         return REPAIR_WITHHELD, _LOCK_BUSY_REASON
+    if regime == LOCK_NODE:
+        return REPAIR_BLOCKED, _lock_node_reason(Lock(Path(root)).path)
     if regime not in (PRE_EFFECT_GATE, UNAVAILABLE):
         raise ValueError(f"unknown harness repair regime: {regime!r}")
     root = Path(root)
@@ -3199,6 +3215,8 @@ def guarded_harness_repair(
         lock.__enter__()
         held = True
     except JournalError as error:
+        if getattr(error, "lock_node", False):
+            return REPAIR_BLOCKED, _lock_node_reason(lock.path)
         if getattr(error, "lock_busy", False):
             return REPAIR_WITHHELD, _LOCK_BUSY_REASON
         not_held = error.message

@@ -252,25 +252,29 @@ class Lock:
         """The refusal of a run whose deadline passed with the lock in the way.
 
         A live holder and a lock path that is not a regular file both get it,
-        with different advice: only the first can be waited for. Both carry
-        `lock_busy`, which is not an unavailable journal, and
-        `harness_repair_regime` reads it.
+        with different advice: only the first can be waited for. The first
+        carries `lock_busy` and the second `lock_node`; neither is an
+        unavailable journal, and `harness_repair_regime` reads both.
         """
         path = self.path.as_posix()
         if self._is_not_a_regular_file():
-            message = (
+            refusal = JournalError(
+                None,
                 f"{path} is not a regular file, so it was neither opened nor "
-                f"broken; remove it by hand and run again"
+                f"broken; remove it by hand and run again",
+                self.artifact,
             )
-        else:
-            message = (
-                f"another validated-memory process holds {path}; retry when "
-                f"it finishes, or if no validated-memory process is running, "
-                f"delete {path}"
-            )
-        busy = JournalError(None, message, self.artifact)
-        busy.lock_busy = True
-        return busy
+            refusal.lock_node = True
+            return refusal
+        refusal = JournalError(
+            None,
+            f"another validated-memory process holds {path}; retry when "
+            f"it finishes, or if no validated-memory process is running, "
+            f"delete {path}",
+            self.artifact,
+        )
+        refusal.lock_busy = True
+        return refusal
 
     def _is_not_a_regular_file(self):
         """Whether a name stands at the lock path that is not a regular file.
