@@ -3247,9 +3247,9 @@ def guarded_harness_repair(
 def _unreadable_repair(regime, relink, recheck, why):
     """Answer for a lock or a vault that cannot be read at all.
 
-    `relink` runs for `UNAVAILABLE` only, after `recheck` and with no vault
-    check; the lock is held when the vault was the failure and not when the
-    lock was.
+    `relink` runs for `UNAVAILABLE` only, with `recheck` made just before its
+    rename and with no vault check; the lock is held when the vault was the
+    failure and not when the lock was.
     """
     if regime == UNAVAILABLE:
         return _publish(relink, recheck)

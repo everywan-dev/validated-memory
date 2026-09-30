@@ -823,10 +823,11 @@ def _sync_symlink(
     What stands at the harness path is read once, by `_harness_identity`,
     before anything is done to it, and a path that cannot be looked at, or a
     symlink that cannot be resolved because it loops, is left alone with a
-    WARNING. `journal.guarded_harness_repair` has that identity
-    read again immediately before it relinks (`_reread_harness`): a link that
-    resolves to `memory/` by then is left as it is and not reported, like one
-    that was correct at the start, and any other change withholds the repair.
+    WARNING. `journal.guarded_harness_repair` has that identity read again
+    with the link staged, immediately before the rename that publishes it
+    (`_reread_harness`): a link that resolves to `memory/` by then is left as
+    it is and not reported, like one that was correct at the start, and any
+    other change withholds the repair.
     """
     path = Path(raw_path)
     location = path.as_posix()
@@ -1072,9 +1073,10 @@ def _harness_identity(path):
 def _reread_harness(path, inspected):
     """Read the harness path again for `journal.guarded_harness_repair`.
 
-    Called immediately before the relink, it compares what stands at `path`
-    with the `inspected` identity the run recorded before it waited for the
-    lock. A path that resolves to `memory/` has nothing left to restore
+    Called by the relink with the link staged, immediately before the rename
+    that publishes it, it compares what stands at `path` with the `inspected`
+    identity the run recorded before it waited for the lock. A path that
+    resolves to `memory/` has nothing left to restore
     (`REPAIR_CURRENT`), whether or not what stands there changed: the link text
     can be the inspected one while the directory it names now leads to
     `memory/`. Otherwise None while the identities are equal, and any other
