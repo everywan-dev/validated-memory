@@ -2023,6 +2023,30 @@ def test_the_decision_and_the_relink_share_one_critical_section():
     )
     assert steps.index("os.symlink(target, temporary)") < rename - 4
 
+    # Once `lstat` has shown the staged name to be that symlink, a failure to
+    # read its text means the name changed under the examination: any `OSError`
+    # is "not intact", never an error the caller may take for intact. No CLI
+    # case reaches it, because it needs a swap between the `lstat` and the
+    # `readlink`, so this is a pin on the shape.
+    examine = function(durable, "_examine_staged")
+    (reading,) = [
+        node
+        for node in ast.walk(examine)
+        if isinstance(node, ast.Try)
+        and any(
+            isinstance(call, ast.Call)
+            and ast.unparse(call.func) == "os.readlink"
+            for statement in node.body
+            for call in ast.walk(statement)
+        )
+    ]
+    assert [ast.unparse(handler.type) for handler in reading.handlers] == [
+        "OSError"
+    ]
+    assert [ast.unparse(statement) for statement in reading.handlers[0].body] == [
+        "return False"
+    ]
+
 
 def test_the_condition_rule_reads_the_subject_and_the_pairing():
     """Structural pin: no reachable condition puts a path in its pairing.

@@ -869,9 +869,11 @@ def _staged_identity(temporary, target):
 def _examine_staged(temporary, target, identity):
     """Whether `temporary` is still the link staged, without following it.
 
-    False when the name is absent or is anything else. Raises `OSError` when
-    the name cannot be examined at all, which says nothing about whether it
-    changed.
+    False when the name is absent or is anything else. Once `lstat` has shown
+    the name to be that symlink, a failure to read its text means the name
+    changed under the examination, so it is False and never intact. Raises
+    `OSError` when the name cannot be `lstat`ed at all, which says nothing
+    about whether it changed.
     """
     try:
         info = os.lstat(temporary)
@@ -881,7 +883,7 @@ def _examine_staged(temporary, target, identity):
         return False
     try:
         return os.readlink(temporary) == os.fspath(target)
-    except FileNotFoundError:
+    except OSError:
         return False
 
 
