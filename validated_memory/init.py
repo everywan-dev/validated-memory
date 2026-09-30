@@ -1058,19 +1058,21 @@ def _reread_harness(path, inspected):
 
     Called immediately before the relink, it compares what stands at `path`
     with the `inspected` identity the run recorded before it waited for the
-    lock. None while they are equal. Otherwise the repair's final answer: a
-    path that already resolves to `memory/` has nothing left to restore
-    (`REPAIR_CURRENT`), and any other difference, or a path that cannot be
-    looked at, blocks the relink (`REPAIR_BLOCKED`).
+    lock. A path that resolves to `memory/` has nothing left to restore
+    (`REPAIR_CURRENT`), whether or not what stands there changed: the link text
+    can be the inspected one while the directory it names now leads to
+    `memory/`. Otherwise None while the identities are equal, and any other
+    difference, or a path that cannot be looked at, blocks the relink
+    (`REPAIR_BLOCKED`).
     """
     try:
         now = _harness_identity(path)
     except OSError as error:
         return journal.REPAIR_BLOCKED, f"{HARNESS_UNREADABLE}: {error}"
-    if now == inspected:
-        return None
     if _link_is_current(path):
         return journal.REPAIR_CURRENT, None
+    if now == inspected:
+        return None
     return journal.REPAIR_BLOCKED, HARNESS_CHANGED
 
 

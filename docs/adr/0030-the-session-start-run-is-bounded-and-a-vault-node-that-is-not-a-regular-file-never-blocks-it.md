@@ -106,10 +106,10 @@ Both routes that relink under the guard read that identity again immediately
 before `relink`: the guarded repair after its vault check, and the route taken
 when the vault cannot be listed, which relinks without that check.
 
-- An identity equal to the recorded one relinks.
 - A path that by then resolves to the project's `memory/` is
-  `REPAIR_CURRENT`: nothing is reported, as for a link that was correct at the
-  start.
+  `REPAIR_CURRENT`, whether or not its identity changed: nothing is reported, as
+  for a link that was correct at the start, and the link is not published again.
+- Otherwise an identity equal to the recorded one relinks.
 - Any other difference, or a path that cannot be looked at, is
   `REPAIR_BLOCKED` with the reason `the harness path changed while the repair
   waited` or the unreadable one. `REPAIR_BLOCKED` is also the outcome for a lock

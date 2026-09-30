@@ -412,7 +412,8 @@ WARNING that says `the harness path could not be read`, and the run's exit code
 does not change. Whenever the repair relinks -- after its vault check or, when
 the vault cannot be listed, without one -- it reads that identity again
 immediately before it replaces PATH. A path that by then resolves to `memory/`
-is left alone and gets no WARNING. Any other change, or a path that can no
+is left alone and gets no WARNING, whether or not what stands there changed.
+Any other change, or a path that can no
 longer be looked at, leaves PATH as it stands with a WARNING that says
 `the harness path changed while the repair waited` or the unreadable reason; a
 WARNING about PATH itself does not end in `run journal --check`. The second

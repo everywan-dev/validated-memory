@@ -1641,6 +1641,34 @@ def test_a_correct_link_published_by_someone_else_is_kept_when_the_vault_gated(
 
 
 @pytest.mark.parametrize("route", (LOCKED, UNLOCKED))
+def test_a_link_whose_target_became_memory_while_the_repair_waited_is_not_republished(
+    tmp_path, route
+):
+    """Only where the path resolves to decides that nothing is left to restore.
+
+    The link text is the same one the run inspected, but the directory it names
+    was replaced by a link to `memory/`, so the harness path resolves to
+    `memory/` by the time the run would relink. It is left as it is, nothing is
+    reported, and the link text is not published again."""
+
+    def swap(adopter, harness):
+        stale = harness.parent / "stale"
+        stale.rmdir()
+        stale.symlink_to((adopter / "memory").resolve(), target_is_directory=True)
+
+    adopter, harness, process, stdout, stderr = _run_with_a_swap(
+        tmp_path, route, swap
+    )
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert harness.resolve() == (adopter / "memory").resolve()
+    assert os.readlink(harness) == str(harness.parent / "stale")
+    assert _stderr_warnings(stderr) == [], stderr
+    assert "created symlink" not in stdout
+    assert "re-pointed symlink" not in stdout
+
+
+@pytest.mark.parametrize("route", (LOCKED, UNLOCKED))
 def test_the_same_link_published_again_is_not_a_change(tmp_path, route):
     """Identity is the entry's type and link text, not its inode.
 
