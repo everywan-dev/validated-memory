@@ -131,8 +131,8 @@ class Lock:
     Within one process the lock is RE-ENTRANT, counted per resolved lock
     path and not per object (`_HELD`): `init.run` holds it for a whole run
     and `Run.__init__` takes it again underneath, and a second `O_EXCL`
-    create would wait out the whole `LOCK_WAIT_SECONDS` and then refuse the
-    run.
+    create would find this process's own file and wait for it until the
+    deadline, then refuse the run.
     The file is created by the outermost `__enter__` and removed by the
     `__exit__` that brings the depth back to zero. Between processes it
     excludes exactly as before. The registry is module state, so a `Lock`
@@ -154,16 +154,12 @@ class Lock:
     never moves a deadline it was given. Each attempt takes the lock or, when
     it exists, breaks it if its owner is gone, and only then compares the
     clock with the deadline. A lock this acquisition broke, or found gone,
-    earns one immediate retry even after the deadline, so a run that breaks a
-    lock takes it whatever its budget, and no acquisition retries more than
-    once past the deadline. An acquisition that starts after the deadline
-    makes one attempt, and one retry if that attempt broke a lock, and then
-    refuses.
+    gets one immediate retry even after the deadline; that retry can lose the
+    `O_EXCL` race to another process, and then the acquisition refuses.
 
-    A lock path that is not a regular file is never opened and never
-    broken, and it is waited for like a live holder: the run refuses at its
-    deadline with a message that names the path and says to remove it by
-    hand.
+    A lock path that is not a regular file is never broken, and it is waited
+    for like a live holder: the run refuses at its deadline with a message
+    that names the path and says to remove it by hand.
 
     Never breaking a live pid has a price, and the contention message pays
     it: if the operating system has handed that pid to an unrelated process
@@ -235,11 +231,12 @@ class Lock:
                 return self
             except FileExistsError:
                 broke = self._break_if_unowned()
-                # Checked on every iteration: whatever `_break_if_unowned`
-                # answers, this loop ends at the deadline. The one thing it
-                # allows past the deadline is a single immediate retry for a
-                # lock that was just broken or found gone, because the run
-                # that removed a dead owner's lock must be the one to take it.
+                # Keep this check on every iteration and independent of what
+                # `_break_if_unowned` answered: an answer that can repeat
+                # without the lock changing would otherwise keep the loop
+                # from ending. For the same reason the retry past the
+                # deadline is one, taken for a lock just broken or found
+                # gone, and never a loop.
                 if time.monotonic() >= deadline:
                     if not broke or retried_after_deadline:
                         raise self._busy()
@@ -329,11 +326,11 @@ class Lock:
         so the caller waits as it does for a live holder.
 
         A name that is not a regular file -- a symlink, a named pipe, a
-        directory -- is never opened and never broken, and answers False: no
-        run made it, its owner cannot be asked, and opening a pipe waits for
-        a writer that never comes. The caller waits out its deadline and
-        refuses. A link is not followed even when it is dangling, which is
-        what would otherwise answer "gone" for ever.
+        directory -- is never broken and answers False: no run made it and
+        its owner cannot be asked. The `lstat` that says so comes before any
+        open and must stay first, because opening a pipe waits for a writer
+        that never comes and opening a link follows it. The caller waits out
+        its deadline and refuses. A link is not followed, even a dangling one.
 
         The file is opened ONCE and every question is asked of that
         descriptor -- the pid it holds, its age, and which file it is --
@@ -379,7 +376,7 @@ class Lock:
         try:
             status = os.fstat(descriptor)
             if not stat.S_ISREG(status.st_mode):
-                return False  # Swapped since the `lstat`: not ours to read.
+                return False  # Not a regular file: nothing to read.
             raw = os.read(descriptor, 64)
         except OSError:
             return self._break_if_old()

@@ -232,13 +232,14 @@ def run(
     `journal.harness_repair_regime` classifies the failure and
     `journal.guarded_harness_repair` decides (ADR 0029): only a refusal that
     preceded every adopting effect, a journal that cannot be read, or a lock
-    that another process holds reach it, and the last is always withheld. Any
-    other refusal -- identity, bootstrap, uncertainty after an effect -- is
-    withheld without calling it. A withheld link is a WARNING naming the
-    harness path and the reason, except when the harness step itself raised
-    (its ERROR already names the path) or when the link already resolves to
-    `memory/` (nothing is left to restore). A real harness directory is never a
-    symlink restoration and remains untouched after either outcome.
+    that another process holds or whose path is not a regular file reach it,
+    and the last two are always withheld. Any other refusal -- identity,
+    bootstrap, uncertainty after an effect -- is withheld without calling it.
+    A withheld link is a WARNING naming the harness path and the reason,
+    except when the harness step itself raised (its ERROR already names the
+    path) or when the link already resolves to `memory/` (nothing is left to
+    restore). A real harness directory is never a symlink restoration and
+    remains untouched after either outcome.
 
     The vault's ignore entry is the other ERROR that is not about a single
     item (`_ensure_ignored`), and it gates the same journalled part plus the

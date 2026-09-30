@@ -3164,10 +3164,12 @@ def guarded_harness_repair(
     `relink` is not called unless it returns None. Anything else it returns is
     the `(outcome, reason)` pair the repair ends with: `REPAIR_CURRENT` when
     the path already is what `relink` would publish, `REPAIR_BLOCKED` when it
-    changed under the wait or cannot be read. A process outside the plugin that replaces the
-    harness path between that reading and the rename inside `relink` is not
-    guarded against: the window is one `lstat` and one `rename`, and the
-    standard library has no compare-and-swap on a pathname to close it.
+    changed under the wait or cannot be read. A process outside the plugin
+    that replaces the harness path after the `lstat` inside `recheck` and
+    before the rename inside `relink` is not guarded against. The window
+    includes the check of the parent directory and the temporary link that
+    `relink` makes before it renames; the standard library has no
+    compare-and-swap on a pathname to close it.
 
     `regime` is what the caller knows of the refusal:
 
@@ -3187,9 +3189,10 @@ def guarded_harness_repair(
     - `UNAVAILABLE`: the history could not be read, or the run gated on an
       unignored vault, so only the vault rules of `PRE_EFFECT_GATE` apply.
       When the lock cannot be taken for a reason other than another process
-      holding it, the vault is still read, without the lock, and the same
-      rules apply. When the vault cannot be listed the link is restored
-      unguarded: that is the exception of
+      holding it or its path not being a regular file, the vault is still
+      read, without the lock, and the same rules apply. When the vault cannot
+      be listed the link is restored without the vault check, after
+      `recheck`: that is the exception of
       docs/design/2026-09-01-the-journal-core.md §4, which promises the link
       when the journal cannot be read at all, and it is an availability
       promise, not a proof.

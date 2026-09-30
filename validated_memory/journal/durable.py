@@ -932,9 +932,8 @@ def read_regular_file(path):
     whatever it points at. What raises is `FileNotFoundError` for a name that
     is absent and an `OSError` carrying only its message for a node that is not
     a regular file. The open uses `O_NONBLOCK` and `O_NOFOLLOW` where the
-    platform has them and the descriptor is checked with `fstat`, so a name
-    swapped for a pipe between the `lstat` and the `open` is refused rather
-    than waited on.
+    platform has them, and the descriptor is checked with `fstat`; keep all
+    three, because the `lstat` describes the name only at the moment it ran.
     """
     path = Path(path)
     if not stat.S_ISREG(os.lstat(path).st_mode):
