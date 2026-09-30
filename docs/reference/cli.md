@@ -407,21 +407,21 @@ unreadable journal.
 
 What stands at PATH is read once, with one `lstat`, before `init` acts on it:
 its file type and, for a symlink, its target. A path that cannot be looked at,
-such as one under a directory that cannot be searched, is left as it is with a
-WARNING that says `the harness path could not be read`, and the run's exit code
-does not change. Whenever the repair relinks -- after its vault check or, when
-the vault cannot be listed, without one -- it reads that identity again
-immediately before it replaces PATH. A path that by then resolves to `memory/`
-is left alone and gets no WARNING, whether or not what stands there changed.
-Any other change, or a path that can no
-longer be looked at, leaves PATH as it stands with a WARNING that says
-`the harness path changed while the repair waited` or the unreadable reason; a
-WARNING about PATH itself does not end in `run journal --check`. The second
-reading is not an atomic guarantee: a process outside the plugin that replaces
-PATH after that `lstat` and before the rename, including the parent-directory
-check and the temporary link the relink makes first, is not guarded against,
-and the relink never replaces a directory. The standard library has no
-compare-and-swap on a pathname.
+such as one under a directory that cannot be searched, or a symlink that cannot
+be resolved because it loops, is left as it is with a WARNING that says `the
+harness path could not be read`, and the run's exit code does not change.
+Whenever the repair relinks -- after its vault check or, when the vault cannot
+be listed, without one -- it reads that identity again immediately before it
+replaces PATH. A path that by then resolves to `memory/` is left alone and gets
+no WARNING, whether or not what stands there changed. Any other change, or a
+path that can no longer be looked at, leaves PATH as it stands with a WARNING
+that says `the harness path changed while the repair waited` or the unreadable
+reason; a WARNING about PATH itself does not end in `run journal --check`. The
+second reading is not an atomic guarantee: a process outside the plugin that
+replaces PATH after that `lstat` and before the rename, including the
+parent-directory check and the temporary link the relink makes first, is not
+guarded against, and the relink never replaces a directory. The standard
+library has no compare-and-swap on a pathname.
 
 The unrecorded restoration after such a refusal, or when the vault's ignore
 entry could not be established, first requires the same eligible in-adopter

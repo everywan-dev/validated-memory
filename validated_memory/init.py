@@ -821,8 +821,9 @@ def _sync_symlink(
     for the lock until; it is not read when `regime` is None.
 
     What stands at the harness path is read once, by `_harness_identity`,
-    before anything is done to it, and a path that cannot be looked at is left
-    alone with a WARNING. `journal.guarded_harness_repair` has that identity
+    before anything is done to it, and a path that cannot be looked at, or a
+    symlink that cannot be resolved because it loops, is left alone with a
+    WARNING. `journal.guarded_harness_repair` has that identity
     read again immediately before it relinks (`_reread_harness`): a link that
     resolves to `memory/` by then is left as it is and not reported, like one
     that was correct at the start, and any other change withholds the repair.
@@ -872,6 +873,16 @@ def _sync_symlink(
         ], 0
     was_symlink = identity[0] == stat.S_IFLNK
     previous = identity[1]
+    resolved = None
+    if was_symlink:
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError) as error:
+            return [
+                _withheld_link(
+                    location, f"{HARNESS_UNREADABLE}: {error}", journal_hint=False
+                )
+            ], 0
 
     def recheck():
         return _reread_harness(path, identity)
@@ -893,7 +904,7 @@ def _sync_symlink(
         journal.repair_harness_link(path, target, Path())
 
     try:
-        if was_symlink and path.resolve() == target:
+        if was_symlink and resolved == target:
             if regime is None:
                 relink()
             elif unrecorded != UNRECORDED_VAULT:

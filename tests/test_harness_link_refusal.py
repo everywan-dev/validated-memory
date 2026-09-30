@@ -1692,6 +1692,32 @@ def test_the_same_link_published_again_is_not_a_change(tmp_path, route):
     assert CHANGED not in stderr
 
 
+@pytest.mark.parametrize("refused", (False, True))
+def test_a_harness_symlink_that_loops_is_left_alone_with_a_warning(tmp_path, refused):
+    """A link that names itself cannot be resolved, so it is reported, not raised.
+
+    `harness/memory -> memory` is outside the project and resolves to nothing:
+    resolving it raises. The run leaves it as it is with the WARNING for a
+    harness path that cannot be read, on a healthy run and on one the journal
+    refused, and it does not end in a traceback."""
+    adopter, harness = _adopted(tmp_path)
+    harness.unlink()
+    harness.symlink_to(harness.name)
+    if refused:
+        _add_second_lineage(adopter)
+
+    result = _cli(adopter, "init", "--harness-memory", str(harness))
+
+    assert result.returncode == (1 if refused else 0), (result.stdout, result.stderr)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert len(_warnings(result)) == 1, result.stderr
+    assert "the harness path could not be read" in _warnings(result)[0]
+    assert not _warnings(result)[0].endswith("; run journal --check")
+    assert os.readlink(harness) == harness.name
+    assert "created symlink" not in result.stdout
+    assert "re-pointed symlink" not in result.stdout
+
+
 @pytest.mark.skipif(
     _root_cannot_be_locked_out(),
     reason="an unsearchable directory is only unsearchable to a non-root user",

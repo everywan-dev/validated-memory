@@ -339,6 +339,7 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "a wait: no process holds it.",
         "`the harness path changed while the repair waited`",
         "`the harness path could not be read`",
+        "or a symlink that cannot be resolved because it loops, is left as it is",
         "`journal --check` answers for such an entry without opening it",
     ),
     "journal.md": (
@@ -360,6 +361,7 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "Two runs breaking one dead lock at the same instant can both end up "
         "holding it",
         "**The harness path is read again immediately before the relink.**",
+        "or a symlink that loops, is likewise left as it is, with a WARNING",
         "**A lock path that is not a regular file** blocks it without a wait, "
         "because no process holds it",
     ),
@@ -388,6 +390,8 @@ def test_lock_wait_and_vault_node_contracts_are_documented():
     )
     for sentence in (
         "`init --lock-wait SECONDS` takes a finite number, zero or more",
+        "or a symlink that cannot be resolved because it loops, is reported as "
+        "`the harness path could not be read`",
         "The hook passes `--lock-wait 3`.",
         "`lstat` the name before any open.",
         "`LOCK_NODE`",

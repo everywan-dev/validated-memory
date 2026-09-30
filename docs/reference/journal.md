@@ -891,21 +891,21 @@ component is never followed.
 **An unignored vault** gates the run without a journal refusal; its repair goes
 through the same guard with the vault rules of an unreadable journal.
 
-**The harness path is read again immediately before the relink.** `init`
-records what stands at it with one `lstat` -- the file type and, for a
-symlink, its target, and no inode number, because a session that publishes
-the same link again creates a new inode and inode numbers are not stable on
-every filesystem -- and both routes that relink under the guard read that
-identity again first: the repair after its vault check and the one that runs
-when the vault cannot be listed. A path that by then resolves to `memory/` is
-left alone and is not reported, whether or not what stands there changed.
-Otherwise an identity that is unchanged relinks, and any other change, or a
-path that can no longer be looked at, withholds the repair with the reason
-`the harness path changed while the repair waited` or the unreadable one, and
-a withheld link that is about the harness path itself does not end in `run
-journal --check`, because the journal has nothing to say about it. A harness
-path that cannot be looked at when `init` first reads it is likewise left as
-it is, with a WARNING, without changing the exit code.
+**The harness path is read again immediately before the relink.** `init` records
+what stands at it with one `lstat` -- the file type and, for a symlink, its
+target, and no inode number, because a session that publishes the same link again
+creates a new inode and inode numbers are not stable on every filesystem -- and
+both routes that relink under the guard read that identity again first: the
+repair after its vault check and the one that runs when the vault cannot be
+listed. A path that by then resolves to `memory/` is left alone and is not
+reported, whether or not what stands there changed. Otherwise an identity that is
+unchanged relinks, and any other change, or a path that can no longer be looked
+at, withholds the repair with the reason `the harness path changed while the
+repair waited` or the unreadable one, and a withheld link that is about the
+harness path itself does not end in `run journal --check`, because the journal
+has nothing to say about it. A harness path that cannot be looked at when `init`
+first reads it, or a symlink that loops, is likewise left as it is, with a
+WARNING, without changing the exit code.
 
 The lock serialises validated-memory processes only. A process outside the
 plugin that replaces the harness path after the `lstat` of that second reading

@@ -99,8 +99,8 @@ seconds.
 the type is a symlink). No device or inode number is part of it: a session that
 publishes the same link again creates a new inode, which is not a change, and
 inode numbers are not stable on 9p, drvfs or FUSE. A failure of `lstat` other
-than an absent name is reported as `the harness path could not be read`, and the
-repair is withheld.
+than an absent name, or a symlink that cannot be resolved because it loops, is
+reported as `the harness path could not be read`, and the repair is withheld.
 
 Both routes that relink under the guard read that identity again immediately
 before `relink`: the guarded repair after its vault check, and the route taken
