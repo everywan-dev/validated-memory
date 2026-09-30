@@ -153,8 +153,12 @@ class Lock:
     all; without one the deadline is `LOCK_WAIT_SECONDS` after entry. `Lock`
     never moves a deadline it was given. Each attempt takes the lock or, when
     it exists, breaks it if its owner is gone, and only then compares the
-    clock with the deadline: an acquisition that starts after the deadline
-    makes one attempt and refuses.
+    clock with the deadline. A lock this acquisition broke, or found gone,
+    earns one immediate retry even after the deadline, so a run that breaks a
+    lock takes it whatever its budget, and no acquisition retries more than
+    once past the deadline. An acquisition that starts after the deadline
+    makes one attempt, and one retry if that attempt broke a lock, and then
+    refuses.
 
     A lock path that is not a regular file is never opened and never
     broken, and it is waited for like a live holder: the run refuses at its
@@ -209,6 +213,7 @@ class Lock:
         deadline = self._deadline
         if deadline is None:
             deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        retried_after_deadline = False
         while True:
             try:
                 descriptor = os.open(
@@ -230,11 +235,16 @@ class Lock:
                 return self
             except FileExistsError:
                 broke = self._break_if_unowned()
-                # Checked on every iteration, before the retry a break
-                # earns: whatever `_break_if_unowned` answers, this loop
-                # ends at the deadline.
+                # Checked on every iteration: whatever `_break_if_unowned`
+                # answers, this loop ends at the deadline. The one thing it
+                # allows past the deadline is a single immediate retry for a
+                # lock that was just broken or found gone, because the run
+                # that removed a dead owner's lock must be the one to take it.
                 if time.monotonic() >= deadline:
-                    raise self._busy()
+                    if not broke or retried_after_deadline:
+                        raise self._busy()
+                    retried_after_deadline = True
+                    continue
                 if not broke:
                     time.sleep(0.05)
 

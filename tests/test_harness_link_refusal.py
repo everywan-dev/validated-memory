@@ -1390,14 +1390,14 @@ def test_the_two_lock_acquisitions_of_one_run_share_one_wait(tmp_path):
 
 
 @pytest.mark.parametrize("wait", ("0", str(HOOK_LOCK_WAIT_SECONDS)))
-def test_a_spent_or_short_budget_still_breaks_a_lock_whose_owner_is_gone(
+def test_a_lock_whose_owner_is_gone_is_broken_and_taken_by_the_same_run(
     tmp_path, wait
 ):
-    """A lock left by a process that exited is broken on the first attempt.
+    """A lock left by a process that exited is broken and then taken, whatever the budget.
 
-    Under the hook's budget the run then takes the lock and relinks. With a
-    zero budget the run may still be refused, but the dead lock is gone
-    afterwards, so the next run takes it."""
+    With a zero budget the deadline has passed by the first attempt, and the
+    run that broke the lock still takes it: the link is restored and the run
+    exits 0."""
     adopter, harness = _adopted(tmp_path)
     _point_at_stale(harness)
     lock = adopter / ".validated-memory" / "lock"
@@ -1409,23 +1409,17 @@ def test_a_spent_or_short_budget_still_breaks_a_lock_whose_owner_is_gone(
     )
     elapsed = time.monotonic() - started
 
-    assert elapsed < RUN_SLACK_SECONDS + 1, elapsed
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert harness.resolve() == (adopter / "memory").resolve()
     assert not lock.exists()
-    if wait != "0":
-        assert result.returncode == 0, (result.stdout, result.stderr)
-        assert harness.resolve() == (adopter / "memory").resolve()
-    else:
-        again = _cli(
-            adopter, "init", "--harness-memory", str(harness), "--lock-wait", wait
-        )
-        assert again.returncode == 0, (again.stdout, again.stderr)
-        assert harness.resolve() == (adopter / "memory").resolve()
+    assert elapsed < RUN_SLACK_SECONDS + 1, elapsed
 
 
-def test_an_empty_lock_older_than_the_horizon_is_broken_under_the_hooks_wait(
-    tmp_path,
+@pytest.mark.parametrize("wait", ("0", str(HOOK_LOCK_WAIT_SECONDS)))
+def test_an_empty_lock_older_than_the_horizon_is_broken_and_taken_by_the_same_run(
+    tmp_path, wait
 ):
-    """A lock with no pid in it is broken on age alone, whatever the budget."""
+    """A lock with no pid in it is broken on age alone, and taken, whatever the budget."""
     adopter, harness = _adopted(tmp_path)
     _point_at_stale(harness)
     lock = adopter / ".validated-memory" / "lock"
@@ -1435,12 +1429,7 @@ def test_an_empty_lock_older_than_the_horizon_is_broken_under_the_hooks_wait(
 
     started = time.monotonic()
     result = _cli(
-        adopter,
-        "init",
-        "--harness-memory",
-        str(harness),
-        "--lock-wait",
-        str(HOOK_LOCK_WAIT_SECONDS),
+        adopter, "init", "--harness-memory", str(harness), "--lock-wait", wait
     )
     elapsed = time.monotonic() - started
 
@@ -1450,7 +1439,8 @@ def test_an_empty_lock_older_than_the_horizon_is_broken_under_the_hooks_wait(
     assert elapsed < RUN_SLACK_SECONDS + 1, elapsed
 
 
-def test_a_young_empty_lock_is_refused_within_the_hooks_wait(tmp_path):
+@pytest.mark.parametrize("wait", ("0", str(HOOK_LOCK_WAIT_SECONDS)))
+def test_a_young_empty_lock_is_refused_within_the_wait(tmp_path, wait):
     """A lock with no pid that is not old enough is not broken.
 
     Nothing says who holds it, so the run waits its budget and withholds the
@@ -1463,12 +1453,7 @@ def test_a_young_empty_lock_is_refused_within_the_hooks_wait(tmp_path):
 
     started = time.monotonic()
     result = _cli(
-        adopter,
-        "init",
-        "--harness-memory",
-        str(harness),
-        "--lock-wait",
-        str(HOOK_LOCK_WAIT_SECONDS),
+        adopter, "init", "--harness-memory", str(harness), "--lock-wait", wait
     )
     elapsed = time.monotonic() - started
 
@@ -1478,7 +1463,7 @@ def test_a_young_empty_lock_is_refused_within_the_hooks_wait(tmp_path):
     assert len(_warnings(result)) == 1, result.stderr
     assert "run-wide lock" in _warnings(result)[0]
     assert lock.exists()
-    assert HOOK_LOCK_WAIT_SECONDS - 0.1 <= elapsed < HOOK_LOCK_WAIT_SECONDS + RUN_SLACK_SECONDS, elapsed
+    assert float(wait) - 0.1 <= elapsed < float(wait) + RUN_SLACK_SECONDS, elapsed
 
 
 # --- the harness path is read again before the relink -------------------------
