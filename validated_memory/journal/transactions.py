@@ -29,6 +29,7 @@ from .durable import (
     VisibilityUnconfirmed,
     ensure_owned_directory,
     install_bytes,
+    read_regular_file,
     remove_name,
 )
 from .operations import INTENTION_OPS
@@ -221,7 +222,7 @@ def mark_published(root, transaction_id, published_mode=None):
             "injected published-marker persistence failure",
             os.fspath(path),
         )
-    entry = json.loads(path.read_text(encoding="utf-8"))
+    entry = _read_entry(path)
     entry["stage"] = PUBLISHED
     if published_mode is not None:
         entry["published_mode"] = published_mode
@@ -239,7 +240,7 @@ def mark_history_append(root, transaction_id, claim):
         if item.strip()
     }:
         raise OSError(errno.EIO, "injected history-claim persistence failure", os.fspath(path))
-    entry = json.loads(path.read_text(encoding="utf-8"))
+    entry = _read_entry(path)
     if "history_append" in entry:
         raise OSError(
             errno.EINVAL,
@@ -255,7 +256,7 @@ def mark_history_append(root, transaction_id, claim):
 def mark_temporary_claim(root, transaction_id, claim):
     """Durably record one target-adjacent staging claim before creation."""
     path = _transaction_path(root, transaction_id)
-    entry = json.loads(path.read_text(encoding="utf-8"))
+    entry = _read_entry(path)
     if "temporary" in entry:
         raise OSError(errno.EINVAL, "transaction already carries a temporary claim", os.fspath(path))
     entry["temporary"] = claim
@@ -268,7 +269,7 @@ def mark_unconfirmed(root, transaction_id, phase, reason):
     if phase not in UNCONFIRMED_PHASES:
         raise ValueError(f"unknown unconfirmed phase '{phase}'")
     path = _transaction_path(root, transaction_id)
-    entry = json.loads(path.read_text(encoding="utf-8"))
+    entry = _read_entry(path)
     entry["unconfirmed"] = phase
     entry["unconfirmed_reason"] = str(reason)
     _write_transaction_file(root, transaction_id, entry)
@@ -300,7 +301,7 @@ def reestablish_transaction(root, transaction_id, expected):
     primitive neither edits fields nor manufactures a successor entry.
     """
     path = _transaction_path(root, transaction_id)
-    data = path.read_bytes()
+    data = read_regular_file(path)
     try:
         current = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -324,7 +325,7 @@ def reestablish_transaction(root, transaction_id, expected):
             os.fspath(path),
         )
     install_bytes(path, data)
-    if path.read_bytes() != data:
+    if read_regular_file(path) != data:
         raise OSError(
             errno.EIO,
             f"transaction {transaction_id} was not identically re-established",
@@ -336,7 +337,7 @@ def reestablish_transaction(root, transaction_id, expected):
 def abort_transaction(root, transaction_id, reason):
     """Close a transaction that will never publish, recording why."""
     path = _transaction_path(root, transaction_id)
-    entry = json.loads(path.read_text(encoding="utf-8"))
+    entry = _read_entry(path)
     entry["stage"] = ABORTED
     entry["reason"] = reason
     _write_transaction_file(root, transaction_id, entry)
@@ -350,7 +351,7 @@ def remove_transaction_file(root, transaction_id):
     itself, on its own successful run) has no further use for it.
     """
     path = _transaction_path(root, transaction_id)
-    entry = json.loads(path.read_text(encoding="utf-8"))
+    entry = _read_entry(path)
     try:
         remove_name(path)
     except VisibilityUnconfirmed:
@@ -533,14 +534,29 @@ def _target_transaction_path(root, transaction_id):
     return _transaction_path(root, transaction_id)
 
 
+def _read_entry(path):
+    """The JSON a transaction file holds, read as `read_regular_file` reads.
+
+    Raises `OSError` for an entry that is absent, unreadable or not a regular
+    file, and the decoder's `ValueError` for bytes that are not JSON text.
+    """
+    return json.loads(read_regular_file(path).decode("utf-8"))
+
+
 def _read_transaction(path, transaction_id):
-    """Decode one known transaction path into the shared reader shape."""
+    """Decode one known transaction path into the shared reader shape.
+
+    An entry that is not a regular file -- a symlink, a named pipe, a
+    directory -- is a damaged transaction and is never opened: a link is not
+    followed even when its target is a valid transaction, because the entry
+    does not hold the transaction and opening a pipe blocks the run.
+    """
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_regular_file(path).decode("utf-8")
     except OSError as error:
         return {"id": transaction_id, "damaged": str(error)}
     except ValueError as error:
-        # Bytes that are not text at all. `read_text` raises
+        # Bytes that are not text at all. `decode` raises
         # `UnicodeDecodeError`, which is a `ValueError` and not an
         # `OSError`, so the handler above does not see it.
         return {"id": transaction_id, "damaged": f"it is not valid UTF-8: {error}"}

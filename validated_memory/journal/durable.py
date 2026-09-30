@@ -923,6 +923,37 @@ def read_file_snapshot(path, *, identify=False):
     return (*result, held) if identify else result
 
 
+def read_regular_file(path):
+    """The bytes of `path` when it is a regular file, read without blocking.
+
+    A symlink is not followed, and a node that is not a regular file -- a named
+    pipe, a directory, a device -- is refused before it is opened: opening a
+    pipe for reading blocks until a writer appears, and following a link reads
+    whatever it points at. What raises is `FileNotFoundError` for a name that
+    is absent and an `OSError` carrying only its message for a node that is not
+    a regular file. The open uses `O_NONBLOCK` and `O_NOFOLLOW` where the
+    platform has them and the descriptor is checked with `fstat`, so a name
+    swapped for a pipe between the `lstat` and the `open` is refused rather
+    than waited on.
+    """
+    path = Path(path)
+    if not stat.S_ISREG(os.lstat(path).st_mode):
+        raise OSError("it is not a regular file; it was not opened")
+    descriptor = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError("it is not a regular file; it was closed unread")
+        with open(descriptor, "rb", closefd=False) as handle:
+            return handle.read()
+    finally:
+        os.close(descriptor)
+
+
 def _swap_snapshot_for_test(path, snapshot_kind, data, mode):
     """Deterministically change a validated pathname for race coverage."""
     requested = {
