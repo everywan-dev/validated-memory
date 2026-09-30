@@ -277,8 +277,12 @@ whose it is, and the ERROR names the slot and says to remove it by hand:
 ERROR: .gitignore: ignore-rule: the vault's ignore entry (/.validated-memory/) could not be written: the preimage of .gitignore could not be parked, so the mutation was not attempted: .validated-memory/preimages/181314065df2f2fdaf920b1a8b5311daa216a2d6489a06ada5b49cc514d89417 is not a regular file, so it was neither opened nor removed; remove it by hand and run again. Nothing has been written.
 ```
 
-A regular slot whose bytes do not match the digest it is filed under is still
-replaced ([ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)).
+A regular slot whose bytes do not match the digest it is filed under, or cannot
+be read, is still replaced, but only while a second `lstat` right before the
+removal shows it is still the regular file that was first examined; a slot that
+has become another kind of node or another file by then is refused as a slot
+that is not a regular file is, and a process that replaces it between that
+`lstat` and the removal is not guarded against ([ADR 0030](../adr/0030-the-session-start-run-is-bounded-and-a-vault-node-that-is-not-a-regular-file-never-blocks-it.md)).
 
 Each file holds:
 

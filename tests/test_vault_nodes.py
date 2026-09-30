@@ -10,6 +10,7 @@ nothing opened the node. Nothing imports the package.
 import hashlib
 import json
 import os
+import select
 import shutil
 import stat
 import subprocess
@@ -295,6 +296,129 @@ def test_a_preimage_slot_that_is_not_a_regular_file_refuses_the_mutation(
     assert (tree / ".gitignore").read_bytes() == original
     assert _node_state(slot) == before
     assert not os.path.lexists(tree / VAULT / "lock")
+
+
+def _run_to_rendezvous(cwd, point, *arguments):
+    """Start the CLI so that it stops at `point` until the test lets it go."""
+    ready_read, ready_write = os.pipe()
+    continue_read, continue_write = os.pipe()
+    process = subprocess.Popen(
+        [sys.executable, "-P", "-m", "validated_memory", *arguments],
+        cwd=cwd,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(REPO_ROOT),
+            "VALIDATED_MEMORY_TEST_RENDEZVOUS": point,
+            "VALIDATED_MEMORY_TEST_READY_FD": str(ready_write),
+            "VALIDATED_MEMORY_TEST_CONTINUE_FD": str(continue_read),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        pass_fds=(ready_write, continue_read),
+    )
+    os.close(ready_write)
+    os.close(continue_read)
+    readable, _, _ = select.select([ready_read], [], [], RUN_TIMEOUT_SECONDS)
+    assert readable and os.read(ready_read, 32), f"the run never reached {point}"
+    return process, ready_read, continue_write
+
+
+def _release(process, ready, proceed):
+    """Let a stopped run go on, and return `(stdout, stderr)` when it ends."""
+    try:
+        os.write(proceed, b"x")
+        return process.communicate(timeout=RUN_TIMEOUT_SECONDS)
+    finally:
+        os.close(ready)
+        os.close(proceed)
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+
+def _corrupt_slot_of_a_gitignore(tmp_path):
+    """A tree whose `.gitignore` needs an update and whose slot holds wrong bytes."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    original = b"build/\n"
+    (tree / ".gitignore").write_bytes(original)
+    slot = tree / VAULT / "preimages" / hashlib.sha256(original).hexdigest()
+    slot.parent.mkdir(parents=True)
+    slot.write_bytes(b"not the preimage at all\n")
+    return tree, slot, original
+
+
+@pytest.mark.parametrize("kind", SLOT_KINDS)
+def test_a_slot_swapped_for_a_node_that_is_not_a_regular_file_after_it_was_examined_is_kept(
+    tmp_path, kind
+):
+    """A slot that is not a regular file when it is read is refused, not removed.
+
+    The slot is a regular file with wrong bytes when the run examines it, which
+    is a slot the run replaces. Something else swaps it for another kind of node
+    before the run reads it, and the run refuses, as for a slot that was that
+    node from the start: exit 1, the slot named, the node kept, `.gitignore`
+    unchanged."""
+    tree, slot, original = _corrupt_slot_of_a_gitignore(tmp_path)
+    process, ready, proceed = _run_to_rendezvous(
+        tree, "after-preimage-slot-examined", "init"
+    )
+    slot.unlink()
+    _make_node(tmp_path, slot, kind)
+    swapped = _node_state(slot)
+
+    stdout, stderr = _release(process, ready, proceed)
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert "Traceback" not in stderr, stderr
+    assert f"{VAULT}/preimages/{slot.name}" in stderr, stderr
+    assert "is not a regular file" in stderr, stderr
+    assert "remove it by hand" in stderr, stderr
+    assert (tree / ".gitignore").read_bytes() == original
+    assert _node_state(slot) == swapped
+
+
+def test_a_slot_replaced_by_another_regular_file_after_it_was_examined_is_kept(
+    tmp_path,
+):
+    """A slot that is no longer the file that was examined is refused, not removed.
+
+    The other file is created beside it first, so it cannot share the inode the
+    examined one had. The run refuses and says the slot was replaced; the other
+    file's bytes are still there."""
+    tree, slot, original = _corrupt_slot_of_a_gitignore(tmp_path)
+    process, ready, proceed = _run_to_rendezvous(
+        tree, "after-preimage-slot-examined", "init"
+    )
+    other = slot.with_name("other")
+    other.write_bytes(b"somebody else's bytes\n")
+    os.replace(other, slot)
+
+    stdout, stderr = _release(process, ready, proceed)
+
+    assert process.returncode == 1, (stdout, stderr)
+    assert "Traceback" not in stderr, stderr
+    assert f"{VAULT}/preimages/{slot.name}" in stderr, stderr
+    assert "was replaced while it was read" in stderr, stderr
+    assert "remove it by hand" in stderr, stderr
+    assert (tree / ".gitignore").read_bytes() == original
+    assert slot.read_bytes() == b"somebody else's bytes\n"
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="an unreadable file is only unreadable to a non-root user",
+)
+def test_a_regular_slot_that_cannot_be_read_is_replaced(tmp_path):
+    """A regular slot whose bytes cannot be read is worthless, and is replaced."""
+    tree, slot, original = _corrupt_slot_of_a_gitignore(tmp_path)
+    slot.chmod(0)
+
+    result = _cli(tree, "init")
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert slot.read_bytes() == original
 
 
 def _diverged_with_preimage(tree):

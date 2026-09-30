@@ -58,7 +58,11 @@ Each reader applies it to what it owns:
   needs it before any effect, with an ERROR that names the slot and says to
   remove it by hand. It is neither opened nor removed: nothing proves whose it
   is, and the guard of ADR 0029 already treats such a node as residue. A regular
-  slot whose bytes do not match its name is replaced as before.
+  slot whose bytes do not match its name, or cannot be read, is replaced as
+  before, but only while a second `lstat` right before the removal shows it is
+  still the regular file that was first examined. A slot that has become
+  another kind of node or another file by then is refused like a slot that is not
+  a regular file: it is kept, and the ERROR says to remove it by hand.
 - A trusted preimage that is not a regular file is **unavailable** to
   `journal --resolve --restore`.
 - The **lock node** is never opened and never broken. A lock path that is not a
@@ -149,6 +153,11 @@ The limits that remain are declared and not closed:
   before it renames. The standard library has no compare-and-swap on a pathname.
   The relink never replaces a directory. This narrows the limit of ADR 0029,
   which spanned the lock wait and the vault read as well.
+- **The window between the second `lstat` of a preimage slot and its removal.**
+  A process outside the plugin that replaces a regular slot with wrong bytes in
+  that window has its file removed and the preimage parked in its place. The
+  window is one `lstat` and one `unlink`; the standard library has no
+  compare-and-swap on a pathname, and no test can hold a run between the two.
 - **Two runs breaking the same dead lock.** Each checks that the lock is the
   file it examined and then unlinks it by name, and the file can be replaced
   between the two calls, so both runs can end up holding the lock. The race

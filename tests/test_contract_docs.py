@@ -329,6 +329,9 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "`it is not a regular file; it was not opened`",
         "A preimage slot that is not a regular file refuses the mutation that "
         "needs it before any effect.",
+        "A regular slot whose bytes differ is still replaced, only while a "
+        "second `lstat` shows it is still the file that was examined; one that "
+        "has changed kind or file in the meantime is refused the same way.",
         "A lock path that is not a regular file is held until the run's lock "
         "deadline, and then refused with an ERROR that names the path and "
         "says to remove it by hand.",
@@ -351,6 +354,8 @@ LOCK_WAIT_AND_VAULT_NODE_SENTENCES = {
         "**A node in those directories that is not a regular file is never "
         "opened.**",
         "it is neither opened nor removed, because nothing proves whose it is",
+        "only while a second `lstat` right before the removal shows it is "
+        "still the regular file that was first examined",
         "it is not a regular file; it was not opened",
         "Two runs breaking one dead lock at the same instant can both end up "
         "holding it",
@@ -388,6 +393,8 @@ def test_lock_wait_and_vault_node_contracts_are_documented():
         "`LOCK_NODE`",
         "`REPAIR_BLOCKED`",
         "The window between the re-read and the rename.",
+        "The window between the second `lstat` of a preimage slot and its "
+        "removal.",
         "Two runs breaking the same dead lock.",
     ):
         assert sentence in decision, f"ADR 0030 no longer says: {sentence!r}"

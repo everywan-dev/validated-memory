@@ -35,7 +35,7 @@ from .durable import (
     republish_directory,
     republish_file,
 )
-from .fault import fault_at, sleep_at
+from .fault import fault_at, rendezvous_at, sleep_at
 from .lock import Lock
 from .operations import (
     OUTCOME_APPLIED,
@@ -126,6 +126,52 @@ def _blob_matches(path, reference):
         return digest(read_regular_file(path)) == reference
     except OSError:
         return False
+
+
+_SLOT_KEEP = "keep"
+_SLOT_REPLACE = "replace"
+_SLOT_ABSENT = "absent"
+
+
+def _slot_name(blob):
+    """How a refusal names a preimage slot."""
+    return f"{VAULT_DIRNAME}/{PREIMAGE_DIRNAME}/{blob.name}"
+
+
+def _slot_verdict(blob, reference, examined):
+    """What a run does with a preimage slot that was a regular file when `examined` was taken.
+
+    `keep` when its bytes digest to `reference`, `replace` when it is a regular
+    file whose bytes differ or cannot be read, and `absent` when it is gone.
+    A slot that is no longer a regular file, or is no longer the file that was
+    examined, raises `OSError` naming it: only a regular file that is still the
+    examined one is removed, and a second `lstat` right before the caller
+    removes it is what shows so. A process that replaces the slot between that
+    `lstat` and the removal is not guarded against.
+    """
+    try:
+        data = read_regular_file(blob)
+    except FileNotFoundError:
+        return _SLOT_ABSENT
+    except OSError:
+        data = None
+    if data is not None and digest(data) == reference:
+        return _SLOT_KEEP
+    try:
+        now = os.lstat(blob)
+    except FileNotFoundError:
+        return _SLOT_ABSENT
+    if not stat.S_ISREG(now.st_mode):
+        raise OSError(
+            f"{_slot_name(blob)} is not a regular file, so it was neither "
+            "opened nor removed; remove it by hand and run again"
+        )
+    if (now.st_dev, now.st_ino) != (examined.st_dev, examined.st_ino):
+        raise OSError(
+            f"{_slot_name(blob)} was replaced while it was read, so it was "
+            "not removed; remove it by hand and run again"
+        )
+    return _SLOT_REPLACE
 
 
 def _preimages_dir(root):
@@ -425,12 +471,16 @@ class Run:
         name is the digest, so bytes that disagree with it can only be a
         corrupt earlier park or a hand edit -- and the bytes to replace it
         with are in hand right now. Refusing instead would wedge the
-        adoption on a file nothing else will ever repair.
+        adoption on a file nothing else will ever repair. Only a regular
+        file is removed, and only while it is still the one first examined
+        (`_slot_verdict`).
 
         A slot that is not a regular file is not a blob and is neither
         opened nor removed: it is `lstat`ed, so a dangling symlink is not
         "absent", and it raises `OSError` naming the slot, before anything
-        is written. Whose it is cannot be proven, and opening a pipe blocks
+        is written. So does a slot that was a regular file when it was
+        examined and is another node or another file by the time it would be
+        removed. Whose it is cannot be proven, and opening a pipe blocks
         the run, so only the operator removes it.
 
         The check is read-back, not a proof about the platter: a filesystem
@@ -450,13 +500,16 @@ class Run:
             slot = None
         if slot is not None and not stat.S_ISREG(slot.st_mode):
             raise OSError(
-                f"{VAULT_DIRNAME}/{PREIMAGE_DIRNAME}/{blob.name} is not a "
-                "regular file, so it was neither opened nor removed; remove "
-                "it by hand and run again"
+                f"{_slot_name(blob)} is not a regular file, so it was neither "
+                "opened nor removed; remove it by hand and run again"
             )
-        if slot is not None and not _blob_matches(blob, reference):
-            remove_name(blob)
-            slot = None
+        if slot is not None:
+            rendezvous_at("after-preimage-slot-examined", 1)
+            verdict = _slot_verdict(blob, reference, slot)
+            if verdict == _SLOT_REPLACE:
+                remove_name(blob)
+            if verdict != _SLOT_KEEP:
+                slot = None
         if slot is None:
             ensure_owned_directory(blob.parent, self.root)
             def verify(temporary):
